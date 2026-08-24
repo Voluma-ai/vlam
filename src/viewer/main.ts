@@ -4547,12 +4547,6 @@ function parseVector3Param(value: string | null): THREE.Vector3 | null {
   return new THREE.Vector3(parts[0], parts[1], parts[2]);
 }
 
-/** Serializes a camera vector for `?cameraPosition=` / `?cameraTarget=`. */
-function formatVector3Param(value: THREE.Vector3): string {
-  const fmt = (n: number): string => String(Number(n.toFixed(6)));
-  return `${fmt(value.x)},${fmt(value.y)},${fmt(value.z)}`;
-}
-
 main().catch((error: unknown) => {
   // A friendly, phase-aware failure card (bad URL, unsupported format, network)
   // instead of a raw message dumped in the corner (M4.4).

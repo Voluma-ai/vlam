@@ -1,3 +1,5 @@
-# Same checks as the CI `lint` job and the `docs:check` step of `docs`.
+# Same local gates as the CI `lint` and `typecheck` jobs, plus `docs:check`.
+# Tests, docs:samples, gitleaks, and build stay in CI (too slow for every commit).
 npm run lint
+npm run typecheck
 npm run docs:check

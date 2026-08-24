@@ -1,0 +1,5 @@
+# Git merge does not run pre-commit. Husky's stub for this hook otherwise
+# exits 0, so a clean merge would skip the same gates a commit gets.
+npm run lint
+npm run typecheck
+npm run docs:check
