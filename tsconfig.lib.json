@@ -1,0 +1,36 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    // Declaration maps would point at `src/`, which `package.json#files` never
+    // ships - every map would be a dead link and go-to-definition would break.
+    // JS source maps (emitted by vite, see vite.config.lib.ts) are kept: they
+    // embed `sourcesContent`, so they stand alone and are debuggable, which an
+    // MIT library owes its users even at ~1.26 MB of dist's ~2.12 MB.
+    "declarationMap": false,
+    // `@internal` members (e.g. SdfEffect._uniforms) are implementation detail
+    // and must not appear in the published .d.ts.
+    "stripInternal": true,
+    "rootDir": "src/lib",
+    "outDir": "dist"
+  },
+  // Only the published entry points. tsc follows their imports, so every module
+  // the public types actually reference still gets a declaration - but dev-only
+  // harnesses and the worker scripts (reached through `?worker&inline`, with
+  // their message types factored into `*-worker-protocol.ts`) stay out of dist.
+  "include": [
+    "src/lib/**/*.d.ts",
+    "src/lib/index.ts",
+    "src/lib/effects.ts",
+    "src/lib/formats/ply/index.ts",
+    "src/lib/formats/sog/index.ts",
+    "src/lib/formats/rad/index.ts",
+    "src/lib/formats/lcc/index.ts",
+    "src/lib/formats/spz/index.ts",
+    "src/lib/formats/splat/index.ts",
+    "src/lib/formats/ksplat/index.ts"
+  ],
+  "exclude": ["src/lib/**/*.test.ts", "src/lib/__tests__"]
+}

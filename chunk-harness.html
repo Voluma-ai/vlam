@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>VLAM! - chunk loading harness</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 16px;
+        background: #1a1a1f;
+        color: #ddd;
+        font: 13px/1.5 ui-monospace, monospace;
+      }
+      button {
+        font: inherit;
+        margin-right: 8px;
+        margin-bottom: 12px;
+        background: #2a2a31;
+        color: #ddd;
+        border: 1px solid #444;
+        padding: 4px 12px;
+        cursor: pointer;
+      }
+      #log { white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h3>Chunk loading harness (M2.2) - fixture: /sandwijck-lod/</h3>
+    <div>
+      <button id="run-sequential">Load all chunks sequentially</button>
+      <button id="run-parallel">Load all chunks in flight</button>
+      <button id="run-cancel">Cancellation test</button>
+    </div>
+    <div id="log">Ready.</div>
+    <script type="module" src="/src/viewer/chunk-harness.ts"></script>
+  </body>
+</html>

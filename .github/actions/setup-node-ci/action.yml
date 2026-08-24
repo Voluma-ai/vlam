@@ -1,0 +1,33 @@
+# Node + npm ci. Restores the default-branch npm cache; only the caller that
+# sets `save-cache` writes a new archive (PRs must not, or each branch copies
+# ~hundreds of MB into the 0.5 GB Actions storage quota).
+name: Setup Node CI
+description: Node 24, restore npm cache, npm ci; optional save on main
+
+inputs:
+  node-version:
+    required: true
+  save-cache:
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+    - uses: actions/cache/restore@v4
+      id: npm-cache
+      with:
+        path: ~/.npm
+        key: ${{ runner.os }}-npm-${{ hashFiles('package-lock.json') }}
+        restore-keys: |
+          ${{ runner.os }}-npm-
+    - run: npm ci
+      shell: bash
+    # Skip when this key already exists — a second save fails the job.
+    - uses: actions/cache/save@v4
+      if: inputs.save-cache == 'true' && github.ref == 'refs/heads/main' && steps.npm-cache.outputs.cache-hit != 'true'
+      with:
+        path: ~/.npm
+        key: ${{ runner.os }}-npm-${{ hashFiles('package-lock.json') }}

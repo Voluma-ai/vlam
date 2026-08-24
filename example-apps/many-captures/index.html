@@ -1,0 +1,36 @@
+<!doctype html>
+<!-- Live runner for site/examples/many-captures.md. See first-viewer/index.html. -->
+<html lang="en">
+ <head>
+ <meta charset="UTF-8" />
+ <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+ <link rel="icon" href="/favicon.ico" sizes="any" />
+ <title>Several captures in one scene. VLAM! example</title>
+ <style>
+ html,
+ body {
+ margin: 0;
+ height: 100%;
+ overflow: hidden;
+ background: #1a1a1f;
+ font: 14px/1.4 system-ui, sans-serif;
+ }
+ canvas {
+ touch-action: none;
+ }
+ #hint {
+ position: fixed;
+ bottom: 14px;
+ left: 14px;
+ z-index: 1;
+ color: #fff;
+ opacity: 0.75;
+ text-shadow: 0 1px 4px #000;
+ }
+ </style>
+ </head>
+ <body>
+ <p id="hint">Three sources in one pool, sorted together, watch where they overlap</p>
+ <script type="module" src="../../docs/examples/samples/many-captures.ts"></script>
+ </body>
+</html>

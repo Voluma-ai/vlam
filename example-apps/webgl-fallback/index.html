@@ -1,0 +1,39 @@
+<!doctype html>
+<!-- Live runner for site/examples/webgl-fallback.md. See first-viewer/index.html. -->
+<html lang="en">
+ <head>
+ <meta charset="UTF-8" />
+ <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+ <link rel="icon" href="/favicon.ico" sizes="any" />
+ <title>WebGL2 fallback. VLAM! example</title>
+ <style>
+ html,
+ body {
+ margin: 0;
+ height: 100%;
+ overflow: hidden;
+ background: #1a1a1f;
+ font: 14px/1.4 system-ui, sans-serif;
+ }
+ canvas {
+ touch-action: none;
+ }
+ #banner {
+ position: fixed;
+ top: 14px;
+ left: 14px;
+ right: 14px;
+ z-index: 1;
+ color: #fff;
+ text-shadow: 0 1px 4px #000;
+ }
+ #banner a {
+ color: #ffb;
+ }
+ </style>
+ </head>
+ <body>
+ <p id="banner">Detecting backend…</p>
+ <script type="module" src="../../docs/examples/samples/webgl-fallback.ts"></script>
+ </body>
+</html>

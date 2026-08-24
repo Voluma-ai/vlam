@@ -1,0 +1,44 @@
+<!doctype html>
+<!-- Live runner for site/examples/open-local-file.md. See first-viewer/index.html. -->
+<html lang="en">
+ <head>
+ <meta charset="UTF-8" />
+ <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+ <link rel="icon" href="/favicon.ico" sizes="any" />
+ <title>Open a local file. VLAM! example</title>
+ <style>
+ html,
+ body {
+ margin: 0;
+ height: 100%;
+ overflow: hidden;
+ background: #1a1a1f;
+ font: 14px/1.4 system-ui, sans-serif;
+ }
+ canvas {
+ touch-action: none;
+ }
+ #ui {
+ position: fixed;
+ top: 14px;
+ left: 14px;
+ z-index: 1;
+ display: flex;
+ gap: 10px;
+ align-items: center;
+ color: #fff;
+ text-shadow: 0 1px 4px #000;
+ }
+ #file {
+ color: inherit;
+ }
+ </style>
+ </head>
+ <body>
+ <div id="ui">
+ <input id="file" type="file" accept=".sog,.ply,.spz,.splat,.ksplat,.rad" />
+ <span id="status">Pick a file, or drop one anywhere on the page.</span>
+ </div>
+ <script type="module" src="../../docs/examples/samples/open-local-file.ts"></script>
+ </body>
+</html>

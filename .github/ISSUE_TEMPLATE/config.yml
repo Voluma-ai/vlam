@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/Voluma-ai/vlam/security/advisories/new
+    about: Do not file publicly. Report privately here, or email security@voluma.ai - see SECURITY.md.
+  - name: Question or idea (Discussions)
+    url: https://github.com/Voluma-ai/vlam/discussions
+    about: For usage questions and open-ended ideas that are not yet a bug or a concrete feature request.

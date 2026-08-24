@@ -1,0 +1,67 @@
+<!doctype html>
+<!-- Live runner for site/examples/select-and-cut.md. See first-viewer/index.html. -->
+<html lang="en">
+ <head>
+ <meta charset="UTF-8" />
+ <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+ <link rel="icon" href="/favicon.ico" sizes="any" />
+ <title>Select and cut. VLAM! example</title>
+ <style>
+ html,
+ body {
+ margin: 0;
+ height: 100%;
+ overflow: hidden;
+ background: #1a1a1f;
+ font: 14px/1.4 system-ui, sans-serif;
+ }
+ canvas {
+ touch-action: none;
+ }
+ #ui {
+ position: fixed;
+ top: 14px;
+ left: 14px;
+ z-index: 1;
+ display: flex;
+ gap: 8px;
+ align-items: center;
+ color: #fff;
+ text-shadow: 0 1px 4px #000;
+ }
+ #ui button {
+ border: 1px solid #ffffff40;
+ border-radius: 6px;
+ padding: 5px 11px;
+ background: #ffffff14;
+ color: #fff;
+ font: inherit;
+ cursor: pointer;
+ }
+ #ui button.active {
+ background: #ff3366;
+ border-color: #ff3366;
+ }
+ #ui button:disabled {
+ opacity: 0.45;
+ cursor: default;
+ }
+ #cut {
+ margin-left: 8px;
+ }
+ #readout {
+ margin-left: 8px;
+ }
+ </style>
+ </head>
+ <body>
+ <div id="ui">
+ <button id="translate" type="button" class="active">Move</button>
+ <button id="rotate" type="button">Rotate</button>
+ <button id="scale" type="button">Scale</button>
+ <button id="cut" type="button">Cut out</button>
+ <span id="readout"></span>
+ </div>
+ <script type="module" src="../../docs/examples/samples/select-and-cut.ts"></script>
+ </body>
+</html>

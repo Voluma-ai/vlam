@@ -1,0 +1,43 @@
+# Deploys the docs/demo site (Worker `vlam` + dist-site assets) to Cloudflare.
+# Custom hostname vlam.voluma.ai is bound in the Cloudflare dashboard; this
+# workflow only refreshes the Worker and static assets.
+#
+# Required repository secrets:
+#   CLOUDFLARE_API_TOKEN   — API token with Workers:Edit (and Workers Routes
+#                            if the hostname is a route binding)
+#   CLOUDFLARE_ACCOUNT_ID  — Cloudflare account id
+#
+# Trigger on pushes to main, from the Actions tab (workflow_dispatch), or
+# when a GitHub Release is published. Restores the shared npm cache; does
+# not write one (CI on main is the sole writer).
+name: Deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+
+concurrency:
+  group: deploy-site
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: deploy site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-ci
+        with:
+          node-version: '24'
+      - run: npm run build:site
+      - name: Deploy to Cloudflare Workers
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

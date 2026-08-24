@@ -1,0 +1,101 @@
+# VLAM! quality gates. Node 24 matches local development; installs use the
+# lockfile only. The npm cache is restored on every job and written only from
+# `main` (see `.github/actions/setup-node-ci`) so PR branches do not fill the
+# Actions storage quota. No workflow artifacts — coverage stays in the job log,
+# bundle-size runs in the build job against a local `dist/`.
+#
+# Jobs: lint, typecheck, test (with coverage), docs, secrets, build
+# (includes gzip budget). Quality jobs run independently so every failure is
+# visible in one run rather than one-at-a-time.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to the same ref supersedes the run in flight.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-ci
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          save-cache: 'true'
+      - run: npm run lint
+
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-ci
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm run typecheck
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-ci
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm run test:coverage
+
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-ci
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      # Roadmap/changelog/link consistency.
+      - run: npm run docs:check
+      # Guide samples in docs/guide/samples/ must type-check against the tree.
+      - run: npm run docs:samples
+
+  # Scans the working tree (--no-git), so it blocks new secrets in tracked
+  # files regardless of how the history was rewritten.
+  secrets:
+    name: secrets
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: 8.28.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install gitleaks
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      - run: gitleaks detect --no-git --config .gitleaks.toml --redact --verbose
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck, test, docs]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-ci
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm run build
+      # Gzip budget for the published main entry; `dist/` is already built.
+      - run: node scripts/check-bundle-size.mjs --no-build

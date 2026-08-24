@@ -1,0 +1,13 @@
+dist
+dist-demo
+.wrangler
+assets
+coverage
+package-lock.json
+
+# Prose is hand-wrapped to fit a terminal; Prettier would reflow it.
+*.md
+
+# The demo pages' inline CSS reads worse formatted: Prettier splits shorthands
+# like `font: 13px/1.5 system-ui, sans-serif` across three lines.
+*.html

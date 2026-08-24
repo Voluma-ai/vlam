@@ -1,0 +1,58 @@
+<!doctype html>
+<!-- Live runner for site/examples/annotations.md. See first-viewer/index.html. -->
+<html lang="en">
+ <head>
+ <meta charset="UTF-8" />
+ <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+ <link rel="icon" href="/favicon.ico" sizes="any" />
+ <title>Annotations. VLAM! example</title>
+ <style>
+ html,
+ body {
+ margin: 0;
+ height: 100%;
+ overflow: hidden;
+ background: #1a1a1f;
+ font: 14px/1.4 system-ui, sans-serif;
+ }
+ canvas {
+ touch-action: none;
+ }
+ /* The label layer sits over the canvas and must never eat the pointer,
+ or clicking a label would stop you placing the next one. */
+ #labels {
+ position: fixed;
+ inset: 0;
+ z-index: 1;
+ pointer-events: none;
+ }
+ .label {
+ position: absolute;
+ top: 0;
+ left: 0;
+ padding: 4px 9px;
+ border-radius: 14px;
+ background: #ff3366;
+ color: #fff;
+ font-size: 12px;
+ font-weight: 600;
+ white-space: nowrap;
+ transition: opacity 0.18s;
+ }
+ #hint {
+ position: fixed;
+ bottom: 14px;
+ left: 14px;
+ z-index: 2;
+ color: #fff;
+ opacity: 0.75;
+ text-shadow: 0 1px 4px #000;
+ }
+ </style>
+ </head>
+ <body>
+ <div id="labels"></div>
+ <p id="hint">Click the capture to pin a label · orbit to watch them track and hide</p>
+ <script type="module" src="../../docs/examples/samples/annotations.ts"></script>
+ </body>
+</html>

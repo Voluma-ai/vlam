@@ -1,0 +1,978 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <title>VLAM!</title>
+    <script>
+      /*
+       * Stamps the preset before the first paint. The module script at the end
+       * of <body> is deferred, so `applyStaticChrome` only runs after the page
+       * has painted - the embed's chrome would appear and then vanish. Mirrors
+       * `resolveViewerPreset` in src/viewer/chrome.ts; keep the two in step.
+       */
+      document.documentElement.dataset.preset =
+        new URLSearchParams(location.search).get('preset') === 'embed' ? 'embed' : 'full';
+    </script>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #1a1a1f;
+        /* The viewer owns every touch gesture. Ancestor `touch-action` is not
+           always applied to a WebGL canvas on iOS, so html/body and the canvas
+           (below) all opt out of double-tap zoom. */
+        touch-action: none;
+      }
+      #app {
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+      }
+      #app canvas {
+        touch-action: none;
+      }
+      /* Bottom chrome: stats left, pickers right. On a narrow viewport the
+         pickers share a row while they fit, and the splat readout wraps under. */
+      #bottom-chrome {
+        position: fixed;
+        bottom: 12px;
+        left: 12px;
+        right: 12px;
+        z-index: 1;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        gap: 12px 24px;
+        pointer-events: none;
+      }
+      #overlay {
+        flex: 1 1 auto;
+        min-width: 0;
+        /* Faded: it is a readout, not something to read. The shadow stays at
+           full strength so it survives a bright scene behind it. */
+        color: #8b8b8b;
+        font: 13px/1.5 system-ui, sans-serif;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+      }
+      @media (max-width: 720px) {
+        #bottom-chrome {
+          flex-flow: row wrap;
+          justify-content: flex-start;
+          align-items: flex-end;
+        }
+        #overlay {
+          order: 1;
+          flex: 1 0 100%;
+        }
+        /* Keep select-and-cut chrome off the picker row. */
+        #separate {
+          flex: 1 0 100%;
+        }
+      }
+      #perf-mode,
+      #copy-view,
+      #cinematic-orbit,
+      #enter-vr {
+        position: fixed;
+        border: 1px solid rgba(255, 166, 0, 0.18);
+        border-radius: 999px;
+        background: rgba(20, 20, 26, 0.75);
+        color: #ba8;
+        font: 12px/1 system-ui, sans-serif;
+        cursor: pointer;
+      }
+      /* Under `#top-links` (hamburger at top 10). z-index below that bar so
+         the open menu covers these rather than sitting behind them. */
+      #perf-mode,
+      #copy-view,
+      #cinematic-orbit {
+        right: 12px;
+        z-index: 1;
+        display: grid;
+        width: 30px;
+        height: 30px;
+        padding: 0;
+        place-items: center;
+      }
+      #perf-mode {
+        top: 52px;
+        font-size: 10px;
+      }
+      #copy-view {
+        top: 86px;
+      }
+      #cinematic-orbit {
+        top: 120px;
+      }
+      #copy-view svg,
+      #cinematic-orbit svg {
+        width: 16px;
+        height: 16px;
+        fill: currentColor;
+      }
+      /* Below `#site-home` on the left. */
+      #enter-vr {
+        left: 12px;
+        top: 52px;
+        padding: 6px 12px;
+      }
+      #enter-vr:disabled {
+        cursor: progress;
+      }
+      #perf-mode[aria-pressed='true'] {
+        border-color: rgba(255, 166, 0, 0.18);
+        color: #fff;
+      }
+      #collision-controls {
+        position: fixed;
+        top: 52px;
+        left: 12px;
+        display: flex;
+        gap: 6px;
+      }
+      /* Enter VR sits under the home logo; collision drops one row. */
+      body:has(#enter-vr) #collision-controls {
+        top: 86px;
+      }
+      #collision-controls[hidden] {
+        display: none;
+      }
+      #collision-controls button {
+        padding: 6px 12px;
+        border: 1px solid rgba(255, 166, 0, 0.18);
+        border-radius: 999px;
+        background: rgba(20, 20, 26, 0.75);
+        color: #ba8;
+        font: 12px/1 system-ui, sans-serif;
+        cursor: pointer;
+      }
+      #collision-controls button[aria-pressed='true'] {
+        border-color: rgba(255, 166, 0, 0.18);
+        color: #fff;
+      }
+      #collision-controls button:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      /* One hover treatment for every capsule button - the right-side icons,
+         Enter VR, collision toggles and the welcome panel's pickers. Declared
+         after them all so it wins, and skipping disabled ones so they read as
+         inert. `.welcome-pick`/`.welcome-url` match further down. */
+      #perf-mode:hover,
+      #copy-view:hover,
+      #cinematic-orbit:hover,
+      #enter-vr:hover:not(:disabled),
+      #collision-controls button:hover:not(:disabled),
+      .welcome-pick button:hover,
+      .welcome-url button:hover {
+        border-color: rgba(255, 166, 0, 0.35);
+        background: rgba(255, 166, 0, 0.12);
+        color: #fff;
+      }
+      /* The two pickers are twins: `tool` is what a click does, `effect` is how
+         the scene looks. Both are <select>s so the lists can keep growing
+         without the bottom chrome turning into a wall of buttons. */
+      #effects,
+      #tools {
+        flex: 0 1 auto;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+        font: 13px/1.5 system-ui, sans-serif;
+        pointer-events: auto;
+      }
+      #effects .label,
+      #tools .label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: #766;
+      }
+      .picker-select {
+        border: 1px solid rgba(255, 166, 0, 0.18);
+        border-radius: 999px;
+        /* Extra right padding: the OS chevron sits inside the padding box. */
+        padding: 4px 16px 4px 10px;
+        background: rgba(20, 20, 26, 0.75);
+        color: #ba8;
+        font: 13px/1.4 system-ui, sans-serif;
+        cursor: pointer;
+      }
+      .picker-select:hover:not(:disabled) {
+        color: #d6c7a7;
+      }
+      .picker-select:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      /* The dropdown panel is drawn by the OS, so it needs a readable pairing
+         of its own - the pill's translucent background does not apply there. */
+      .picker-select option {
+        background: #14141a;
+        color: #d6c7a7;
+      }
+      .tool-readout {
+        color: #8b8b8b;
+      }
+      /* An empty slot still participates in flex-wrap and leaves a row gap,
+         which lifts the select off the bottom when neighbouring chrome wraps.
+         Same idea as the paint/dof `:has([hidden])` rules below. */
+      #tools .tool-slot:empty {
+        display: none;
+      }
+      /* Each tool owns its own chrome, revealed by the body attribute the tool
+         picker stamps - so a tool's controls need no wiring in the picker. */
+      body:not([data-tool='select']) #separate {
+        display: none;
+      }
+      /* Labels dropped by the annotate tool. The layer must never take the
+         pointer, or a click on a label would not reach the canvas. */
+      #annotations {
+        position: fixed;
+        inset: 0;
+        z-index: 1;
+        pointer-events: none;
+      }
+      .annotation {
+        position: absolute;
+        top: 0;
+        left: 0;
+        min-width: 22px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: rgba(255, 166, 0, 0.9);
+        color: #14141a;
+        font: 600 12px/1.2 system-ui, sans-serif;
+        text-align: center;
+        transition: opacity 0.15s;
+      }
+      #effects button {
+        padding: 0;
+        border: 0;
+        background: none;
+        color: #ba8;
+        font: 13px/1.5 system-ui, sans-serif;
+        cursor: pointer;
+      }
+      #effects button:hover {
+        color: #d6c7a7;
+      }
+      #effects button.active {
+        color: #fff;
+        font-weight: 600;
+      }
+      /* Contextual controls sit *in* the row, not floating above it: they used
+         to be anchored over the button each belonged to, and with the buttons
+         replaced by a <select> that anchoring landed them on top of the
+         dropdowns. The row wraps, so an extra control just extends it. */
+      #effects .paint-slot,
+      #effects .dof-slot,
+      #effects .warp-slot {
+        display: flex;
+        align-items: center;
+      }
+      /* An empty slot would still draw the row's 12px gap on both sides, so it
+         leaves the layout entirely while its control is hidden. */
+      #effects .paint-slot:has(.paint-color[hidden]),
+      #effects .dof-slot:has(.dof-focus[hidden]),
+      #effects .warp-slot:has(.warp-intensity[hidden]) {
+        display: none;
+      }
+      #effects .paint-color {
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        border: 1px solid rgba(255, 166, 0, 0.28);
+        border-radius: 6px;
+        background: transparent;
+        cursor: pointer;
+      }
+      #effects .paint-color::-webkit-color-swatch-wrapper {
+        padding: 2px;
+      }
+      #effects .paint-color::-webkit-color-swatch {
+        border: 0;
+        border-radius: 4px;
+      }
+      #effects .dof-focus {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border: 1px solid rgba(255, 166, 0, 0.18);
+        border-radius: 999px;
+        background: rgba(20, 20, 26, 0.75);
+        white-space: nowrap;
+        color: #766;
+        font: 12px/1 system-ui, sans-serif;
+      }
+      #effects .dof-focus[hidden] {
+        display: none;
+      }
+      #effects .dof-focus input[type='range'] {
+        width: 110px;
+        margin: 0;
+        accent-color: #ba8;
+        cursor: pointer;
+      }
+      #effects .dof-focus output {
+        min-width: 3.2em;
+        color: #ba8;
+        font: 12px/1 ui-monospace, monospace;
+        text-align: right;
+      }
+      #effects .warp-intensity {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border: 1px solid rgba(255, 166, 0, 0.18);
+        border-radius: 999px;
+        background: rgba(20, 20, 26, 0.75);
+        white-space: nowrap;
+        color: #766;
+        font: 12px/1 system-ui, sans-serif;
+      }
+      #effects .warp-intensity[hidden] {
+        display: none;
+      }
+      #effects .warp-intensity input[type='range'] {
+        width: 110px;
+        margin: 0;
+        accent-color: #ba8;
+        cursor: pointer;
+      }
+      #effects .warp-intensity output {
+        min-width: 3.2em;
+        color: #ba8;
+        font: 12px/1 ui-monospace, monospace;
+        text-align: right;
+      }
+      /* Separation panel (?separate=1) sits with the effects row and shares its look. */
+      #separate {
+        flex: 0 1 auto;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+        font: 13px/1.5 system-ui, sans-serif;
+        pointer-events: auto;
+      }
+      /* `display: flex` above beats the UA `[hidden]` rule, so hiding the panel
+         needs an explicit rule of its own (same as #collision-controls). */
+      #separate[hidden] {
+        display: none;
+      }
+      #separate .label {
+        color: #766;
+      }
+      #separate button {
+        padding: 0;
+        border: 0;
+        background: none;
+        color: #ba8;
+        font: 13px/1.5 system-ui, sans-serif;
+        cursor: pointer;
+      }
+      #separate button:hover {
+        color: #d6c7a7;
+      }
+      #separate button.active {
+        color: #fff;
+        font-weight: 600;
+      }
+      #separate button:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      #status {
+        display: none;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border: 1px solid rgba(255, 166, 0, 0.18);
+        border-radius: 999px;
+        background: rgba(20, 20, 26, 0.75);
+        color: #ddd;
+        font: 12px/1 system-ui, sans-serif;
+        white-space: nowrap;
+      }
+      #status.visible {
+        display: flex;
+      }
+      #status.error {
+        color: #f3a;
+      }
+      #status .spinner {
+        width: 12px;
+        height: 12px;
+        border: 2px solid rgba(255, 255, 255, 0.25);
+        border-top-color: #ba8;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+      #status.error .spinner {
+        display: none;
+      }
+      /* Determinate progress: only shown once a load reports a known total. */
+      #status-progress {
+        display: none;
+        width: 90px;
+        height: 4px;
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.16);
+        overflow: hidden;
+      }
+      #status.progress #status-progress {
+        display: block;
+      }
+      #status-progress i {
+        display: block;
+        height: 100%;
+        width: 0;
+        background: #ba8;
+        transition: width 0.15s linear;
+      }
+      #error {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        display: none;
+        flex-direction: column;
+        align-items: flex-start;
+        max-width: min(90vw, 460px);
+        padding: 20px 24px;
+        border: 1px solid rgba(255, 80, 120, 0.35);
+        border-radius: 12px;
+        background: rgba(26, 26, 31, 0.92);
+        color: #eee;
+        font: 14px/1.5 system-ui, sans-serif;
+        box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+      }
+      #error.visible {
+        display: flex;
+      }
+      #error h2 {
+        margin: 0 0 8px;
+        font-size: 16px;
+        color: #ff87a3;
+      }
+      #error p  {
+        margin: 0;
+        color: #cfcfd6;
+      }
+      #error button {
+        margin-top: 16px;
+        padding: 7px 16px;
+        border: 0;
+        border-radius: 8px;
+        background: #ba8;
+        color: #14141a;
+        font: 600 13px system-ui, sans-serif;
+        cursor: pointer;
+      }
+      #error button:hover {
+        background: #d6c7a7;
+      }
+      /*
+       * Everything the `embed` preset strips, hidden up front so it never
+       * flashes in before `applyStaticChrome` removes it. This mirrors the
+       * EMBED entry in src/viewer/chrome.ts - the DOM removal there is still
+       * the source of truth; these rules only cover the pre-script paint.
+       */
+      html[data-preset='embed'] #site-home,
+      html[data-preset='embed'] #site-menu,
+      html[data-preset='embed'] #top-links a {
+        display: none;
+      }
+      #welcome-hint {
+        position: fixed;
+        top: 15px;
+        /* Centred by auto margins against the full viewport, not by
+           `left: 50%` + a translate: a shrink-to-fit box offset to 50% can only
+           ever use the remaining 50% as its available width, which forced every
+           line to wrap on a phone. `fit-content` then grows it to the content,
+           still capped by max-width below. */
+        left: 0;
+        right: 0;
+        margin: 0 auto;
+        width: fit-content;
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        min-width: 300px;
+        max-width: min(92vw, 560px);
+        padding: 0 22px 12px 22px;
+        border: 1px dashed rgba(255, 166, 0, 0.55);
+        border-radius: 12px;
+        background: rgba(20, 20, 26, 0.55);
+        text-align: center;
+        pointer-events: none;
+        backdrop-filter: blur(10px);
+      }
+      #welcome-hint.visible {
+        display: flex;
+      }
+      /* The panel is centred and grows to 560px, so its right edge only clears
+         the hamburger + HD/link/play stack above ~900px viewports. Below that,
+         drop it under the stack instead of behind it. The embed preset has no
+         such buttons, so it keeps the tighter offset. */
+      @media (max-width: 900px) {
+        #welcome-hint:not(.drop-hint-only):not(.welcome-collapsed) {
+          top: 154px;
+        }
+      }
+      /* Embed preset: the drop hint and the pickers, nothing else - no logo,
+         blurb or URL box. The home-page iframe stays deliberately minimal. */
+      #welcome-hint.drop-hint-only > .welcome-blurb,
+      #welcome-hint.drop-hint-only > .welcome-url,
+      #welcome-hint.drop-hint-only > img {
+        display: none;
+      }
+      #welcome-hint.drop-hint-only {
+        min-width: 0;
+        max-width: min(92vw, 420px);
+        flex-direction: column;
+        align-items: center;
+        padding: 10px 14px;
+        gap: 0;
+        text-align: center;
+      }
+      #welcome-hint.drop-hint-only > .welcome-drop-hint {
+        flex: 1;
+        min-width: 0;
+      }
+      /* After a non-goose scene mounts: one drop-hint line + expand toggle.
+         Distinct from embed's `drop-hint-only`, which keeps the pickers. */
+      #welcome-hint.welcome-collapsed > .welcome-blurb,
+      #welcome-hint.welcome-collapsed > .welcome-url,
+      #welcome-hint.welcome-collapsed > .welcome-pick,
+      #welcome-hint.welcome-collapsed > .welcome-privacy,
+      #welcome-hint.welcome-collapsed > img {
+        display: none;
+      }
+      #welcome-hint.welcome-collapsed {
+        min-width: 0;
+        max-width: min(92vw, 420px);
+        flex-direction: row;
+        align-items: center;
+        padding: 10px 36px 10px 14px;
+        gap: 0;
+        text-align: center;
+      }
+      #welcome-hint.welcome-collapsed > .welcome-drop-hint,
+      #welcome-hint.welcome-collapsed > .welcome-pick-hint {
+        flex: 1;
+        min-width: 0;
+      }
+      /* Top-right expand/collapse; only shown once a non-goose scene is up. */
+      .welcome-toggle {
+        display: none;
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: 0;
+        border-radius: 6px;
+        background: none;
+        color: #ba8;
+        cursor: pointer;
+        pointer-events: auto;
+      }
+      #welcome-hint.welcome-collapsed > .welcome-toggle,
+      #welcome-hint.welcome-expanded > .welcome-toggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .welcome-toggle:hover {
+        color: #eee;
+      }
+      .welcome-toggle:focus-visible {
+        outline: 2px solid #d6c7a7;
+        outline-offset: 2px;
+      }
+      .welcome-toggle svg {
+        width: 18px;
+        height: 18px;
+        fill: currentColor;
+        transition: transform 0.15s ease;
+      }
+      /* Collapsed: chevron down (expand). Expanded: rotate to point up. */
+      #welcome-hint.welcome-expanded > .welcome-toggle svg {
+        transform: rotate(180deg);
+      }
+      /* Expanded-from-collapse keeps room for the toggle over the logo.
+         Keep `position: fixed` from `#welcome-hint` - `relative` would drop
+         the panel into document flow and park it under the canvas. */
+      #welcome-hint.welcome-expanded {
+        padding-top: 8px;
+      }
+      /*
+       * Touch devices have no drag & drop, so that hint is dead advice there
+       * and the pickers carry the panel alone. `hover: none` and
+       * `pointer: coarse` together are what separate a phone or tablet from a
+       * laptop with a touchscreen (which keeps both).
+       */
+      .welcome-pick-hint {
+        display: none;
+      }
+      @media (hover: none) and (pointer: coarse) {
+        #welcome-hint > .welcome-drop-hint {
+          display: none;
+        }
+        #welcome-hint > .welcome-pick-hint {
+          display: block;
+        }
+      }
+      #welcome-hint p {
+        color: #eee;
+        font: 300 14px/1.4 system-ui, sans-serif;
+        margin:0;
+      }
+      #welcome-hint span {
+        color: rgb(184, 145, 67);
+        font: 13px/1.4 system-ui, sans-serif;
+      }
+      #welcome-hint small {
+        color: rgb(184, 145, 67);
+        font: 11px/1.4 system-ui, sans-serif;
+      }
+      /*
+       * The file/folder picker buttons, and the parked URL box below them.
+       * `#welcome-hint` is `pointer-events: none` so orbiting is never blocked;
+       * interactive children opt back in.
+       */
+      .welcome-pick {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 8px;
+        margin-top: 8px;
+        pointer-events: auto;
+      }
+      /* The same capsule as Enter VR / collision on the left. */
+      .welcome-pick button,
+      .welcome-url button {
+        padding: 6px 12px;
+        border: 1px solid rgba(255, 166, 0, 0.18);
+        border-radius: 999px;
+        background: rgba(20, 20, 26, 0.75);
+        color: #ba8;
+        font: 12px/1 system-ui, sans-serif;
+        cursor: pointer;
+      }
+      .welcome-pick button:focus-visible {
+        outline: 2px solid #d6c7a7;
+        outline-offset: 2px;
+      }
+      /* `display: flex` above beats the UA `[hidden]` rule (same trap as
+         #separate[hidden] and #collision-controls[hidden]). */
+      .welcome-pick[hidden],
+      .welcome-url[hidden] {
+        display: none;
+      }
+      .welcome-url {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        width: 100%;
+        margin-top: 2px;
+        pointer-events: auto;
+      }
+      .welcome-url input {
+        flex: 1;
+        min-width: 0;
+        padding: 6px 9px;
+        border: 1px solid rgba(255, 166, 0, 0.4);
+        border-radius: 7px;
+        background: rgba(0, 0, 0, 0.35);
+        color: #eee;
+        font: 300 13px/1.3 system-ui, sans-serif;
+      }
+      .welcome-url input::placeholder {
+        color: #8a7a5e;
+      }
+      .welcome-url input:focus-visible,
+      .welcome-url button:focus-visible {
+        outline: 2px solid #d6c7a7;
+        outline-offset: 2px;
+      }
+      #welcome-url-error {
+        flex-basis: 100%;
+        color: #e0a3a3;
+        text-align: left;
+      }
+      #welcome-url-error:empty {
+        display: none;
+      }
+      #top-links {
+        position: fixed;
+        top: 10px;
+        right: 12px;
+        z-index: 2;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      #top-links a {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px;
+        border-radius: 6px;
+        color: #ba8;
+        text-decoration: none;
+      }
+      #top-links a:hover {
+        color: #eee;
+      }
+      #top-links a:focus-visible {
+        outline: 2px solid #d6c7a7;
+        outline-offset: 2px;
+      }
+      #top-links .voluma-logo img {
+        display: block;
+        height: 28px;
+        width: auto;
+      }
+      #top-links .icon-link svg {
+        width: 28px;
+        height: 28px;
+        fill: currentColor;
+      }
+      #site-home {
+        position: fixed;
+        top: 10px;
+        left: 12px;
+        z-index: 2;
+        display: inline-flex;
+        padding: 2px;
+        border-radius: 6px;
+        opacity: 0.85;
+      }
+      #site-home:hover {
+        opacity: 1;
+      }
+      #site-home:focus-visible {
+        outline: 2px solid #d6c7a7;
+        outline-offset: 2px;
+      }
+      #site-home img {
+        display: block;
+        height: 28px;
+        width: auto;
+      }
+      #site-menu {
+        position: relative;
+        display: inline-flex;
+      }
+      #site-menu-btn {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px;
+        border: 0;
+        border-radius: 6px;
+        background: none;
+        color: #ba8;
+        cursor: pointer;
+      }
+      #site-menu-btn:hover,
+      #site-menu-btn[aria-expanded='true'] {
+        color: #eee;
+      }
+      #site-menu-btn:focus-visible {
+        outline: 2px solid #d6c7a7;
+        outline-offset: 2px;
+      }
+      #site-menu-btn svg {
+        width: 28px;
+        height: 28px;
+        fill: currentColor;
+      }
+      #site-menu-panel {
+        position: absolute;
+        top: calc(100% + 8px);
+        right: 0;
+        display: flex;
+        flex-direction: column;
+        min-width: 170px;
+        padding: 6px;
+        border: 1px solid rgba(255, 166, 0, 0.18);
+        border-radius: 10px;
+        background: rgba(20, 20, 26, 0.92);
+        font: 13px/1.4 system-ui, sans-serif;
+      }
+      /* `display: flex` above outranks the UA `hidden` rule. */
+      #site-menu-panel[hidden] {
+        display: none;
+      }
+      #site-menu-panel a {
+        gap: 8px;
+        padding: 6px 10px;
+        white-space: nowrap;
+      }
+      #site-menu-panel a:hover {
+        background: rgba(255, 166, 0, 0.1);
+      }
+      #site-menu-panel svg {
+        width: 16px;
+        height: 16px;
+        fill: currentColor;
+      }
+      /* Overrides the 28px top-row sizing; the wordmark is the row's label. */
+      #site-menu-panel .voluma-logo img {
+        height: 18px;
+      }
+      #site-menu-panel hr {
+        margin: 5px 8px;
+        border: 0;
+        border-top: 1px solid rgba(255, 166, 0, 0.18);
+      }
+      #dropzone {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        /* The drag is tracked on window; the overlay must never become the
+           event target itself, or crossing it would fire a stray dragleave. */
+        pointer-events: none;
+        background: rgba(12, 12, 16, 0.72);
+        backdrop-filter: blur(2px);
+      }
+      #dropzone.visible {
+        display: flex;
+      }
+      #dropzone .dropzone-card {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        padding: 44px 64px;
+        border: 2px dashed rgba(255, 166, 0, 0.7);
+        border-radius: 16px;
+        background: rgba(26, 26, 31, 0.85);
+        text-align: center;
+      }
+      #dropzone strong {
+        color: #fff;
+        font: 600 18px/1.4 system-ui, sans-serif;
+      }
+      #dropzone span {
+        color: rgb(207, 194, 166);
+        font: 13px/1.4 system-ui, sans-serif;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="bottom-chrome">
+      <div id="overlay">Loading…</div>
+    </div>
+    <a id="site-home" href="/" aria-label="Back to the VLAM! docs">
+      <!-- Icon only (no wordmark), matching the docs header. The viewer is
+           always dark, so it takes the dark-theme variant. -->
+      <img src="/vlam-icon-dark.png" alt="VLAM!" />
+    </a>
+    <div id="top-links">
+      <div id="status">
+        <span class="spinner"></span><span id="status-text"></span
+        ><span id="status-progress"><i></i></span>
+      </div>
+      <div id="site-menu">
+        <button id="site-menu-btn" type="button" aria-expanded="false" aria-controls="site-menu-panel" aria-label="Site menu">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6.5h16v2H4v-2Zm0 4.5h16v2H4v-2Zm0 4.5h16v2H4v-2Z"/></svg>
+        </button>
+        <div id="site-menu-panel" hidden>
+          <a href="/">Home</a>
+          <a href="/get-started">Get started</a>
+          <a href="/examples">Examples</a>
+          <a href="/faq">FAQ</a>
+          <a href="/api/">API</a>
+          <hr />
+          <a href="https://discord.com/invite/fKUG4GWY8h" target="_blank" rel="noreferrer">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.32 4.37A19.8 19.8 0 0 0 15.46 3l-.6 1.22a18.27 18.27 0 0 0-5.72 0L8.54 3a19.74 19.74 0 0 0-4.87 1.38C.59 9.04-.25 13.58.17 18.06A19.96 19.96 0 0 0 6.14 21l1.45-1.99a12.73 12.73 0 0 1-2.28-1.08l.54-.42c4.4 2.01 9.15 2.01 13.5 0l.54.42c-.73.43-1.5.79-2.28 1.08L19.06 21a19.9 19.9 0 0 0 5.97-2.94c.5-5.2-.84-9.69-3.71-13.69ZM8.68 15.34c-1.16 0-2.11-1.05-2.11-2.34 0-1.29.93-2.34 2.11-2.34 1.18 0 2.13 1.05 2.11 2.34 0 1.29-.93 2.34-2.11 2.34Zm7.57 0c-1.16 0-2.11-1.05-2.11-2.34 0-1.29.93-2.34 2.11-2.34 1.18 0 2.13 1.05 2.11 2.34 0 1.29-.93 2.34-2.11 2.34Z"/></svg>
+            Discord
+          </a>
+          <a href="https://github.com/voluma-ai/vlam" target="_blank" rel="noreferrer">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.24c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49 0-.24-.01-1.04-.01-1.89-2.78.62-3.37-1.21-3.37-1.21-.45-1.18-1.11-1.49-1.11-1.49-.91-.64.07-.63.07-.63 1 .08 1.53 1.06 1.53 1.06.9 1.57 2.35 1.12 2.92.86.09-.67.35-1.12.64-1.38-2.22-.26-4.56-1.14-4.56-5.08 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.31.1-2.73 0 0 .84-.27 2.75 1.05A9.36 9.36 0 0 1 12 6.38c.85 0 1.71.12 2.51.35 1.91-1.32 2.75-1.05 2.75-1.05.55 1.42.2 2.47.1 2.73.64.72 1.03 1.63 1.03 2.75 0 3.95-2.34 4.82-4.57 5.08.36.32.68.93.68 1.88 0 1.36-.01 2.45-.01 2.78 0 .27.18.59.69.49A10.27 10.27 0 0 0 22 12.24C22 6.58 17.52 2 12 2Z"/></svg>
+            GitHub
+          </a>
+          <a class="voluma-logo" href="https://voluma.ai/new" target="_blank" rel="noreferrer">
+            <!-- The text is the label, so the mark is decorative here. -->
+            <img src="/voluma-logo.png" alt="" />
+            Voluma.ai
+          </a>
+        </div>
+      </div>
+    </div>
+    <div id="welcome-hint">
+      <button
+        type="button"
+        id="welcome-toggle"
+        class="welcome-toggle"
+        aria-expanded="false"
+        aria-label="Expand welcome"
+        hidden
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z" />
+        </svg>
+      </button>
+      <img src="/vlam.png" alt="VLAM!" width="160" />
+      <span class="welcome-blurb">
+        A WebGPU Gaussian Splat viewer for three.js.
+      </span>
+      <p class="welcome-drop-hint">
+        <b>Drag &amp; drop</b> your gaussian splat file or folder here.
+      </p>
+
+      <!-- Replaces the drag & drop line on touch, where that advice is dead. -->
+      <p class="welcome-pick-hint">Select a gaussian splat file or folder</p>
+
+      <div class="welcome-pick">
+        <button type="button" id="welcome-pick-file">Choose file</button>
+        <button type="button" id="welcome-pick-folder">Choose folder</button>
+        <!-- The buttons above are the visible control; these are clicked for them. -->
+        <input type="file" id="welcome-file-input" hidden />
+        <input type="file" id="welcome-folder-input" hidden webkitdirectory multiple />
+      </div>
+      <!-- Under the buttons, and its own element rather than a line inside the
+           drop hint: touch devices drop that hint, but the promise still holds. -->
+      <small class="welcome-privacy">(Your data stays on your device.)</small>
+
+      <!--
+        Parked, not dropped: loading a scene from a URL works (`?scene=`) and the
+        submit handler is still wired - remove `hidden` to bring the box back.
+      -->
+      <form class="welcome-url" id="welcome-url-form" novalidate hidden>
+        <input
+          type="url"
+          id="welcome-url-input"
+          name="scene"
+          placeholder="…or paste a link to a splat file"
+          spellcheck="false"
+          autocomplete="url"
+          aria-label="URL of a splat file on the web"
+        />
+        <button type="submit">Load</button>
+        <small id="welcome-url-error" role="alert"></small>
+      </form>
+    </div>
+    <script type="module" src="/src/viewer/main.ts"></script>
+  </body>
+</html>

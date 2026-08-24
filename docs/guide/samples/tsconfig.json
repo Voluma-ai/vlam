@@ -1,0 +1,22 @@
+{
+  // Type-checks every guide sample against the current source tree, with the
+  // `@voluma/vlam` package name mapped to `src/lib` so samples import the
+  // public entrypoints exactly as an embedder would write them. Run via
+  // `npm run docs:samples`; wired into the `docs:check` CI job.
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@voluma/vlam": ["../../../src/lib/index.ts"],
+      "@voluma/vlam/effects": ["../../../src/lib/effects.ts"],
+      "@voluma/vlam/formats/*": ["../../../src/lib/formats/*/index.ts"]
+    }
+  },
+  "include": [
+    "./**/*.ts",
+    // Ambient declarations the library itself compiles with (WebGPU
+    // navigator typing, the three.js zstd module shim).
+    "../../../src/viewer/webgpu-env.d.ts",
+    "../../../src/lib/three-zstd.d.ts"
+  ]
+}

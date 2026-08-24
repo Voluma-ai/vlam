@@ -1,0 +1,36 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": [
+    "src/lib/index.ts",
+    "src/lib/formats/ply/index.ts",
+    "src/lib/formats/sog/index.ts",
+    "src/lib/formats/rad/index.ts",
+    "src/lib/formats/lcc/index.ts",
+    "src/lib/formats/spz/index.ts",
+    "src/lib/formats/splat/index.ts",
+    "src/lib/formats/ksplat/index.ts",
+    "src/lib/effects.ts"
+  ],
+  // Keep the reading order above (index, then formats, then effects) instead of
+  // TypeDoc's alphabetical default.
+  "sortEntryPoints": false,
+  "plugin": ["typedoc-plugin-markdown"],
+  "out": ".tmp/api-reference",
+  "readme": "none",
+  "name": "@voluma/vlam API reference",
+  "gitRevision": "main",
+  // Pinned rather than inferred from the local git remote, so "Defined in"
+  // links are identical no matter who regenerates the reference.
+  "sourceLinkTemplate": "https://github.com/Voluma-ai/vlam/blob/main/{path}#L{line}",
+  "excludeInternal": true,
+  "excludePrivate": true,
+  "hideGenerator": true,
+  "disableSources": false,
+  "skipErrorChecking": true,
+  "cleanOutputDir": true,
+  "validation": {
+    "notExported": false,
+    "invalidLink": false,
+    "notDocumented": false
+  }
+}

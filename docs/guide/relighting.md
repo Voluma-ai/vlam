@@ -1,0 +1,139 @@
+# Proxy-mesh relighting
+
+PlayCanvas-style **screen-space** relighting for Gaussian splats: render a
+triangle **proxy** into an RGBA target, then multiply that onto baked splat
+color in the display fragment.
+
+This is **not** a [`SplatModifier`](effects-and-modifiers.md). Modifiers run
+per splat in the vertex / gather stage; coverage is per pixel. Relighting is
+a draw-time material feature, same class as `SplatMesh.setDepthOfField`.
+
+## What the RT means
+
+The fragment does:
+
+`factor = mix(background, lit.rgb × brightness, lit.a)`
+
+| Pixel | Typical RT | Result on splats |
+|--------|------------|------------------|
+| Uncovered | A = 0 | `background` (usually 1) |
+| Covered, multiplier ≈ 1 | RGB ≈ 1, A = 1 | unchanged |
+| Covered, umbra | RGB &lt; 1, A = 1 | darkened |
+
+Clear the lighting RT to **RGB 1, A 0** (not black). Softness / bilinear
+samples at coverage edges otherwise pull in black and draw a dark outline
+of every collision triangle.
+
+Treat RGB as a **multiplier**, not as a lit-gray “look.” A low-ambient
+MeshStandard pass writes mid-gray on the whole footprint, so grass under the
+collision mesh looks muddy even where no shadow falls. Prefer
+`createRelightingShadowFactorMaterial(light)` so unshadowed coverage stays ≈ 1.
+Pass `{ umbra: 0.45 }` (default) so full shadow multiplies by ~0.45 instead of
+crushing splat color to black.
+
+Splat foliage cannot cast. Umbra shape follows **proxy triangles** only.
+Floor-only LCC collision yields ground / overhang self-shadow, not canopy
+silhouettes from the splat leaves — use a denser lighting mesh when you need
+that.
+
+**Vs PlayCanvas:** their [relighting](https://developer.playcanvas.com/user-manual/gaussian-splatting/building/relighting/)
+lights a reconstructed / photogrammetry proxy (gray albedo, `brightness: 2`)
+and transfers lit RGB + coverage. Separately, splats can *cast* onto meshes;
+they do not receive shadows directly. Using walk-collision as caster+receiver
+is a demo shortcut — crease self-shadow often reads as dark triangle outlines,
+which is not their intended look.
+
+## Proxy vs collision mesh
+
+Both are triangle meshes that approximate the scene. They differ by **job**:
+
+- **Collision** — physics / walk / camera BVH. May omit thin props.
+- **Proxy** — shading / shadow stand-in. Needs triangles where umbras matter.
+
+You may reuse LCC collision tiles (or a PlayCanvas `.collision.glb`) as the
+proxy when the silhouette is good enough. Prefer a denser reconstructed mesh
+when light edges matter. The core API never requires `SceneCollision`; pass
+any `THREE.Texture` from your own RT.
+
+## Minimal loop (shadow-factor)
+
+```ts
+import { SplatMesh, createSplatRenderer, loadScene } from '@voluma/vlam';
+import {
+  createRelightingProxy,
+  createRelightingShadowFactorMaterial,
+} from '@voluma/vlam/effects';
+
+const proxy = createRelightingProxy({
+  geometries: [new THREE.BoxGeometry(2, 1, 2)],
+});
+
+const relightScene = new THREE.Scene();
+relightScene.add(proxy.group);
+const sun = new THREE.DirectionalLight(0xffffff, 1);
+sun.castShadow = true;
+sun.position.set(2, 4, 1);
+relightScene.add(sun);
+
+const factorMat = createRelightingShadowFactorMaterial(sun);
+proxy.group.traverse((obj) => {
+  if (obj instanceof THREE.Mesh) {
+    obj.material = factorMat;
+    obj.castShadow = true;
+    obj.receiveShadow = true;
+  }
+});
+
+const relightTarget = new THREE.RenderTarget(1, 1, { depthBuffer: true });
+splats.setRelighting({
+  map: relightTarget.texture,
+  blend: 1,
+  brightness: 1,
+  background: 1,
+  softness: 3,
+});
+
+// Each frame, before the main splat draw:
+renderer.shadowMap.enabled = true;
+renderer.setRenderTarget(relightTarget);
+// White + A0 — black clear draws dark triangle outlines under softness.
+renderer.setClearColor(0xffffff, 0);
+renderer.clear();
+renderer.render(relightScene, camera);
+renderer.setRenderTarget(null);
+
+splats.update(camera, renderer);
+renderer.render(scene, camera);
+```
+
+<!-- full file: docs/guide/samples/relighting.ts -->
+
+`blend` / `brightness` / `background` / `softness` are live uniforms (no material
+rebuild). Changing the map texture identity rebuilds once. Pass `null` to
+`setRelighting` to disable. The pick pass is not tinted.
+
+Coarse collision proxies leave hard coverage silhouettes. If you use
+`softness`, keep the lighting RT clear at **RGB 1, A 0** and prefer the
+alpha-weighted filter (built in); a black clear turns soft edges into mesh
+outlines. PlayCanvas does not add this blur — proxy quality is the main lever.
+
+On `UnifiedSplatRenderer`, the same API modulates the unified draw material
+without invalidating gather caches.
+
+## Demo
+
+In the built-in viewer: `?effects=relight` on an LCC / `.lcc2` scene that
+ships collision meshes. The sun orbits; the lighting RT is a shadow
+multiplier so only the umbra darkens splats.
+
+Optional `?proxy=/path/to/mesh.glb` loads an external lighting mesh (e.g. a
+splat-transform `.collision.glb`). When set and loaded, it replaces the LCC
+collision tiles for the relight pass only; walk collision is unchanged. If
+`proxy` is omitted (or fails to load), the demo falls back to
+`loadCollisionMeshes()` tiles.
+
+## See also
+
+- [`lightingPreset`](effects-and-modifiers.md) — cheap per-splat Lambert from
+  covariance normals (no proxy, no shadows).
+- [Effects & modifiers](effects-and-modifiers.md) — vertex-stage hooks.

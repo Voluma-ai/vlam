@@ -1,0 +1,19 @@
+# gitleaks configuration for VLAM!
+#
+# CI scans the WORKING TREE (`--no-git`) so it blocks NEW secrets in tracked files.
+
+title = "VLAM! secret scan"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Vendored deps, build output, and lockfiles"
+paths = [
+    '''(^|/)node_modules/''',
+    '''(^|/)dist/''',
+    '''(^|/)dist-ssr/''',
+    '''(^|/)\.vite/''',
+    '''package-lock\.json$''',
+    '''(^|/)\.env\.example$''',
+]

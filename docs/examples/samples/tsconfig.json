@@ -1,0 +1,31 @@
+{
+  // Type-checks the examples-section samples (rendered by site/examples/*.md)
+  // against the current source tree, with the `@voluma/vlam` package name
+  // mapped to `src/lib` so they import the public entrypoints exactly as an
+  // embedder would write them. Run via `npm run docs:samples`.
+  //
+  // Separate from docs/guide/samples/tsconfig.json rather than folded into its
+  // `include`: ESLint's project service resolves the *nearest* tsconfig to each
+  // file, so samples in a directory without one are reported as outside the
+  // project and never linted.
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    // The React example is the only .tsx here; `react-jsx` is the modern
+    // transform, so its files need no `import React`.
+    "jsx": "react-jsx",
+    "paths": {
+      "@voluma/vlam": ["../../../src/lib/index.ts"],
+      "@voluma/vlam/effects": ["../../../src/lib/effects.ts"],
+      "@voluma/vlam/formats/*": ["../../../src/lib/formats/*/index.ts"]
+    }
+  },
+  "include": [
+    "./**/*.ts",
+    "./**/*.tsx",
+    // Ambient declarations the library itself compiles with (WebGPU
+    // navigator typing, the three.js zstd module shim).
+    "../../../src/viewer/webgpu-env.d.ts",
+    "../../../src/lib/three-zstd.d.ts"
+  ]
+}

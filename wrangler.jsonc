@@ -1,0 +1,12 @@
+{
+  "name": "vlam",
+  "compatibility_date": "2026-07-15",
+  "main": "./site-worker.js",
+  "assets": {
+    "directory": "./dist-site",
+    "not_found_handling": "404-page",
+    // Every path is served directly from assets; the worker is only the
+    // fallback binding behind them.
+    "binding": "ASSETS",
+  },
+}

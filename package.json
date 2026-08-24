@@ -1,0 +1,133 @@
+{
+  "name": "@voluma/vlam",
+  "version": "0.2.0",
+  "description": "VLAM! - A lightweight WebGPU Gaussian splat viewer for three.js, built for high performance, streaming LOD, and fully customizable rendering through an open shader pipeline.",
+  "license": "MIT",
+  "author": "Voluma",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Voluma-ai/vlam.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Voluma-ai/vlam/issues"
+  },
+  "homepage": "https://vlam.voluma.ai",
+  "keywords": [
+    "gaussian-splatting",
+    "3dgs",
+    "3dgs-lod",
+    "3dgs-stream",
+    "webgpu",
+    "three-js",
+    "viewer"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./effects": {
+      "types": "./dist/effects.d.ts",
+      "import": "./dist/effects.js"
+    },
+    "./formats/ply": {
+      "types": "./dist/formats/ply/index.d.ts",
+      "import": "./dist/formats/ply.js"
+    },
+    "./formats/sog": {
+      "types": "./dist/formats/sog/index.d.ts",
+      "import": "./dist/formats/sog.js"
+    },
+    "./formats/rad": {
+      "types": "./dist/formats/rad/index.d.ts",
+      "import": "./dist/formats/rad.js"
+    },
+    "./formats/lcc": {
+      "types": "./dist/formats/lcc/index.d.ts",
+      "import": "./dist/formats/lcc.js"
+    },
+    "./formats/spz": {
+      "types": "./dist/formats/spz/index.d.ts",
+      "import": "./dist/formats/spz.js"
+    },
+    "./formats/splat": {
+      "types": "./dist/formats/splat/index.d.ts",
+      "import": "./dist/formats/splat.js"
+    },
+    "./formats/ksplat": {
+      "types": "./dist/formats/ksplat/index.d.ts",
+      "import": "./dist/formats/ksplat.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "dev": "npm run docs:api:site && vitepress dev site",
+    "docs:api:site": "typedoc --options typedoc.site.json",
+    "build:site": "npm run typecheck && node scripts/build-site.mjs",
+    "build:lib": "vite build --config vite.config.lib.ts && tsc -p tsconfig.lib.json",
+    "build": "npm run build:site && npm run build:lib",
+    "prepack": "npm run build:lib",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "docs:check": "node scripts/docs-check.mjs",
+    "docs:samples": "tsc --noEmit -p docs/guide/samples/tsconfig.json && tsc --noEmit -p docs/examples/samples/tsconfig.json",
+    "docs:api": "typedoc",
+    "size:check": "node scripts/check-bundle-size.mjs",
+    "deploy": "npm run build:site && wrangler deploy"
+  },
+  "peerDependencies": {
+    "three": ">=0.185.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@types/three": "^0.185.0",
+    "@vitest/coverage-v8": "^4.1.10",
+    "@voluma/three-transform-gizmo": "^0.9.0",
+    "camera-controls": "^3.1.2",
+    "eslint": "^10.7.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.185.0",
+    "three-mesh-bvh": "^0.9.11",
+    "typedoc": "^0.28.20",
+    "typedoc-plugin-markdown": "^4.12.0",
+    "typedoc-vitepress-theme": "^1.1.3",
+    "typescript": "^5.5.0",
+    "typescript-eslint": "^8.64.0",
+    "vite": "~6.4.2",
+    "vitepress": "^1.6.4",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.119.0"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.9",
+    "nanoid": "3.3.18",
+    "postcss": "8.5.26",
+    "undici": "7.29.0",
+    "vite": "$vite"
+  }
+}

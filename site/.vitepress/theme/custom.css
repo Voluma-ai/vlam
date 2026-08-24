@@ -1,0 +1,122 @@
+:root {
+  --vp-c-brand-1: #c4a06a;
+  --vp-c-brand-2: #d6c7a7;
+  --vp-c-brand-3: #ba8;
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(120deg, #d6c7a7, #ba8);
+}
+
+.VPNavBarTitle .title {
+  font-weight: 700;
+}
+
+.VPNavBarTitle .VPImage.logo {
+  height: 28px;
+  width: auto;
+  transform: translateY(-5px);
+}
+
+/* VitePress hides the footer when a sidebar is present (API pages). Keep it. */
+.VPFooter.has-sidebar {
+  display: block;
+}
+
+/* FAQ: questions collapsed by default, answers set back from the title. */
+.faq {
+  border-bottom: 1px solid var(--vp-c-divider);
+}
+
+.faq > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 16px 28px 16px 0;
+  position: relative;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--vp-c-text-1);
+}
+
+.faq > summary::-webkit-details-marker {
+  display: none;
+}
+
+.faq > summary::after {
+  content: '+';
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 20px;
+  line-height: 1;
+  color: var(--vp-c-brand-1);
+}
+
+.faq[open] > summary::after {
+  content: '−';
+}
+
+.faq > summary:hover {
+  color: var(--vp-c-brand-1);
+}
+
+.faq > :not(summary) {
+  color: var(--vp-c-text-2);
+}
+
+.faq > *:not(summary):first-of-type {
+  margin-top: 0;
+}
+
+.faq > *:last-child {
+  margin-bottom: 20px;
+}
+
+/* Highlight the key term in an answer (glossary lead-ins, WebGPU / WebGL2). */
+.faq strong {
+  color: var(--vp-c-brand-1);
+}
+
+/* Home uses a custom layout; hide the default VitePress home chrome. */
+.VPHome {
+  padding-bottom: 0 !important;
+}
+
+/* Pre-release notice. Uses VitePress' built-in warning tokens so it tracks the
+   light/dark theme without a bespoke palette. */
+.vlam-warning {
+  margin: 0 0 24px;
+  padding: 12px 16px;
+  border: 1px solid var(--vp-c-warning-3);
+  border-radius: 8px;
+  background: var(--vp-c-warning-soft);
+  color: var(--vp-c-text-2);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.vlam-warning strong {
+  color: var(--vp-c-warning-1);
+}
+
+/* Hero variant: shrinks to its text so it stays centred under the buttons. */
+.vlam-warning--hero {
+  display: inline-block;
+  max-width: 40rem;
+  margin: 0 auto 20px;
+  padding: 8px 14px;
+  font-size: 12.8px;
+  text-align: left;
+}
+
+/* Version badge beside the nav bar title. The nav title is a full-height
+   centred flex row, so `flex-end` would drop the badge to the bottom of the
+   header; nudging the centred box down by half the font-size difference puts
+   it on the title's baseline instead. */
+.vlam-nav-version {
+  margin-left: 6px;
+  transform: translateY(3px);
+  color: var(--vp-c-text-3);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1;
+}

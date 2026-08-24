@@ -1,0 +1,64 @@
+node_modules
+.tmp
+.DS_Store
+dist
+dist-demo
+dist-viewer
+dist-site
+dist-ssr
+coverage
+.claude
+.cursor*
+bundle-visualization.html
+# wrangler's local state and bundles: miniflare's SQLite cache plus generated
+# entry files that hard-code absolute paths from whoever ran it last.
+.wrangler
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+*.tsbuildinfo
+
+.env
+.env*
+!.env.example
+
+*storybook.log
+.vite/*
+site/.vitepress/cache
+site/.vitepress/dist
+# Generated into the VitePress tree by `npm run docs:api:site` / build:site.
+site/api
+# Standalone TypeDoc output. The website generates its own copy in site/api.
+.tmp/api-reference
+
+playwright/.auth/user.json
+
+# internal strategy documents, not part of the public repository
+*.docx
+.~lock.*
+
+# `npm pack` output, under any past or future package name
+*.tgz
+
+# Local mkcert development certificates (one of the pair is a private key).
+# Copy them in to serve the viewer over HTTPS on the LAN. A phone needs a secure
+# context or `navigator.gpu` is undefined and the viewer silently falls back to
+# WebGL2. See the `server.https` block in vite.config.ts.
+*.pem

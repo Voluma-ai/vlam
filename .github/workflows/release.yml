@@ -1,0 +1,54 @@
+# Publishes the `@voluma/vlam` package to npm when a `v*` tag is pushed.
+#
+# Requires an NPM_TOKEN repository secret (an npm automation token with
+# publish rights). `id-token: write` lets npm attach a provenance attestation
+# linking the tarball to this workflow run.
+#
+# Cut a release by tagging a commit whose package.json version matches:
+#   git tag v<version> && git push origin v<version>
+#
+# Note: @voluma/vlam@0.1.0 on npm is a name-reservation placeholder, not this
+# library. The first real release is 0.2.0, which publishes to `latest`.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: publish to npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+
+      # The tag is the source of truth for what gets published - refuse to
+      # publish if package.json disagrees with it.
+      - name: Verify tag matches package.json version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag v$tag does not match package.json version $pkg"
+            exit 1
+          fi
+
+      # Re-run the gates rather than trusting that CI passed on this commit.
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build:lib
+
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

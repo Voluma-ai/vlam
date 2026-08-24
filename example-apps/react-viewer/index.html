@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- Live runner for site/examples/react-viewer.md. See first-viewer/index.html. -->
+<html lang="en">
+ <head>
+ <meta charset="UTF-8" />
+ <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+ <link rel="icon" href="/favicon.ico" sizes="any" />
+ <title>Use it from React. VLAM! example</title>
+ <style>
+ html,
+ body,
+ #root {
+ margin: 0;
+ height: 100%;
+ overflow: hidden;
+ background: #1a1a1f;
+ font: 14px/1.4 system-ui, sans-serif;
+ }
+ canvas {
+ touch-action: none;
+ }
+ .toggle {
+ position: fixed;
+ top: 14px;
+ left: 14px;
+ z-index: 1;
+ border: 1px solid #ffffff40;
+ border-radius: 6px;
+ padding: 6px 12px;
+ background: #ffffff14;
+ color: #fff;
+ font: inherit;
+ cursor: pointer;
+ }
+ </style>
+ </head>
+ <body>
+ <div id="root"></div>
+ <script type="module" src="../../docs/examples/samples/react-main.tsx"></script>
+ </body>
+</html>
