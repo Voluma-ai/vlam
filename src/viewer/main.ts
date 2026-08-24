@@ -1839,10 +1839,13 @@ async function main(): Promise<void> {
         const geometries: THREE.BufferGeometry[] = [];
         gltf.scene.updateMatrixWorld(true);
         gltf.scene.traverse((obj) => {
-          if (!(obj instanceof THREE.Mesh) || !obj.geometry) return;
+          if (!(obj instanceof THREE.Mesh)) return;
+          // instanceof erases Mesh type params, so geometry is `any` until recast.
+          const mesh = obj as THREE.Mesh<THREE.BufferGeometry, THREE.Material | THREE.Material[]>;
+          if (!mesh.geometry) return;
           // Bake node transform so createRelightingProxy can leave matrixWorld unset.
-          const geo = obj.geometry.clone();
-          geo.applyMatrix4(obj.matrixWorld);
+          const geo = mesh.geometry.clone();
+          geo.applyMatrix4(mesh.matrixWorld);
           geometries.push(geo);
         });
         if (geometries.length === 0) {
