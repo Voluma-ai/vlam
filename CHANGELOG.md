@@ -45,6 +45,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 - The `/demo/` cinematic-orbit control starts paused. The home-page embed still
   orbits on load. A play/pause click is still remembered across reloads.
+  Pressing play starts the orbit immediately; a camera interruption still waits
+  five seconds before the path resumes.
 
 - Transitive `nanoid` is pinned at `3.3.18` (CVE-2026-67213 / GHSA-2v37)
   and the existing PostCSS override is raised to `8.5.26`. Vite, Vitest, and
