@@ -84,7 +84,7 @@ export function createLodDistanceDebugModifier(
 }
 
 /** Short legend HTML for the demo overlay. */
-export function lodDebugLegendHtml(mode: 'lod' | 'loddist'): string {
+export function lodDebugLegendHtml(mode: 'lod' | 'distance'): string {
   const swatch = (color: string, label: string) =>
     `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:10px">` +
     `<i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${color}"></i>${label}</span>`;
@@ -105,7 +105,7 @@ export function lodDebugLegendHtml(mode: 'lod' | 'loddist'): string {
   }
   return (
     `<div style="font:12px/1.4 ui-sans-serif,system-ui;color:#eee;text-shadow:0 1px 2px #000">` +
-    `<b>LOD distance</b> · ≤10 / ≤20 / ≤40 / ≤80 m` +
+    `<b>Distance</b> · ≤10 / ≤20 / ≤40 / ≤80 m` +
     `<div style="margin-top:4px">${row}</div>` +
     `</div>`
   );

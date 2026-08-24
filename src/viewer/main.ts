@@ -67,6 +67,7 @@ import { createFrameBenchmark, verifyGpuSort } from './sort-benchmark';
 import { createPerfHud } from './perf-hud';
 import { createSeparateTool, type SeparateTool } from './separate';
 import { buildToolPicker, parseViewerTool, type ViewerTool } from './tool-picker';
+import { parseFpvParam, parseOrbitPlayingParam, writeShareViewSearchParams } from './share-view';
 import {
   alignXrRigToCamera,
   applyPresentationSplatBudget,
@@ -91,6 +92,7 @@ import {
   baseDistanceForOrbitalCameraPath,
   CINEMATIC_ORBIT_DURATION,
   CINEMATIC_ORBIT_IDLE_DELAY,
+  CINEMATIC_ORBIT_RAMP_DURATION,
   cinematicOrbitBlend,
   evaluateOrbitalCameraPath,
   type OrbitFraming,
@@ -260,7 +262,10 @@ function createPerformanceMode(defaultEnabled: boolean): {
  * Sticky cinematic-orbit state. Storage failures fall back to the chrome
  * preset so privacy settings cannot prevent the viewer from starting.
  */
-function createCinematicOrbitMode(defaultEnabled: boolean): {
+function createCinematicOrbitMode(
+  defaultEnabled: boolean,
+  urlPlaying: boolean | null = null,
+): {
   enabled: boolean;
   set(value: boolean): void;
 } {
@@ -271,7 +276,9 @@ function createCinematicOrbitMode(defaultEnabled: boolean): {
     // Blocked storage: keep the preset default.
   }
   return {
-    enabled: stored === null ? defaultEnabled : stored === 'true',
+    // A share link's `?orbit=` wins over the sticky preference so a paused
+    // copy-view pose is not immediately overwritten by cinematic motion.
+    enabled: urlPlaying ?? (stored === null ? defaultEnabled : stored === 'true'),
     set(value: boolean): void {
       this.enabled = value;
       try {
@@ -1115,6 +1122,13 @@ async function main(): Promise<void> {
     refreshOverlay();
   };
 
+  /** Restores `?fpv=1` once a collision floor exists to stand on. */
+  const applyWalkFromUrl = (): void => {
+    if (!fpvFromUrl || !collisionEnabled || !collisionWorld?.ready) return;
+    setWalkMode(true);
+    collisionToggles.setWalk(true);
+  };
+
   const collisionToggles = chrome.collisionUi
     ? buildCollisionToggles(
         (enabled) => {
@@ -1411,6 +1425,8 @@ async function main(): Promise<void> {
   // tool so a pasted link restores it.
   const separateMode = params.has('separate');
   const toolFromUrl = parseViewerTool(params.get('tool'));
+  const fpvFromUrl = parseFpvParam(params.get('fpv'));
+  const orbitFromUrl = parseOrbitPlayingParam(params.get('orbit'));
 
   // Scene state. A dropped file replaces all of it in place, so everything
   // derived from the current scene is a `let` that `applyScene` re-derives;
@@ -1435,7 +1451,7 @@ async function main(): Promise<void> {
    */
   const preferHoldNearL0 = params.get('initialReveal') !== 'progressive';
   let nearL0HoldActive = false;
-  const cinematicOrbitMode = createCinematicOrbitMode(chrome.cinematicOrbit);
+  const cinematicOrbitMode = createCinematicOrbitMode(chrome.cinematicOrbit, orbitFromUrl);
   let cinematicOrbitPlaying = cinematicOrbitMode.enabled;
   let cinematicOrbitPhase = 0;
   let cinematicOrbitLastInteraction = performance.now();
@@ -1513,7 +1529,7 @@ async function main(): Promise<void> {
   //   reveal   - wgslFn value-noise dissolve, WebGPU-only (M7.5)
   //   warp     - planet / bowl wrap (worldWarpPreset)
   //   lod      - false-color by resident LOD level (red=finest … blue=coarse)
-  //   loddist  - false-color by camera distance (same band edges as LCC LODs)
+  //   distance  - false-color by camera distance (same band edges as LCC LODs)
   // `?tool=paint` is enough to arm paint without a separate effects value.
   let effectMode = params.get('effects') ?? (toolFromUrl === 'paint' ? 'paint' : null);
   // `defineChannel` throws on a redefinition, so a streamed scene's mask is
@@ -1898,7 +1914,7 @@ async function main(): Promise<void> {
     'position:absolute;left:12px;bottom:48px;z-index:5;pointer-events:none;max-width:min(420px,90vw)';
   container.appendChild(lodLegend);
   const syncLodLegend = (): void => {
-    if (effectMode === 'lod' || effectMode === 'loddist') {
+    if (effectMode === 'lod' || effectMode === 'distance') {
       lodLegend.innerHTML = lodDebugLegendHtml(effectMode);
       lodLegend.hidden = false;
     } else {
@@ -2117,6 +2133,7 @@ async function main(): Promise<void> {
         refreshRelightEffectOption();
         if (effectMode === 'relight' && mounted && splats === mesh) setupRelight(mesh);
         refreshOverlay(); // the hint gains the walk/fly key
+        applyWalkFromUrl();
       })
       .catch((error: unknown) => {
         console.warn('Collision meshes failed to load; flying uncollided.', error);
@@ -2231,7 +2248,7 @@ async function main(): Promise<void> {
           : createLodDistanceDebugModifier(),
       ]);
       updateEffects = null;
-    } else if (effectMode === 'loddist') {
+    } else if (effectMode === 'distance') {
       // Camera-distance bands matching classic LCC defaults (10 / 2^L metres).
       setEffectModifiers([createLodDistanceDebugModifier()]);
       updateEffects = null;
@@ -3874,7 +3891,11 @@ async function main(): Promise<void> {
     buildCinematicOrbitToggle(cinematicOrbitPlaying, (playing) => {
       cinematicOrbitMode.set(playing);
       cinematicOrbitPlaying = playing;
-      cinematicOrbitLastInteraction = performance.now();
+      // Play starts the path now; pointer/keyboard interrupts still wait the
+      // idle delay before the blend ramps back up.
+      cinematicOrbitLastInteraction = playing
+        ? performance.now() - (CINEMATIC_ORBIT_IDLE_DELAY + CINEMATIC_ORBIT_RAMP_DURATION) * 1000
+        : performance.now();
       cinematicOrbitWasMoving = false;
       clearPointerInertia();
       syncCameraControlsEnabled();
@@ -3883,7 +3904,8 @@ async function main(): Promise<void> {
   }
 
   // Shareable view: copies the current URL with camera pose plus the armed
-  // tool / effect so a pasted link opens the same looking view and chrome.
+  // tool / effect / FPV walk / paused orbit so a pasted link opens the same
+  // looking view and chrome.
   if (chrome.copyView) {
     const sharePosition = new THREE.Vector3();
     const shareTarget = new THREE.Vector3();
@@ -3895,6 +3917,8 @@ async function main(): Promise<void> {
         target: shareTarget,
         tool: pointerTool,
         effect: effectMode,
+        fpv: walkMode,
+        orbitPlaying: cinematicOrbitPlaying,
       };
     });
   }
@@ -4051,7 +4075,7 @@ function buildCinematicOrbitToggle(playing: boolean, onChange: (playing: boolean
     button.setAttribute('aria-label', playing ? 'Pause cinematic orbit' : 'Play cinematic orbit');
     button.title = playing
       ? 'Pause the cinematic camera orbit.'
-      : `Play the ${CINEMATIC_ORBIT_DURATION}-second cinematic camera orbit after a ${CINEMATIC_ORBIT_IDLE_DELAY}-second delay.`;
+      : `Play the ${CINEMATIC_ORBIT_DURATION}-second cinematic camera orbit. After a camera move it waits ${CINEMATIC_ORBIT_IDLE_DELAY} seconds before resuming.`;
     button.innerHTML = playing
       ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>'
       : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7z"/></svg>';
@@ -4067,8 +4091,8 @@ function buildCinematicOrbitToggle(playing: boolean, onChange: (playing: boolean
 
 /**
  * "Copy link" (under the performance toggle). Writes the live camera pose plus
- * the armed tool / effect into the current URL and copies it, so a pasted link
- * opens the same view and chrome the viewer was using.
+ * the armed tool / effect / FPV walk / paused cinematic orbit into the current
+ * URL and copies it, so a pasted link opens the same view and chrome.
  */
 function buildCopyViewButton(
   getState: () => {
@@ -4076,13 +4100,15 @@ function buildCopyViewButton(
     target: THREE.Vector3;
     tool: ViewerTool;
     effect: string | null;
+    fpv: boolean;
+    orbitPlaying: boolean;
   },
 ): void {
   const button = document.createElement('button');
   button.id = 'copy-view';
   button.type = 'button';
   const defaultLabel =
-    'Copy the page URL with the current camera, tool, and effect so the view can be recreated.';
+    'Copy the page URL with the current camera, tool, effect, FPV walk, and orbit pause so the view can be recreated.';
   const linkIcon =
     '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.6 13.4a4 4 0 0 1 0-5.66l3.18-3.18a4 4 0 1 1 5.66 5.66l-1.42 1.42-1.06-1.06 1.42-1.42a2.5 2.5 0 0 0-3.54-3.54L11.66 9.8a2.5 2.5 0 0 0 0 3.54zm2.8-2.8a4 4 0 0 1 0 5.66l-3.18 3.18a4 4 0 1 1-5.66-5.66l1.42-1.42 1.06 1.06-1.42 1.42a2.5 2.5 0 0 0 3.54 3.54l3.18-3.18a2.5 2.5 0 0 0 0-3.54z"/></svg>';
   const checkIcon =
@@ -4097,16 +4123,16 @@ function buildCopyViewButton(
   showIdle();
   let resetLabel: number | undefined;
   button.addEventListener('click', () => {
-    const { position, target, tool, effect } = getState();
+    const { position, target, tool, effect, fpv, orbitPlaying } = getState();
     const url = new URL(location.href);
-    url.searchParams.set('cameraPosition', formatVector3Param(position));
-    url.searchParams.set('cameraTarget', formatVector3Param(target));
-    if (effect) url.searchParams.set('effects', effect);
-    else url.searchParams.delete('effects');
-    if (tool !== 'none') url.searchParams.set('tool', tool);
-    else url.searchParams.delete('tool');
-    // Prefer `?tool=select` over the legacy deep link when sharing.
-    url.searchParams.delete('separate');
+    writeShareViewSearchParams(url, {
+      position,
+      target,
+      tool,
+      effect,
+      fpv,
+      orbitPlaying,
+    });
     const href = url.toString();
     void (async () => {
       try {
@@ -4307,7 +4333,7 @@ function buildEffectPicker(
     },
     {
       label: 'Distance',
-      mode: 'loddist',
+      mode: 'distance',
       title: 'Camera distance bands: ≤10 red, ≤20 orange, ≤40 yellow, ≤80 green, else blue',
     },
   ];
@@ -4514,12 +4540,6 @@ function parseVector3Param(value: string | null): THREE.Vector3 | null {
   const parts = value.split(',').map(Number);
   if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) return null;
   return new THREE.Vector3(parts[0], parts[1], parts[2]);
-}
-
-/** Serializes a camera vector for `?cameraPosition=` / `?cameraTarget=`. */
-function formatVector3Param(value: THREE.Vector3): string {
-  const fmt = (n: number): string => String(Number(n.toFixed(6)));
-  return `${fmt(value.x)},${fmt(value.y)},${fmt(value.z)}`;
 }
 
 main().catch((error: unknown) => {
