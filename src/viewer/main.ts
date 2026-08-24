@@ -96,6 +96,7 @@ import {
   baseDistanceForOrbitalCameraPath,
   CINEMATIC_ORBIT_DURATION,
   CINEMATIC_ORBIT_IDLE_DELAY,
+  CINEMATIC_ORBIT_RAMP_DURATION,
   cinematicOrbitBlend,
   evaluateOrbitalCameraPath,
   type OrbitFraming,
@@ -3897,7 +3898,8 @@ async function main(): Promise<void> {
       // Play starts the path now; pointer/keyboard interrupts still wait the
       // idle delay before the blend ramps back up.
       cinematicOrbitLastInteraction = playing
-        ? performance.now() - CINEMATIC_ORBIT_IDLE_DELAY * 1000
+        ? performance.now() -
+          (CINEMATIC_ORBIT_IDLE_DELAY + CINEMATIC_ORBIT_RAMP_DURATION) * 1000
         : performance.now();
       cinematicOrbitWasMoving = false;
       clearPointerInertia();
