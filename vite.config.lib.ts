@@ -52,7 +52,9 @@ function verifyStableDynamicImports(): Plugin {
         if (output.type !== 'chunk') continue;
         const adapter = output.code.match(syntheticNamespaceAdapter)?.[0];
         if (adapter) {
-          this.error(`${output.fileName} contains an unstable synthetic namespace adapter: ${adapter}`);
+          this.error(
+            `${output.fileName} contains an unstable synthetic namespace adapter: ${adapter}`,
+          );
         }
       }
     },

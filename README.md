@@ -1,7 +1,11 @@
 # VLAM!
 
+<!-- Image shields. Do not flatten to [CI](url) text links. -->
+
 [![CI](https://github.com/Voluma-ai/vlam/actions/workflows/ci.yml/badge.svg)](https://github.com/Voluma-ai/vlam/actions/workflows/ci.yml)
-[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![npm](https://img.shields.io/npm/v/@voluma/vlam.svg)](https://www.npmjs.com/package/@voluma/vlam)
+[![demo](https://img.shields.io/badge/demo-live-4c1.svg)](https://vlam.voluma.ai)
+[![license](https://img.shields.io/github/license/Voluma-ai/vlam.svg)](./LICENSE)
 
 A WebGPU Gaussian Splat viewer for three.js.
 

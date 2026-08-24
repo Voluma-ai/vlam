@@ -17,7 +17,7 @@ our [Code of Conduct](CODE_OF_CONDUCT.md).
 ## Getting set up
 
 ```bash
-npm install
+npm install        # also registers the lint pre-commit hook
 npm run dev        # Docs site → http://localhost:5170 (viewer at /demo/)
 npm test           # Vitest unit tests
 npm run typecheck  # tsc --noEmit
@@ -145,7 +145,9 @@ surface than the full viewer.
 ## Commits & pull requests
 
 - **Conventional commits**: `feat:`, `fix:`, `perf:`, `refactor:`, `docs:`,
-  `chore:`. Present tense, ≤ 72-char subject.
+ `chore:`. Present tense, ≤ 72-char subject. A Husky pre-commit hook runs
+ `npm run lint` (the same ESLint + Prettier check CI uses). Skip with
+ `HUSKY=0 git commit` only when you have a reason.
 - **One roadmap item per PR** from [`ROADMAP.md`](ROADMAP.md); update its state
  in the same PR. Keep diffs reviewable.
 - **Changelog:** user-visible changes get an entry under `## [Unreleased]` in

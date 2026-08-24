@@ -1,0 +1,2 @@
+# Same check as the CI `lint` job.
+npm run lint

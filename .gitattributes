@@ -1,0 +1,2 @@
+# Git hooks run under sh; CRLF makes `sh` fail on Windows checkouts.
+.husky/* text eol=lf

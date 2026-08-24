@@ -138,10 +138,7 @@ export function createCollisionWorld(
     // Copy positions — `applyMatrix4` mutates the attribute buffer in place.
     // Shared `tile.data` must stay source-local for other consumers (e.g. proxy
     // relighting), which bake `matrixWorld` themselves from the raw frame.
-    geometry.setAttribute(
-      'position',
-      new THREE.BufferAttribute(tile.data.positions.slice(), 3),
-    );
+    geometry.setAttribute('position', new THREE.BufferAttribute(tile.data.positions.slice(), 3));
     geometry.setIndex(new THREE.BufferAttribute(tile.data.indices.slice(), 1));
     geometry.applyMatrix4(worldMatrix); // source-local → world, once
     geometry.computeBoundingBox();
