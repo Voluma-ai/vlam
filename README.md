@@ -15,6 +15,12 @@ Local site and generated API: `npm run dev` (http://localhost:5170, viewer at `/
 
 > Package `@voluma/vlam`, public **0.2.0**. APIs may still move before 1.0.
 
+## Important notice!
+This is a pre-release. The API can still change in breaking ways before v1.0. Great for prototypes and experiments, not yet recommended for production.
+
+Phones and laptops with integrated graphics, like a MacBook Air, still need a lot of testing and tuning. Frame rate and image quality on those devices are not final.
+
+
 ## Install
 
 ```bash
@@ -47,7 +53,9 @@ renderer.setAnimationLoop(() => {
 });
 ```
 
-Formats: `.sog`, `.ply`, `.spz`, `.splat`, `.ksplat`, `.rad`. Large scenes: `StreamedSplatMesh`.
+
+Supported formats: `.sog`, `.ply`, `.spz`, `.splat`, `.ksplat`, `.lcc`, `.lcc2`, `.rad`, `.radc`. 
+
 
 ## Contributing
 
