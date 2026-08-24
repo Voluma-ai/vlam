@@ -4289,8 +4289,7 @@ function buildEffectPicker(
     {
       label: 'proxy relight',
       mode: 'relight',
-      title:
-        'PlayCanvas-style proxy-mesh relight (needs LCC collision or ?proxy= mesh)',
+      title: 'PlayCanvas-style proxy-mesh relight (needs LCC collision or ?proxy= mesh)',
     },
     { label: 'reveal', mode: 'reveal', title: 'wgslFn noise dissolve - WebGPU only (M7.5)' },
     {

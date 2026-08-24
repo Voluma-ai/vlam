@@ -1,0 +1,3 @@
+# Same checks as the CI `lint` job and the `docs:check` step of `docs`.
+npm run lint
+npm run docs:check

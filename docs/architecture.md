@@ -19,7 +19,7 @@ directory name and `package.json` disagree, trust `package.json`.
 
 | Command | What it does |
 | --- | --- |
-| `npm install` | install dependencies |
+| `npm install` | install dependencies (also registers the lint + docs:check pre-commit hook) |
 | `npm run dev` | VitePress docs site → http://localhost:5170 (port pinned; interactive viewer at `/demo/`, harnesses at `/chunk-harness.html` / `/unified-harness.html`) |
 | `npm run build:site` | docs site + viewer + TypeDoc HTML → `dist-site/` |
 | `npm run build:lib` | library ES build + `.d.ts` → `dist/` |

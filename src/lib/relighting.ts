@@ -47,9 +47,7 @@ export type RelightingUniforms = {
  * Clamps blend / brightness / background / softness.
  */
 export function clampRelightingSettings(
-  partial: Partial<
-    Pick<RelightingSettings, 'blend' | 'brightness' | 'background' | 'softness'>
-  >,
+  partial: Partial<Pick<RelightingSettings, 'blend' | 'brightness' | 'background' | 'softness'>>,
   previous: RelightingUniforms = {
     blend: DEFAULT_RELIGHT_BLEND,
     brightness: DEFAULT_RELIGHT_BRIGHTNESS,

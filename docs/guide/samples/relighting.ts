@@ -2,10 +2,7 @@
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { SplatMesh, createSplatRenderer, loadScene } from '@voluma/vlam';
-import {
-  createRelightingProxy,
-  createRelightingShadowFactorMaterial,
-} from '@voluma/vlam/effects';
+import { createRelightingProxy, createRelightingShadowFactorMaterial } from '@voluma/vlam/effects';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);
