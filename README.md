@@ -1,6 +1,6 @@
 # VLAM!
 
-<!-- Image shields. Do not flatten to [CI](url) text links. -->
+<!-- Image shields. Do not flatten CI badges to text links. -->
 
 [![CI](https://github.com/Voluma-ai/vlam/actions/workflows/ci.yml/badge.svg)](https://github.com/Voluma-ai/vlam/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@voluma/vlam.svg)](https://www.npmjs.com/package/@voluma/vlam)

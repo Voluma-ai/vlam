@@ -22,12 +22,17 @@ function linesOf(text) {
   return text.split(/\r?\n/);
 }
 
+/** Blank HTML comments, keeping newlines so line numbers stay valid. */
+function withoutHtmlComments(text) {
+  return text.replace(/<!--[\s\S]*?-->/g, (block) => block.replace(/[^\n]/g, ' '));
+}
+
 /** Markdown links [text](url) excluding images and http(s)/mailto/# anchors. */
 function localLinks(text) {
   const out = [];
   const re = /(?<!!)\[([^\]]*)\]\(([^)\s]+)\)/g;
   let m;
-  while ((m = re.exec(text))) {
+  while ((m = re.exec(withoutHtmlComments(text)))) {
     const url = m[2];
     if (/^(https?:|mailto:|#|data:|\/)/i.test(url)) continue;
     out.push({ url: url.split('#')[0], index: m.index });
