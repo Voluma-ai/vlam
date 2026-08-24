@@ -67,11 +67,7 @@ import { createFrameBenchmark, verifyGpuSort } from './sort-benchmark';
 import { createPerfHud } from './perf-hud';
 import { createSeparateTool, type SeparateTool } from './separate';
 import { buildToolPicker, parseViewerTool, type ViewerTool } from './tool-picker';
-import {
-  parseFpvParam,
-  parseOrbitPlayingParam,
-  writeShareViewSearchParams,
-} from './share-view';
+import { parseFpvParam, parseOrbitPlayingParam, writeShareViewSearchParams } from './share-view';
 import {
   alignXrRigToCamera,
   applyPresentationSplatBudget,
@@ -3898,8 +3894,7 @@ async function main(): Promise<void> {
       // Play starts the path now; pointer/keyboard interrupts still wait the
       // idle delay before the blend ramps back up.
       cinematicOrbitLastInteraction = playing
-        ? performance.now() -
-          (CINEMATIC_ORBIT_IDLE_DELAY + CINEMATIC_ORBIT_RAMP_DURATION) * 1000
+        ? performance.now() - (CINEMATIC_ORBIT_IDLE_DELAY + CINEMATIC_ORBIT_RAMP_DURATION) * 1000
         : performance.now();
       cinematicOrbitWasMoving = false;
       clearPointerInertia();

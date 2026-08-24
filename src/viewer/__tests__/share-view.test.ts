@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  parseFpvParam,
-  parseOrbitPlayingParam,
-  writeShareViewSearchParams,
-} from '../share-view';
+import { parseFpvParam, parseOrbitPlayingParam, writeShareViewSearchParams } from '../share-view';
 
 describe('parseFpvParam', () => {
   it('enables walk for bare, 1, true, and on', () => {
