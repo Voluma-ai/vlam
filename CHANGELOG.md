@@ -43,6 +43,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- The `/demo/` cinematic-orbit control starts paused. The home-page embed still
+  orbits on load. A play/pause click is still remembered across reloads.
+
 - Transitive `nanoid` is pinned at `3.3.18` (CVE-2026-67213 / GHSA-2v37)
   and the existing PostCSS override is raised to `8.5.26`. Vite, Vitest, and
   VitePress still pull PostCSS, which cannot use nanoid 5.x. Dev-tooling only;

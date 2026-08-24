@@ -10,10 +10,10 @@ describe('viewerChromeForPreset', () => {
     expect(chrome.cinematicOrbitToggle).toBe(false);
   });
 
-  it('runs the cinematic orbit with its toggle in the full viewer', () => {
+  it('starts the cinematic orbit paused with its toggle in the full viewer', () => {
     const chrome = viewerChromeForPreset('full');
 
-    expect(chrome.cinematicOrbit).toBe(true);
+    expect(chrome.cinematicOrbit).toBe(false);
     expect(chrome.cinematicOrbitToggle).toBe(true);
   });
 });

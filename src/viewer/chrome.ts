@@ -56,7 +56,7 @@ const FULL: ViewerChrome = {
   stats: true,
   perfMode: true,
   copyView: true,
-  cinematicOrbit: true,
+  cinematicOrbit: false,
   cinematicOrbitToggle: true,
   enterVr: true,
   collisionUi: true,
