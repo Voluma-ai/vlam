@@ -43,6 +43,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- The demo relight effect no longer places an orange cylinder in the scene.
+
+- Copy-view links restore walk mode from `?fpv=1` after the collision BVH has
+  its first tile, instead of dropping the flag because the world was not ready
+  yet.
+
 - The `/demo/` cinematic-orbit control starts paused. The home-page embed still
   orbits on load. A play/pause click is still remembered across reloads.
   Pressing play starts the orbit immediately; a camera interruption still waits
