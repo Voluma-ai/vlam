@@ -111,6 +111,7 @@ export {
   resolveXrSplatBudget,
   resolveCpuCacheBytes,
   suggestAdaptivePixelRatio,
+  ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES,
   estimateSplatPoolBytes,
   type SplatBudgetOptions,
   type SplatCostClass,

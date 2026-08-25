@@ -15,6 +15,7 @@ import {
   recommendedMaxPixelRatio,
   recommendedXrFramebufferScale,
   suggestAdaptivePixelRatio,
+  ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES,
   xrSessionInit,
   createSplatRenderer,
   yUpTransformForFormat,
@@ -64,7 +65,7 @@ import {
 } from './scene-url';
 import { createCollisionWorld, type CollisionWorld } from './collision';
 import { createFrameBenchmark, verifyGpuSort } from './sort-benchmark';
-import { createPerfHud } from './perf-hud';
+import { createPerfHud, hudBrowserName } from './perf-hud';
 import { createSeparateTool, type SeparateTool } from './separate';
 import { buildToolPicker, parseViewerTool, type ViewerTool } from './tool-picker';
 import { parseFpvParam, parseOrbitPlayingParam, writeShareViewSearchParams } from './share-view';
@@ -85,6 +86,7 @@ import {
   type ViewerChrome,
 } from './chrome';
 import { whenDocumentVisible } from './when-document-visible';
+import { setRendererMsaa, getRendererMsaaSamples } from './renderer-msaa';
 import { DoubleTapDetector } from './double-tap';
 import { sampleTeleportTransition, type TeleportTransition } from './teleport-transition';
 import { PressForwardDetector } from './press-forward';
@@ -462,8 +464,9 @@ async function main(): Promise<void> {
   const gpuTimestampsEnabled = params.get('gpuTimestamps') === '1';
   // Enrich the navigator profile with a WebGPU adapter class so laptop / Apple
   // Silicon desktops take the integrated tier instead of the workstation 8M path.
-  // Resolved before the renderer so performance mode can drop MSAA at
-  // construction - sample count is not a live WebGPURenderer setting.
+  // Resolved before the renderer so the first frame already has the device
+  // default (performance mode drops MSAA at construction; the HD toggle can
+  // restore it live via setRendererMsaa).
   const baseDeviceProfile = detectSplatDeviceProfile() ?? {};
   const probedGpuClass = await probeSplatGpuClass();
   const deviceProfile: SplatDeviceProfile = {
@@ -473,8 +476,8 @@ async function main(): Promise<void> {
   // Performance mode trades detail for frame rate, defaulting on where the GPU
   // needs it (mobile + integrated/fallback desktop) and remembering whatever
   // the viewer chooses. It drives the costs a running viewer can still change:
-  // render resolution, resident splat budget, Gaussian cutoff, and SH bands.
-  // Renderer MSAA is chosen here too, but only at construction.
+  // render resolution, resident splat budget, Gaussian cutoff, and MSAA.
+  // Streamed SH bands are still a load-time choice.
   const perfMode = createPerformanceMode(isFillConstrainedSplatDevice(deviceProfile));
   // Renderer MSAA is on when performance mode is off; ?rendererAntialias=0/1
   // pins it for A/B (distinct from ?antialias, which toggles the Mip-Splatting
@@ -511,10 +514,20 @@ async function main(): Promise<void> {
     adaptiveDprParam === null
       ? isFillConstrainedSplatDevice(deviceProfile)
       : adaptiveDprParam !== '0';
-  const pixelRatioCeiling = (): number =>
-    Math.min(window.devicePixelRatio, recommendedMaxPixelRatio(deviceProfile));
+  // HD uses the library quality ceiling (1.5 on integrated, 2 on discrete), not
+  // min(native, ceiling). Clamping to `devicePixelRatio` made HD identical to
+  // SD whenever the window reported 1, while `?pixelRatio=1.5` could still
+  // supersample. Adaptive DPR may still step down from that ceiling under
+  // frame-time pressure.
+  const pixelRatioCeiling = (): number => recommendedMaxPixelRatio(deviceProfile);
   let adaptiveEmaMs: number | undefined;
+  let adaptiveWarmupRemaining = ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES;
   let adaptivePixelRatio = pixelRatioCeiling();
+  const resetAdaptivePixelRatio = (): void => {
+    adaptiveEmaMs = undefined;
+    adaptiveWarmupRemaining = ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES;
+    adaptivePixelRatio = pixelRatioCeiling();
+  };
   const resolvePixelRatio = (): number =>
     pinnedPixelRatio ??
     (perfMode.enabled
@@ -536,6 +549,10 @@ async function main(): Promise<void> {
     console.error(error);
     return;
   }
+  // `init()` rebuilds the drawing buffer; re-apply so HD is not stuck at 1
+  // after a load that set the ratio before the backend existed.
+  renderer.setPixelRatio(resolvePixelRatio());
+  renderer.setSize(window.innerWidth, window.innerHeight);
   const backendName =
     (renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true
       ? 'WebGPU'
@@ -1233,6 +1250,9 @@ async function main(): Promise<void> {
       ...(deviceProfile.gpuClass === undefined ? {} : { gpuClass: deviceProfile.gpuClass }),
     };
   })();
+  const hudBrowser = hudBrowserName(
+    typeof navigator === 'undefined' ? '' : navigator.userAgent,
+  );
   /**
    * Worst per-update CPU cost seen, by stage. Monotonic maxima like
    * `planTimings.worstApplyMs`, so a stall that happened once while the camera
@@ -3428,8 +3448,10 @@ async function main(): Promise<void> {
         current: adaptivePixelRatio,
         max: pixelRatioCeiling(),
         emaMs: adaptiveEmaMs,
+        warmupRemaining: adaptiveWarmupRemaining,
       });
       adaptiveEmaMs = suggestion.emaMs;
+      adaptiveWarmupRemaining = suggestion.warmupRemaining;
       if (suggestion.pixelRatio !== adaptivePixelRatio) {
         adaptivePixelRatio = suggestion.pixelRatio;
         renderer.setPixelRatio(adaptivePixelRatio);
@@ -3602,6 +3624,14 @@ async function main(): Promise<void> {
           ...(mesh instanceof StreamedSplatMesh ? { chunks: mesh.residentChunkCount } : {}),
           shBands: mesh?.shBands ?? 0,
           pixelRatio: renderer.getPixelRatio(),
+          nativePixelRatio: window.devicePixelRatio,
+          quality: perfMode.enabled ? 'SD' : 'HD',
+          msaa: getRendererMsaaSamples(renderer),
+          ...(mesh === undefined
+            ? {}
+            : { maxStdDev: mesh.maxStdDev, performanceProfile: mesh.performanceProfile }),
+          ...(perfMode.enabled || pinnedPixelRatio !== null ? {} : { adaptiveDpr }),
+          browser: hudBrowser,
           backend: backendName,
           physicalSize: {
             width: drawingBufferSize.x,
@@ -3747,15 +3777,22 @@ async function main(): Promise<void> {
   }
 
   // Performance-mode toggle. Applies live: resolution, resident budget,
-  // contribution culling, and Gaussian cutoff are all changeable on a running
-  // mesh. Renderer MSAA is chosen at construction (WebGPU sample count is not
-  // live), so turning the mode off does not restore it until reload. A pinned
-  // ?pixelRatio / ?budget / ?maxStdDev still wins, so A/B runs stay reproducible.
+  // contribution culling, Gaussian cutoff, and renderer MSAA. MSAA is not a
+  // public three.js setter - `setRendererMsaa` retargets the cached sample
+  // count in place so HD does not need a reload (and a file-picker scene
+  // stays mounted). A pinned ?pixelRatio / ?budget / ?maxStdDev /
+  // ?rendererAntialias still wins, so A/B runs stay reproducible.
   if (chrome.perfMode) {
     buildPerformanceToggle(perfMode.enabled, (enabled) => {
       perfMode.set(enabled);
+      // Snap HD to the quality ceiling and restart warmup so a compile or
+      // resize hitch cannot pin the drawing buffer at dpr 1 for the session.
+      if (!enabled) resetAdaptivePixelRatio();
       renderer.setPixelRatio(resolvePixelRatio());
       renderer.setSize(window.innerWidth, window.innerHeight);
+      if (rendererAntialiasParam === null) {
+        setRendererMsaa(renderer, !enabled);
+      }
       // Routed through the shared helper so a toggle *during* an immersive
       // session keeps the stereo cap instead of restoring the page budget.
       applySplatBudget();
@@ -3846,10 +3883,6 @@ async function main(): Promise<void> {
   }
 }
 
-/**
- * Performance-mode toggle (top left). Unlike the scene/effect pickers this
- * does not reload - `onChange` re-applies the live levers in place.
- */
 /**
  * "Enter VR" button, owning the session request rather than deferring to
  * three's `VRButton`.

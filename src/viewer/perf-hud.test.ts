@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatHud, type PerfHudSample } from './perf-hud';
+import { formatHud, hudBrowserName, type PerfHudSample } from './perf-hud';
 
 /**
  * The panel's DOM half is verified visually (the browser pane cannot paint it ÔÇö
@@ -65,6 +65,34 @@ describe('formatHud', () => {
     expect(text).toContain('SH off');
     expect(text).toContain('WebGPU');
     expect(text).toContain('buffer 1179×2556');
+    expect(text).not.toContain('SD');
+    expect(text).not.toContain('HD');
+  });
+
+  it('names the demo quality toggle so a pinned dpr cannot be mistaken for it', () => {
+    expect(formatHud({ ...SAMPLE, quality: 'SD' }, [16.7])).toContain('SD  SH off');
+    expect(formatHud({ ...SAMPLE, quality: 'HD' }, [16.7])).toContain('HD  SH off');
+  });
+
+  it('lists the live SD/HD knobs next to native dpr', () => {
+    const text = formatHud(
+      {
+        ...SAMPLE,
+        quality: 'HD',
+        nativePixelRatio: 2,
+        msaa: 4,
+        maxStdDev: 4,
+        performanceProfile: 'quality',
+        adaptiveDpr: true,
+      },
+      [16.7],
+    );
+    expect(text).toContain('HD  SH off  dpr 1 native 2  WebGPU');
+    expect(text).toContain('msaa 4  σ 4  quality  adaptive dpr');
+  });
+
+  it('says when MSAA is off', () => {
+    expect(formatHud({ ...SAMPLE, msaa: 0 }, [16.7])).toContain('msaa off');
   });
 
   it('names the band count when SH is on', () => {
@@ -225,6 +253,23 @@ describe('formatHud device line', () => {
     expect(text).toContain('desktop integrated');
   });
 
+  it('names the browser on the device line', () => {
+    const text = formatHud(
+      {
+        ...SAMPLE,
+        browser: 'Chrome 131',
+        device: { memoryGb: 8, mobile: false, lowPower: false, gpuClass: 'integrated' },
+      },
+      [16.7],
+    );
+    expect(text).toContain('Chrome 131  mem 8');
+    expect(text).toContain('desktop integrated');
+  });
+
+  it('still names the browser when no device profile was supplied', () => {
+    expect(formatHud({ ...SAMPLE, browser: 'Safari 18' }, [16.7])).toContain('Safari 18');
+  });
+
   it('omits the line when no profile was supplied', () => {
     expect(formatHud(SAMPLE, [16.7])).not.toContain('mem ');
   });
@@ -240,5 +285,34 @@ describe('formatHud gpu line on a backend without timestamps', () => {
 
   it('still offers the flag on WebGPU, where it works', () => {
     expect(formatHud(SAMPLE, [16.7])).toContain('add ?gpuTimestamps=1');
+  });
+});
+
+describe('hudBrowserName', () => {
+  it('names Chrome before the Safari token Chrome also carries', () => {
+    expect(
+      hudBrowserName(
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      ),
+    ).toBe('Chrome 131');
+  });
+
+  it('names Safari from Version/, not the WebKit build', () => {
+    expect(
+      hudBrowserName(
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15',
+      ),
+    ).toBe('Safari 18');
+  });
+
+  it('names Edge and Firefox ahead of their Chrome/Safari tokens', () => {
+    expect(
+      hudBrowserName(
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0',
+      ),
+    ).toBe('Edge 131');
+    expect(hudBrowserName('Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0')).toBe(
+      'Firefox 133',
+    );
   });
 });

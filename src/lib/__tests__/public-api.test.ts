@@ -74,6 +74,7 @@ describe('public API surface (vlam)', () => {
     expect(typeof vlam.recommendedMaxPixelRatio).toBe('function');
     expect(typeof vlam.recommendedRadMaxStdDev).toBe('function');
     expect(typeof vlam.suggestAdaptivePixelRatio).toBe('function');
+    expect(vlam.ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES).toBe(5);
     expect(typeof vlam.estimateSplatPoolBytes).toBe('function');
     expect(typeof vlam.createSplatRenderer).toBe('function');
     expect(typeof vlam.recommendedWebGpuRequiredLimits).toBe('function');

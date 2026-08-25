@@ -753,6 +753,17 @@ export function recommendedXrFramebufferScale(
   return profile?.isHeadset ? 0.8 : 1;
 }
 
+/**
+ * Host-threaded samples to ignore before the EMA starts.
+ *
+ * First `renderer.compute` and first `copyTextureToTexture` each compile a
+ * WebGPU pipeline (~200 ms). Seeding the EMA from those drops the ratio to
+ * the floor, and a 60 Hz display's 16.7 ms vsync never beats the raise bar
+ * (`targetFrameMs * 0.85` ≈ 15.3 ms), so the drop is permanent. Pass the
+ * returned {@link AdaptivePixelRatioResult.warmupRemaining} back each frame.
+ */
+export const ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES = 5;
+
 /** Inputs for {@link suggestAdaptivePixelRatio}. */
 export interface AdaptivePixelRatioInput {
   /** Latest wall-frame time in milliseconds. */
@@ -765,6 +776,12 @@ export interface AdaptivePixelRatioInput {
   min?: number;
   /** EMA of frame time from the previous call; omit on the first sample. */
   emaMs?: number;
+  /**
+   * Samples still ignored before the EMA starts. Omit or `0` to start
+   * immediately. Thread the result's `warmupRemaining` when using
+   * {@link ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES}.
+   */
+  warmupRemaining?: number;
   /**
    * Comfortable frame time (ms). Below this (with headroom) the helper may
    * step the ratio up. Default `18` (~55 fps).
@@ -781,8 +798,10 @@ export interface AdaptivePixelRatioInput {
 export interface AdaptivePixelRatioResult {
   /** Suggested pixel ratio after hysteresis (quarter steps). */
   pixelRatio: number;
-  /** Updated EMA to pass back on the next call. */
-  emaMs: number;
+  /** Updated EMA to pass back on the next call. Unset while warming up. */
+  emaMs: number | undefined;
+  /** Remaining warmup samples; pass back as `warmupRemaining`. */
+  warmupRemaining: number;
 }
 
 /**
@@ -790,11 +809,13 @@ export interface AdaptivePixelRatioResult {
  *
  * The library cannot call `renderer.setPixelRatio` (the host owns the
  * renderer); this is a pure policy helper. Pass the previous result's
- * `emaMs` each frame for a stable EMA, and only re-size the canvas when
+ * `emaMs` and `warmupRemaining` each frame, and only re-size the canvas when
  * `pixelRatio` changes.
  *
  * Steps are quarter-units with asymmetric thresholds (pressure to lower,
- * comfortable headroom to raise) so the ratio does not oscillate.
+ * comfortable headroom to raise) so the ratio does not oscillate. One-off
+ * hitches (pipeline compiles, tab resume) that are several times the EMA do
+ * not count as pressure.
  */
 export function suggestAdaptivePixelRatio(
   input: AdaptivePixelRatioInput,
@@ -804,16 +825,32 @@ export function suggestAdaptivePixelRatio(
   const targetFrameMs = input.targetFrameMs ?? 18;
   const pressureFrameMs = input.pressureFrameMs ?? 22;
   const frameMs = Number.isFinite(input.frameMs) ? Math.max(0, input.frameMs) : targetFrameMs;
+  const pixelRatio = clamp(input.current, min, max);
+  const warmupRaw = input.warmupRemaining;
+  const warmupRemaining =
+    warmupRaw !== undefined && Number.isFinite(warmupRaw) && warmupRaw > 0
+      ? Math.floor(warmupRaw)
+      : 0;
+  if (warmupRemaining > 0) {
+    return { pixelRatio, emaMs: input.emaMs, warmupRemaining: warmupRemaining - 1 };
+  }
+  if (
+    input.emaMs !== undefined &&
+    Number.isFinite(input.emaMs) &&
+    frameMs > Math.max(input.emaMs * 4, pressureFrameMs * 4)
+  ) {
+    return { pixelRatio, emaMs: input.emaMs, warmupRemaining: 0 };
+  }
   const alpha = 0.15;
   const emaMs = input.emaMs === undefined ? frameMs : input.emaMs * (1 - alpha) + frameMs * alpha;
 
-  let next = clamp(input.current, min, max);
+  let next = pixelRatio;
   if (emaMs > pressureFrameMs && next > min) {
     next = Math.max(min, roundPixelRatio(next - 0.25));
   } else if (emaMs < targetFrameMs * 0.85 && next < max) {
     next = Math.min(max, roundPixelRatio(next + 0.25));
   }
-  return { pixelRatio: clamp(next, min, max), emaMs };
+  return { pixelRatio: clamp(next, min, max), emaMs, warmupRemaining: 0 };
 }
 
 /** Quarter-step pixel ratios (1, 1.25, 1.5, …) keep canvas resizes coarse. */
