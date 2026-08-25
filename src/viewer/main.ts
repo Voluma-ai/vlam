@@ -917,6 +917,12 @@ async function main(): Promise<void> {
   let collisionWorld: CollisionWorld | null = null;
   let collisionEnabled = true;
   let walkMode = false;
+  /**
+   * `?fpv=1` is applied once the first collision tile is queryable. The BVH
+   * builds one tile per idle callback, so the world is not `.ready` on the
+   * same tick `loadCollisionMeshes` resolves.
+   */
+  let fpvWalkPending = parseFpvParam(params.get('fpv'));
   let collisionRadius = 0.3;
   let verticalVelocity = 0;
   /** Guards against a slow collision load landing after the scene changed. */
@@ -1100,6 +1106,7 @@ async function main(): Promise<void> {
   };
 
   const updateMovement = (elapsed: number): void => {
+    applyWalkFromUrl();
     if (walkMode && collisionEnabled && collisionWorld?.ready) updateWalkMovement(elapsed);
     else updateFlyMovement(elapsed);
   };
@@ -1124,7 +1131,8 @@ async function main(): Promise<void> {
 
   /** Restores `?fpv=1` once a collision floor exists to stand on. */
   const applyWalkFromUrl = (): void => {
-    if (!fpvFromUrl || !collisionEnabled || !collisionWorld?.ready) return;
+    if (!fpvWalkPending || !collisionEnabled || !collisionWorld?.ready) return;
+    fpvWalkPending = false;
     setWalkMode(true);
     collisionToggles.setWalk(true);
   };
@@ -1425,7 +1433,6 @@ async function main(): Promise<void> {
   // tool so a pasted link restores it.
   const separateMode = params.has('separate');
   const toolFromUrl = parseViewerTool(params.get('tool'));
-  const fpvFromUrl = parseFpvParam(params.get('fpv'));
   const orbitFromUrl = parseOrbitPlayingParam(params.get('orbit'));
 
   // Scene state. A dropped file replaces all of it in place, so everything
@@ -1551,21 +1558,8 @@ async function main(): Promise<void> {
   let relightScene: THREE.Scene | null = null;
   let relightTarget: THREE.RenderTarget | null = null;
   let relightSun: THREE.DirectionalLight | null = null;
-  /** Twin of {@link relightSun} in the main scene so lit meshes match the proxy sun. */
-  let relightMainSun: THREE.DirectionalLight | null = null;
-  let relightMainAmbient: THREE.AmbientLight | null = null;
   /** Shadow-factor material owned by the demo (proxy group borrows it). */
   let relightFactorMaterial: THREE.MeshStandardNodeMaterial | null = null;
-  /** Demo caster in the lighting RT (shadow map only; multiply path is not opaque). */
-  let relightDemoCylinder: THREE.Mesh | null = null;
-  /** Opaque orange twin in the main scene so the caster is actually visible. */
-  let relightDemoCylinderVisible: THREE.Mesh | null = null;
-  /**
-   * Invisible main-scene copies of the proxy so collision/splat stand-ins cast
-   * onto the orange cylinder (shadow map only; no color / depth in the view).
-   */
-  let relightProxyShadowCasters: THREE.Group | null = null;
-  let relightProxyShadowMaterial: THREE.Material | null = null;
   /** World-space focus the demo sun orbits (proxy / scene center). */
   const relightFocus = new THREE.Vector3();
   let relightOrbitRadius = 8;
@@ -1598,40 +1592,6 @@ async function main(): Promise<void> {
 
   const teardownRelight = (): void => {
     if (mounted) splats.setRelighting(null);
-    if (relightDemoCylinderVisible) {
-      relightDemoCylinderVisible.removeFromParent();
-      const mat = relightDemoCylinderVisible.material;
-      if (Array.isArray(mat)) for (const m of mat) m.dispose();
-      else mat.dispose();
-      relightDemoCylinderVisible = null;
-    }
-    if (relightProxyShadowCasters) {
-      relightProxyShadowCasters.removeFromParent();
-      relightProxyShadowCasters = null;
-    }
-    relightProxyShadowMaterial?.dispose();
-    relightProxyShadowMaterial = null;
-    if (relightDemoCylinder) {
-      relightDemoCylinder.removeFromParent();
-      relightDemoCylinder.geometry.dispose();
-      const mat = relightDemoCylinder.material;
-      if (mat && mat !== relightFactorMaterial) {
-        if (Array.isArray(mat)) for (const m of mat) m.dispose();
-        else mat.dispose();
-      }
-      relightDemoCylinder = null;
-    }
-    if (relightMainSun) {
-      relightMainSun.target.removeFromParent();
-      relightMainSun.removeFromParent();
-      relightMainSun.dispose();
-      relightMainSun = null;
-    }
-    if (relightMainAmbient) {
-      relightMainAmbient.removeFromParent();
-      relightMainAmbient.dispose();
-      relightMainAmbient = null;
-    }
     relightFactorMaterial?.dispose();
     relightFactorMaterial = null;
     relightProxy?.dispose();
@@ -1731,29 +1691,6 @@ async function main(): Promise<void> {
     relightScene.add(relightSun);
     relightScene.add(relightSun.target);
 
-    // Main-scene twin: MeshBasic ignores lights; standard materials need this
-    // synced sun (and fill) to shade / self-shadow like the proxy pass.
-    relightMainAmbient = new THREE.AmbientLight(0xffffff, 0.35);
-    scene.add(relightMainAmbient);
-    relightMainSun = new THREE.DirectionalLight(0xffffff, 1);
-    relightMainSun.castShadow = true;
-    relightMainSun.shadow.mapSize.copy(relightSun.shadow.mapSize);
-    relightMainSun.shadow.bias = relightSun.shadow.bias;
-    relightMainSun.shadow.normalBias = relightSun.shadow.normalBias;
-    relightMainSun.shadow.radius = relightSun.shadow.radius;
-    const mainShadowCam = relightMainSun.shadow.camera;
-    mainShadowCam.left = shadowCam.left;
-    mainShadowCam.right = shadowCam.right;
-    mainShadowCam.top = shadowCam.top;
-    mainShadowCam.bottom = shadowCam.bottom;
-    mainShadowCam.near = shadowCam.near;
-    mainShadowCam.far = shadowCam.far;
-    mainShadowCam.updateProjectionMatrix();
-    relightMainSun.position.copy(relightSun.position);
-    relightMainSun.target.position.copy(relightFocus);
-    scene.add(relightMainSun);
-    scene.add(relightMainSun.target);
-
     relightFactorMaterial = createRelightingShadowFactorMaterial(relightSun, { umbra: 0.5 });
     relightFactorMaterial.side = THREE.FrontSide;
     relightProxy.group.traverse((obj) => {
@@ -1762,58 +1699,6 @@ async function main(): Promise<void> {
       obj.castShadow = true;
       obj.receiveShadow = true;
     });
-
-    // Relighting multiplies splat color by the lighting RT — a mesh in that
-    // pass cannot look opaque. RT twin only casts shadows (shadow-factor ≈ 1);
-    // a second mesh in the main scene is the solid orange you actually see.
-    const cylinderHeight = Math.max(extent * 0.12, 1);
-    const cylinderRadius = Math.max(extent * 0.02, 0.15);
-    const cylinderGeometry = new THREE.CylinderGeometry(
-      cylinderRadius,
-      cylinderRadius,
-      cylinderHeight,
-      32,
-    );
-    const cylinderPosition = new THREE.Vector3(
-      relightFocus.x,
-      bounds.min.y + cylinderHeight * 0.5,
-      relightFocus.z,
-    );
-
-    relightDemoCylinder = new THREE.Mesh(cylinderGeometry, relightFactorMaterial);
-    relightDemoCylinder.castShadow = true;
-    relightDemoCylinder.receiveShadow = true;
-    relightDemoCylinder.position.copy(cylinderPosition);
-    relightScene.add(relightDemoCylinder);
-
-    relightDemoCylinderVisible = new THREE.Mesh(
-      cylinderGeometry,
-      new THREE.MeshStandardNodeMaterial({
-        color: 0xff6a00,
-        roughness: 0.45,
-        metalness: 0,
-      }),
-    );
-    relightDemoCylinderVisible.castShadow = true;
-    relightDemoCylinderVisible.receiveShadow = true;
-    relightDemoCylinderVisible.position.copy(cylinderPosition);
-    scene.add(relightDemoCylinderVisible);
-
-    // Proxy/collision stand-in for the splats: cast into the main sun's shadow
-    // map so umbras fall on the cylinder. Invisible in the color/depth pass.
-    relightProxyShadowMaterial = new THREE.MeshBasicNodeMaterial();
-    relightProxyShadowMaterial.colorWrite = false;
-    relightProxyShadowMaterial.depthWrite = false;
-    relightProxyShadowCasters = new THREE.Group();
-    relightProxy.group.traverse((obj) => {
-      if (!(obj instanceof THREE.Mesh)) return;
-      const caster = new THREE.Mesh(obj.geometry, relightProxyShadowMaterial!);
-      caster.castShadow = true;
-      caster.receiveShadow = false;
-      caster.raycast = () => undefined;
-      relightProxyShadowCasters!.add(caster);
-    });
-    scene.add(relightProxyShadowCasters);
 
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -1836,11 +1721,6 @@ async function main(): Promise<void> {
       );
       relightSun.target.position.copy(relightFocus);
       relightSun.target.updateMatrixWorld();
-      if (relightMainSun) {
-        relightMainSun.position.copy(relightSun.position);
-        relightMainSun.target.position.copy(relightFocus);
-        relightMainSun.target.updateMatrixWorld();
-      }
     };
   };
 
@@ -2109,6 +1989,7 @@ async function main(): Promise<void> {
     collisionTilesForRelight = null;
     walkMode = false;
     collisionToggles.setWalk(false);
+    fpvWalkPending = parseFpvParam(params.get('fpv'));
 
     const available = mesh instanceof StreamedSplatMesh && mesh.hasCollisionMeshes;
     collisionToggles.setAvailable(available);
