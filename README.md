@@ -18,7 +18,7 @@ Local site and generated API: `npm run dev` (http://localhost:5170, viewer at `/
 ## Important notice!
 This is a pre-release. The API can still change in breaking ways before v1.0. Great for prototypes and experiments, not yet recommended for production.
 
-Phones and laptops with integrated graphics, like a MacBook Air, still need a lot of testing and tuning. Frame rate and image quality on those devices are not final.
+Phones and Intel/AMD integrated GPUs still need more device runs. On a MacBook Air M3 the demo keeps the fill-constrained (SD) preset; HD is a toggle, not the default.
 
 
 ## Install

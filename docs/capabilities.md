@@ -157,7 +157,7 @@ requirements met; not exercised here) · ❓ unverified, no device/report
 | Chrome / Edge desktop, WebGPU disabled or unavailable | WebGL2 | ✅ | Full-path fallback audit (M4.1). Force it in the demo with `?backend=webgl`. |
 | Safari, iOS, iPhone 15 Pro | WebGPU | ✅ | Verified during M4.2 / M6.8 (core rendering + `.rad` mobile defaults). |
 | Safari, iOS, iPhone 15 (non-Pro) | WebGPU | ❓ | **Open gate, ROADMAP N4.** Same A-series generation as Pro; not separately run. |
-| Safari, macOS | WebGPU | ✅ | MacBook Air M3, 2026-08-21, `?hud=1`: `mem - desktop integrated`. `deviceMemory` absent. Laptop tier, not the 8M workstation path. |
+| Safari, macOS | WebGPU | ✅ | MacBook Air M3, 8 GB. Classified 2026-08-21 (`mem - desktop integrated`, no `deviceMemory`). Demo SD/HD measured 2026-08-25 in Safari and Chrome; default stays fill-constrained. |
 | Chrome, Android, Galaxy S7 (Mali, no WebGPU) | WebGL2 | 🔎 | Smoke only for the no-WebGPU budget tier (ROADMAP N4). Runs, low fps expected. Not a support claim. |
 | Chrome, Android, Galaxy S24 (Adreno) | WebGPU | ❓ | **Open gate, ROADMAP N4.** Mobile defaults are implemented and unit-tested; no Adreno flagship has been run. Do not read this row as support. |
 | Chrome, Android, other devices | WebGPU / WebGL2 | ❓ | Not exercised by this project. |
@@ -189,8 +189,11 @@ textures (`poolFloatTextures: 'float16'`) and the adaptive pixel-ratio policy
 (`suggestAdaptivePixelRatio`) exist for tighter memory and frame-time budgets.
 The **demo** performance mode (default-on on mobile and on `integrated` /
 `fallback` desktops) keeps that 3σ cutoff and
-turns off renderer MSAA, which is what held 60 Hz on an iPhone 15
-Pro during a hard orbit; the library defaults above are unchanged.
+turns off renderer MSAA. That is what held 60 Hz on an iPhone 15
+Pro during a hard orbit, and what a MacBook Air M3 still needs on streamed
+million-splat scenes (see Apple Silicon below). The library defaults above
+are unchanged. The HD toggle remains for A/B. Do not ship HD as the Mac
+default.
 The minimum-radius default is mobile-only: integrated or fallback desktops may
 still select the broader `smooth` fill policy, but retain a `0` px floor.
 
@@ -206,8 +209,33 @@ This is classification, not a fill-rate claim.
 WebGPU, public demo `?hud=1`: HUD `mem - desktop integrated`. Safari omits
 `deviceMemory`. Chrome on the same machine reported 8 GiB `deviceMemory` and
 WebGPU; that 8 GiB must not select the discrete 8M path, and the Safari HUD
-confirms `integrated`. Demo performance mode defaults on. `minSplatSizePx`
-stays 0. Goose HUD `N / N` is the loaded count, not the 2M integrated ceiling.
+confirms `integrated`. `minSplatSizePx` stays 0. Goose HUD `N / N` is the
+loaded count, not the 2M integrated ceiling.
+
+**Apple Silicon demo default (2026-08-25).** Same Air, 8 GB unified, Chrome and
+Safari WebGPU, window often `native` dpr 1. Demo performance mode stays
+**on** for every `isFillConstrainedSplatDevice`, including Apple vendor.
+Goose (`goose.sog`, 149,120) looks fine in SD: Chrome ~14 ms GPU / 60 rAF at
+dpr 1 and MSAA off; Safari ~4–6 ms GPU. Chrome HD (dpr 1.5, MSAA 4) still
+holds 60 at ~21 ms GPU. Safari HD with adaptive pinned off is ~38 ms GPU at
+the same 1.5 / 4×. That extra cost does not fix a visible SD problem on
+goose.
+
+Streamed million-splat views are already fill-bound in SD. Dehaar `.lcc2`
+(~1M): Chrome SD holds 60 at ~18 ms GPU; Safari SD is ~58 rAF mean with a
+~55 ms p99. HD at dpr 1 plus MSAA 4 is ~64 ms GPU in Chrome and ~183 ms in
+Safari. `sandwijck-lod` streamed SOG (~900k): SD already ~45 rAF Chrome /
+~40 Safari; HD MSAA is ~169 ms / ~216 ms GPU. RAD `A-lod0` canopy (~1M): SD
+~29 fps, HD at dpr 1.5 ~10 fps (~114 ms render). Safari's streamed chunk
+cache was 128 MiB (often FULL) against Chrome's 256 MiB, which shows as
+holes, not as a reason to raise the quality preset.
+
+A Mac-only HD default would help goose a little and break the scenes people
+actually open on a laptop. Keep phones and Intel/AMD iGPUs on the same
+fill-constrained path until those devices are measured. Library
+`resolveSplatBudget` stays on the 2M sampled / 1M LCC integrated caps.
+`vlam:performance-mode-v2` does not need a bump. M2 Pro was on hand and was
+not re-run; the 8 GB Air is the tighter machine.
 
 **Recording a mobile device check.** Open `?hud=1` and keep the tab in the
 foreground so the perf HUD paints (a background tab reports `1 rAF` and empty HUD). Copy

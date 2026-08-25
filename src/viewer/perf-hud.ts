@@ -25,6 +25,23 @@ export interface PerfHudSample {
   shBands: number;
   /** Applied renderer pixel ratio. */
   pixelRatio: number;
+  /** `window.devicePixelRatio`, so a 1.5 drawing buffer is not confused with native 2. */
+  nativePixelRatio?: number;
+  /**
+   * Demo performance-mode toggle. `SD` is the fill-saving preset, `HD` is
+   * quality. Independent of `pixelRatio`, which a `?pixelRatio=` pin can hold.
+   */
+  quality?: 'SD' | 'HD';
+  /** Default-framebuffer MSAA sample count (`0` is off). */
+  msaa?: number;
+  /** Gaussian cutoff in standard deviations. */
+  maxStdDev?: number;
+  /** Contribution-culling profile currently on the mesh. */
+  performanceProfile?: string;
+  /** Whether the demo is running adaptive pixel-ratio in HD. */
+  adaptiveDpr?: boolean;
+  /** Browser brand (+ major version), for on-device A/B notes. */
+  browser?: string;
   /** `WebGPU` or `WebGL2`. */
   backend: string;
   /** Physical drawing-buffer dimensions after DPR is applied. */
@@ -280,9 +297,18 @@ export function formatHud(sample: PerfHudSample, frames: readonly number[]): str
       (sample.chunks === undefined ? '' : `  ${sample.chunks} chunks`),
   );
   lines.push(
-    `SH ${sample.shBands === 0 ? 'off' : sample.shBands}  ` +
-      `dpr ${sample.pixelRatio}  ${sample.backend}`,
+    `${sample.quality === undefined ? '' : `${sample.quality}  `}` +
+      `SH ${sample.shBands === 0 ? 'off' : sample.shBands}  ` +
+      `dpr ${sample.pixelRatio}` +
+      `${sample.nativePixelRatio === undefined ? '' : ` native ${sample.nativePixelRatio}`}  ` +
+      `${sample.backend}`,
   );
+  const knobs: string[] = [];
+  if (sample.msaa !== undefined) knobs.push(sample.msaa > 0 ? `msaa ${sample.msaa}` : 'msaa off');
+  if (sample.maxStdDev !== undefined) knobs.push(`σ ${sample.maxStdDev}`);
+  if (sample.performanceProfile !== undefined) knobs.push(sample.performanceProfile);
+  if (sample.adaptiveDpr === true) knobs.push('adaptive dpr');
+  if (knobs.length > 0) lines.push(knobs.join('  '));
   if (sample.physicalSize) {
     lines.push(`buffer ${sample.physicalSize.width}×${sample.physicalSize.height}`);
   }
@@ -294,16 +320,43 @@ export function formatHud(sample: PerfHudSample, frames: readonly number[]): str
     // ÔÇö and `deviceMemory` is genuinely absent on some Android builds, which
     // silently disables the low-power tier that depends on it.
     lines.push(
-      `mem ${device.memoryGb ?? '-'}  ` +
+      `${sample.browser === undefined ? '' : `${sample.browser}  `}` +
+        `mem ${device.memoryGb ?? '-'}  ` +
         `${device.mobile ? 'mobile' : 'desktop'}` +
         `${device.lowPower ? ' low-power' : ''}` +
         `${device.gpuClass ? ` ${device.gpuClass}` : ''}`,
     );
+  } else if (sample.browser !== undefined) {
+    lines.push(sample.browser);
   }
   return lines.join('\n');
 }
 
 /** Frames per second from a frame time, guarding the zero-length window. */
 function fps(frameMs: number): string {
-  return frameMs > 0 ? (1000 / frameMs).toFixed(0) : 'ÔÇö';
+  return frameMs > 0 ? (1000 / frameMs).toFixed(0) : '—';
+}
+
+/**
+ * Short browser label for the HUD. Order is load-bearing: Edge and Opera
+ * include `Chrome`, and Chrome includes `Safari`.
+ */
+export function hudBrowserName(userAgent: string): string {
+  const match = (pattern: RegExp, label: string): string | undefined => {
+    const found = userAgent.match(pattern);
+    const version = found?.[1];
+    if (found === null) return undefined;
+    return version === undefined ? label : `${label} ${version}`;
+  };
+  return (
+    match(/Edg(?:iOS)?\/(\d+)/, 'Edge') ??
+    match(/OPR\/(\d+)/, 'Opera') ??
+    match(/OPT\/(\d+)/, 'Opera') ??
+    match(/Firefox\/(\d+)/, 'Firefox') ??
+    match(/FxiOS\/(\d+)/, 'Firefox') ??
+    match(/(?:Chrome|CriOS)\/(\d+)/, 'Chrome') ??
+    match(/Version\/(\d+).*Safari\//, 'Safari') ??
+    match(/Safari\//, 'Safari') ??
+    'browser ?'
+  );
 }

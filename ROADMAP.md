@@ -34,24 +34,8 @@ No blocking work for the public 0.2.0 snapshot. Pick from **Later** toward 1.0.
   FPS; orbit median / p95 / p99 plus missed 16.6 ms and 33.3 ms deadlines;
   ten-minute thermal soak on one sparse and one dense capture; portrait and
   landscape gaps, discs, popping; A/B `?pixelRatio=1`, `0.9`, `0.8` with
-  `?adaptiveDpr=0` before raising `maxStdDev`; `?minSplatPx=1.5` vs `3.5`. See
+  `?adaptiveDpr=0` before raising `maxStdDev`;   `?minSplatPx=1.5` vs `3.5`. See
   [capabilities](docs/capabilities.md).
-- **Apple Silicon demo quality** — `[ ]` the demo's performance mode defaults
-  on for every `isFillConstrainedSplatDevice` (mobile, `integrated`,
-  `fallback`). Apple vendor always classifies as `integrated`, so an M3 Air
-  and an M5 Pro get the phone preset: 1M `budgetCap`, pixel ratio 1, no
-  renderer MSAA, 3σ, streamed SH off. That is the wrong first impression on a
-  machine this many people actually use. Measure what M-series can hold with
-  the preset **off** vs **on** (`?hud=1`, orbit median / p95 / p99, missed
-  16.6 ms, one sparse and one dense capture, Safari and Chrome). Then ship a
-  **Mac-specific demo default**, not the mobile one: likely MSAA and a higher
-  budget ceiling, maybe adaptive DPR under a 1.5–2 cap, without turning on
-  the 1.5 px splat floor (desktop stays `minSplatSizePx` 0). Keep phones and
-  Intel/AMD iGPUs on today's fill-constrained path unless those devices are
-  measured too. Library `resolveSplatBudget` may stay on the 2M sampled /
-  1M LCC integrated caps; the bug is the demo treating a Mac like a phone.
-  Bump `vlam:performance-mode-v2` if the default flips so old sticky `true`
-  does not hide the new preset. Hardware on hand: M3 Air, M2 Pro.
 - **Streamed spherical harmonics** — `[v]` implementation is covered by tests;
   blocked on an SH-bearing streamed capture and headed `?sh=0` versus `?sh=N`.
 - **RAD parity and coverage** — `[v]` pagetable traversal keeps a coarse shell,
