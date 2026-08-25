@@ -159,7 +159,7 @@ requirements met; not exercised here) · ❓ unverified, no device/report
 | Safari, iOS, iPhone 15 (non-Pro) | WebGPU | ❓ | **Open gate, ROADMAP N4.** Same A-series generation as Pro; not separately run. |
 | Safari, macOS | WebGPU | ✅ | MacBook Air M3, 8 GB. Classified 2026-08-21 (`mem - desktop integrated`, no `deviceMemory`). Demo SD/HD measured 2026-08-25 in Safari and Chrome; default stays fill-constrained. |
 | Chrome, Android, Galaxy S7 (Mali, no WebGPU) | WebGL2 | 🔎 | Smoke only for the no-WebGPU budget tier (ROADMAP N4). Runs, low fps expected. Not a support claim. |
-| Chrome, Android, Galaxy S24 (Adreno) | WebGPU | ❓ | **Open gate, ROADMAP N4.** Mobile defaults are implemented and unit-tested; no Adreno flagship has been run. Do not read this row as support. |
+| Chrome, Android, Galaxy S24 Ultra (Adreno 750) | WebGPU | ✅ | 2026-08-25, Chrome 151, public demo `?hud=1&gpuTimestamps=1`. HUD `mem 8 mobile discrete`, native dpr 2.625. Goose HD, streamed Dehaar / sandwijck SD vs HD below. Not a 60 Hz claim on dense scenes. |
 | Chrome, Android, other devices | WebGPU / WebGL2 | ❓ | Not exercised by this project. |
 | Firefox | WebGPU | ❓ | Firefox's WebGPU rollout status is not tracked by this project and has not been tested here. Where WebGPU is absent, the WebGL2 fallback applies. |
 | Firefox | WebGL2 | 🔎 | Nothing in the fallback path is Chromium-specific, but it has not been run here. |
@@ -190,10 +190,10 @@ textures (`poolFloatTextures: 'float16'`) and the adaptive pixel-ratio policy
 The **demo** performance mode (default-on on mobile and on `integrated` /
 `fallback` desktops) keeps that 3σ cutoff and
 turns off renderer MSAA. That is what held 60 Hz on an iPhone 15
-Pro during a hard orbit, and what a MacBook Air M3 still needs on streamed
-million-splat scenes (see Apple Silicon below). The library defaults above
-are unchanged. The HD toggle remains for A/B. Do not ship HD as the Mac
-default.
+Pro during a hard orbit, what a MacBook Air M3 still needs on streamed
+million-splat scenes, and what a Galaxy S24 Ultra still needs on the same views
+(see below). The library defaults above are unchanged. The HD toggle remains
+for A/B. Do not ship HD as the Mac or phone default.
 The minimum-radius default is mobile-only: integrated or fallback desktops may
 still select the broader `smooth` fill policy, but retain a `0` px floor.
 
@@ -231,14 +231,65 @@ cache was 128 MiB (often FULL) against Chrome's 256 MiB, which shows as
 holes, not as a reason to raise the quality preset.
 
 A Mac-only HD default would help goose a little and break the scenes people
-actually open on a laptop. Keep phones and Intel/AMD iGPUs on the same
-fill-constrained path until those devices are measured. Library
-`resolveSplatBudget` stays on the 2M sampled / 1M LCC integrated caps.
-`vlam:performance-mode-v2` does not need a bump. M2 Pro was on hand and was
-not re-run; the 8 GB Air is the tighter machine.
+actually open on a laptop. Galaxy S24 Ultra Chrome agrees: keep the phone on SD.
+Intel/AMD iGPUs are still unmeasured. Library `resolveSplatBudget` stays on
+the 2M sampled / 1M LCC integrated caps. `vlam:performance-mode-v2` does not
+need a bump. M2 Pro was on hand and was not re-run; the 8 GB Air is the
+tighter machine.
 
-**Recording a mobile device check.** Open `?hud=1` and keep the tab in the
-foreground so the perf HUD paints (a background tab reports `1 rAF` and empty HUD). Copy
+**Galaxy S24 Ultra, Chrome 151 WebGPU (2026-08-25).** Public demo, portrait,
+`?hud=1&gpuTimestamps=1`. HUD `Chrome 151  mem 8  mobile discrete`, native
+dpr 2.625, drawing buffer 411×783 at dpr 1. Chrome privacy-caps
+`deviceMemory` at 8, so extra Ultra RAM is invisible to
+`resolveSplatBudget`. Snapdragon Adreno 750 has no Apple/Intel/AMD cue, so
+`classifySplatGpuClass` returns `discrete`. `isMobile` still selects the
+phone caps (1M sampled, 600k LCC) and fill-constrained SD. Do not read
+`discrete` as the 8M workstation path.
+
+Goose (`goose.sog`, 149,120), SD (`msaa off`, 3σ, `smooth`): 60 rAF (16.6
+ms), GPU render 9.59 ms, compute 3.21 ms, CPU submit 1.5 ms, sort 28.6 Hz.
+p99 60 fps, frame p95 16.7 / p99 16.8 ms, missed 0, worst frame 17 ms.
+Same scene in HD (`msaa 4`, 4σ, `quality`, adaptive dpr): ~58 rAF (17.3
+ms), GPU render 14.48 ms, compute 1.15 ms, CPU submit 3.4 ms. p99 30 fps,
+frame p95 16.7 / p99 33.3 ms, 23 missed, worst frame 216 ms (window hitch).
+Adaptive DPR already floored HD to 1. Sparse SD is locked vsync. HD still
+holds the mean and spends ~5 ms of GPU on MSAA. That extra cost does not
+fix goose, and it is what breaks Dehaar / sandwijck.
+
+Dehaar `.lcc2`, SD (`msaa off`, 3σ, `smooth`), first shot (other Chrome tabs
+open): ~48 rAF mean (20.9 ms), GPU render 21.02 ms, compute 6.52 ms, CPU
+submit 1.0 ms, sort 21.9 Hz. p99 8 fps, frame p95 33.4 / p99 133.1 ms, 101
+missed. Resident ~609k / 600k (small overshoot), 8 chunks, cache 141/256 MiB,
+~4.8k holes. Same scene in HD: ~26 rAF (38.5 ms), GPU render 27.36 ms, p99
+7 fps, 786 missed, cache 250/256 FULL, 13 chunks. Budget does not change
+(already the LCC phone ceiling). HD's tax is MSAA and 4σ. Adaptive DPR had
+already floored HD to dpr 1.
+
+Follow-up, one Chrome tab, cinematic orbit ≥5 s, still `Streaming 1 chunk`:
+~54 rAF (18.6 ms), GPU render 13.97 ms, compute 5.65 ms, CPU submit 2.1 ms.
+p99 20 fps, frame p95 33.3 / p99 50.0 ms, 72 missed, worst frame 67 ms. HUD
+~318k / 600k, footer ~495k, 11 chunks, cache 209/256. Closing extra tabs
+cuts the hitch tail. The GPU drop is mostly a lighter cut, not a faster
+600k view. Compare against the 609k shot, not this one, when judging the
+phone ceiling.
+
+`sandwijck-lod` streamed SOG, SD, still streaming after the same 5 s orbit
+(197k holes, pill on): ~35 rAF (28.5 ms), GPU render 24.38 ms, compute
+8.72 ms, CPU submit 10.4 ms, 895k / 1M, 7 chunks. Earlier SD mid-stream at
+827k was 16.56 ms GPU / 19.1 ms CPU submit. Filling toward the 1M sampled
+cap makes GPU worse; 5 s of orbit does not finish the stream. HD mid-stream
+was GPU-bound instead: ~17 rAF, GPU render 61.47 ms at 482k / 1M. Do not
+treat any sandwijck shot as a thermal soak.
+
+Keep the mobile SD default. Do not raise `MOBILE_BUDGETS`. Remaining
+protocol: `?pixelRatio=` steps, `?minSplatPx=`, ten-minute soak, landscape.
+iPhone 15 non-Pro is still open.
+
+**Recording a mobile device check.** Open `?hud=1` in a single foreground tab
+so the perf HUD paints (a background tab reports `1 rAF` and empty HUD; extra
+Chrome tabs on Android inflate p99). Wait until the Streaming pill is gone
+before calling the sample steady; five seconds of cinematic orbit is not
+enough on sandwijck. Copy
 browser, OS, GPU / `gpuClass`, backend, dataset, splat count, and HUD FPS.
 For a repeatable orbit, write median / p95 / p99 frame times plus missed
 16.6 ms and 33.3 ms deadlines. A/B coverage with `?adaptiveDpr=0` and
@@ -246,8 +297,8 @@ For a repeatable orbit, write median / p95 / p99 frame times plus missed
 splat floor with `?minSplatPx=1.5` against `?minSplatPx=3.5` (3.5 px is the
 blobby zoomed-out reference). Run a ten-minute thermal soak on one sparse
 and one dense capture. Check portrait and landscape for gaps, discs, and
-LOD popping. An iPhone 15 Pro run does not close the non-Pro 15 or Galaxy
-S24 rows.
+LOD popping. An iPhone 15 Pro or Galaxy S24 Ultra run does not close the
+non-Pro 15 row.
 
 ## Sorting semantics (documented threshold)
 
