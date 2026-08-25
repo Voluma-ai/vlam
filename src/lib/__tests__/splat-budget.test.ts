@@ -13,6 +13,7 @@ import {
   resolveXrSplatBudget,
   resolveCpuCacheBytes,
   suggestAdaptivePixelRatio,
+  ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES,
   type SplatDeviceProfile,
   type SplatGpuProbeAdapter,
   type SplatGpuProbeEntry,
@@ -629,6 +630,50 @@ describe('suggestAdaptivePixelRatio', () => {
       emaMs: 40,
     });
     expect(result.pixelRatio * 4).toBe(Math.round(result.pixelRatio * 4));
+  });
+
+  it('ignores warmup samples instead of seeding the EMA from a compile spike', () => {
+    let warmupRemaining = ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES;
+    let emaMs: number | undefined;
+    let pixelRatio = 1.5;
+    for (let i = 0; i < ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES; i++) {
+      const state = suggestAdaptivePixelRatio({
+        frameMs: 200,
+        current: pixelRatio,
+        max: 1.5,
+        min: 1,
+        emaMs,
+        warmupRemaining,
+      });
+      expect(state.pixelRatio).toBe(1.5);
+      expect(state.emaMs).toBeUndefined();
+      warmupRemaining = state.warmupRemaining;
+      emaMs = state.emaMs;
+      pixelRatio = state.pixelRatio;
+    }
+    expect(warmupRemaining).toBe(0);
+    const after = suggestAdaptivePixelRatio({
+      frameMs: 16.7,
+      current: pixelRatio,
+      max: 1.5,
+      min: 1,
+      emaMs,
+      warmupRemaining,
+    });
+    expect(after.pixelRatio).toBe(1.5);
+    expect(after.emaMs).toBeCloseTo(16.7);
+  });
+
+  it('ignores a hitch several times the EMA without stepping down', () => {
+    const state = suggestAdaptivePixelRatio({
+      frameMs: 200,
+      current: 1.5,
+      max: 1.5,
+      min: 1,
+      emaMs: 16.7,
+    });
+    expect(state.pixelRatio).toBe(1.5);
+    expect(state.emaMs).toBe(16.7);
   });
 });
 

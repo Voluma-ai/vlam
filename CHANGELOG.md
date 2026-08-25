@@ -33,6 +33,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `docs/guide/relighting.md`.
 - `worldWarpPreset` (`@voluma/vlam/effects`): camera-centered planet / bowl
   splat wrap. Demo: `?effects=warp`.
+- Demo `?hud=1` names the SD/HD toggle and the browser, so a pinned
+  `?pixelRatio=` cannot be read as the quality preset. The same panel lists
+  MSAA, Gaussian cutoff, contribution profile, native dpr, and whether
+  adaptive dpr is armed.
 
 ### Verified
 
@@ -40,8 +44,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `goose.sog`. MacBook Air M3 Safari WebGPU classifies as `integrated`
   (`?hud=1`, `mem - desktop integrated`). Remaining mobile matrix: non-Pro
   iPhone 15, Galaxy S24.
+- MacBook Air M3 (8 GB, Chrome and Safari WebGPU): demo performance mode
+  stays default-on for `integrated`. Goose 149k is 60 fps and looks fine in
+  SD. Streamed ~1M (Dehaar `.lcc2`, sandwijck SOG, RAD canopy) is already
+  fill-bound in SD; HD MSAA is tens to hundreds of milliseconds of GPU. No
+  Mac-specific HD default. See `docs/capabilities.md`.
 
 ### Changed
+
+- Demo HD/SD now retargets renderer MSAA in place. A reload is no longer
+  required, so a splat opened from the file picker stays on screen.
 
 - The demo relight effect no longer places an orange cylinder in the scene.
 
@@ -119,6 +131,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   documentation index cover only current behavior and open work.
 
 ### Fixed
+
+- Adaptive pixel ratio no longer treats WebGPU pipeline-compile frames as
+  fill pressure. `suggestAdaptivePixelRatio` ignores a short warmup and
+  hitches several times the EMA, and the demo HD button snaps to the quality
+  ceiling live (MSAA, cutoff, budget, and drawing-buffer size) without a
+  reload. A 60 Hz display cannot climb back from dpr 1 once vsync is 16.7 ms.
+  HD's ceiling is `recommendedMaxPixelRatio` (1.5 on this Air), not
+  `min(devicePixelRatio, …)`, so a window that reports native dpr 1 can still
+  supersample. The ratio is re-applied after `renderer.init()`, which was
+  resetting a pre-init `setPixelRatio` back to 1.
 
 - Classic `.lcc` loading now survives production rebundling by lazy-loading
   through the stable public LCC format entry instead of synthetic internal

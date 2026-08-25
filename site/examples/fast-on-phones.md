@@ -28,7 +28,7 @@ For many apps, this is the most effective performance setting.
 
 A fixed ceiling is a guess about the worst case. `suggestAdaptivePixelRatio` turns it into a measurement: hand it the frame time each frame and it tells you whether to spend or save.
 
-It smooths the input and separates the "speed up" and "slow down" thresholds, so a single slow frame does not make the image flicker between resolutions. You keep the returned `emaMs` and pass it back next frame, that is the whole state.
+It smooths the input and separates the "speed up" and "slow down" thresholds, so a single slow frame does not make the image flicker between resolutions. Thread `emaMs` and `warmupRemaining` from the previous result each frame. Warmup plus a hitch filter keep one-time WebGPU pipeline compiles from pinning the ratio at 1.
 
 The viewer stays sharp when it has headroom and lowers resolution when needed.
 
@@ -58,7 +58,7 @@ Three settings are device-derived unless you override them:
 
 **The performance profile**, `resolveSplatPerformanceProfile()` picks `'smooth'` on mobile and fill-constrained desktops, `'quality'` on discrete desktop, which controls how aggressively faint splats are culled.
 
-**Coverage and rendering defaults**, device-derived, and generally not worth touching until you have measured a specific problem. The public demo's performance mode (on by default on phones and on integrated / fallback desktops) is the exception: it uses a 3σ Gaussian cutoff and no renderer MSAA, because 4σ plus MSAA was what made a 600k scene on an iPhone 15 Pro miss vsync during a hard orbit. `?maxStdDev=` and `?rendererAntialias=` pin those for A/B.
+**Coverage and rendering defaults**, device-derived, and generally not worth touching until you have measured a specific problem. The public demo's performance mode (on by default on phones and on integrated / fallback desktops) is the exception: it uses a 3σ Gaussian cutoff and no renderer MSAA, because 4σ plus MSAA was what made a 600k scene on an iPhone 15 Pro miss vsync during a hard orbit. A MacBook Air M3 keeps that same SD default: goose looks fine without MSAA, and streamed million-splat scenes already miss 60 Hz before HD. `?maxStdDev=` and `?rendererAntialias=` pin those for A/B.
 
 ::: warning A cap is not a pin
 If you want "the usual settings, but no more than N", use `budgetCap`, not `budget`. `budget` is absolute and overrides the device tier entirely, which has shipped as a bug more than once, in the form of a "performance mode" that raised the load on the weakest device it was meant to help.

@@ -11,6 +11,7 @@ import {
   resolveSplatBudget,
   resolveSplatPerformanceProfile,
   suggestAdaptivePixelRatio,
+  ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES,
 } from '@voluma/vlam';
 
 const renderer = await createSplatRenderer();
@@ -44,6 +45,7 @@ scene.add(splats);
 
 const hud = document.querySelector<HTMLElement>('#hud')!;
 let emaMs: number | undefined;
+let warmupRemaining = ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES;
 let last = performance.now();
 let sinceHud = 0;
 
@@ -54,15 +56,17 @@ renderer.setAnimationLoop(() => {
 
   // Measure, then let the library decide whether to spend or save. It
   // hysteresis-damps the decision, so the ratio does not oscillate on a
-  // frame that happened to be slow.
+  // frame that happened to be slow. Warmup skips one-time pipeline compiles.
   const next = suggestAdaptivePixelRatio({
     frameMs,
     emaMs,
+    warmupRemaining,
     current: pixelRatio,
     max: maxRatio,
     min: 1,
   });
   emaMs = next.emaMs;
+  warmupRemaining = next.warmupRemaining;
   if (next.pixelRatio !== pixelRatio) {
     pixelRatio = next.pixelRatio;
     renderer.setPixelRatio(pixelRatio); // cheap: it resizes the drawing buffer
