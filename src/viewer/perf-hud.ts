@@ -342,10 +342,7 @@ function fps(frameMs: number): string {
  * include `Chrome`, and Chrome includes `Safari`.
  */
 export function hudBrowserName(userAgent: string): string {
-  const match = (
-    pattern: RegExp,
-    label: string,
-  ): string | undefined => {
+  const match = (pattern: RegExp, label: string): string | undefined => {
     const found = userAgent.match(pattern);
     const version = found?.[1];
     if (found === null) return undefined;

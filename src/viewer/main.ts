@@ -1250,9 +1250,7 @@ async function main(): Promise<void> {
       ...(deviceProfile.gpuClass === undefined ? {} : { gpuClass: deviceProfile.gpuClass }),
     };
   })();
-  const hudBrowser = hudBrowserName(
-    typeof navigator === 'undefined' ? '' : navigator.userAgent,
-  );
+  const hudBrowser = hudBrowserName(typeof navigator === 'undefined' ? '' : navigator.userAgent);
   /**
    * Worst per-update CPU cost seen, by stage. Monotonic maxima like
    * `planTimings.worstApplyMs`, so a stall that happened once while the camera

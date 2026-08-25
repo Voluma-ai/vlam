@@ -311,8 +311,10 @@ describe('hudBrowserName', () => {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0',
       ),
     ).toBe('Edge 131');
-    expect(hudBrowserName('Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0')).toBe(
-      'Firefox 133',
-    );
+    expect(
+      hudBrowserName(
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0',
+      ),
+    ).toBe('Firefox 133');
   });
 });
