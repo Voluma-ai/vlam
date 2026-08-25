@@ -131,9 +131,9 @@ const MOBILE_BUDGETS: Readonly<Record<SplatCostClass, MobileClassBudget>> = {
   // an Android flagship reporting 8 GiB has no more fill rate for wide discs
   // than an iPhone that reports nothing.
   lcc: { ceiling: 600_000, withoutMemorySignal: 600_000 },
-  // Today's numbers, unchanged. `sandwijck` has visible headroom here (it holds
-  // 52-57 fps while losing centre detail to the budget), but the replacement is
-  // an A/B on device, not a guess.
+  // Today's numbers, unchanged. `sandwijck` on iPhone had visible headroom
+  // (52-57 fps while losing centre detail). Galaxy S24 Ultra SD at ~827k was still
+  // streaming (164k holes); do not raise this ceiling from that capture.
   sampled: { ceiling: 1_000_000, withoutMemorySignal: 750_000 },
 };
 

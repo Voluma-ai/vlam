@@ -42,13 +42,20 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 - Discrete Windows NVIDIA Ampere classifies as `gpuClass: 'discrete'` on
   `goose.sog`. MacBook Air M3 Safari WebGPU classifies as `integrated`
-  (`?hud=1`, `mem - desktop integrated`). Remaining mobile matrix: non-Pro
-  iPhone 15, Galaxy S24.
+  (`?hud=1`, `mem - desktop integrated`). Galaxy S24 Ultra Chrome 151 WebGPU
+  classifies as `mem 8 mobile discrete` (Adreno probe default; phone caps
+  still apply). Remaining mobile matrix: non-Pro iPhone 15.
 - MacBook Air M3 (8 GB, Chrome and Safari WebGPU): demo performance mode
   stays default-on for `integrated`. Goose 149k is 60 fps and looks fine in
   SD. Streamed ~1M (Dehaar `.lcc2`, sandwijck SOG, RAD canopy) is already
   fill-bound in SD; HD MSAA is tens to hundreds of milliseconds of GPU. No
   Mac-specific HD default. See `docs/capabilities.md`.
+- Galaxy S24 Ultra Chrome 151 WebGPU: goose.sog SD (149k) 60 rAF / 9.6 ms
+  GPU, p99 60 fps, missed 0. HD (MSAA 4) ~58 rAF / 14.5 ms GPU, p99 30 fps.
+  Dehaar SD at the 600k cap is ~48 rAF / 21 ms GPU vs HD ~26 rAF / 27 ms. A
+  one-tab 5 s orbit at a lighter cut is ~54 rAF / 14 ms GPU and still
+  streaming. sandwijck stays mid-stream at 5 s; GPU rises toward the 1M cap.
+  Keep the phone SD default. See `docs/capabilities.md`.
 
 ### Changed
 
@@ -859,8 +866,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
  guide reading order and README. A **browser & platform support matrix** in
  [`docs/capabilities.md`](docs/capabilities.md) separating device-verified
  rows (desktop Chromium WebGPU and the WebGL2 fallback audit, iPhone 15 Pro
- Safari WebGPU) from expected and explicitly unverified ones (Adreno /
- Galaxy S24 per ROADMAP N4, Firefox).
+ Safari WebGPU) from expected and explicitly unverified ones (Adreno
+ flagship later, Firefox).
  README's "Migrating" section, which documented `0.0.17`/`0.0.18` migrations
  no external user can have consumed (the package has never been published),
  is now a pointer to this changelog. Documentation only, no library or

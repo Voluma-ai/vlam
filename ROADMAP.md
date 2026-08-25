@@ -26,16 +26,18 @@ No blocking work for the public 0.2.0 snapshot. Pick from **Later** toward 1.0.
 
 - **SuperSplat antialias comparison** — `[v]` implementation and tests pass;
   blocked on a representative AA-flagged SOG and headed comparison.
-- **Mobile device gate** — `[~]` iPhone 15 Pro/WebGPU core passed. Discrete
-  Windows keeps `minSplatSizePx` 0 (see desktop GPU tiers in the changelog).
-  Still need a non-Pro iPhone 15 and Galaxy S24/Chrome WebGPU. Galaxy S7/WebGL2
-  is a smoke-test floor, not a performance target. Protocol (also still
-  unrecorded on 15 Pro): HUD browser, OS, GPU, backend, dataset, splat count,
-  FPS; orbit median / p95 / p99 plus missed 16.6 ms and 33.3 ms deadlines;
-  ten-minute thermal soak on one sparse and one dense capture; portrait and
-  landscape gaps, discs, popping; A/B `?pixelRatio=1`, `0.9`, `0.8` with
-  `?adaptiveDpr=0` before raising `maxStdDev`;   `?minSplatPx=1.5` vs `3.5`. See
-  [capabilities](docs/capabilities.md).
+- **Mobile device gate** — `[~]` iPhone 15 Pro/WebGPU core passed. Galaxy S24 Ultra
+  Chrome 151 WebGPU: goose SD locked 60, HD ~58 rAF; streamed Dehaar /
+  sandwijck SD vs HD on 2026-08-25; keep the phone SD default (see
+  [capabilities](docs/capabilities.md)). Discrete Windows keeps
+  `minSplatSizePx` 0. Still need a non-Pro iPhone 15. Galaxy S7/WebGL2 is a
+  smoke-test floor, not a performance target. Protocol (also still
+  unrecorded on 15 Pro; S24 Ultra is HUD snapshots only): HUD browser, OS,
+  GPU, backend, dataset, splat count, FPS; orbit median / p95 / p99 plus
+  missed 16.6 ms and 33.3 ms deadlines; ten-minute thermal soak on one sparse
+  and one dense capture; portrait and landscape gaps, discs, popping; A/B
+  `?pixelRatio=1`, `0.9`, `0.8` with `?adaptiveDpr=0` before raising
+  `maxStdDev`; `?minSplatPx=1.5` vs `3.5`.
 - **Streamed spherical harmonics** — `[v]` implementation is covered by tests;
   blocked on an SH-bearing streamed capture and headed `?sh=0` versus `?sh=N`.
 - **RAD parity and coverage** — `[v]` pagetable traversal keeps a coarse shell,
@@ -63,6 +65,6 @@ No blocking work for the public 0.2.0 snapshot. Pick from **Later** toward 1.0.
 | Work                        | Blocker                                  |
 | --------------------------- | ---------------------------------------- |
 | SuperSplat AA comparison    | Representative AA-flagged SOG            |
-| Mobile matrix               | Physical iPhone 15 and Galaxy S24 access |
+| Mobile matrix               | Physical iPhone 15 (non-Pro)             |
 | Streamed SH comparison      | SH-bearing streamed capture              |
 | Reference pixel comparisons | External datasets and viewers            |
