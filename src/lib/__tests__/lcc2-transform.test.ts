@@ -209,3 +209,34 @@ describe('StreamedSplatMesh.load classic LCC initial reveal', () => {
     mesh.dispose();
   });
 });
+
+function stubLcc2Fetch(): void {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({
+      ok: true,
+      json: async () => minimalLcc2Manifest(),
+    })),
+  );
+}
+
+describe('StreamedSplatMesh.load LCC2 initial reveal', () => {
+  it('holds in-view coarsest coverage by default', async () => {
+    stubLcc2Fetch();
+    const mesh = await StreamedSplatMesh.load('https://example.test/scene.lcc2', { budget: 10 });
+
+    expect(mesh.initialRevealState.status).toBe('pending');
+    mesh.dispose();
+  });
+
+  it('keeps progressive reveal as an explicit LCC2 opt-out', async () => {
+    stubLcc2Fetch();
+    const mesh = await StreamedSplatMesh.load('https://example.test/scene.lcc2', {
+      budget: 10,
+      initialReveal: 'progressive',
+    });
+
+    expect(mesh.initialRevealState.status).toBe('disabled');
+    mesh.dispose();
+  });
+});

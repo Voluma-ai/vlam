@@ -84,6 +84,19 @@ describe('swap group ordering', () => {
     expect(groups.every((g) => g.removes.length === 1)).toBe(true);
   });
 
+  it('keeps a parent in the same group as non-overlapping children it contains', () => {
+    const parent = run(5, 0, 20);
+    const left = run(0, 0, 5);
+    const right = run(0, 5, 10);
+    const groups = buildSwapGroups(
+      [left, right],
+      [['old', { run: parent, handle: { count: parent.count } }]],
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.adds).toEqual([left, right]);
+    expect(groups[0]?.removes).toHaveLength(1);
+  });
+
   it('runs purely additive groups before any group that retires coverage', () => {
     const additive = group([run(0, 0, 100)], 0);
     const retiring = group([run(4, 0, 100)], 1);

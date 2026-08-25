@@ -184,10 +184,27 @@ a leaf interval) each frame and diffs against resident runs. Reuse it by:
    `env.sog` is always resident (a pinned run).
 3. **Abstract the scheduler** behind a small interface both
    `LodScheduler` (SOG) and `OctreeLodSource` (LCC2) implement
- (`computeDesiredRuns`, `coarsestRunsFor`, `budget`, `lodBaseDistance`);
+ (`computeDesiredRuns`, `coarsestRunsFor`, `coverageRunsFor`, `budget`, `lodBaseDistance`);
    `StreamedSplatMesh.load` picks the source by extension (`.lcc2` vs a
    Streamed SOG `lod-meta.json`). The chunk-file list, scene bounds and
    pinned (coarsest) files come from a shared manifest struct.
+
+## In-view coverage startup hold
+
+`.lcc2` shows empty octree squares if the mesh is visible while near cells
+wait on finest tiles (`isWaitingOnFinest` skips the coarse stand-in). The
+library default `initialReveal: 'hold-coverage'` hides the mesh until every
+**in-view** finest cell has its coarsest covering node resident — any LOD,
+not the target cut. Refinement continues after reveal. An empty frustum
+falls back to the nearest cell so a skyward start still paints something.
+
+This is not classic `.lcc` `'hold-near-l0'` (one home cell at L0). After
+reveal, those coarsest runs stay in the desired set until the live cut
+actually covers their leaves, so refinement cannot retire them into empty
+squares. Turning onto a near cell that was behind the camera can still
+hole until that coarsest tile lands. `?initialReveal=progressive` restores
+immediate progressive fill. A one-minute watchdog degrades to progressive
+if the frozen set cannot finish.
 
 ## Coordinate frame
 

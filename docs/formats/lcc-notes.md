@@ -174,7 +174,8 @@ the hierarchical RAD path that needs it. Visible work maps to cross-mesh
 Per-cell L0 commits are atomic, but many nearby cells finishing one after
 another still looks like a low-detail buildup.
 `StreamedSplatMeshOptions.initialReveal: 'hold-near-l0'` is the library default
-for classic `.lcc` (other streamed formats remain `'progressive'`) and freezes the first
+for classic `.lcc` (`.lcc2` uses `'hold-coverage'` instead; other streamed
+formats remain `'progressive'`) and freezes the first
 schedule's **camera home coverage group** (nearest within `lodBaseDistance`, by
 distance - not frustum). Prefers L0; when that set does not fit the pool
 (typical on mobile / integrated-desktop budgets against HiRes captures), the
@@ -195,6 +196,10 @@ This improves time-to-useful-frame by avoiding wasted lower-LOD downloads; it
 does **not** make the target detail instantaneous. If the bounded set cannot
 fit the pool, startup degrades immediately to progressive streaming.
 `?initialReveal=progressive` restores the old viewer behavior.
+
+`.lcc2` does **not** use this home-L0 hold. See
+[`lcc2-notes.md`](lcc2-notes.md#in-view-coverage-startup-hold)
+for its in-view coarsest coverage hold.
 
 XGRIDS LCCViewer budget division is not documented in this tree; VLAM keeps
 distance → enforceBudget → ~5% fill headroom (`budgetFillFraction` /

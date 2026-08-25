@@ -70,6 +70,7 @@ type Internals = {
     source: {
       computeDesiredRuns: (...args: unknown[]) => LodRun[];
       coarsestRunsFor: (from: number, to: number) => LodRun[];
+      coverageRunsFor?: (cameraLocal: THREE.Vector3, frustum: THREE.Frustum) => LodRun[];
       lodBaseDistance: number;
     };
     pinnedFiles: Set<number>;
@@ -88,8 +89,10 @@ interface MeshConfig {
   /** Full LOD ladder for {@link LodSource.runsAtLevelFor}; defaults to `desired`. */
   levelRuns?: LodRun[];
   coarsest?: LodRun[];
+  /** In-view coarsest cover for `'hold-coverage'`; omit to leave the hook unset. */
+  coverage?: LodRun[];
   capacity?: number;
-  reveal?: 'hold-near-l0' | 'progressive';
+  reveal?: 'hold-near-l0' | 'hold-coverage' | 'progressive';
   neverRetire?: boolean;
   maxSplatsPerSwap?: number;
 }
@@ -97,6 +100,7 @@ interface MeshConfig {
 function makeMesh(config: MeshConfig): StreamedSplatMesh {
   const coarsest = config.coarsest ?? [];
   const levelRuns = config.levelRuns ?? config.desired;
+  const coverage = config.coverage;
   const capacity = config.capacity ?? 4 * WIDTH;
   const scene = {
     source: {
@@ -108,6 +112,7 @@ function makeMesh(config: MeshConfig): StreamedSplatMesh {
         coarsest.filter((r) => r.leafStart < to && r.leafEnd > from),
       runsAtLevelFor: (from: number, to: number, level: number) =>
         levelRuns.filter((r) => r.level === level && r.leafStart < to && r.leafEnd > from),
+      ...(coverage === undefined ? {} : { coverageRunsFor: () => coverage }),
     },
     chunkKind: 'file' as const,
     bounds: new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(100, 1, 1)),
@@ -121,6 +126,7 @@ function makeMesh(config: MeshConfig): StreamedSplatMesh {
     ...config.desired.map((r) => r.file),
     ...levelRuns.map((r) => r.file),
     ...coarsest.map((r) => r.file),
+    ...(config.coverage ?? []).map((r) => r.file),
   );
   scene.chunkUrls = Array.from({ length: maxFile + 1 }, (_, f) => `https://host/data.bin#${f}`);
 
@@ -838,5 +844,132 @@ describe('StreamedSplatMesh initial reveal (hold-near-l0)', () => {
     inner.reschedule(camera, 0);
 
     expect(inner.frozenCriticalRuns).toEqual([neighbour]);
+  });
+});
+
+describe('StreamedSplatMesh initial reveal (hold-coverage)', () => {
+  const meshes: StreamedSplatMesh[] = [];
+
+  function setup(config: MeshConfig): {
+    mesh: StreamedSplatMesh;
+    inner: Internals;
+    requested: { file: number; kind: string }[];
+  } {
+    const mesh = makeMesh({ neverRetire: false, reveal: 'hold-coverage', ...config });
+    meshes.push(mesh);
+    const inner = internals(mesh);
+    const requested: { file: number; kind: string }[] = [];
+    inner.requestChunk = (file, kind) => {
+      requested.push({ file, kind });
+    };
+    return { mesh, inner, requested };
+  }
+
+  function cache(inner: Internals, file: number, count: number): void {
+    inner.cache.set(file, { data: makeChunk(count), bytes: 0, lastUsed: 0 });
+  }
+
+  afterEach(() => {
+    for (const m of meshes) m.dispose();
+    meshes.length = 0;
+  });
+
+  const finestInView = run({ file: 10, level: 0, leafStart: 0, leafEnd: 4 });
+  const finestOutOfView = run({ file: 11, level: 0, leafStart: 4, leafEnd: 8 });
+  const coarseInView = run({ file: 0, level: 5, leafStart: 0, leafEnd: 4 });
+  const coarseOutOfView = run({ file: 1, level: 5, leafStart: 4, leafEnd: 8 });
+
+  it('is disabled when hold-coverage is set without coverageRunsFor', () => {
+    const { mesh, inner } = setup({
+      desired: [finestInView],
+      reveal: 'hold-coverage',
+      neverRetire: false,
+    });
+    expect(mesh.initialRevealState.status).toBe('disabled');
+    expect(inner.initialRevealPhase).toBe('off');
+  });
+
+  it('freezes coarsest in-view runs, not the live finest cut', () => {
+    const { mesh, inner, requested } = setup({
+      desired: [finestInView, finestOutOfView],
+      coverage: [coarseInView],
+      coarsest: [coarseInView, coarseOutOfView],
+    });
+
+    inner.reschedule(camera, 0);
+
+    expect(inner.initialRevealPhase).toBe('holding');
+    expect(inner.frozenCriticalRuns?.map((r) => r.file)).toEqual([0]);
+    expect(mesh.initialRevealState).toMatchObject({
+      status: 'pending',
+      totalGroups: 1,
+      totalSplats: 100,
+    });
+    expect(requested.every((r) => r.file === 0)).toBe(true);
+    expect(requested.some((r) => r.file === 10 || r.file === 11 || r.file === 1)).toBe(false);
+  });
+
+  it('releases when coverage runs are resident, then the live cut may request finest', () => {
+    const { mesh, inner, requested } = setup({
+      desired: [finestInView],
+      coverage: [coarseInView],
+    });
+    cache(inner, 0, 100);
+
+    inner.reschedule(camera, 0);
+
+    expect(mesh.initialRevealState.status).toBe('ready');
+    expect(inner.initialRevealPhase).toBe('released');
+    expect(inner.resident.has(runKey(coarseInView))).toBe(true);
+    expect(requested.some((r) => r.file === 10)).toBe(false);
+
+    requested.length = 0;
+    inner.reschedule(camera, 1);
+    expect(requested.some((r) => r.file === 10)).toBe(true);
+    // Coarsest in-view cover stays until the live finest cut is actually resident.
+    expect(inner.resident.has(runKey(coarseInView))).toBe(true);
+  });
+
+  it('replaces released coverage atomically after the complete fine cut is cached', () => {
+    const fineLeft = run({ file: 10, level: 0, leafStart: 0, leafEnd: 2 });
+    const fineRight = run({ file: 11, level: 0, leafStart: 2, leafEnd: 4 });
+    const { mesh, inner } = setup({
+      desired: [fineLeft, fineRight],
+      coverage: [coarseInView],
+    });
+    cache(inner, 0, 100);
+    inner.reschedule(camera, 0);
+
+    expect(mesh.initialRevealState.status).toBe('ready');
+    expect(inner.resident.has(runKey(coarseInView))).toBe(true);
+
+    cache(inner, fineLeft.file, fineLeft.count);
+    inner.reschedule(camera, 1);
+
+    // A partial replacement stays inactive, avoiding coarse + fine overdraw.
+    expect(inner.resident.has(runKey(coarseInView))).toBe(true);
+    expect(inner.resident.has(runKey(fineLeft))).toBe(false);
+
+    cache(inner, fineRight.file, fineRight.count);
+    inner.reschedule(camera, 2);
+
+    expect(inner.resident.has(runKey(coarseInView))).toBe(false);
+    expect(inner.resident.has(runKey(fineLeft))).toBe(true);
+    expect(inner.resident.has(runKey(fineRight))).toBe(true);
+  });
+
+  it('recaptures the coverage hold without neverRetireCoverageEarly', () => {
+    const { mesh, inner } = setup({
+      desired: [finestInView],
+      coverage: [coarseInView],
+    });
+
+    inner.reschedule(camera, 0);
+    expect(inner.initialRevealPhase).toBe('holding');
+
+    mesh.recaptureInitialReveal();
+    expect(inner.initialRevealPhase).toBe('capture');
+    expect(inner.frozenCriticalRuns).toBeNull();
+    expect(mesh.initialRevealState.status).toBe('pending');
   });
 });
