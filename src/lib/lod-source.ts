@@ -39,6 +39,13 @@ export interface LodSource {
    */
   runsAtLevelFor?(from: number, to: number, level: number): LodRun[];
   /**
+   * Coarsest covering runs for finest cells currently in the camera frustum.
+   * Used by `.lcc2` startup `initialReveal: 'hold-coverage'` so the first
+   * painted frame has no empty cells. Optional: sources without a nested
+   * octree cover leave it undefined (the hold then stays disabled).
+   */
+  coverageRunsFor?(cameraLocal: THREE.Vector3, frustum: THREE.Frustum): LodRun[];
+  /**
    * Notified when a chunk finishes decoding, so a source that discovers its
    * structure from chunk payloads (a `.rad` LOD tree lives in the chunks, not
    * a manifest) can incorporate it. Sources with a fully-known manifest

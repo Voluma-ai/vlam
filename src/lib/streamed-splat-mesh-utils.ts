@@ -112,27 +112,30 @@ export function buildSwapGroups(toAdd: LodRun[], toRemove: ResidentEntry[]): Swa
       add: undefined as LodRun | undefined,
       remove: entry,
     })),
-  ].sort((a, b) => a.start - b.start);
+  ].sort((a, b) => a.start - b.start || b.end - a.end);
 
+  // Sorted interval sweep finds the same overlap-connected components in
+  // O(n log n). Longer equal-start intervals come first so an octree parent
+  // opens the full component before its adjacent children are visited.
   const groups: SwapGroup[] = [];
   for (const item of items) {
     const last = groups[groups.length - 1];
-    if (last && item.start < last.leafEnd) {
-      last.leafEnd = Math.max(last.leafEnd, item.end);
-      if (item.add) {
-        last.adds.push(item.add);
-        last.addCount += item.add.count;
-      }
-      if (item.remove) last.removes.push(item.remove);
-    } else {
+    if (!last || item.start >= last.leafEnd) {
       groups.push({
-        adds: item.add ? [item.add] : [],
-        removes: item.remove ? [item.remove] : [],
+        adds: [],
+        removes: [],
         leafStart: item.start,
         leafEnd: item.end,
-        addCount: item.add?.count ?? 0,
+        addCount: 0,
       });
     }
+    const group = groups[groups.length - 1] as SwapGroup;
+    group.leafEnd = Math.max(group.leafEnd, item.end);
+    if (item.add) {
+      group.adds.push(item.add);
+      group.addCount += item.add.count;
+    }
+    if (item.remove) group.removes.push(item.remove);
   }
   return groups;
 }

@@ -193,8 +193,9 @@ export function estimateSceneDecodedBytes(scene: StreamedScene): number {
 }
 
 /**
- * Read-only startup-hold progress for classic `.lcc` {@link StreamedSplatMeshOptions.initialReveal}.
- * Exported for hosts that gate visibility on the first useful near-L0 frame.
+ * Read-only startup-hold progress for {@link StreamedSplatMeshOptions.initialReveal}.
+ * Exported for hosts that gate visibility on the first useful coverage frame
+ * (classic `.lcc` nearby L0, or `.lcc2` in-view coarsest cells).
  */
 export type InitialRevealState =
   | { readonly status: 'disabled' }
@@ -328,10 +329,11 @@ export interface StreamedSplatMeshOptions extends SplatMeshOptions {
    */
   maxSplatsPerSwap?: number;
   /**
-   * First-frame reveal policy for classic `.lcc` streaming.
+   * First-frame reveal policy for streamed formats that can hide empty cells.
    *
-   * - `'progressive'`: cells become visible as each L0 coverage group commits
-   *   - can show sparse near-detail while siblings load.
+   * - `'progressive'`: cells become visible as each swap group commits — can
+   *   show sparse near-detail (classic `.lcc`) or empty octree squares
+   *   (`.lcc2`) while siblings load.
    * - `'hold-near-l0'` (the default for classic `.lcc` when unset): hide the
    *   mesh until the camera's home coverage group is resident (L0 when it fits;
    *   otherwise coarsen via the leaf ladder L1→L2). Neighbours are not part of
@@ -340,16 +342,20 @@ export interface StreamedSplatMeshOptions extends SplatMeshOptions {
    *   does not require frustum intersection (HiRes tiles often fail `inView`
    *   when the camera stands inside looking out). Coarser rungs come from
    *   `LodSource.runsAtLevelFor`. Only home files are fetched during the hold.
-   *   A one-minute watchdog also degrades if the cut cannot finish. Other
-   *   streamed formats default to `'progressive'` and treat the hold as
-   *   disabled.
+   *   A one-minute watchdog also degrades if the cut cannot finish.
+   * - `'hold-coverage'` (the default for `.lcc2` when unset): hide the mesh
+   *   until every in-view finest cell has a coarsest covering node resident
+   *   (any LOD). Does not wait for finest tiles or the rest of the stream.
+   *   An empty frustum falls back to the nearest cell. Requires
+   *   `LodSource.coverageRunsFor`; other formats treat this as disabled.
    *
-   * Does not make detail downloads instantaneous; it avoids lower-LOD traffic
-   * and multi-cell buildup before the first useful frame. The hold uses the
-   * **resolved** cut from the first schedule (after camera + format transform),
-   * not distance ambition alone.
+   * A one-minute watchdog degrades to progressive if the frozen set cannot
+   * finish. Does not make detail downloads instantaneous. Classic `.lcc` uses
+   * the **resolved** cut from the first schedule (after camera + format
+   * transform), not distance ambition alone. Other streamed formats default
+   * to `'progressive'`.
    */
-  initialReveal?: 'progressive' | 'hold-near-l0';
+  initialReveal?: 'progressive' | 'hold-near-l0' | 'hold-coverage';
   /** Receives lightweight LOD swap markers for performance attribution. */
   onPerformanceEvent?: (event: StreamedSplatPerformanceEvent) => void;
   /**
@@ -727,11 +733,13 @@ export class StreamedSplatMesh extends SplatMesh {
   private envUnfit = false;
 
   /**
-   * Classic `.lcc` startup hold. `'capture'` waits for the first schedule after
-   * the host applies the final camera; `'holding'` freezes that nearby-detail set.
+   * Startup hold. `'capture'` waits for the first schedule after the host
+   * applies the final camera; `'holding'` freezes that coverage set.
    */
   private initialRevealPhase: 'off' | 'capture' | 'holding' | 'released' = 'off';
-  /** Frozen nearby-detail runs for {@link initialRevealPhase} `'holding'`. */
+  /** Which hold, if any, was armed at construction. Survives release for recapture. */
+  private readonly initialRevealHold: 'off' | 'hold-near-l0' | 'hold-coverage' = 'off';
+  /** Frozen nearby-detail / in-view coverage runs for {@link initialRevealPhase} `'holding'`. */
   private frozenCriticalRuns: LodRun[] | null = null;
   /** Timestamp of the final-camera capture that began the current hold. */
   private initialRevealStartedAt: number | undefined;
@@ -1034,10 +1042,14 @@ export class StreamedSplatMesh extends SplatMesh {
       {
         ...options,
         // Classic LCC's useful first frame is the bounded nearby-detail set,
-        // not its coarse shell. Keep every other format progressive, and let a
-        // caller explicitly request progressive LCC for A/B or legacy hosts.
+        // not its coarse shell. `.lcc2` waits for in-view coarsest coverage
+        // so empty octree squares do not flash. Keep every other format
+        // progressive, and let a caller explicitly request progressive for A/B.
         ...(format === 'lcc' && options.initialReveal === undefined
           ? { initialReveal: 'hold-near-l0' as const }
+          : {}),
+        ...(format === 'lcc2' && options.initialReveal === undefined
+          ? { initialReveal: 'hold-coverage' as const }
           : {}),
         // The resolved ceiling, not the caller's raw option: it may have been
         // lifted to a moderate capture's leaf count above.
@@ -1130,8 +1142,11 @@ export class StreamedSplatMesh extends SplatMesh {
     this.stagedSwapsEnabled = options.experimentalStagedSwaps !== false;
     this.neverRetireCoverageEarly = neverRetireCoverageEarly;
     this.appendCap = validateAppendCap(options.maxSplatsPerSwap);
-    // Classic `.lcc` only: other formats treat hold-near-l0 as disabled.
-    if (options.initialReveal === 'hold-near-l0' && neverRetireCoverageEarly) {
+    const holdCoverage =
+      options.initialReveal === 'hold-coverage' && this.scene.source.coverageRunsFor !== undefined;
+    const holdNearL0 = options.initialReveal === 'hold-near-l0' && neverRetireCoverageEarly;
+    if (holdCoverage || holdNearL0) {
+      this.initialRevealHold = holdCoverage ? 'hold-coverage' : 'hold-near-l0';
       this.initialRevealPhase = 'capture';
       this.initialRevealStateValue = {
         status: 'pending',
@@ -1141,6 +1156,7 @@ export class StreamedSplatMesh extends SplatMesh {
         totalGroups: 0,
       };
     } else {
+      this.initialRevealHold = 'off';
       this.initialRevealPhase = 'off';
       this.initialRevealStateValue = { status: 'disabled' };
     }
@@ -1877,22 +1893,23 @@ export class StreamedSplatMesh extends SplatMesh {
 
   /**
    * Startup-hold progress for {@link StreamedSplatMeshOptions.initialReveal}.
-   * Classic `.lcc` hosts using the default (or explicitly opting into
-   * `'hold-near-l0'`) should keep the mesh invisible while
-   * `status === 'pending'`, then reveal on `'ready'` or `'degraded'`.
+   * Hosts using `'hold-near-l0'` or `'hold-coverage'` should keep the mesh
+   * invisible while `status === 'pending'`, then reveal on `'ready'` or
+   * `'degraded'`.
    */
   get initialRevealState(): InitialRevealState {
     return this.initialRevealStateValue;
   }
 
   /**
-   * Captures a fresh classic `.lcc` nearby-detail startup set on the next
-   * {@link update}. Hosts that apply their final initial camera pose after the
-   * mesh first receives frames should call this before lifting their loading
-   * cover. It is a no-op for every other format and for progressive startup.
+   * Captures a fresh startup-hold set on the next {@link update}. Hosts that
+   * apply their final initial camera pose after the mesh first receives frames
+   * should call this before lifting their loading cover. It is a no-op when
+   * the hold was never armed (progressive startup, or a format without the
+   * matching LodSource hook).
    */
   recaptureInitialReveal(): void {
-    if (!this.neverRetireCoverageEarly || this.initialRevealPhase === 'off') return;
+    if (this.initialRevealHold === 'off') return;
     this.frozenCriticalRuns = null;
     this.initialRevealStartedAt = undefined;
     this.initialRevealPhase = 'capture';
@@ -2176,10 +2193,17 @@ export class StreamedSplatMesh extends SplatMesh {
       now,
       _cameraForward,
     );
-    const holdingRuns = this.captureOrContinueInitialReveal(scheduledRuns, now);
+    const holdingRuns = this.captureOrContinueInitialReveal(
+      scheduledRuns,
+      now,
+      _cameraLocal,
+      _frustum,
+    );
     const holding = holdingRuns !== null;
-    // During the startup hold, ignore later camera cuts: only the frozen near-L0
-    // set is desired. After release (or when hold is off), use the live schedule.
+    // During the startup hold, ignore later camera cuts: only the frozen
+    // coverage set is desired. After release, the normal swap transaction
+    // keeps that coverage active while the live cut stages, then replaces it
+    // atomically rather than drawing coarse and fine runs together.
     const desiredRuns = holdingRuns ?? scheduledRuns;
     const desired = new Map<string, LodRun>();
     const desiredFiles = new Set<number>();
@@ -2309,7 +2333,8 @@ export class StreamedSplatMesh extends SplatMesh {
       // on each sub-leaf until that slice's L0 commits). L1+: allow per-slice
       // coarsest substitute while that slice's target loads.
       // Startup hold never paints coarse for the critical set.
-      const holdForTarget = holding || isWaitingOnFinest(group);
+      const holdForTarget =
+        holding || (isWaitingOnFinest(group) && this.initialRevealHold !== 'hold-coverage');
       if (missing.length > 0) {
         // Only keep re-scheduling if some missing chunk is still
         // recoverable (fetching or awaiting a retry); a group whose chunks
@@ -2482,9 +2507,9 @@ export class StreamedSplatMesh extends SplatMesh {
   }
 
   private publishInitialRevealProgress(runs: readonly LodRun[]): void {
-    const groups = new Map<number, LodRun[]>();
+    const groups = new Map<string, LodRun[]>();
     for (const run of runs) {
-      const g = run.coverageGroup as number;
+      const g = run.coverageGroup !== undefined ? `g:${run.coverageGroup}` : runKey(run);
       let list = groups.get(g);
       if (!list) {
         list = [];
@@ -2563,93 +2588,129 @@ export class StreamedSplatMesh extends SplatMesh {
     this.pendingWork = true;
   }
 
-  private captureOrContinueInitialReveal(scheduledRuns: LodRun[], now: number): LodRun[] | null {
+  /**
+   * `.lcc2` coverage hold: freeze coarsest covering runs for in-view cells.
+   * Missing `coverageRunsFor` (or an empty result after fallback) releases
+   * immediately so the mesh does not stay hidden with nothing to fetch.
+   */
+  private captureCoverageHold(
+    cameraLocal: THREE.Vector3,
+    frustum: THREE.Frustum,
+    now: number,
+  ): void {
+    const coverage = this.scene.source.coverageRunsFor?.(cameraLocal, frustum) ?? [];
+    if (coverage.length === 0) {
+      this.initialRevealStateValue = { status: 'ready' };
+      this.initialRevealPhase = 'released';
+      return;
+    }
+    if (!this.criticalRunsFitCapacity(coverage)) {
+      this.frozenCriticalRuns = coverage;
+      this.releaseInitialReveal('degraded', 'capacity');
+      return;
+    }
+    this.frozenCriticalRuns = coverage;
+    this.initialRevealStartedAt = now;
+    this.initialRevealPhase = 'holding';
+    this.publishInitialRevealProgress(coverage);
+  }
+
+  private captureOrContinueInitialReveal(
+    scheduledRuns: LodRun[],
+    now: number,
+    cameraLocal: THREE.Vector3,
+    frustum: THREE.Frustum,
+  ): LodRun[] | null {
     if (this.initialRevealPhase === 'off' || this.initialRevealPhase === 'released') return null;
 
     if (this.initialRevealPhase === 'capture') {
-      // Prefer a full nearby L0 hold of the camera cell only. Tight pools
-      // coarsen via the leaf ladder (L1, then L2) before degrading. Neighbours
-      // are left for progressive streaming - they often beat home on
-      // screenImportance. `desiredRuns` only has the *resolved* rung, so coarser
-      // home cuts come from `runsAtLevelFor`.
-      const seeds = this.selectHomeSeedRuns(scheduledRuns);
-      let critical: LodRun[] = [];
-      if (seeds.length === 0) {
-        // Cold camera: nothing inside lodBaseDistance. Hold the nearest
-        // coverage group in the near band (distance first, not screenImportance).
-        const horizon =
-          this.scene.source.lodBaseDistance *
-          this.scene.source.lodMultiplier *
-          this.scene.source.lodMultiplier;
-        const fallback = scheduledRuns.filter(
-          (run) =>
-            run.level <= 2 &&
-            run.coverageGroup !== undefined &&
-            (run.distance ?? Number.POSITIVE_INFINITY) <= horizon,
-        );
-        const nearest = [...fallback].sort(
-          (a, b) =>
-            (a.distance ?? Number.POSITIVE_INFINITY) - (b.distance ?? Number.POSITIVE_INFINITY) ||
-            (a.inView === true ? 0 : 1) - (b.inView === true ? 0 : 1) ||
-            (a.screenImportance ?? Number.POSITIVE_INFINITY) -
-              (b.screenImportance ?? Number.POSITIVE_INFINITY) ||
-            a.leafStart - b.leafStart,
-        )[0];
-        if (!nearest) {
-          this.initialRevealStateValue = { status: 'ready' };
-          this.initialRevealPhase = 'released';
-          return null;
-        }
-        critical =
-          nearest.coverageGroup !== undefined
-            ? fallback.filter((run) => run.coverageGroup === nearest.coverageGroup)
-            : [nearest];
-        if (!this.criticalRunsFitCapacity(critical)) {
-          // Prefer a single fitting run over degrading the whole hold.
+      if (this.initialRevealHold === 'hold-coverage') {
+        this.captureCoverageHold(cameraLocal, frustum, now);
+      } else {
+        // Prefer a full nearby L0 hold of the camera cell only. Tight pools
+        // coarsen via the leaf ladder (L1, then L2) before degrading. Neighbours
+        // are left for progressive streaming - they often beat home on
+        // screenImportance. `desiredRuns` only has the *resolved* rung, so coarser
+        // home cuts come from `runsAtLevelFor`.
+        const seeds = this.selectHomeSeedRuns(scheduledRuns);
+        let critical: LodRun[] = [];
+        if (seeds.length === 0) {
+          // Cold camera: nothing inside lodBaseDistance. Hold the nearest
+          // coverage group in the near band (distance first, not screenImportance).
+          const horizon =
+            this.scene.source.lodBaseDistance *
+            this.scene.source.lodMultiplier *
+            this.scene.source.lodMultiplier;
+          const fallback = scheduledRuns.filter(
+            (run) =>
+              run.level <= 2 &&
+              run.coverageGroup !== undefined &&
+              (run.distance ?? Number.POSITIVE_INFINITY) <= horizon,
+          );
+          const nearest = [...fallback].sort(
+            (a, b) =>
+              (a.distance ?? Number.POSITIVE_INFINITY) - (b.distance ?? Number.POSITIVE_INFINITY) ||
+              (a.inView === true ? 0 : 1) - (b.inView === true ? 0 : 1) ||
+              (a.screenImportance ?? Number.POSITIVE_INFINITY) -
+                (b.screenImportance ?? Number.POSITIVE_INFINITY) ||
+              a.leafStart - b.leafStart,
+          )[0];
+          if (!nearest) {
+            this.initialRevealStateValue = { status: 'ready' };
+            this.initialRevealPhase = 'released';
+            return null;
+          }
           critical =
             nearest.coverageGroup !== undefined
-              ? fallback
-                  .filter(
-                    (run) =>
-                      run.coverageGroup === nearest.coverageGroup &&
-                      this.criticalRunsFitCapacity([run]),
-                  )
-                  .slice(0, 1)
-              : fallback.filter((run) => this.criticalRunsFitCapacity([run])).slice(0, 1);
-        }
-        if (critical.length === 0 || !this.criticalRunsFitCapacity(critical)) {
-          this.frozenCriticalRuns = critical.length > 0 ? critical : [nearest];
-          this.releaseInitialReveal('degraded', 'capacity');
-          return null;
-        }
-        this.frozenCriticalRuns = critical;
-        this.initialRevealStartedAt = now;
-        this.initialRevealPhase = 'holding';
-        this.publishInitialRevealProgress(critical);
-      } else {
-        for (const nearLevel of [0, 1, 2] as const) {
-          const home = this.coarsenHomeRuns(seeds, nearLevel);
-          if (home.length === 0) continue;
-          if (this.criticalRunsFitCapacity(home)) {
-            critical = home;
-            break;
+              ? fallback.filter((run) => run.coverageGroup === nearest.coverageGroup)
+              : [nearest];
+          if (!this.criticalRunsFitCapacity(critical)) {
+            // Prefer a single fitting run over degrading the whole hold.
+            critical =
+              nearest.coverageGroup !== undefined
+                ? fallback
+                    .filter(
+                      (run) =>
+                        run.coverageGroup === nearest.coverageGroup &&
+                        this.criticalRunsFitCapacity([run]),
+                    )
+                    .slice(0, 1)
+                : fallback.filter((run) => this.criticalRunsFitCapacity([run])).slice(0, 1);
           }
-          critical = home;
-        }
-        if (critical.length === 0) {
-          this.initialRevealStateValue = { status: 'ready' };
-          this.initialRevealPhase = 'released';
-          return null;
-        }
-        if (!this.criticalRunsFitCapacity(critical)) {
+          if (critical.length === 0 || !this.criticalRunsFitCapacity(critical)) {
+            this.frozenCriticalRuns = critical.length > 0 ? critical : [nearest];
+            this.releaseInitialReveal('degraded', 'capacity');
+            return null;
+          }
           this.frozenCriticalRuns = critical;
-          this.releaseInitialReveal('degraded', 'capacity');
-          return null;
+          this.initialRevealStartedAt = now;
+          this.initialRevealPhase = 'holding';
+          this.publishInitialRevealProgress(critical);
+        } else {
+          for (const nearLevel of [0, 1, 2] as const) {
+            const home = this.coarsenHomeRuns(seeds, nearLevel);
+            if (home.length === 0) continue;
+            if (this.criticalRunsFitCapacity(home)) {
+              critical = home;
+              break;
+            }
+            critical = home;
+          }
+          if (critical.length === 0) {
+            this.initialRevealStateValue = { status: 'ready' };
+            this.initialRevealPhase = 'released';
+            return null;
+          }
+          if (!this.criticalRunsFitCapacity(critical)) {
+            this.frozenCriticalRuns = critical;
+            this.releaseInitialReveal('degraded', 'capacity');
+            return null;
+          }
+          this.frozenCriticalRuns = critical;
+          this.initialRevealStartedAt = now;
+          this.initialRevealPhase = 'holding';
+          this.publishInitialRevealProgress(critical);
         }
-        this.frozenCriticalRuns = critical;
-        this.initialRevealStartedAt = now;
-        this.initialRevealPhase = 'holding';
-        this.publishInitialRevealProgress(critical);
       }
     }
 

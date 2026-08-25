@@ -356,14 +356,57 @@ class OctreeLodSource implements LodSource {
     return runs;
   }
 
+  /**
+   * Coarsest root-child runs covering in-view finest cells. An empty frustum
+   * falls back to the nearest cell's root child so a skyward start still paints
+   * something rather than releasing an empty hold.
+   */
+  coverageRunsFor(cameraLocal: THREE.Vector3, frustum: THREE.Frustum): LodRun[] {
+    const n = this.cellNodes.length;
+    if (n === 0) return [];
+    const picked = new Uint8Array(this.rootChildren.length);
+    let anyInView = false;
+    let nearestCell = 0;
+    let nearestDist = Number.POSITIVE_INFINITY;
+    for (let c = 0; c < n; c++) {
+      const node = this.nodes[this.cellNodes[c] as number] as OctNode;
+      const d = node.bounds.distanceToPoint(cameraLocal);
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearestCell = c;
+      }
+      if (this.cellIntersectsFrustum(frustum, c)) {
+        picked[this.cellRootChild[c] as number] = 1;
+        anyInView = true;
+      }
+    }
+    if (!anyInView) picked[this.cellRootChild[nearestCell] as number] = 1;
+    const runs: LodRun[] = [];
+    for (let r = 0; r < this.rootChildren.length; r++) {
+      if (picked[r] !== 1) continue;
+      runs.push(runFromNode(this.nodes[this.rootChildren[r] as number] as OctNode));
+    }
+    return runs;
+  }
+
+  /** Finest-cell AABB expanded by {@link FRUSTUM_MARGIN}, written into scratch. */
+  private expandCellBox(cell: number): THREE.Box3 {
+    const node = this.nodes[this.cellNodes[cell] as number] as OctNode;
+    this.scratchBox.copy(node.bounds);
+    node.bounds.getSize(this.scratchSize);
+    this.scratchBox.expandByScalar(this.scratchSize.length() * FRUSTUM_MARGIN);
+    return this.scratchBox;
+  }
+
+  private cellIntersectsFrustum(frustum: THREE.Frustum, cell: number): boolean {
+    return frustum.intersectsBox(this.expandCellBox(cell));
+  }
+
   /** Distance (frustum-penalized) to each finest cell's node bounds. */
   private cellDistanceOf(cameraLocal: THREE.Vector3, frustum: THREE.Frustum, cell: number): number {
     const node = this.nodes[this.cellNodes[cell] as number] as OctNode;
     const d = node.bounds.distanceToPoint(cameraLocal);
-    this.scratchBox.copy(node.bounds);
-    node.bounds.getSize(this.scratchSize);
-    this.scratchBox.expandByScalar(this.scratchSize.length() * FRUSTUM_MARGIN);
-    return frustum.intersectsBox(this.scratchBox) ? d : d * FRUSTUM_PENALTY;
+    return this.cellIntersectsFrustum(frustum, cell) ? d : d * FRUSTUM_PENALTY;
   }
 
   /** Advances each cell's dwelled level toward the distance target. */

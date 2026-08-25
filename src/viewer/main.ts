@@ -1470,12 +1470,19 @@ async function main(): Promise<void> {
    */
   let loadingProgress: { loaded: number; total: number } | null = null;
   /**
-   * Classic `.lcc` nearby-detail startup hold. Library default, unless
-   * unless `?initialReveal=progressive`. While pending, the mesh stays
-   * invisible and camera controls are locked so the frozen set matches the URL pose.
+   * Streamed startup hold (classic `.lcc` nearby L0, `.lcc2` in-view coarsest
+   * coverage). Library default, unless `?initialReveal=progressive`. While
+   * pending, the mesh stays invisible and camera controls are locked so the
+   * frozen set matches the URL pose.
    */
-  const preferHoldNearL0 = params.get('initialReveal') !== 'progressive';
+  const preferStartupHold = params.get('initialReveal') !== 'progressive';
   let nearL0HoldActive = false;
+  /**
+   * While `applyScene` awaits `fitToBox`, skip `update()` so the coverage hold
+   * cannot freeze the pre-fit camera (mounted is already true, mesh is in the
+   * scene). Cleared after framing.
+   */
+  let suppressStreamedUpdate = false;
   const cinematicOrbitMode = createCinematicOrbitMode(chrome.cinematicOrbit, orbitFromUrl);
   let cinematicOrbitPlaying = cinematicOrbitMode.enabled;
   let cinematicOrbitPhase = 0;
@@ -1866,14 +1873,14 @@ async function main(): Promise<void> {
       splats.initialRevealState.status === 'pending'
     ) {
       const hold = splats.initialRevealState;
-      if (chrome.overlay) overlay.textContent = 'Loading nearby detail…';
+      if (chrome.overlay) overlay.textContent = 'Loading coverage…';
       if (chrome.status && status && statusText) {
         status.classList.add('visible', 'progress');
         status.classList.remove('error');
         const total = Math.max(1, hold.totalSplats);
         const fraction = Math.min(1, hold.stagedSplats / total);
         statusText.textContent =
-          `Nearby detail ${hold.readyGroups}/${hold.totalGroups} cells · ` +
+          `Coverage ${hold.readyGroups}/${hold.totalGroups} cells · ` +
           `${hold.stagedSplats.toLocaleString('en-US')} / ${hold.totalSplats.toLocaleString('en-US')}`;
         if (statusBar) statusBar.style.width = `${Math.round(fraction * 100)}%`;
       }
@@ -2238,6 +2245,7 @@ async function main(): Promise<void> {
     if (!next.preservesTransform && userScale) next.mesh.scale.multiply(userScale);
     next.mesh.updateMatrixWorld();
     scene.add(next.mesh);
+    if (options.frame ?? true) suppressStreamedUpdate = true;
     mounted = true;
     if (
       next.mesh instanceof StreamedSplatMesh &&
@@ -2399,7 +2407,21 @@ async function main(): Promise<void> {
     syncSeparateTool();
     loadingTitle = null;
     loadingProgress = null;
+    if (options.frame ?? true) {
+      armStartupHoldAfterPose();
+      suppressStreamedUpdate = false;
+    }
     refreshOverlay();
+  };
+
+  const armStartupHoldAfterPose = (): void => {
+    if (!(splats instanceof StreamedSplatMesh)) return;
+    splats.recaptureInitialReveal();
+    if (splats.initialRevealState.status === 'pending') {
+      splats.visible = false;
+      nearL0HoldActive = true;
+      syncCameraControlsEnabled();
+    }
   };
 
   // Built unconditionally now that the tool picker gates it: `?separate` used
@@ -2614,9 +2636,10 @@ async function main(): Promise<void> {
     void StreamedSplatMesh.loadLocal(files, {
       deviceProfile,
       environmentEnabled: params.get('env') !== '0',
-      // Keep the explicit query opt-out effective now that classic `.lcc`
-      // defaults to the hold in the library.
-      initialReveal: preferHoldNearL0 ? ('hold-near-l0' as const) : ('progressive' as const),
+      // Keep the explicit query opt-out effective now that streamed formats
+      // default to a first-paint hold in the library. Unset lets `.lcc` keep
+      // nearby L0 and `.lcc2` keep in-view coarsest coverage.
+      ...(preferStartupHold ? {} : { initialReveal: 'progressive' as const }),
       ...(pinnedBudget === undefined ? {} : { budget: pinnedBudget }),
       ...(perfMode.enabled && pinnedBudget === undefined ? { budgetCap: PERF_MODE_BUDGET } : {}),
       ...(requestedShBands() === undefined
@@ -2766,9 +2789,10 @@ async function main(): Promise<void> {
       deviceProfile,
       ...(budgetCap === undefined ? {} : { budgetCap }),
       experimentalStagedSwaps,
-      // Keep the explicit query opt-out effective now that classic `.lcc`
-      // defaults to the hold in the library.
-      initialReveal: preferHoldNearL0 ? ('hold-near-l0' as const) : ('progressive' as const),
+      // Keep the explicit query opt-out effective now that streamed formats
+      // default to a first-paint hold in the library. Unset lets `.lcc` keep
+      // nearby L0 and `.lcc2` keep in-view coarsest coverage.
+      ...(preferStartupHold ? {} : { initialReveal: 'progressive' as const }),
       // `.lcc2` ships an always-on sky; ?env=0 starts it hidden, and 'v' toggles
       // it live (see the keydown handler). Other formats have none - no effect.
       environmentEnabled: params.get('env') !== '0',
@@ -2807,9 +2831,9 @@ async function main(): Promise<void> {
   }
 
   // Shareable / benchmark view. Applied *after* applyScene's fitToBox so the
-  // URL pose wins. Classic `.lcc` `initialReveal: 'hold-near-l0'` freezes its
-  // nearby-detail set on the first update() after this - do not move URL assignment
-  // earlier than framing or the hold would capture the fitted camera instead.
+  // URL pose wins. The streamed `initialReveal` hold freezes its coverage set
+  // on the first update() after this - do not move URL assignment earlier than
+  // framing or the hold would capture the fitted camera instead.
   const benchmarkCameraPosition = parseVector3Param(params.get('cameraPosition'));
   const benchmarkCameraTarget = parseVector3Param(params.get('cameraTarget'));
   if (benchmarkCameraPosition && benchmarkCameraTarget) {
@@ -2822,6 +2846,7 @@ async function main(): Promise<void> {
       benchmarkCameraTarget.z,
       false,
     );
+    armStartupHoldAfterPose();
   }
 
   /** NDC (-1..1, y up) for a pointer event on the canvas. */
@@ -3561,7 +3586,7 @@ async function main(): Promise<void> {
       // `mounted` is false only when the initial scene failed to load: keep
       // drawing the empty scene so a dropped file has a live loop to land in.
       if (mounted) separateTool?.update(timer.getElapsed());
-      if (mounted) splats.update(camera, renderer);
+      if (mounted && !suppressStreamedUpdate) splats.update(camera, renderer);
       if (mounted && splats instanceof StreamedSplatMesh && nearL0HoldActive) {
         const reveal = splats.initialRevealState;
         if (reveal.status === 'pending') {
@@ -3575,7 +3600,7 @@ async function main(): Promise<void> {
           nearL0RevealFadeUntil = performance.now() + 150;
           if (reveal.status === 'degraded') {
             console.warn(
-              `Near-L0 startup hold degraded (${reveal.reason}); resuming progressive streaming.`,
+              `Startup hold degraded (${reveal.reason}); resuming progressive streaming.`,
             );
           }
           refreshOverlay();

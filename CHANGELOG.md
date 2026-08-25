@@ -37,6 +37,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `?pixelRatio=` cannot be read as the quality preset. The same panel lists
   MSAA, Gaussian cutoff, contribution profile, native dpr, and whether
   adaptive dpr is armed.
+- `.lcc2` `initialReveal: 'hold-coverage'` (library default): hide the
+  mesh until every in-view octree cell has coarsest coverage resident,
+  then keep that cover until finer tiles replace it so first paint does
+  not flash empty cells. `?initialReveal=progressive` opts out. See
+  `docs/formats/lcc2-notes.md`.
 
 ### Verified
 
