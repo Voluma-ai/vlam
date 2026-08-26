@@ -195,8 +195,11 @@ a leaf interval) each frame and diffs against resident runs. Reuse it by:
 wait on finest tiles (`isWaitingOnFinest` skips the coarse stand-in). The
 library default `initialReveal: 'hold-coverage'` hides the mesh until every
 **in-view** finest cell has its coarsest covering node resident — any LOD,
-not the target cut. Refinement continues after reveal. An empty frustum
-falls back to the nearest cell so a skyward start still paints something.
+not the target cut — **and** until the always-resident environment tile is in
+the pool, when the capture ships one and it starts enabled. That tile is
+fetched at priority, ahead of cell coverage, so first paint includes the sky.
+Refinement continues after reveal. An empty frustum falls back to the nearest
+cell so a skyward start still paints something.
 
 This is not classic `.lcc` `'hold-near-l0'` (one home cell at L0). After
 reveal, those coarsest runs stay in the desired set until the live cut

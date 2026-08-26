@@ -14,7 +14,7 @@ title: VLAM!
     </p>
     <p class="vlam-actions">
       <a class="vlam-btn" href="/get-started">Get started</a>
-      <a class="vlam-btn vlam-btn-ghost" href="/demo/" target="_self">Open demo</a>
+      <a class="vlam-btn vlam-btn-ghost" href="/demo/?scene=%2Fremote%2Fjack%2Fv%2FDehaar%2FDehaar.lcc2&cameraPosition=-9.087571%2C1.650835%2C8.85405&cameraTarget=-8.213875%2C1.673484%2C7.055121&fpv=1&orbit=0&welcome=1&effects=relight&fallback=goose" target="_self">Open demo</a>
     </p>
     <br/>
     <PreReleaseNotice variant="hero" />

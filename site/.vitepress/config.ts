@@ -71,7 +71,11 @@ export default defineConfig({
       // new tab each way just piles them up. `target` is still required -
       // it is what makes the VitePress router skip the link and do a real
       // navigation; `/demo/` is served by Vite, not a VitePress page.
-      { text: 'Demo', link: '/demo/', target: '_self' },
+      {
+        text: 'Demo',
+        link: '/demo/?scene=/remote/jack/v/Dehaar/Dehaar.lcc2&fallback=goose',
+        target: '_self',
+      },
     ],
     sidebar: {
       '/examples/': [

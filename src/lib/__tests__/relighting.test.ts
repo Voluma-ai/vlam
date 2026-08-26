@@ -130,4 +130,50 @@ describe('createRelightingShadowFactorMaterial', () => {
     hi.dispose();
     lo.dispose();
   });
+
+  it('builds with receiveUpMin 0 (every face receives)', () => {
+    const light = new THREE.DirectionalLight();
+    const material = createRelightingShadowFactorMaterial(light, { receiveUpMin: 0 });
+    expect(material.outputNode).toBeTruthy();
+    material.dispose();
+  });
+
+  it('builds with a far cascade light', () => {
+    const near = new THREE.DirectionalLight();
+    const far = new THREE.DirectionalLight();
+    const material = createRelightingShadowFactorMaterial(near, { farLight: far, nearRadius: 40 });
+    expect(material.outputNode).toBeTruthy();
+    material.dispose();
+  });
+
+  it('builds with inner, mid, and far cascade lights', () => {
+    const inner = new THREE.DirectionalLight();
+    const mid = new THREE.DirectionalLight();
+    const far = new THREE.DirectionalLight();
+    const material = createRelightingShadowFactorMaterial(inner, {
+      nearRadius: 20,
+      midLight: mid,
+      midRadius: 50,
+      farLight: far,
+    });
+    expect(material.outputNode).toBeTruthy();
+    material.dispose();
+  });
+
+  it('builds with inner, mid, outer, and far cascade lights', () => {
+    const inner = new THREE.DirectionalLight();
+    const mid = new THREE.DirectionalLight();
+    const outer = new THREE.DirectionalLight();
+    const far = new THREE.DirectionalLight();
+    const material = createRelightingShadowFactorMaterial(inner, {
+      nearRadius: 20,
+      midLight: mid,
+      midRadius: 50,
+      outerLight: outer,
+      outerRadius: 160,
+      farLight: far,
+    });
+    expect(material.outputNode).toBeTruthy();
+    material.dispose();
+  });
 });

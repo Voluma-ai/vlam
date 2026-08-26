@@ -16,9 +16,7 @@ Local site and generated API: `npm run dev` (http://localhost:5170, viewer at `/
 > Package `@voluma/vlam`, public **0.2.0**. APIs may still move before 1.0.
 
 ## Important notice!
-This is a pre-release. The API can still change in breaking ways before v1.0. Great for prototypes and experiments, not yet recommended for production.
-
-Phones and Intel/AMD integrated GPUs still need more device runs. A Galaxy S24 Ultra holds WebGPU; goose.sog is locked 60 rAF in SD and ~58 in HD, streamed million-splat views are fill-bound. On a MacBook Air M3 the demo keeps the fill-constrained (SD) preset; HD is a toggle, not the default.
+This is a pre-release not yet recommended for production. The API can still change in breaking ways before v1.0.
 
 
 ## Install

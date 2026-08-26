@@ -51,6 +51,21 @@ describe('writeShareViewSearchParams', () => {
     expect(url.searchParams.has('separate')).toBe(false);
   });
 
+  it('drops docs CTA welcome and fallback flags from a copied view', () => {
+    const url = new URL('https://vlam.voluma.ai/demo/?scene=Dehaar.lcc2&welcome=1&fallback=goose');
+    writeShareViewSearchParams(url, {
+      position: { x: 1, y: 2, z: 3 },
+      target: { x: 0, y: 0.5, z: 0 },
+      tool: 'none',
+      effect: null,
+      fpv: false,
+      orbitPlaying: true,
+    });
+    expect(url.searchParams.has('welcome')).toBe(false);
+    expect(url.searchParams.has('fallback')).toBe(false);
+    expect(url.searchParams.get('scene')).toBe('Dehaar.lcc2');
+  });
+
   it('omits default chrome so a playing orbit with no tool stays a camera link', () => {
     const url = new URL('https://vlam.voluma.ai/demo/?tool=paint&effects=demo&fpv=1&orbit=0');
     writeShareViewSearchParams(url, {

@@ -26,6 +26,11 @@ export class WorkerSorter implements SplatSorter {
   private disposed = false;
   /** The active spans the in-flight sort was computed against. */
   private sentSpans: Uint32Array | null = null;
+  private submittedCount = 0;
+  private completedCount = 0;
+  private lastSubmittedAt = -Infinity;
+  private lastCompletedAt = -Infinity;
+  private lastLatencyMs = Number.NaN;
 
   constructor(host: WorkerSorterHost) {
     this.host = host;
@@ -53,6 +58,8 @@ export class WorkerSorter implements SplatSorter {
   sort(modelView: THREE.Matrix4, _activeCount: number, _bounds: THREE.Sphere): boolean {
     if (this.disposed || this.inFlight) return false;
     this.inFlight = true;
+    this.submittedCount++;
+    this.lastSubmittedAt = performance.now();
 
     this.pushCenters(this.host.takeDirtyRows());
     const spans = this.host.getActiveSpans();
@@ -65,6 +72,23 @@ export class WorkerSorter implements SplatSorter {
     };
     this.worker.postMessage(message);
     return true;
+  }
+
+  /** Internal timing diagnostics used by the demo's opt-in XR A/B harness. */
+  snapshot(): {
+    submittedCount: number;
+    completedCount: number;
+    lastSubmittedAt: number;
+    lastCompletedAt: number;
+    lastLatencyMs: number;
+  } {
+    return {
+      submittedCount: this.submittedCount,
+      completedCount: this.completedCount,
+      lastSubmittedAt: this.lastSubmittedAt,
+      lastCompletedAt: this.lastCompletedAt,
+      lastLatencyMs: this.lastLatencyMs,
+    };
   }
 
   dispose(): void {
@@ -91,6 +115,9 @@ export class WorkerSorter implements SplatSorter {
 
   private applyOrder(order: Uint32Array): void {
     this.inFlight = false;
+    this.completedCount++;
+    this.lastCompletedAt = performance.now();
+    this.lastLatencyMs = this.lastCompletedAt - this.lastSubmittedAt;
     // An order event already dispatched when dispose ran still lands here;
     // writing it would flag a post-dispose GPU upload on the dead draw list.
     if (this.disposed) return;

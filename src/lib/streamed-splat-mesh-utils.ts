@@ -209,7 +209,8 @@ export function compareClassicSwapGroups(a: SwapGroup, b: SwapGroup): number {
 }
 
 /** One classic-path chunk want, ranked before {@link StreamedSplatMesh} issues it. */
-export type ClassicFetchPhase = 'finest-target' | 'coverage' | 'target' | 'background';
+export type ClassicFetchPhase =
+  'environment' | 'finest-target' | 'coverage' | 'target' | 'background';
 
 export interface ClassicFetchWant {
   /** Cross-mesh scheduler kind derived from {@link phase}. */
@@ -249,6 +250,8 @@ export interface ClassicFetchWant {
 
 function classicFetchPhaseRank(phase: ClassicFetchPhase): number {
   switch (phase) {
+    case 'environment':
+      return -1;
     case 'finest-target':
       return 0;
     case 'coverage':
@@ -293,6 +296,7 @@ export function stampClassicFetchGroups(
     { distance: number; count: number; inView: boolean; screenImportance: number; finest: boolean }
   >();
   for (const [file, want] of pending) {
+    if (want.phase === 'environment') continue;
     const key = classicFetchGroupKey(want, file);
     const prev = aggregates.get(key);
     if (!prev) {
@@ -314,6 +318,17 @@ export function stampClassicFetchGroups(
     prev.count++;
   }
   for (const [file, want] of pending) {
+    if (want.phase === 'environment') {
+      want.kind = 'priority';
+      want.groupDistance = 0;
+      want.groupPending = 1;
+      want.groupInView = true;
+      want.groupScreenImportance = Number.NEGATIVE_INFINITY;
+      want.groupFinest = true;
+      want.groupId = 'environment';
+      want.groupClass = 0;
+      continue;
+    }
     const groupId = classicFetchGroupKey(want, file);
     const agg = aggregates.get(groupId);
     if (!agg) continue;
@@ -485,7 +500,10 @@ export function compareClassicFetches(
     if (phase === 'background') return 2;
     return 1; // target + finest-target
   };
+  const envA = a.phase === 'environment' ? 0 : 1;
+  const envB = b.phase === 'environment' ? 0 : 1;
   return (
+    envA - envB ||
     classA - classB ||
     finestA - finestB ||
     screenA - screenB ||

@@ -81,15 +81,27 @@ import {
 } from './xr-session';
 import {
   applyStaticChrome,
+  parseGooseFallbackParam,
+  parseWelcomeExpandedParam,
   resolveViewerPreset,
   viewerChromeForPreset,
   type ViewerChrome,
 } from './chrome';
 import { whenDocumentVisible } from './when-document-visible';
+import { installPageResourceLifecycle } from './page-resource-lifecycle';
 import { setRendererMsaa, getRendererMsaaSamples } from './renderer-msaa';
 import { DoubleTapDetector } from './double-tap';
 import { sampleTeleportTransition, type TeleportTransition } from './teleport-transition';
 import { PressForwardDetector } from './press-forward';
+import { XrDiagnostics, type XrSortDiagnosticsSnapshot } from './xr-diagnostics';
+import {
+  XrSortCadence,
+  applyXrDepthMode,
+  resolveXrFoveation,
+  resolveXrStabilityOptions,
+  restoreXrDepthMode,
+  type XrMaterialState,
+} from './xr-stability';
 import {
   baseDistanceForOrbitalCameraPath,
   CINEMATIC_ORBIT_DURATION,
@@ -224,6 +236,7 @@ const PERF_MODE_BUDGET = 1_000_000;
 const PERF_MODE_STORAGE_KEY = 'vlam:performance-mode-v2';
 const PERF_MODE_STORAGE_KEY_LEGACY = 'vlam:performance-mode';
 const CINEMATIC_ORBIT_STORAGE_KEY = 'vlam:cinematic-orbit';
+const XR_SKIP_SORT_OPTIONS = { sort: false } as const;
 
 /**
  * Performance-mode state: on by default where the GPU needs it (mobile and
@@ -557,6 +570,13 @@ async function main(): Promise<void> {
     (renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true
       ? 'WebGPU'
       : 'WebGL2';
+  const xrStability = resolveXrStabilityOptions(params, {
+    isHeadset: deviceProfile.isHeadset === true,
+    backend: backendName,
+    recommendedFramebufferScale: recommendedXrFramebufferScale(deviceProfile),
+  });
+  const xrSortCadence = new XrSortCadence(xrStability.sortHz);
+  const xrDiagnostics = xrStability.diagnostics ? new XrDiagnostics() : null;
 
   // Graceful device loss (M4.4): a lost GPU device (driver reset, sleep,
   // resource pressure) otherwise leaves a silently frozen canvas. Stop the
@@ -590,21 +610,33 @@ async function main(): Promise<void> {
   // (D3D12 `E_OUTOFMEMORY` creating the command queue) and the viewer quietly
   // running on WebGL2 until the browser is restarted.
   //
-  // `pagehide` rather than `unload`, which browsers skip for bfcache-eligible
-  // pages; `persisted` means the document may still be restored, so its device
-  // has to survive. `renderer.dispose()` destroys the device only when three
-  // created it (`WebGPUBackend.dispose` leaves a supplied one alone), hence the
-  // explicit `destroy()` for the device this module owns.
-  window.addEventListener('pagehide', (event) => {
-    if (event.persisted) return;
-    renderer.dispose();
-    // The device `createSplatRenderer` owns, read back off the backend - three
-    // leaves a supplied device alone, so nothing else would destroy it.
-    (renderer.backend as { device?: { destroy?: () => void } }).device?.destroy?.();
-  });
+  // Quest Browser can retain several viewer documents in bfcache while the XR
+  // harness moves back and forth between tests. Each retained WebGL context
+  // consumes scarce GPU resources until context creation fails. Always dispose
+  // on pagehide; if bfcache restores this now-empty document, reload it to
+  // construct one fresh renderer. The explicit device destroy covers the
+  // WebGPU device supplied by createSplatRenderer, which three leaves alone.
+  installPageResourceLifecycle(
+    window,
+    () => {
+      renderer.dispose();
+      (renderer.backend as { device?: { destroy?: () => void } }).device?.destroy?.();
+    },
+    () => location.reload(),
+  );
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x1a1a1f);
+
+  // Opaque world-locked reference for the Quest A/B harness. If this cube
+  // trails with the goose, the fault is frame pacing or XR pose delivery; if
+  // only the goose moves, investigate splat sorting/depth instead.
+  const xrDiagnosticProbe = new THREE.Mesh(
+    new THREE.BoxGeometry(1, 1, 1),
+    new THREE.MeshBasicMaterial({ color: 0x33ff88 }),
+  );
+  xrDiagnosticProbe.visible = false;
+  scene.add(xrDiagnosticProbe);
 
   const camera = new THREE.PerspectiveCamera(
     60,
@@ -633,6 +665,44 @@ async function main(): Promise<void> {
   const xrRig = new THREE.Group();
   let xrCameraState: XrCameraState | null = null;
   let xrPlacementPending = false;
+  let xrMaterialState: XrMaterialState | null = null;
+  const restoreXrMaterial = (): void => {
+    restoreXrDepthMode(xrMaterialState);
+    xrMaterialState = null;
+  };
+  const applyXrMaterial = (mesh: SplatMesh): void => {
+    restoreXrMaterial();
+    if (xrStability.depthAlphaThreshold !== null) {
+      xrMaterialState = applyXrDepthMode(mesh, xrStability.depthAlphaThreshold);
+    }
+  };
+  const placeXrDiagnosticProbe = (mesh: SplatMesh): void => {
+    mesh.updateWorldMatrix(true, false);
+    const bounds = mesh.computeSplatBounds().applyMatrix4(mesh.matrixWorld);
+    if (bounds.isEmpty()) return;
+    const size = bounds.getSize(new THREE.Vector3());
+    const edge = Math.max(size.x, size.y, size.z, 1e-4) * 0.12;
+    const center = bounds.getCenter(new THREE.Vector3());
+    xrDiagnosticProbe.scale.setScalar(edge);
+    xrDiagnosticProbe.position.set(bounds.max.x + edge, center.y, center.z);
+    xrDiagnosticProbe.updateMatrixWorld();
+  };
+  const workerSortSnapshot = (mesh: SplatMesh): XrSortDiagnosticsSnapshot | null => {
+    const sorter = (
+      mesh as unknown as {
+        sorter?: {
+          kind?: string;
+          snapshot?: () => XrSortDiagnosticsSnapshot;
+        };
+      }
+    ).sorter;
+    return sorter?.kind === 'worker' && sorter.snapshot ? sorter.snapshot() : null;
+  };
+  const logXrDiagnostics = (final: boolean): void => {
+    if (!xrDiagnostics || !mounted) return;
+    const report = xrDiagnostics.report(performance.now(), workerSortSnapshot(splats), final);
+    console.info('XR_DIAGNOSTIC', JSON.stringify({ ...report, config: xrStability }));
+  };
   /** Applies the XR framebuffer cap while presenting, the page budget otherwise. */
   const applySplatBudget = (mesh: SplatMesh | undefined = splats): void => {
     // A pinned ?budget is an explicit A/B choice and wins everywhere, in
@@ -661,16 +731,13 @@ async function main(): Promise<void> {
         // uses the budget and fixed-foveation levers below instead.
         const xrFramebufferScale = xrFramebufferScaleForBackend(
           backendName,
-          recommendedXrFramebufferScale(),
+          xrStability.framebufferScale,
         );
         if (xrFramebufferScale !== null) {
           // Must precede the session: three warns and ignores this once presenting.
           renderer.xr.setFramebufferScaleFactor(xrFramebufferScale);
         }
-        const foveationParam = Number(params.get('foveation'));
-        const foveation = Number.isFinite(foveationParam)
-          ? THREE.MathUtils.clamp(foveationParam, 0, 1)
-          : 1;
+        const foveation = resolveXrFoveation(params.get('foveation'));
         renderer.xr.setFoveation(foveation);
         renderer.xr.addEventListener('sessionstart', () => {
           // Save the exact desktop eye pose and lens before three starts
@@ -683,6 +750,16 @@ async function main(): Promise<void> {
           xrRig.updateMatrixWorld(true);
           scene.add(xrRig);
           xrRig.add(camera);
+          xrSortCadence.reset();
+          if (mounted) {
+            applyXrMaterial(splats);
+            placeXrDiagnosticProbe(splats);
+          }
+          xrDiagnosticProbe.visible = xrDiagnostics !== null;
+          const activeSession = renderer.xr.getSession();
+          if (activeSession) {
+            xrDiagnostics?.begin(activeSession, performance.now(), workerSortSnapshot(splats));
+          }
           // Re-assert foveation: three re-applies the stored value itself when
           // it builds a *GL* layer, but `_initWebGPUSession` does not, so on a
           // WebGPU-backed session the pre-session value is dropped on the floor.
@@ -697,6 +774,10 @@ async function main(): Promise<void> {
           applySplatBudget();
         });
         renderer.xr.addEventListener('sessionend', () => {
+          logXrDiagnostics(true);
+          restoreXrMaterial();
+          xrDiagnosticProbe.visible = false;
+          xrSortCadence.reset();
           // three leaves its last head pose and union projection on the
           // application camera. Restore the exact desktop state before
           // camera-controls resumes.
@@ -711,6 +792,7 @@ async function main(): Promise<void> {
           xrRig.updateMatrixWorld(true);
           controls.update(0);
           applySplatBudget();
+          refreshOverlay();
         });
         if (chrome.enterVr) {
           buildEnterVrButton(renderer, (message, offerWebGl) => {
@@ -1408,6 +1490,10 @@ async function main(): Promise<void> {
    * collapses the panel again.
    */
   let welcomeExpanded = false;
+  const keepWelcomeExpanded =
+    chrome.welcome === 'full' && parseWelcomeExpandedParam(params.get('welcome'));
+  const gooseFallback = parseGooseFallbackParam(params.get('fallback'));
+  let usedGooseFallback = false;
   /**
    * Full welcome panel on the built-in goose; after any other scene, a single
    * drop-hint line with an expand toggle. Embed (`drop-hint`) is unchanged.
@@ -1564,6 +1650,8 @@ async function main(): Promise<void> {
   //   distance  - false-color by camera distance (same band edges as LCC LODs)
   // `?tool=paint` is enough to arm paint without a separate effects value.
   let effectMode = params.get('effects') ?? (toolFromUrl === 'paint' ? 'paint' : null);
+  /** Parks the visual effect while paint owns the stack; cleared on a local pick. */
+  let parkedEffect: string | null = effectMode === 'paint' ? null : effectMode;
   // `defineChannel` throws on a redefinition, so a streamed scene's mask is
   // defined once however many times paint is toggled.
   let streamedMaskDefined = false;
@@ -1579,15 +1667,40 @@ async function main(): Promise<void> {
   /** True after `?proxy=` fails so the effect option can hide. */
   let relightProxyFailed = false;
   const relightProxyUrl = params.get('proxy');
+  /** Dropped once a local file/folder is picked so `?proxy=` does not follow it. */
+  let useUrlRelightProxy = relightProxyUrl !== null;
+  /**
+   * After a local pick, ignore the outgoing mesh's collision until the new
+   * scene's `attachCollision` runs.
+   */
+  let suppressStaleRelightOption = false;
   let relightProxy: RelightingProxy | null = null;
   let relightScene: THREE.Scene | null = null;
   let relightTarget: THREE.RenderTarget | null = null;
   let relightSun: THREE.DirectionalLight | null = null;
+  let relightMidSun: THREE.DirectionalLight | null = null;
+  let relightOuterSun: THREE.DirectionalLight | null = null;
+  let relightFarSun: THREE.DirectionalLight | null = null;
   /** Shadow-factor material owned by the demo (proxy group borrows it). */
   let relightFactorMaterial: THREE.MeshStandardNodeMaterial | null = null;
-  /** World-space focus the demo sun orbits (proxy / scene center). */
-  const relightFocus = new THREE.Vector3();
   let relightOrbitRadius = 8;
+  /** Ortho half-extent of the far (scene-sized) sun shadow map. */
+  let relightShadowRadius = 80;
+  /** Ortho half-extent of the inner (close) cascade. */
+  let relightNearRadius = 20;
+  /** Ortho half-extent of the mid cascade. */
+  let relightMidRadius = 50;
+  /** Ortho half-extent of the outer cascade (before scene-sized far). */
+  let relightOuterRadius = 160;
+  const relightSunDir = new THREE.Vector3();
+  const relightShadowFocus = new THREE.Vector3();
+  const relightNearFocus = new THREE.Vector3();
+  const relightMidFocus = new THREE.Vector3();
+  const relightOuterFocus = new THREE.Vector3();
+  const relightCamForward = new THREE.Vector3();
+  const relightLightSpace = new THREE.Vector3();
+  const relightSnapDelta = new THREE.Vector3();
+  const relightShadowOrigin = new THREE.Vector3();
   const relightClearColor = new THREE.Color();
   const relightSize = new THREE.Vector2();
   const relightBoundsSize = new THREE.Vector3();
@@ -1599,11 +1712,21 @@ async function main(): Promise<void> {
   const relightCastMeshAvailable = (): boolean => {
     if ((relightExternalGeometries?.length ?? 0) > 0) return true;
     if ((collisionTilesForRelight?.length ?? 0) > 0) return true;
-    if (mounted && splats instanceof StreamedSplatMesh && splats.hasCollisionMeshes) {
+    if (
+      !suppressStaleRelightOption &&
+      mounted &&
+      splats instanceof StreamedSplatMesh &&
+      splats.hasCollisionMeshes
+    ) {
       return true;
     }
     // Deep-link with ?proxy=…: keep the option visible while the GLB loads.
-    if (relightProxyUrl && !relightProxyFailed && relightExternalGeometries === null) {
+    if (
+      useUrlRelightProxy &&
+      relightProxyUrl &&
+      !relightProxyFailed &&
+      relightExternalGeometries === null
+    ) {
       return true;
     }
     // Chrome mounts before the first scene; do not wipe `?effects=relight` yet.
@@ -1621,7 +1744,14 @@ async function main(): Promise<void> {
     relightFactorMaterial = null;
     relightProxy?.dispose();
     relightProxy = null;
+    relightSun?.dispose();
+    relightMidSun?.dispose();
+    relightOuterSun?.dispose();
+    relightFarSun?.dispose();
     relightSun = null;
+    relightMidSun = null;
+    relightOuterSun = null;
+    relightFarSun = null;
     relightScene = null;
     relightTarget?.dispose();
     relightTarget = null;
@@ -1683,40 +1813,58 @@ async function main(): Promise<void> {
     relightScene.add(relightProxy.group);
 
     const bounds = new THREE.Box3().setFromObject(relightProxy.group);
-    if (bounds.isEmpty()) {
-      bounds.copy(mesh.computeSplatBounds()).applyMatrix4(mesh.matrixWorld);
-    }
-    bounds.getCenter(relightFocus);
+    const splatBounds = mesh.computeSplatBounds().clone().applyMatrix4(mesh.matrixWorld);
+    if (bounds.isEmpty()) bounds.copy(splatBounds);
+    else if (!splatBounds.isEmpty()) bounds.union(splatBounds);
+    bounds.getCenter(relightShadowFocus);
     bounds.getSize(relightBoundsSize);
     const extent = Math.max(relightBoundsSize.x, relightBoundsSize.y, relightBoundsSize.z, 1);
     relightOrbitRadius = Math.max(extent * 0.85, 2);
-    const shadowExtent = extent * 0.55;
+    // Cover the full proxy + splat bounds. Slope-gated receive keeps foliage
+    // from sparkling; a camera-fitted box was clipping umbras past ~20–140 m.
+    // A light-space axis can combine horizontal and vertical extents. The
+    // half-diagonal encloses the box for every sun angle; max(XZ, Y) does not.
+    relightShadowRadius = Math.max(relightBoundsSize.length() * 0.5, 8) * 1.1;
+    relightNearRadius = 20;
+    relightMidRadius = 50;
+    // Blend to scene starts at ~0.7×outerRadius — keep that past 100 m so the
+    // mid/outer band does not sample the coarse scene map early.
+    relightOuterRadius = 160;
+
+    const configureSun = (
+      light: THREE.DirectionalLight,
+      mapSize: number,
+      bias: number,
+      normalBias: number,
+    ): void => {
+      light.castShadow = true;
+      light.shadow.mapSize.set(mapSize, mapSize);
+      light.shadow.bias = bias;
+      light.shadow.normalBias = normalBias;
+      light.shadow.radius = 2;
+      relightScene!.add(light);
+      relightScene!.add(light.target);
+    };
 
     relightSun = new THREE.DirectionalLight(0xffffff, 1);
-    relightSun.castShadow = true;
-    relightSun.shadow.mapSize.set(2048, 2048);
-    // Bias high enough to reduce triangle-edge self-shadow (reads as mesh outline).
-    relightSun.shadow.bias = -0.0015;
-    relightSun.shadow.normalBias = 0.12;
-    relightSun.shadow.radius = 8;
-    const shadowCam = relightSun.shadow.camera;
-    shadowCam.left = -shadowExtent;
-    shadowCam.right = shadowExtent;
-    shadowCam.top = shadowExtent;
-    shadowCam.bottom = -shadowExtent;
-    shadowCam.near = 0.5;
-    shadowCam.far = relightOrbitRadius * 2 + extent;
-    shadowCam.updateProjectionMatrix();
-    relightSun.target.position.copy(relightFocus);
-    relightSun.position.set(
-      relightFocus.x + relightOrbitRadius * 0.6,
-      relightFocus.y + relightOrbitRadius * 0.85,
-      relightFocus.z + relightOrbitRadius * 0.35,
-    );
-    relightScene.add(relightSun);
-    relightScene.add(relightSun.target);
+    configureSun(relightSun, 2048, -0.002, 0.12);
+    relightMidSun = new THREE.DirectionalLight(0xffffff, 1);
+    configureSun(relightMidSun, 2048, -0.0025, 0.2);
+    relightOuterSun = new THREE.DirectionalLight(0xffffff, 1);
+    configureSun(relightOuterSun, 4096, -0.003, 0.22);
+    relightFarSun = new THREE.DirectionalLight(0xffffff, 1);
+    const farTexel = (2 * relightShadowRadius) / 2048;
+    configureSun(relightFarSun, 2048, -0.004, Math.max(0.35, farTexel * 1.5));
 
-    relightFactorMaterial = createRelightingShadowFactorMaterial(relightSun, { umbra: 0.5 });
+    relightFactorMaterial = createRelightingShadowFactorMaterial(relightSun, {
+      umbra: 0.5,
+      nearRadius: relightNearRadius,
+      midLight: relightMidSun,
+      midRadius: relightMidRadius,
+      outerLight: relightOuterSun,
+      outerRadius: relightOuterRadius,
+      farLight: relightFarSun,
+    });
     relightFactorMaterial.side = THREE.FrontSide;
     relightProxy.group.traverse((obj) => {
       if (!(obj instanceof THREE.Mesh)) return;
@@ -1728,24 +1876,74 @@ async function main(): Promise<void> {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
+    const placeSun = (
+      light: THREE.DirectionalLight,
+      focus: THREE.Vector3,
+      radius: number,
+      distance: number,
+    ): void => {
+      light.position.copy(focus).addScaledVector(relightSunDir, distance);
+      light.target.position.copy(focus);
+      light.target.updateMatrixWorld();
+      light.updateMatrixWorld();
+      const shadowCam = light.shadow.camera;
+      shadowCam.left = -radius;
+      shadowCam.right = radius;
+      shadowCam.top = radius;
+      shadowCam.bottom = -radius;
+      shadowCam.near = 0.5;
+      shadowCam.far = distance + radius;
+      shadowCam.updateProjectionMatrix();
+      light.shadow.updateMatrices(light);
+      const texel = (2 * radius) / Math.max(light.shadow.mapSize.x, 1);
+      relightLightSpace.copy(focus).applyMatrix4(shadowCam.matrixWorldInverse);
+      const snappedX = Math.round(relightLightSpace.x / texel) * texel;
+      const snappedY = Math.round(relightLightSpace.y / texel) * texel;
+      relightShadowOrigin.set(0, 0, 0).applyMatrix4(shadowCam.matrixWorld);
+      relightSnapDelta
+        .set(relightLightSpace.x - snappedX, relightLightSpace.y - snappedY, 0)
+        .applyMatrix4(shadowCam.matrixWorld)
+        .sub(relightShadowOrigin);
+      light.position.add(relightSnapDelta);
+      light.target.position.add(relightSnapDelta);
+      light.target.updateMatrixWorld();
+    };
+
+    const applyRelightSun = (elapsed: number): void => {
+      if (!relightSun || !relightMidSun || !relightOuterSun || !relightFarSun) return;
+      const angle = elapsed * 0.05625;
+      relightSunDir.set(Math.cos(angle), 0.75, Math.sin(angle)).normalize();
+      camera.getWorldDirection(relightCamForward);
+      relightNearFocus
+        .copy(camera.position)
+        .addScaledVector(relightCamForward, relightNearRadius * 0.55);
+      relightMidFocus
+        .copy(camera.position)
+        .addScaledVector(relightCamForward, relightMidRadius * 0.55);
+      relightOuterFocus
+        .copy(camera.position)
+        .addScaledVector(relightCamForward, relightOuterRadius * 0.55);
+      const innerDist = Math.max(relightOrbitRadius * 0.2, relightNearRadius * 2);
+      const midDist = Math.max(relightOrbitRadius * 0.35, relightMidRadius * 2);
+      const outerDist = Math.max(relightOrbitRadius * 0.5, relightOuterRadius * 2);
+      const farDist = Math.max(relightOrbitRadius, relightShadowRadius * 2);
+      placeSun(relightSun, relightNearFocus, relightNearRadius, innerDist);
+      placeSun(relightMidSun, relightMidFocus, relightMidRadius, midDist);
+      placeSun(relightOuterSun, relightOuterFocus, relightOuterRadius, outerDist);
+      placeSun(relightFarSun, relightShadowFocus, relightShadowRadius, farDist);
+    };
+    applyRelightSun(0);
+
     const target = ensureRelightTarget();
     mesh.setRelighting({
       map: target.texture,
       blend: 1,
       brightness: 1,
       background: 1,
-      softness: 0,
+      softness: 2,
     });
     updateEffects = (t) => {
-      if (!relightSun) return;
-      const r = relightOrbitRadius;
-      relightSun.position.set(
-        relightFocus.x + Math.cos(t * 0.45) * r,
-        relightFocus.y + r * 0.75,
-        relightFocus.z + Math.sin(t * 0.45) * r,
-      );
-      relightSun.target.position.copy(relightFocus);
-      relightSun.target.updateMatrixWorld();
+      applyRelightSun(t);
     };
   };
 
@@ -2008,6 +2206,7 @@ async function main(): Promise<void> {
    * the user has already moved on to another scene.
    */
   const attachCollision = (mesh: SplatMesh): void => {
+    suppressStaleRelightOption = false;
     collisionSequence++;
     collisionWorld?.dispose();
     collisionWorld = null;
@@ -2200,7 +2399,7 @@ async function main(): Promise<void> {
    */
   const applyScene = async (
     next: LoadedScene,
-    options: { frame?: boolean; sideView?: boolean } = {},
+    options: { frame?: boolean; sideView?: boolean; keepWelcome?: boolean } = {},
   ): Promise<void> => {
     if (options.frame ?? true) perfHud?.reset();
     hudSortCount = 0;
@@ -2211,6 +2410,7 @@ async function main(): Promise<void> {
     // separation tool needs, so it drives the origin rather than a second flag.
     const sceneSwapOrigin = (options.frame ?? true) ? 'external' : 'self';
     if (mounted) {
+      restoreXrMaterial();
       scene.remove(splats);
       splats.dispose();
       // The paint tool holds the old mesh's range handles and cannot survive
@@ -2245,6 +2445,10 @@ async function main(): Promise<void> {
     if (!next.preservesTransform && userScale) next.mesh.scale.multiply(userScale);
     next.mesh.updateMatrixWorld();
     scene.add(next.mesh);
+    if (renderer.xr.isPresenting) {
+      applyXrMaterial(next.mesh);
+      placeXrDiagnosticProbe(next.mesh);
+    }
     if (options.frame ?? true) suppressStreamedUpdate = true;
     mounted = true;
     if (
@@ -2390,8 +2594,9 @@ async function main(): Promise<void> {
     // and leave this flag alone.
     if (options.frame ?? true) {
       isDefaultGoose = options.sideView === true;
-      // A new non-goose scene always starts collapsed; goose restores the full panel.
-      welcomeExpanded = false;
+      // A new non-goose scene starts collapsed unless the docs CTA asked to
+      // keep the file pickers open (`?welcome=1` via `keepWelcome`).
+      welcomeExpanded = (options.keepWelcome ?? false) && !isDefaultGoose;
       syncWelcomePanel();
     }
     // The preview goes into its own slot, so order relative to attachEffects
@@ -2542,6 +2747,37 @@ async function main(): Promise<void> {
   // Set once a dropped scene is actually on screen, so the initial URL scene
   // does not mount on top of it when its own load finishes.
   let dropMounted = false;
+  /** Picker UI sync assigned once the chrome exists; a drop during first load skips it. */
+  let applyPickerReset: (() => void) | null = null;
+  /** True after a local pick so chrome that mounts later starts at none. */
+  let localPickClearedChrome = false;
+
+  const disposeRelightExternalGeometries = (): void => {
+    for (const geometry of relightExternalGeometries ?? []) geometry.dispose();
+    relightExternalGeometries = null;
+  };
+
+  /**
+   * A local file or folder is a new capture. Drop the previous tool, effect,
+   * and any `?proxy=` lighting mesh so relight only comes back if this scene
+   * ships its own collision.
+   */
+  const resetChromeForLocalPick = (): void => {
+    localPickClearedChrome = true;
+    parkedEffect = null;
+    effectMode = null;
+    paintTool = null;
+    pointerTool = 'none';
+    useUrlRelightProxy = false;
+    suppressStaleRelightOption = true;
+    relightProxyLoadSeq++;
+    disposeRelightExternalGeometries();
+    relightProxyFailed = false;
+    collisionTilesForRelight = null;
+    if (mounted) attachEffects(splats);
+    refreshRelightEffectOption();
+    applyPickerReset?.();
+  };
 
   /**
    * Mounts one self-contained local file. Shared by the drop zone and the
@@ -2549,6 +2785,7 @@ async function main(): Promise<void> {
    * guard, progress reporting and error cards a dropped one gets.
    */
   const loadLocalFile = (file: File): void => {
+    resetChromeForLocalPick();
     // A superseded drop (a second file, or one overtaken by the scene that
     // was already loading) must not resurrect its scene when it decodes.
     const sequence = ++dropSequence;
@@ -2626,6 +2863,7 @@ async function main(): Promise<void> {
 
   /** Mounts a local scene folder. Shared by the drop zone and the folder picker. */
   const loadLocalDirectory = (files: Map<string, File>, name: string): void => {
+    resetChromeForLocalPick();
     const sequence = ++dropSequence;
     hideError();
     // Collapses once mounted, same as the single-file path.
@@ -2732,6 +2970,7 @@ async function main(): Promise<void> {
     }
   }
 
+  if (keepWelcomeExpanded) syncWelcomePanel({ forceExpanded: true });
   refreshOverlay();
   try {
     await loadInitialScene();
@@ -2739,19 +2978,46 @@ async function main(): Promise<void> {
     // Not fatal to the viewer any more: the drop zone is already live and the
     // render loop below still starts, so a viewer whose ?scene= is broken can
     // drop a local file and carry on rather than being stuck on a dead page.
-    const info = describeLoadError(error, sceneLabel(sceneName));
-    showError({
-      title: info.title,
-      message: `${info.message} You can drop a local splat file to view one instead.`,
-      ...(info.retryable ? { action: { label: 'Retry', onClick: () => location.reload() } } : {}),
-    });
-    // The panel is normally reserved for the default goose, but a `?scene=`
-    // that failed is exactly when its pickers (and parked URL box) are wanted:
-    // force the full panel open so a typo is one edit away from fixed.
-    if (chrome.welcome !== 'none') syncWelcomePanel({ forceExpanded: true });
-    console.error(error);
+    const showInitialLoadError = (failed: unknown): void => {
+      const info = describeLoadError(failed, sceneLabel(sceneName));
+      showError({
+        title: info.title,
+        message: `${info.message} You can drop a local splat file to view one instead.`,
+        ...(info.retryable ? { action: { label: 'Retry', onClick: () => location.reload() } } : {}),
+      });
+      // The panel is normally reserved for the default goose, but a `?scene=`
+      // that failed is exactly when its pickers (and parked URL box) are wanted:
+      // force the full panel open so a typo is one edit away from fixed.
+      if (chrome.welcome !== 'none') syncWelcomePanel({ forceExpanded: true });
+      console.error(failed);
+    };
+    if (gooseFallback && sceneName !== DEFAULT_SCENE) {
+      try {
+        loadingTitle = sceneLabel(DEFAULT_SCENE);
+        refreshOverlay();
+        const data = await loadScene(resolveSceneUrl(DEFAULT_SCENE), {
+          onProgress: (loaded, total) => {
+            if (!dropMounted) loadingProgress = { loaded, total };
+          },
+        });
+        if (!dropMounted) {
+          await applyScene(buildStaticScene(data, sceneLabel(DEFAULT_SCENE)), {
+            sideView: true,
+          });
+        }
+        usedGooseFallback = true;
+        console.error(error);
+      } catch (fallbackError) {
+        showInitialLoadError(error);
+        console.error(fallbackError);
+      }
+    } else {
+      showInitialLoadError(error);
+    }
   }
-  setInterval(refreshOverlay, 250);
+  setInterval(() => {
+    if (!renderer.xr.isPresenting) refreshOverlay();
+  }, 250);
 
   /** Loads and mounts the `?scene=` scene the page was opened with. */
   async function loadInitialScene(): Promise<void> {
@@ -2769,6 +3035,7 @@ async function main(): Promise<void> {
       if (!dropMounted) {
         await applyScene(buildStaticScene(data, sceneLabel(sceneName)), {
           sideView: isDefaultGoose,
+          keepWelcome: keepWelcomeExpanded,
         });
         // applyScene syncs the welcome panel (full for goose, collapsed otherwise).
       }
@@ -2820,13 +3087,16 @@ async function main(): Promise<void> {
     if (dropMounted) {
       mesh.dispose();
     } else {
-      await applyScene({
-        mesh,
-        data: null,
-        title: sceneLabel(sceneName),
-        note: '',
-        paint: null,
-      });
+      await applyScene(
+        {
+          mesh,
+          data: null,
+          title: sceneLabel(sceneName),
+          note: '',
+          paint: null,
+        },
+        { keepWelcome: keepWelcomeExpanded },
+      );
     }
   }
 
@@ -2836,7 +3106,8 @@ async function main(): Promise<void> {
   // framing or the hold would capture the fitted camera instead.
   const benchmarkCameraPosition = parseVector3Param(params.get('cameraPosition'));
   const benchmarkCameraTarget = parseVector3Param(params.get('cameraTarget'));
-  if (benchmarkCameraPosition && benchmarkCameraTarget) {
+  // The docs CTA camera is framed for Dehaar; skip it if goose had to stand in.
+  if (!usedGooseFallback && benchmarkCameraPosition && benchmarkCameraTarget) {
     controls.setLookAt(
       benchmarkCameraPosition.x,
       benchmarkCameraPosition.y,
@@ -3573,7 +3844,7 @@ async function main(): Promise<void> {
     // rig-local (and runtime-driven) while presenting.
     if (mounted && !presenting && !nearL0HoldActive) updateFloorProbe();
     // Spray only after a press classified as a splat hit (camera stays locked).
-    if (sprayPointerId !== null) sprayPaintAtCursor();
+    if (!presenting && sprayPointerId !== null) sprayPaintAtCursor();
     try {
       // Render the mirror view first: it sorts the shared order buffer for the
       // reflected camera, and the main update() below then re-sorts for the
@@ -3585,13 +3856,17 @@ async function main(): Promise<void> {
       if (mounted && !presenting && !nearL0HoldActive) renderRelightPass();
       // `mounted` is false only when the initial scene failed to load: keep
       // drawing the empty scene so a dropped file has a live loop to land in.
-      if (mounted) separateTool?.update(timer.getElapsed());
-      if (mounted && !suppressStreamedUpdate) splats.update(camera, renderer);
+      if (mounted && !presenting) separateTool?.update(timer.getElapsed());
+      if (mounted && !suppressStreamedUpdate) {
+        const sortThisFrame =
+          !presenting || backendName !== 'WebGL2' || xrSortCadence.shouldAttempt(timestamp);
+        splats.update(camera, renderer, sortThisFrame ? undefined : XR_SKIP_SORT_OPTIONS);
+      }
       if (mounted && splats instanceof StreamedSplatMesh && nearL0HoldActive) {
         const reveal = splats.initialRevealState;
         if (reveal.status === 'pending') {
           splats.visible = false;
-          refreshOverlay();
+          if (!presenting) refreshOverlay();
         } else {
           // ready or degraded: reveal and unlock. Fade the overlay briefly.
           splats.visible = true;
@@ -3603,10 +3878,10 @@ async function main(): Promise<void> {
               `Startup hold degraded (${reveal.reason}); resuming progressive streaming.`,
             );
           }
-          refreshOverlay();
+          if (!presenting) refreshOverlay();
         }
       }
-      if (nearL0RevealFadeUntil > 0) {
+      if (!presenting && nearL0RevealFadeUntil > 0) {
         const remaining = nearL0RevealFadeUntil - performance.now();
         if (chrome.overlay) {
           if (remaining <= 0) {
@@ -3621,7 +3896,7 @@ async function main(): Promise<void> {
       }
       renderer.render(scene, camera);
       // After the render, so labels use the camera the frame was drawn with.
-      updateAnnotationOverlay();
+      if (!presenting) updateAnnotationOverlay();
     } catch (error) {
       // A per-frame failure (e.g. a scene too large for the device's texture
       // limit) would otherwise spam the console and freeze the canvas. Surface
@@ -3635,13 +3910,18 @@ async function main(): Promise<void> {
       console.error(error);
       return;
     }
-    sampleFps();
-    if (perfHud) {
+    const cpuFrameMs = performance.now() - cpuFrameStartedAt;
+    if (presenting && xrDiagnostics) {
+      xrDiagnostics.recordFrame(timestamp, cpuFrameMs);
+      if (xrDiagnostics.shouldReport(timestamp)) logXrDiagnostics(false);
+    }
+    if (!presenting) sampleFps();
+    if (perfHud && !presenting) {
       const mesh = splats;
       renderer.getDrawingBufferSize(drawingBufferSize);
       perfHud.record(
         {
-          cpuFrameMs: performance.now() - cpuFrameStartedAt,
+          cpuFrameMs,
           activeSplats: mesh?.activeSplatCount ?? 0,
           budget: mesh instanceof StreamedSplatMesh ? mesh.budget : (mesh?.activeSplatCount ?? 0),
           ...(mesh instanceof StreamedSplatMesh ? { chunks: mesh.residentChunkCount } : {}),
@@ -3728,9 +4008,8 @@ async function main(): Promise<void> {
     // *tool* to the user, so the two pickers have to agree: entering paint
     // parks the visual effect and greys its control out, leaving paint puts
     // the parked effect back.
-    let parkedEffect: string | null = effectMode === 'paint' ? null : effectMode;
     const effectPicker = buildEffectPicker(
-      effectMode === 'paint' ? null : effectMode,
+      localPickClearedChrome || effectMode === 'paint' ? null : effectMode,
       (mode) => {
         parkedEffect = mode;
         void setEffect(mode);
@@ -3749,8 +4028,11 @@ async function main(): Promise<void> {
     const PAINT_OWNS_EFFECTS = 'Paint owns the modifier stack - switch the tool to change effects.';
     // Paint owns the stack, so `?effects=paint` wins over any other `?tool=`.
     // Otherwise honor `?tool=`, then the legacy `?separate` deep link.
-    const initialTool: ViewerTool =
-      effectMode === 'paint' ? 'paint' : (toolFromUrl ?? (separateMode ? 'select' : 'none'));
+    const initialTool: ViewerTool = localPickClearedChrome
+      ? 'none'
+      : effectMode === 'paint'
+        ? 'paint'
+        : (toolFromUrl ?? (separateMode ? 'select' : 'none'));
     const toolPicker = buildToolPicker(initialTool, (tool) => {
       if (tool === 'paint') {
         effectPicker.setValue(null);
@@ -3768,6 +4050,12 @@ async function main(): Promise<void> {
       setPointerTool(tool);
     });
     if (effectMode === 'paint') effectPicker.setEnabled(false, PAINT_OWNS_EFFECTS);
+    applyPickerReset = () => {
+      effectPicker.setEnabled(true);
+      effectPicker.setValue(null);
+      toolPicker.setValue('none');
+      setPointerTool('none');
+    };
     // The measure readout and any future per-tool controls live here.
     toolSlot = toolPicker.slot;
     // The picker reports changes, not its starting value - arm the initial

@@ -45,7 +45,8 @@ export function parseOrbitPlayingParam(value: string | null): boolean | null {
 /**
  * Writes camera pose and demo chrome onto a share URL.
  * Defaults stay off the query: no `tool` when none, no `fpv` when orbiting,
- * no `orbit` while the cinematic path is playing.
+ * no `orbit` while the cinematic path is playing. Docs CTA flags (`welcome`,
+ * `fallback`) are stripped so a copied link is a plain `?scene=` view.
  */
 export function writeShareViewSearchParams(url: URL, state: ShareViewState): void {
   url.searchParams.set('cameraPosition', formatShareVector3(state.position));
@@ -59,4 +60,6 @@ export function writeShareViewSearchParams(url: URL, state: ShareViewState): voi
   else url.searchParams.delete('fpv');
   if (!state.orbitPlaying) url.searchParams.set('orbit', '0');
   else url.searchParams.delete('orbit');
+  url.searchParams.delete('welcome');
+  url.searchParams.delete('fallback');
 }

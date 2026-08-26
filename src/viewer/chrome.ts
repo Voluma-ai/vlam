@@ -93,6 +93,22 @@ export function resolveViewerPreset(params: URLSearchParams): ViewerPreset {
   return params.get('preset') === 'embed' ? 'embed' : 'full';
 }
 
+/**
+ * Docs "Open demo" expands the file pickers (`?welcome=1`). Other `?scene=`
+ * links keep the collapsed drop-hint.
+ */
+export function parseWelcomeExpandedParam(value: string | null): boolean {
+  return value === '1' || value === 'true' || value === 'on';
+}
+
+/**
+ * Opt-in goose fallback when the CTA scene fails (`?fallback=goose`).
+ * A constructed `?scene=` without this flag still surfaces the error.
+ */
+export function parseGooseFallbackParam(value: string | null): boolean {
+  return value === 'goose';
+}
+
 /** Chrome flags for a preset. */
 export function viewerChromeForPreset(preset: ViewerPreset): ViewerChrome {
   return PRESETS[preset];
