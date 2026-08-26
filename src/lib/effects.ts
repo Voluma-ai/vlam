@@ -15,6 +15,8 @@
  *    tiles (or raw geometries) for PlayCanvas-style {@link SplatMesh.setRelighting}.
  *  - {@link createRelightingShadowFactorMaterial}: writes a shadow **multiplier**
  *    (1 = lit, &lt;1 = umbra) so coverage does not statically tint splats.
+ *    Optional `color` / `diffuse` / `direction` add a Lambert boost on top
+ *    of that identity (RGB may exceed 1 on a HalfFloat lighting RT).
  *  - {@link worldWarpPreset}: camera-centered sphere wrap (planet / bowl).
  *  - {@link depthOfFieldPreset}: stylized modifier-based depth-of-field (M13).
  *    For physically-modeled camera DoF prefer the core
@@ -662,15 +664,18 @@ export interface RelightingProxy {
  * Node material for a **shadow-factor** lighting RT used with
  * {@link SplatMesh.setRelighting}.
  *
- * Fragment output is `vec4(vec3(mix(umbra, 1, shadow(light))), 1)`:
+ * Fragment output is `vec4(vec3(mix(umbra, 1, shadow(light))) + boost, 1)`:
  *  - covered + lit → RGB ≈ 1 (identity modulate when brightness/background are 1)
  *  - covered + umbra → RGB ≈ `umbra` (soft darken; never pure black)
  *  - uncovered stays clear-alpha 0 from the RT clear
+ *  - with `diffuse` &gt; 0, facing surfaces add `color * NdotL * diffuse`
+ *    (RGB may exceed 1; use a HalfFloat lighting RT)
  *
  * By default, only **upward** proxy faces receive (`receiveUpMin`). Vertical
  * and noisy foliage triangles still **cast**, but they do not self-shadow —
  * that PCF acne reads as per-frame sparkle in trees. Pass `receiveUpMin: 0`
- * to receive on every face.
+ * to receive on every face. The Lambert term uses the same slope gate, so
+ * steep foliage does not pick up a noisy tint.
  *
  * Clear the lighting RT to **RGB 1, A 0** (not black). Softness / bilinear
  * samples at coverage edges otherwise pull in black and draw a dark outline
@@ -686,6 +691,13 @@ export interface RelightingProxy {
  * @param options.umbra - Multiplier in full shadow, in `[0, 1]`. Default `0.45`.
  * @param options.receiveUpMin - World-up `normal.y` below which the face does
  *   not receive. Default `0.25`. `0` disables the slope gate.
+ * @param options.color - Light tint for the optional Lambert boost. Mutate
+ *   in place; the material holds this object. Default white.
+ * @param options.diffuse - Lambert boost on top of identity. Default `0`
+ *   (shadow multiplier only). Facing, unshadowed coverage becomes
+ *   `1 + color * NdotL * diffuse`.
+ * @param options.direction - World-space direction **toward** the light.
+ *   Mutate in place each frame as the sun moves. Default `(0, 1, 0)`.
  * @param options.midLight - Optional mid cascade (demo: ~50 m). Blend from
  *   `light` over `nearRadius`.
  * @param options.midRadius - World metres where the mid cascade yields to
@@ -707,6 +719,9 @@ export function createRelightingShadowFactorMaterial(
   options: {
     umbra?: number;
     receiveUpMin?: number;
+    color?: THREE.Color;
+    diffuse?: number;
+    direction?: THREE.Vector3;
     midLight?: THREE.Light;
     midRadius?: number;
     outerLight?: THREE.Light;
@@ -732,6 +747,7 @@ export function createRelightingShadowFactorMaterial(
   const outerRadius = Number.isFinite(options.outerRadius)
     ? Math.max(midRadius, options.outerRadius as number)
     : 160;
+  const diffuse = Number.isFinite(options.diffuse) ? Math.max(0, options.diffuse as number) : 0;
   const material = new THREE.MeshStandardNodeMaterial();
   material.side = THREE.DoubleSide;
   material.color = new THREE.Color(1, 1, 1);
@@ -743,8 +759,9 @@ export function createRelightingShadowFactorMaterial(
   material.polygonOffset = true;
   material.polygonOffsetFactor = 2;
   material.polygonOffsetUnits = 2;
-  // Bypass Lambert/PBR — only the light's shadow attenuation, floored so
-  // umbra multiplies splats by `umbra` instead of crushing them to black.
+  // Bypass MeshStandard lighting. Shadow attenuation is the base multiplier;
+  // optional Lambert is added on top of identity so unshadowed coverage stays
+  // ≈ 1 when `diffuse` is 0.
   const dist = positionWorld.distance(cameraPosition);
   const blendAt = (inner: Node<'float'>, outer: Node<'float'>, radius: number): Node<'float'> =>
     asNode<'float'>(mix(inner, outer, smoothstep(float(radius * 0.7), float(radius * 0.95), dist)));
@@ -768,7 +785,17 @@ export function createRelightingShadowFactorMaterial(
       : float(1);
   const attenuation = mix(float(1), shadowed, receive);
   const factor = mix(float(umbra), float(1), attenuation);
-  material.outputNode = vec4(vec3(factor), float(1));
+  if (diffuse > 0) {
+    const lightColor = uniform(options.color ?? new THREE.Color(1, 1, 1));
+    const lightDir = uniform(options.direction ?? new THREE.Vector3(0, 1, 0));
+    const ndl = asNode<'float'>(normalWorld.dot(lightDir.normalize()).max(0));
+    const boost = asNode<'vec3'>(
+      lightColor.mul(ndl).mul(float(diffuse)).mul(receive).mul(shadowed),
+    );
+    material.outputNode = vec4(vec3(factor).add(boost), float(1));
+  } else {
+    material.outputNode = vec4(vec3(factor), float(1));
+  }
   return material;
 }
 

@@ -1846,18 +1846,23 @@ async function main(): Promise<void> {
       relightScene!.add(light.target);
     };
 
-    relightSun = new THREE.DirectionalLight(0xffffff, 1);
+    const relightSunColor = new THREE.Color(0xffa040);
+
+    relightSun = new THREE.DirectionalLight(relightSunColor, 1);
     configureSun(relightSun, 2048, -0.002, 0.12);
-    relightMidSun = new THREE.DirectionalLight(0xffffff, 1);
+    relightMidSun = new THREE.DirectionalLight(relightSunColor, 1);
     configureSun(relightMidSun, 2048, -0.0025, 0.2);
-    relightOuterSun = new THREE.DirectionalLight(0xffffff, 1);
+    relightOuterSun = new THREE.DirectionalLight(relightSunColor, 1);
     configureSun(relightOuterSun, 4096, -0.003, 0.22);
-    relightFarSun = new THREE.DirectionalLight(0xffffff, 1);
+    relightFarSun = new THREE.DirectionalLight(relightSunColor, 1);
     const farTexel = (2 * relightShadowRadius) / 2048;
     configureSun(relightFarSun, 2048, -0.004, Math.max(0.35, farTexel * 1.5));
 
     relightFactorMaterial = createRelightingShadowFactorMaterial(relightSun, {
       umbra: 0.5,
+      color: relightSunColor,
+      diffuse: 0.8,
+      direction: relightSunDir,
       nearRadius: relightNearRadius,
       midLight: relightMidSun,
       midRadius: relightMidRadius,

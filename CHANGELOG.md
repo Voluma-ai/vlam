@@ -87,6 +87,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- Demo `?effects=relight` adds a warm directional Lambert boost
+  (`0xffa040`, `diffuse` 0.8) on top of the shadow-factor multiplier, so
+  sun-facing proxy coverage brightens and tints instead of only darkening
+  in umbra. `createRelightingShadowFactorMaterial` accepts optional
+  `color` / `diffuse` / `direction`; default `diffuse` 0 keeps the
+  previous identity-when-lit behaviour.
+
 - Docs "Open demo" / nav Demo load Dehaar (`.lcc2`) via `/remote/`. The
   home-page embed stays on `goose.sog`. Open demo also expands the file
   pickers (`?welcome=1`). Both CTA links opt into goose fallback with

@@ -160,6 +160,19 @@ describe('createRelightingShadowFactorMaterial', () => {
     material.dispose();
   });
 
+  it('builds with a Lambert color, diffuse, and live direction', () => {
+    const light = new THREE.DirectionalLight();
+    const color = new THREE.Color(0xffa040);
+    const direction = new THREE.Vector3(0.3, 0.8, 0.2);
+    const material = createRelightingShadowFactorMaterial(light, {
+      color,
+      diffuse: 0.8,
+      direction,
+    });
+    expect(material.outputNode).toBeTruthy();
+    material.dispose();
+  });
+
   it('builds with inner, mid, outer, and far cascade lights', () => {
     const inner = new THREE.DirectionalLight();
     const mid = new THREE.DirectionalLight();

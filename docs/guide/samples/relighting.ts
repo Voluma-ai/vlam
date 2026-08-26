@@ -32,6 +32,7 @@ sun.castShadow = true;
 sun.shadow.mapSize.set(1024, 1024);
 relightScene.add(sun);
 
+// Shadow multiplier only. Pass { color, diffuse, direction } for a Lambert boost.
 const factorMat = createRelightingShadowFactorMaterial(sun);
 proxy.group.traverse((obj) => {
   if (!(obj instanceof THREE.Mesh)) return;

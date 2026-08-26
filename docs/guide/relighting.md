@@ -18,6 +18,7 @@ The fragment does:
 |--------|------------|------------------|
 | Uncovered | A = 0 | `background` (usually 1) |
 | Covered, multiplier ≈ 1 | RGB ≈ 1, A = 1 | unchanged |
+| Covered, facing light | RGB &gt; 1 when `diffuse` &gt; 0 | brightened / tinted |
 | Covered, umbra | RGB &lt; 1, A = 1 | darkened |
 
 Clear the lighting RT to **RGB 1, A 0** (not black). Softness / bilinear
@@ -29,7 +30,8 @@ MeshStandard pass writes mid-gray on the whole footprint, so grass under the
 collision mesh looks muddy even where no shadow falls. Prefer
 `createRelightingShadowFactorMaterial(light)` so unshadowed coverage stays ≈ 1.
 Pass `{ umbra: 0.45 }` (default) so full shadow multiplies by ~0.45 instead of
-crushing splat color to black.
+crushing splat color to black. `{ color, diffuse, direction }` adds a Lambert
+boost on top of that identity (RGB may exceed 1 — use a HalfFloat lighting RT).
 
 Splat foliage cannot cast. Umbra shape follows **proxy triangles** only.
 Floor-only LCC collision yields ground / overhang self-shadow, not canopy
@@ -130,10 +132,13 @@ without invalidating gather caches.
 ## Demo
 
 In the built-in viewer: `?effects=relight` on an LCC / `.lcc2` scene that
-ships collision meshes. The sun orbits; the lighting RT is a shadow
-multiplier so only the umbra darkens splats. The directional map covers the
-proxy ∪ splat bounds (texel-snapped, 20 / 50 / 160 / scene cascades) so close
-trees stay stable through mid-range and umbras still reach the far side.
+ships collision meshes. The sun orbits. The lighting RT is still a
+**multiplier** (not a gray MeshStandard look): umbra darkens, and a warm
+Lambert boost (`color` `0xffa040`, `diffuse` 0.8) brightens sun-facing
+proxy faces. The directional map covers the proxy ∪ splat bounds
+(texel-snapped, 20 / 50 / 160 / scene cascades) so close trees stay stable
+through mid-range and umbras still reach the far side. Lighting follows
+**proxy triangles** only — splat foliage cannot cast or receive.
 
 Optional `?proxy=/path/to/mesh.glb` loads an external lighting mesh (e.g. a
 splat-transform `.collision.glb`). When set and loaded, it replaces the LCC
