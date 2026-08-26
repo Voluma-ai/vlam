@@ -100,6 +100,17 @@ function spanTotal(message: SortMessage): number {
   return total;
 }
 
+function timingSnapshot(mesh: SplatMesh): {
+  submittedCount: number;
+  completedCount: number;
+  lastLatencyMs: number;
+} {
+  const sorter = internals(mesh).sorter as SplatSorter & {
+    snapshot(): { submittedCount: number; completedCount: number; lastLatencyMs: number };
+  };
+  return sorter.snapshot();
+}
+
 describe('WorkerSorter / active-list race regressions', () => {
   const meshes: SplatMesh[] = [];
   afterEach(() => {
@@ -118,6 +129,17 @@ describe('WorkerSorter / active-list race regressions', () => {
     internals(mesh).rebuildActiveList();
     return { mesh, handles };
   }
+
+  it('reports accepted and completed sort timing for XR diagnostics', () => {
+    const { mesh } = meshWith([16]);
+    internals(mesh).requestSortIfNeeded(cameraAt(1), webglRenderer());
+    expect(timingSnapshot(mesh)).toMatchObject({ submittedCount: 1, completedCount: 0 });
+
+    lastWorker().reply(Uint32Array.from({ length: 16 }, (_, index) => index));
+    const completed = timingSnapshot(mesh);
+    expect(completed).toMatchObject({ submittedCount: 1, completedCount: 1 });
+    expect(completed.lastLatencyMs).toBeGreaterThanOrEqual(0);
+  });
 
   it('sends only the active prefix of a partially activated range to the worker', () => {
     const { mesh, handles } = meshWith([64]);

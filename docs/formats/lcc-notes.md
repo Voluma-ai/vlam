@@ -188,7 +188,9 @@ the facade instead. The mesh stays invisible until that bounded home set is
 staged and committed.
 
 During the hold, only those nearby target files use classic fetch slots. Their
-coarse substitutes, far cuts, and environment tiles wait. Chunks stage into
+coarse substitutes and far cuts wait. The always-resident environment tile
+(LCC2 `env.sog`, not classic `environment.bin`) is fetched at priority and
+the hold waits for it when present. Chunks stage into
 inactive GPU ranges as they arrive (siblings need not coexist in the CPU cache).
 Fully staged decoded arrays may leave the CPU cache without a refetch.
 

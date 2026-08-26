@@ -36,6 +36,13 @@ Floor-only LCC collision yields ground / overhang self-shadow, not canopy
 silhouettes from the splat leaves — use a denser lighting mesh when you need
 that.
 
+Collision foliage that both casts and receives sparkles: PCF samples flip on
+noisy leaf/branch triangles as the sun or camera moves. The shadow-factor
+material therefore receives only on **upward** faces by default (`receiveUpMin`,
+`0.25`). Trees still cast onto grass and paths. Pass `{ receiveUpMin: 0 }` if
+every proxy face must receive. The demo uses three texel-snapped cascades:
+~20 m / ~50 m / ~160 m / full scene AABB.
+
 **Vs PlayCanvas:** their [relighting](https://developer.playcanvas.com/user-manual/gaussian-splatting/building/relighting/)
 lights a reconstructed / photogrammetry proxy (gray albedo, `brightness: 2`)
 and transfers lit RGB + coverage. Separately, splats can *cast* onto meshes;
@@ -124,7 +131,9 @@ without invalidating gather caches.
 
 In the built-in viewer: `?effects=relight` on an LCC / `.lcc2` scene that
 ships collision meshes. The sun orbits; the lighting RT is a shadow
-multiplier so only the umbra darkens splats.
+multiplier so only the umbra darkens splats. The directional map covers the
+proxy ∪ splat bounds (texel-snapped, 20 / 50 / 160 / scene cascades) so close
+trees stay stable through mid-range and umbras still reach the far side.
 
 Optional `?proxy=/path/to/mesh.glb` loads an external lighting mesh (e.g. a
 splat-transform `.collision.glb`). When set and loaded, it replaces the LCC

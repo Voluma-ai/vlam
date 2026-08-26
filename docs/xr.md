@@ -105,12 +105,34 @@ Realistic splat counts at 72 Hz:
 | With streamed LOD / `.rad` foveation, `maxStdDev` ≈ 2–2.5, framebuffer scale 0.8, fixed foveation | ~1–1.5M resident |
 | Above ~1.5M | dropped frames on dense scenes |
 
-`resolveXrSplatBudget()` caps a presenting session at **1M**, and
+`resolveXrSplatBudget()` caps a presenting session at **600k**, and
 `resolveSplatBudget` applies the same ceiling to a headset it recognizes by
 user agent. Both are ceilings, not defaults, a low-memory device still scales
 below them.
 
 ## Tuning knobs
+
+The demo enables its conservative stability policy automatically on a
+recognized standalone headset: WebGL XR uses framebuffer scale **0.7** and
+attempts the asynchronous worker sort at most **30 times per second**. Projection
+uniforms and the headset pose still update on every XR frame; only depth-order
+work is throttled. `?xrStability=0` restores the generic defaults for an A/B.
+
+Viewer-only XR controls (they do not widen the library API):
+
+| Query | Meaning |
+| --- | --- |
+| `?xrScale=0.7` | WebGL XR framebuffer scale, applied before the session starts (`0.25..1`) |
+| `?xrSortHz=30` | WebGL worker-sort attempt ceiling; `0` is unrestricted |
+| `?xrDepth=0.15` | Experimental depth writes with this alpha-test threshold; `off` disables |
+| `?xrDiagnostics=1` | Show an opaque green reference cube and emit `XR_DIAGNOSTIC` JSON every 10 seconds and on exit |
+
+The diagnostic report records the runtime refresh rate, callback and main-thread
+p50/p95/p99, missed deadlines, and worker-sort submission/completion age. Compare
+the green cube with the splats: both trailing points to frame pacing; only the
+splats trailing points to depth/sort behavior. The depth experiment is never
+enabled automatically because compositor use and transparent-tail artifacts
+must be verified on the target headset first.
 
 - On three 0.185.x's **WebGL XR** path,
   `recommendedXrFramebufferScale()` →
@@ -139,10 +161,11 @@ below them.
 
 ## Known limitations / future work
 
-- **No depth writes** (premultiplied alpha compositing), so the compositor's
- positional reprojection has no depth to work with, fast head translation can
- show slight edge swim. Accepted for now; an approximate depth write past an
- alpha threshold is a possible future option.
+- **No depth writes by default** (premultiplied alpha compositing), so the
+ compositor's positional reprojection has no depth to work with and fast head
+ translation can show slight edge swim. The demo's `?xrDepth=<alpha>` A/B writes
+ approximate depth after rejecting low-alpha tails; it can improve reprojection
+ but may create holes or incorrect transparent occlusion, so it remains opt-in.
 - **Sort popping while strafing** on WebGL2 (worker sort lands 1–3 frames
  late). Keep resident counts near the budget, not the cap.
 - **Picking needs a mono camera.** `pick()` throws if handed an XR array

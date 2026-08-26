@@ -32,11 +32,14 @@
  */
 import * as THREE from 'three/webgpu';
 import {
+  cameraPosition,
   float,
   int,
   mat3,
   mix,
   modelViewMatrix,
+  normalWorld,
+  positionWorld,
   shadow,
   smoothstep,
   uniform,
@@ -664,6 +667,11 @@ export interface RelightingProxy {
  *  - covered + umbra → RGB ≈ `umbra` (soft darken; never pure black)
  *  - uncovered stays clear-alpha 0 from the RT clear
  *
+ * By default, only **upward** proxy faces receive (`receiveUpMin`). Vertical
+ * and noisy foliage triangles still **cast**, but they do not self-shadow —
+ * that PCF acne reads as per-frame sparkle in trees. Pass `receiveUpMin: 0`
+ * to receive on every face.
+ *
  * Clear the lighting RT to **RGB 1, A 0** (not black). Softness / bilinear
  * samples at coverage edges otherwise pull in black and draw a dark outline
  * of every collision triangle.
@@ -674,15 +682,56 @@ export interface RelightingProxy {
  * umbra shape follows those triangles (splat foliage cannot cast).
  *
  * @param light - Shadow-casting light (typically a {@link THREE.DirectionalLight}).
+ *   Innermost cascade when `midLight` / `outerLight` / `farLight` are set.
  * @param options.umbra - Multiplier in full shadow, in `[0, 1]`. Default `0.45`.
+ * @param options.receiveUpMin - World-up `normal.y` below which the face does
+ *   not receive. Default `0.25`. `0` disables the slope gate.
+ * @param options.midLight - Optional mid cascade (demo: ~50 m). Blend from
+ *   `light` over `nearRadius`.
+ * @param options.midRadius - World metres where the mid cascade yields to
+ *   `outerLight` (or `farLight`). Default `50`.
+ * @param options.outerLight - Optional outer cascade (demo: ~160 m) between
+ *   mid and scene-sized far. Blend from mid over `midRadius`, then to
+ *   `farLight` over `outerRadius`.
+ * @param options.outerRadius - World metres where the outer cascade yields to
+ *   `farLight`. Default `160`. Ignored without `outerLight` and `farLight`.
+ * @param options.farLight - Optional scene-sized cascade. Out-of-frustum
+ *   `shadow()` is 1 (lit), so inner maps can stay tight without clipping
+ *   distant umbras. Blend by camera distance.
+ * @param options.nearRadius - World metres where the inner cascade yields to
+ *   `midLight` (or to `farLight` if there is no mid). Default `20` with
+ *   `midLight`, else `100`.
  */
 export function createRelightingShadowFactorMaterial(
   light: THREE.Light,
-  options: { umbra?: number } = {},
+  options: {
+    umbra?: number;
+    receiveUpMin?: number;
+    midLight?: THREE.Light;
+    midRadius?: number;
+    outerLight?: THREE.Light;
+    outerRadius?: number;
+    farLight?: THREE.Light;
+    nearRadius?: number;
+  } = {},
 ): THREE.MeshStandardNodeMaterial {
   const umbra = Number.isFinite(options.umbra)
     ? Math.min(1, Math.max(0, options.umbra as number))
     : 0.45;
+  const receiveUpMin = Number.isFinite(options.receiveUpMin)
+    ? Math.min(0.95, Math.max(0, options.receiveUpMin as number))
+    : 0.25;
+  const nearRadius = Number.isFinite(options.nearRadius)
+    ? Math.max(1, options.nearRadius as number)
+    : options.midLight
+      ? 20
+      : 100;
+  const midRadius = Number.isFinite(options.midRadius)
+    ? Math.max(nearRadius, options.midRadius as number)
+    : 50;
+  const outerRadius = Number.isFinite(options.outerRadius)
+    ? Math.max(midRadius, options.outerRadius as number)
+    : 160;
   const material = new THREE.MeshStandardNodeMaterial();
   material.side = THREE.DoubleSide;
   material.color = new THREE.Color(1, 1, 1);
@@ -692,11 +741,32 @@ export function createRelightingShadowFactorMaterial(
   material.depthWrite = true;
   // polygonOffset reduces self-shadow acne that reads as mesh wireframe.
   material.polygonOffset = true;
-  material.polygonOffsetFactor = 1;
-  material.polygonOffsetUnits = 1;
+  material.polygonOffsetFactor = 2;
+  material.polygonOffsetUnits = 2;
   // Bypass Lambert/PBR — only the light's shadow attenuation, floored so
   // umbra multiplies splats by `umbra` instead of crushing them to black.
-  const attenuation = asNode<'float'>(shadow(light));
+  const dist = positionWorld.distance(cameraPosition);
+  const blendAt = (inner: Node<'float'>, outer: Node<'float'>, radius: number): Node<'float'> =>
+    asNode<'float'>(mix(inner, outer, smoothstep(float(radius * 0.7), float(radius * 0.95), dist)));
+  let shadowed = asNode<'float'>(shadow(light));
+  if (options.midLight) {
+    shadowed = blendAt(shadowed, asNode<'float'>(shadow(options.midLight)), nearRadius);
+    if (options.outerLight) {
+      shadowed = blendAt(shadowed, asNode<'float'>(shadow(options.outerLight)), midRadius);
+      if (options.farLight) {
+        shadowed = blendAt(shadowed, asNode<'float'>(shadow(options.farLight)), outerRadius);
+      }
+    } else if (options.farLight) {
+      shadowed = blendAt(shadowed, asNode<'float'>(shadow(options.farLight)), midRadius);
+    }
+  } else if (options.farLight) {
+    shadowed = blendAt(shadowed, asNode<'float'>(shadow(options.farLight)), nearRadius);
+  }
+  const receive =
+    receiveUpMin > 0
+      ? asNode<'float'>(smoothstep(float(receiveUpMin), float(receiveUpMin + 0.3), normalWorld.y))
+      : float(1);
+  const attenuation = mix(float(1), shadowed, receive);
   const factor = mix(float(umbra), float(1), attenuation);
   material.outputNode = vec4(vec3(factor), float(1));
   return material;

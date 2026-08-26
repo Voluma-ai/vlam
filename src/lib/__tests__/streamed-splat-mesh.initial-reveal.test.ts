@@ -95,6 +95,9 @@ interface MeshConfig {
   reveal?: 'hold-near-l0' | 'hold-coverage' | 'progressive';
   neverRetire?: boolean;
   maxSplatsPerSwap?: number;
+  /** Chunk-file index of an always-resident environment tile. */
+  environment?: number;
+  environmentEnabled?: boolean;
 }
 
 function makeMesh(config: MeshConfig): StreamedSplatMesh {
@@ -116,9 +119,13 @@ function makeMesh(config: MeshConfig): StreamedSplatMesh {
     },
     chunkKind: 'file' as const,
     bounds: new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(100, 1, 1)),
-    pinnedFiles: new Set(coarsest.map((r) => r.file)),
+    pinnedFiles: new Set([
+      ...coarsest.map((r) => r.file),
+      ...(config.environment === undefined ? [] : [config.environment]),
+    ]),
     maxResidentSplats: 4 * WIDTH,
     chunkUrls: [] as string[],
+    ...(config.environment === undefined ? {} : { environment: { file: config.environment } }),
   };
   // Ensure chunkUrls covers every file index used.
   const maxFile = Math.max(
@@ -127,6 +134,7 @@ function makeMesh(config: MeshConfig): StreamedSplatMesh {
     ...levelRuns.map((r) => r.file),
     ...coarsest.map((r) => r.file),
     ...(config.coverage ?? []).map((r) => r.file),
+    ...(config.environment === undefined ? [] : [config.environment]),
   );
   scene.chunkUrls = Array.from({ length: maxFile + 1 }, (_, f) => `https://host/data.bin#${f}`);
 
@@ -146,6 +154,9 @@ function makeMesh(config: MeshConfig): StreamedSplatMesh {
       initialReveal: config.reveal ?? 'hold-near-l0',
       maxSplatsPerSwap: config.maxSplatsPerSwap,
       experimentalStagedSwaps: true,
+      ...(config.environmentEnabled === undefined
+        ? {}
+        : { environmentEnabled: config.environmentEnabled }),
     },
     undefined,
     config.neverRetire ?? true,
@@ -971,5 +982,74 @@ describe('StreamedSplatMesh initial reveal (hold-coverage)', () => {
     expect(inner.initialRevealPhase).toBe('capture');
     expect(inner.frozenCriticalRuns).toBeNull();
     expect(mesh.initialRevealState.status).toBe('pending');
+  });
+
+  it('fetches the environment tile at priority during the coverage hold', () => {
+    const envFile = 99;
+    const { mesh, inner, requested } = setup({
+      desired: [finestInView],
+      coverage: [coarseInView],
+      environment: envFile,
+    });
+
+    inner.reschedule(camera, 0);
+
+    expect(mesh.initialRevealState.status).toBe('pending');
+    expect(requested[0]).toEqual({ file: envFile, kind: 'priority' });
+    expect(requested.some((r) => r.file === 0)).toBe(true);
+    expect(requested.some((r) => r.file === 10)).toBe(false);
+  });
+
+  it('waits for the environment tile even when coverage is already cached', () => {
+    const envFile = 99;
+    const { mesh, inner } = setup({
+      desired: [finestInView],
+      coverage: [coarseInView],
+      environment: envFile,
+    });
+    cache(inner, 0, 100);
+
+    inner.reschedule(camera, 0);
+
+    expect(mesh.initialRevealState.status).toBe('pending');
+    expect(inner.initialRevealPhase).toBe('holding');
+    expect(inner.resident.has(runKey(coarseInView))).toBe(false);
+    expect(mesh.environmentSplatCount).toBe(0);
+
+    cache(inner, envFile, 50);
+    inner.reschedule(camera, 1);
+
+    expect(mesh.environmentSplatCount).toBe(50);
+    expect(mesh.initialRevealState.status).toBe('ready');
+    expect(inner.initialRevealPhase).toBe('released');
+    expect(inner.resident.has(runKey(coarseInView))).toBe(true);
+  });
+
+  it('does not wait for a disabled or failed environment tile', () => {
+    const envFile = 99;
+    const { mesh, inner } = setup({
+      desired: [finestInView],
+      coverage: [coarseInView],
+      environment: envFile,
+      environmentEnabled: false,
+    });
+    cache(inner, 0, 100);
+
+    inner.reschedule(camera, 0);
+
+    expect(mesh.initialRevealState.status).toBe('ready');
+    expect(mesh.environmentSplatCount).toBe(0);
+
+    const failed = setup({
+      desired: [finestInView],
+      coverage: [coarseInView],
+      environment: envFile,
+    });
+    cache(failed.inner, 0, 100);
+    failed.inner.failedFiles.add(envFile);
+    failed.inner.reschedule(camera, 0);
+
+    expect(failed.mesh.initialRevealState.status).toBe('ready');
+    expect(failed.mesh.environmentSplatCount).toBe(0);
   });
 });

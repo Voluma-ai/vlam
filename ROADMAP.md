@@ -4,23 +4,6 @@ Open work for **VLAM!**. Work top-down; `[v]` means implemented but awaiting the
 named visual or device validation. Completed work belongs in the changelog and
 Git history, not in this queue.
 
-Public development starts at **0.2.0**. Remaining items below are toward
-**1.0**, not a private 0.2 gate.
-
-## Release gate (0.2.0)
-
-- [x] Public repository at [github.com/Voluma-ai/vlam](https://github.com/Voluma-ai/vlam).
-- [x] Public demo at [https://vlam.voluma.ai](https://vlam.voluma.ai) (`Deploy` workflow on `main`).
-- [ ] Green CI on `main`.
-- [ ] Publish `@voluma/vlam@0.2.0` to npm.
-- [ ] Tag `v0.2.0` and add its changelog section.
-
-`@voluma/vlam@0.1.0` was a name-reservation placeholder. **1.0.0** is the
-stability contract.
-
-## Next
-
-No blocking work for the public 0.2.0 snapshot. Pick from **Later** toward 1.0.
 
 ## Later
 

@@ -345,9 +345,11 @@ export interface StreamedSplatMeshOptions extends SplatMeshOptions {
    *   A one-minute watchdog also degrades if the cut cannot finish.
    * - `'hold-coverage'` (the default for `.lcc2` when unset): hide the mesh
    *   until every in-view finest cell has a coarsest covering node resident
-   *   (any LOD). Does not wait for finest tiles or the rest of the stream.
-   *   An empty frustum falls back to the nearest cell. Requires
-   *   `LodSource.coverageRunsFor`; other formats treat this as disabled.
+   *   (any LOD), and until the always-resident environment tile is in the pool
+   *   when the scene ships one and it starts enabled. Does not wait for finest
+   *   tiles or the rest of the stream. An empty frustum falls back to the
+   *   nearest cell. Requires `LodSource.coverageRunsFor`; other formats treat
+   *   this as disabled.
    *
    * A one-minute watchdog degrades to progressive if the frozen set cannot
    * finish. Does not make detail downloads instantaneous. Classic `.lcc` uses
@@ -2222,8 +2224,9 @@ export class StreamedSplatMesh extends SplatMesh {
 
     // Cancel fetches whose file no longer backs any desired run. Pinned
     // (coarsest-level) files are never cancelled: they are the substitute
-    // coverage every deferred swap relies on. During hold, only critical L0
-    // files (and pins) stay - neighbours / coarse / env lose their slots.
+    // coverage every deferred swap relies on, and the environment tile is
+    // pinned for the same reason. During hold, only critical coverage files
+    // (and pins) stay - neighbours and far coarse lose their slots.
     for (const [file, { controller }] of this.fetching) {
       if (!desiredFiles.has(file) && !this.scene.pinnedFiles.has(file)) controller.abort();
     }
@@ -2245,6 +2248,15 @@ export class StreamedSplatMesh extends SplatMesh {
       const staged = this.staged.get(key);
       if (staged && staged.uploadedCount === run.count) continue;
       this.neededFiles.add(run.file);
+    }
+    if (
+      this.envFile !== undefined &&
+      this.envEnabled &&
+      this.envHandle === undefined &&
+      !this.envUnfit &&
+      !this.failedFiles.has(this.envFile)
+    ) {
+      this.neededFiles.add(this.envFile);
     }
 
     const toAdd = desiredRuns.filter((run) => !this.resident.has(runKey(run)));
@@ -2281,6 +2293,9 @@ export class StreamedSplatMesh extends SplatMesh {
     // discs. Collect every miss this tick and flush nearest/finest first -
     // same contract as the pagetable `pageTableFetchPriority` path.
     const pendingFetches = new Map<number, ClassicFetchWant>();
+    // Environment first: append it before coverage consumes pool rows, and
+    // enqueue its fetch ahead of LOD wants so the sky is not last in the pipe.
+    this.updateEnvironment(now, pendingFetches);
 
     // A `.rad` refinement splits across groups, and that is what used to punch
     // holes in a region while it sharpened. Grouping pairs adds with removals by
@@ -2364,6 +2379,13 @@ export class StreamedSplatMesh extends SplatMesh {
         // before every sibling is cached.
         if (!holding) continue;
       }
+      if (holding && this.environmentPendingForReveal()) {
+        // Keep pool headroom for the env tile; coverage stays cached until it
+        // lands. Fetches for the frozen set are already queued above.
+        this.pendingWork = true;
+        addsPending = true;
+        continue;
+      }
       const forceStage = holding || (this.stagedSwapsEnabled && group.addCount > this.appendCap);
       if (forceStage && this.canStageGroup(group)) {
         const stagedNow = this.stageGroup(group, now, Math.max(0, this.appendCap - appended));
@@ -2422,9 +2444,6 @@ export class StreamedSplatMesh extends SplatMesh {
       // streaming until release.
       if (this.initialRevealPhase === 'holding') this.pendingWork = true;
     }
-
-    // Defer the LCC2 environment tile until the nearby-detail hold releases.
-    if (!holding) this.updateEnvironment(now);
     // Publish the CPU cache state before evicting, so `cacheBytes` reports the
     // peak the tick actually reached rather than the post-eviction figure - the
     // latter always sits at or under the limit and so can never show pressure.
@@ -2600,6 +2619,13 @@ export class StreamedSplatMesh extends SplatMesh {
   ): void {
     const coverage = this.scene.source.coverageRunsFor?.(cameraLocal, frustum) ?? [];
     if (coverage.length === 0) {
+      if (this.environmentPendingForReveal()) {
+        this.frozenCriticalRuns = [];
+        this.initialRevealStartedAt = now;
+        this.initialRevealPhase = 'holding';
+        this.publishInitialRevealProgress([]);
+        return;
+      }
       this.initialRevealStateValue = { status: 'ready' };
       this.initialRevealPhase = 'released';
       return;
@@ -2742,9 +2768,24 @@ export class StreamedSplatMesh extends SplatMesh {
   private finishInitialRevealIfComplete(): void {
     if (this.initialRevealPhase !== 'holding' || !this.frozenCriticalRuns) return;
     this.publishInitialRevealProgress(this.frozenCriticalRuns);
+    if (this.environmentPendingForReveal()) return;
     if (this.frozenCriticalRuns.every((run) => this.resident.has(runKey(run)))) {
       this.releaseInitialReveal('ready');
     }
+  }
+
+  /**
+   * Startup hold still needs the environment tile when the scene ships one
+   * and it starts enabled. Failed / unfit / disabled tiles do not block reveal.
+   */
+  private environmentPendingForReveal(): boolean {
+    return (
+      this.envFile !== undefined &&
+      this.envEnabled &&
+      !this.envUnfit &&
+      this.envHandle === undefined &&
+      !this.failedFiles.has(this.envFile)
+    );
   }
 
   /** Creates a marker for a changed streamed-LOD tick, if any. */
@@ -3107,8 +3148,10 @@ export class StreamedSplatMesh extends SplatMesh {
    * it is wanted. The tile has no LOD ladder and no manifest count, so it is
    * appended whole (measuring its splat count at decode) and thereafter toggled
    * by flipping its pool range active - never scheduled, refetched, or evicted.
+   * When `pending` is supplied, a miss is ranked as an `'environment'` want so
+   * it issues ahead of LOD coverage.
    */
-  private updateEnvironment(now: number): void {
+  private updateEnvironment(now: number, pending?: Map<number, ClassicFetchWant>): void {
     const file = this.envFile;
     if (file === undefined || this.envHandle !== undefined || !this.envEnabled || this.envUnfit) {
       return;
@@ -3118,7 +3161,8 @@ export class StreamedSplatMesh extends SplatMesh {
       if (!this.failedFiles.has(file)) {
         // The environment tile is always-resident coverage, never speculation:
         // a mesh that cannot fetch it renders no background at all.
-        this.requestChunk(file, 'base');
+        if (pending) this.enqueueEnvironmentFetch(pending, file);
+        else this.requestChunk(file, 'priority');
         this.pendingWork = true;
       }
       return;
@@ -3161,6 +3205,29 @@ export class StreamedSplatMesh extends SplatMesh {
     this.envHandle = handle;
     this.envSplatCount = chunk.data.count;
     chunk.lastUsed = now;
+  }
+
+  /** Ranks the env tile ahead of every LOD want in {@link flushClassicFetches}. */
+  private enqueueEnvironmentFetch(pending: Map<number, ClassicFetchWant>, file: number): void {
+    if (pending.has(file)) return;
+    pending.set(file, {
+      kind: 'priority',
+      phase: 'environment',
+      distance: 0,
+      level: 0,
+      inView: true,
+      coverageGroup: -1,
+      leafStart: 0,
+      leafEnd: 0,
+      screenImportance: Number.NEGATIVE_INFINITY,
+      groupDistance: 0,
+      groupPending: 1,
+      groupInView: true,
+      groupScreenImportance: Number.NEGATIVE_INFINITY,
+      groupFinest: true,
+      groupId: 'environment',
+      groupClass: 0,
+    });
   }
 
   /**

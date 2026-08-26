@@ -25,6 +25,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- Quest XR stability harness: recognized standalone headsets use a 0.7 WebGL
+  framebuffer scale and 30 Hz worker-sort attempt ceiling while pose/projection
+  still update every frame. `?xrScale=`, `?xrSortHz=`, `?xrStability=`, and the
+  opt-in `?xrDepth=` depth experiment support A/B runs; `?xrDiagnostics=1`
+  adds an opaque reference cube and periodic frame/sort timing JSON. The
+  headset-friendly `/xr-test` page launches the full comparison matrix without
+  typing query strings, including streamed Sandwijck SOG and Dehaar LCC2 runs.
+  Fixed foveation now actually defaults to maximum; the absent query parameter
+  had previously parsed as explicit `?foveation=0`.
+
 - Proxy-mesh splat relighting (PlayCanvas-style): `SplatMesh.setRelighting` /
   `UnifiedSplatRenderer.setRelighting` multiply baked splat color from a
   screen-space lit-proxy RT; `createRelightingProxy` /
@@ -38,10 +48,23 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   MSAA, Gaussian cutoff, contribution profile, native dpr, and whether
   adaptive dpr is armed.
 - `.lcc2` `initialReveal: 'hold-coverage'` (library default): hide the
-  mesh until every in-view octree cell has coarsest coverage resident,
-  then keep that cover until finer tiles replace it so first paint does
-  not flash empty cells. `?initialReveal=progressive` opts out. See
-  `docs/formats/lcc2-notes.md`.
+  mesh until every in-view octree cell has coarsest coverage resident
+  **and** the environment tile is in the pool, then keep that cover until
+  finer tiles replace it so first paint does not flash empty cells or a
+  missing sky. The env tile is fetched at priority. `?initialReveal=progressive`
+  opts out. See `docs/formats/lcc2-notes.md`.
+
+### Fixed
+
+- Demo proxy relight: tree-canopy shadow sparkle. Collision foliage no longer
+  self-receives (`receiveUpMin` on `createRelightingShadowFactorMaterial`);
+  a 20 / 50 / 160 m cascade stack (`midLight`, `outerLight`) plus a scene-sized
+  far cascade (`farLight`) so close and mid-range trees stay stable without
+  clipping distant umbras. Outer uses a 4096 map so the 40–100 m band stays dense.
+
+- The viewer now releases its GPU renderer when entering the browser's
+  back-forward cache and reloads if that disposed page is restored. Repeated
+  Quest XR A/B runs no longer retain WebGL contexts until new contexts fail.
 
 ### Verified
 
@@ -63,6 +86,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   Keep the phone SD default. See `docs/capabilities.md`.
 
 ### Changed
+
+- Docs "Open demo" / nav Demo load Dehaar (`.lcc2`) via `/remote/`. The
+  home-page embed stays on `goose.sog`. Open demo also expands the file
+  pickers (`?welcome=1`). Both CTA links opt into goose fallback with
+  `?fallback=goose` if Dehaar cannot be fetched; a constructed `?scene=`
+  still surfaces the error.
 
 - Demo HD/SD now retargets renderer MSAA in place. A reload is no longer
   required, so a splat opened from the file picker stays on screen.
