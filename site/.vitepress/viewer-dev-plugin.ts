@@ -16,6 +16,7 @@ const repoRootFs = repoRoot.replace(/\\/g, '/');
 export const EXAMPLE_APPS = [
   'first-viewer',
   'open-local-file',
+  'big-scenes',
   'click-the-world',
   'change-the-look',
   'splats-and-objects',
@@ -26,6 +27,8 @@ export const EXAMPLE_APPS = [
   'many-captures',
   'custom-effect',
   'depth-of-field',
+  'relight',
+  'tiny-planet',
   'frame-the-camera',
   'annotations',
   'webgl-fallback',

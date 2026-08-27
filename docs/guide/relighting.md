@@ -32,6 +32,9 @@ collision mesh looks muddy even where no shadow falls. Prefer
 Pass `{ umbra: 0.45 }` (default) so full shadow multiplies by ~0.45 instead of
 crushing splat color to black. `{ color, diffuse, direction }` adds a Lambert
 boost on top of that identity (RGB may exceed 1 — use a HalfFloat lighting RT).
+Pass an array of contributions for several casters (up to
+`MAX_RELIGHTING_SHADOW_LIGHTS`, currently 32); the shader unrolls only the
+lights you pass.
 
 Splat foliage cannot cast. Umbra shape follows **proxy triangles** only.
 Floor-only LCC collision yields ground / overhang self-shadow, not canopy
@@ -71,6 +74,7 @@ import { SplatMesh, createSplatRenderer, loadScene } from '@voluma/vlam';
 import {
   createRelightingProxy,
   createRelightingShadowFactorMaterial,
+  renderRelightingFactorMap,
 } from '@voluma/vlam/effects';
 
 const proxy = createRelightingProxy({
@@ -104,18 +108,20 @@ splats.setRelighting({
 
 // Each frame, before the main splat draw:
 renderer.shadowMap.enabled = true;
-renderer.setRenderTarget(relightTarget);
-// White + A0 — black clear draws dark triangle outlines under softness.
-renderer.setClearColor(0xffffff, 0);
-renderer.clear();
-renderer.render(relightScene, camera);
-renderer.setRenderTarget(null);
+renderRelightingFactorMap(renderer, relightScene, camera, relightTarget);
 
 splats.update(camera, renderer);
 renderer.render(scene, camera);
 ```
 
 <!-- full file: docs/guide/samples/relighting.ts -->
+
+Use {@link renderRelightingFactorMap} on a host-owned `WebGPURenderer`
+(`autoClear: false`, tone-mapping `contextNode`, and so on). The helper
+resizes the RT, clears white with alpha 0, turns shadow maps on for the pass,
+swaps in a passthrough `contextNode` (never `undefined` — WebGPURenderer
+reads `contextNode.id`), and restores renderer state afterward. Hand-rolling
+`setRenderTarget` only matches a fresh `createSplatRenderer()`.
 
 `blend` / `brightness` / `background` / `softness` are live uniforms (no material
 rebuild). Changing the map texture identity rebuilds once. Pass `null` to
@@ -128,6 +134,9 @@ outlines. PlayCanvas does not add this blur — proxy quality is the main lever.
 
 On `UnifiedSplatRenderer`, the same API modulates the unified draw material
 without invalidating gather caches.
+
+A compact runnable copy lives in the docs as
+[Relight a capture](../../site/examples/relight.md).
 
 ## Demo
 

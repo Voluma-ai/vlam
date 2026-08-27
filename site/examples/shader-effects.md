@@ -61,11 +61,11 @@ not every frame.
 
 **`sdfEffects`** takes a list of shapes, spheres, boxes, planes, each set to `hide` (cut it away) or `show` (keep only what is inside). Useful for cutaway views of a building, isolating one object out of a room, or clipping a capture to a site boundary. `setShapes` moves and resizes them live.
 
-**`lightingPreset`** shades each splat from the direction you give it, using the splat's own shape to work out which way it faces. Captures come with the original lighting baked in, so this is a stylistic layer on top, good for making a capture feel like it belongs in a scene you control, not for physically correct relighting.
+**`lightingPreset`** shades each splat from the direction you give it, using the splat's own shape to work out which way it faces. Captures come with the original lighting baked in, so this is a stylistic layer on top, good for making a capture feel like it belongs in a scene you control. For a moving sun with real shadows, that is a different path: [Relight a capture](/examples/relight).
 
 **`revealPreset`** dissolves splats in as `progress` goes 0 → 1. It is the standard way to hide a load: start at 0, sweep to 1 once the capture is ready, and the scene builds itself instead of popping in.
 
-There is also a stylized depth-of-field preset here, but for anything meant to look like a real lens prefer the core path, that is its own example: [Cinematic depth of field](/examples/depth-of-field).
+There is also a stylized depth-of-field preset here, but for anything meant to look like a real lens prefer the core path, that is its own example: [Cinematic depth of field](/examples/depth-of-field). `worldWarpPreset` wraps the far field into a planet or a bowl: [Tiny planet](/examples/tiny-planet).
 
 You can also write a modifier from scratch, see [Write your own effect](/examples/custom-effect).
 
@@ -79,5 +79,6 @@ You can also write a modifier from scratch, see [Write your own effect](/example
 
 ## Next
 
+- [Relight a capture](/examples/relight): sun and shadows from a triangle proxy
+- [Tiny planet](/examples/tiny-planet): wrap the far field without moving the camera
 - [Cinematic depth of field](/examples/depth-of-field), the other way to change the look, built into the projection
-- [All samples](/examples/all-samples): `ModifierSlots`, custom TSL modifiers, the effects contract in full

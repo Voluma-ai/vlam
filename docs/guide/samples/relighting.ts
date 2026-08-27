@@ -2,7 +2,11 @@
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { SplatMesh, createSplatRenderer, loadScene } from '@voluma/vlam';
-import { createRelightingProxy, createRelightingShadowFactorMaterial } from '@voluma/vlam/effects';
+import {
+  createRelightingProxy,
+  createRelightingShadowFactorMaterial,
+  renderRelightingFactorMap,
+} from '@voluma/vlam/effects';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);
@@ -15,6 +19,12 @@ const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 1
 camera.position.set(1.2, 0.8, 1.6);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
 
 const splats = new SplatMesh(await loadScene('/goose.sog'));
 scene.add(splats);
@@ -57,12 +67,7 @@ function frame() {
   const t = performance.now() * 0.001;
   sun.position.set(Math.cos(t * 0.4) * 3, 4, Math.sin(t * 0.4) * 3);
 
-  renderer.setRenderTarget(relightTarget);
-  // White + A0 — black clear draws dark triangle outlines under softness.
-  renderer.setClearColor(0xffffff, 0);
-  renderer.clear();
-  renderer.render(relightScene, camera);
-  renderer.setRenderTarget(null);
+  renderRelightingFactorMap(renderer, relightScene, camera, relightTarget);
 
   splats.update(camera, renderer);
   renderer.render(scene, camera);

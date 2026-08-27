@@ -44,7 +44,6 @@ import {
 
 import {
   sdfEffects,
-  lightingPreset,
   revealPreset,
   worldWarpPreset,
   createRelightingProxy,
@@ -1633,7 +1632,7 @@ async function main(): Promise<void> {
     null;
   let syncWarpIntensitySlider: ((state: { visible: boolean; value?: number }) => void) | null =
     null;
-  /** Shows/hides the proxy-relight option once a cast mesh is known. */
+  /** Shows/hides the relight option once a cast mesh is known. */
   let syncRelightModeVisible: ((visible: boolean) => void) | null = null;
   let liveWarp: WorldWarpPreset | null = null;
 
@@ -1642,7 +1641,6 @@ async function main(): Promise<void> {
   //   demo     - opacity pulse + height tint (M7.2)
   //   paint    - click to paint a per-splat mask channel (M7.3/M7.6)
   //   sdf      - 16 animated SDF shapes tint/desaturate/hide/rim (M7.4)
-  //   lighting - per-splat pseudo-normal lighting (M7.5)
   //   relight  - PlayCanvas-style proxy-mesh screen-space relight (collision mesh)
   //   reveal   - wgslFn value-noise dissolve, WebGPU-only (M7.5)
   //   warp     - planet / bowl wrap (worldWarpPreset)
@@ -1706,7 +1704,7 @@ async function main(): Promise<void> {
   const relightBoundsSize = new THREE.Vector3();
 
   /**
-   * Proxy relight needs triangles that can cast/receive shadows: either a
+   * Relight needs triangles that can cast/receive shadows: either a
    * loaded `?proxy=` mesh or LCC collision tiles (or a scene that ships them).
    */
   const relightCastMeshAvailable = (): boolean => {
@@ -1787,8 +1785,8 @@ async function main(): Promise<void> {
     if (!useExternal && (!collisionTilesForRelight || collisionTilesForRelight.length === 0)) {
       console.warn(
         relightProxyUrl
-          ? `Proxy relight: still loading ${relightProxyUrl} (or load failed).`
-          : 'Proxy relight needs collision meshes or ?proxy=<glb|gltf url>.',
+          ? `Relight: still loading ${relightProxyUrl} (or load failed).`
+          : 'Relight needs collision meshes or ?proxy=<glb|gltf url>.',
       );
       updateEffects = null;
       return;
@@ -1801,7 +1799,7 @@ async function main(): Promise<void> {
         geometries: relightExternalGeometries!,
         albedo: 1,
       });
-      console.info(`Proxy relight using ?proxy=${relightProxyUrl}`);
+      console.info(`Relight using ?proxy=${relightProxyUrl}`);
     } else {
       relightProxy = createRelightingProxy({
         tiles: collisionTilesForRelight!,
@@ -1973,7 +1971,7 @@ async function main(): Promise<void> {
           geometries.push(geo);
         });
         if (geometries.length === 0) {
-          console.warn(`Proxy relight: no meshes in ${url}`);
+          console.warn(`Relight: no meshes in ${url}`);
           return;
         }
         for (const g of relightExternalGeometries ?? []) g.dispose();
@@ -1984,7 +1982,7 @@ async function main(): Promise<void> {
       },
       undefined,
       (err) => {
-        console.warn(`Proxy relight: failed to load ${url}`, err);
+        console.warn(`Relight: failed to load ${url}`, err);
         relightProxyFailed = true;
         refreshRelightEffectOption();
       },
@@ -2302,10 +2300,6 @@ async function main(): Promise<void> {
       const sdf = sdfEffects([], { maxShapes: 24 });
       setEffectModifiers([sdf.modifier]);
       updateEffects = (t) => sdf.setShapes(makeAnimatedSdfShapes(t, localBounds));
-    } else if (effectMode === 'lighting') {
-      const light = lightingPreset({ ambient: 0.35, diffuse: 0.85 });
-      setEffectModifiers([light.modifier]);
-      updateEffects = (t) => light.direction.value.set(Math.cos(t * 0.75), 0.8, Math.sin(t * 0.75));
     } else if (effectMode === 'relight') {
       setupRelight(mesh);
     } else if (effectMode === 'reveal') {
@@ -4541,9 +4535,8 @@ function buildEffectPicker(
   const modes: { label: string; mode: string | null; title: string }[] = [
     { label: 'effect', mode: null, title: 'No effect' },
     { label: 'SDF shapes', mode: 'sdf', title: '16 animated SDF shapes (M7.4)' },
-    { label: 'lighting', mode: 'lighting', title: 'Per-splat pseudo-normal lighting (M7.5)' },
     {
-      label: 'proxy relight',
+      label: 'relight',
       mode: 'relight',
       title: 'PlayCanvas-style proxy-mesh relight (needs LCC collision or ?proxy= mesh)',
     },
@@ -4581,7 +4574,7 @@ function buildEffectPicker(
     option.value = mode ?? NONE;
     option.textContent = text;
     option.title = title;
-    // Proxy relight needs cast geometry; stay hidden until the host confirms
+    // Relight needs cast geometry; stay hidden until the host confirms
     // collision tiles or a `?proxy=` mesh (see refreshRelightEffectOption).
     if (mode === 'relight') {
       option.hidden = true;
