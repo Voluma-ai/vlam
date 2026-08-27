@@ -46,6 +46,7 @@ import {
   mix,
   modelViewMatrix,
   normalWorld,
+  objectPosition,
   positionWorld,
   shadow,
   smoothstep,
@@ -55,6 +56,9 @@ import {
   vec3,
   vec4,
   wgslFn,
+  reference,
+  frameGroup,
+  cos,
 } from 'three/tsl';
 import type { SplatContext, SplatModifier } from './splat-modifier';
 import { warn } from './logging';
@@ -670,8 +674,14 @@ export interface RelightingProxy {
 /** One independent shadow-casting light for {@link createRelightingShadowFactorMaterial}. */
 export type RelightingLightContribution = {
   light: THREE.Light;
-  /** Relative umbra weight. Default `1`. Values `<= 0` are skipped. */
+  /** Relative umbra weight. Default `1`. Values `<= 0` are skipped unless `fill` is set. */
   intensity?: number;
+  /**
+   * Additive Lambert fill on top of the umbra factor (RGB may exceed 1).
+   * Gated by `shadow()`, facing, and for spot/point lights the Frostbite
+   * `distance` window (and the spot cone). `0` / omitted = umbra only.
+   */
+  fill?: number;
 };
 
 /** Options for {@link createRelightingShadowFactorMaterial}. */
@@ -710,6 +720,20 @@ const contributionIntensity = (contribution: RelightingLightContribution): numbe
   return Math.max(0, value as number);
 };
 
+const contributionFill = (contribution: RelightingLightContribution): number => {
+  const value = contribution.fill;
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, value as number);
+};
+
+/** Light pose/color must track every frame. `uniform(vec)` keeps object identity, so in-place `copy()` does not re-upload. */
+const liveRef = <T extends string>(name: string, type: string, object: object): Node<T> => {
+  const ref = reference(name, type, object);
+  // three.js implements ReferenceNode.setGroup(), but its public declaration omits it.
+  (ref as unknown as { setGroup(group: typeof frameGroup): unknown }).setGroup(frameGroup);
+  return asNode<T>(ref);
+};
+
 /**
  * Fade punctual (spot / point) umbras to lit as fragments approach `light.distance`.
  * Directional lights return 1. Uses the Frostbite cutoff window so weight is 0 at
@@ -722,10 +746,61 @@ const punctualUmbraWeight = (light: THREE.Light): Node<'float'> => {
   const cutoff = Number(punctual.distance);
   if (!(cutoff > 0)) return float(1);
   const decay = Math.max(Number(punctual.decay) || 1, 0.01);
-  const lightDistance = asNode<'float'>(positionWorld.distance(uniform(punctual.position)));
+  const lightDistance = asNode<'float'>(positionWorld.distance(objectPosition(punctual)));
+  const range = liveRef<'float'>('distance', 'float', punctual).max(1e-4);
   // pow2(saturate(1 - pow4(d/cutoff))) → 1 near light, 0 at cutoff
-  const window = asNode<'float'>(lightDistance.div(float(cutoff)).pow4().oneMinus().clamp().pow2());
+  const window = asNode<'float'>(lightDistance.div(range).pow4().oneMinus().clamp().pow2());
   return asNode<'float'>(window.pow(float(decay)));
+};
+
+/**
+ * Ranged Lambert toward a punctual light, occluded by its shadow map.
+ * Spot cone uses `light.angle` / `penumbra` and `light.target`.
+ * Does **not** use `receiveUpMin`: that slope gate keeps umbra off noisy
+ * vertical foliage, but it also erased fill on tree stems, so splats only
+ * lit after the host fell back to un-occluded Lambert.
+ */
+const punctualFillTerm = (light: THREE.Light, fill: number, vis: Node<'float'>): Node<'vec3'> => {
+  const punctual = light as THREE.SpotLight & THREE.PointLight;
+  const isSpot = punctual.isSpotLight === true;
+  const isPoint = punctual.isPointLight === true;
+  if (!isSpot && !isPoint) return vec3(0, 0, 0);
+
+  const lightPos = asNode<'vec3'>(objectPosition(punctual));
+  const toLightVec = asNode<'vec3'>(lightPos.sub(positionWorld));
+  const dist = asNode<'float'>(toLightVec.length().max(1e-4));
+  const toLight = asNode<'vec3'>(toLightVec.div(dist));
+  const ndl = asNode<'float'>(normalWorld.dot(toLight).max(0));
+  const window = punctualUmbraWeight(light);
+  let mask = asNode<'float'>(window.mul(ndl).mul(vis));
+
+  if (isSpot) {
+    const spot = light as THREE.SpotLight;
+    const shine = asNode<'vec3'>(objectPosition(spot.target).sub(lightPos).normalize());
+    const outer = liveRef<'float'>('angle', 'float', spot).max(1e-3);
+    const penumbra = liveRef<'float'>('penumbra', 'float', spot).clamp(0, 0.95);
+    const inner = asNode<'float'>(outer.mul(float(1).sub(penumbra)).max(1e-3));
+    const cone = asNode<'float'>(smoothstep(cos(outer), cos(inner), toLight.negate().dot(shine)));
+    mask = asNode<'float'>(mask.mul(cone));
+  }
+
+  const chroma = liveRef<'vec3'>('color', 'color', light);
+  return asNode<'vec3'>(chroma.mul(float(fill)).mul(mask));
+};
+
+const directionalFillTerm = (
+  light: THREE.Light,
+  fill: number,
+  vis: Node<'float'>,
+): Node<'vec3'> => {
+  const dirLight = light as THREE.DirectionalLight;
+  if (dirLight.isDirectionalLight !== true) return vec3(0, 0, 0);
+  const shine = asNode<'vec3'>(
+    objectPosition(dirLight.target).sub(objectPosition(dirLight)).normalize(),
+  );
+  const ndl = asNode<'float'>(normalWorld.dot(shine.negate()).max(0));
+  const chroma = liveRef<'vec3'>('color', 'color', light);
+  return asNode<'vec3'>(chroma.mul(float(fill)).mul(ndl).mul(vis));
 };
 
 const normalizeRelightingLights = (
@@ -735,7 +810,7 @@ const normalizeRelightingLights = (
   const weighted: RelightingLightContribution[] = [];
   for (const contribution of list) {
     if (weighted.length >= MAX_RELIGHTING_SHADOW_LIGHTS) break;
-    if (contributionIntensity(contribution) <= 0) continue;
+    if (contributionIntensity(contribution) <= 0 && contributionFill(contribution) <= 0) continue;
     weighted.push(contribution);
   }
   return weighted;
@@ -794,16 +869,19 @@ const cascadedShadow = (
  * union of umbras so each caster keeps its silhouette. Spot / point lights
  * with `distance &gt; 0` fade their umbra to lit via a Frostbite cutoff window
  * (steepened by `decay`) so the shadow map far plane is not a hard cliff.
- * Cascades (`midLight` / `outerLight` / `farLight`) still attach to the
- * **first** directional only. At most {@link MAX_RELIGHTING_SHADOW_LIGHTS}
- * independent lights are used; extras are ignored. Graph size follows the
- * live contribution count (not a padded loop of that width).
+ * Contribution `fill` adds occluded Lambert (range + cone for punctual lights)
+ * on top of that identity so marker lamps can light splats without wrapping
+ * through collision. Cascades (`midLight` / `outerLight` / `farLight`) still
+ * attach to the **first** directional only. At most
+ * {@link MAX_RELIGHTING_SHADOW_LIGHTS} independent lights are used; extras
+ * are ignored. Graph size follows the live contribution count (not a padded
+ * loop of that width).
  *
  * By default, only **upward** proxy faces receive (`receiveUpMin`). Vertical
  * and noisy foliage triangles still **cast**, but they do not self-shadow —
  * that PCF acne reads as per-frame sparkle in trees. Pass `receiveUpMin: 0`
- * to receive on every face. The Lambert term uses the same slope gate, so
- * steep foliage does not pick up a noisy tint.
+ * to receive on every face. Contribution `fill` does **not** use that slope
+ * gate (stems would otherwise stay unlit in the factor map).
  *
  * Clear the lighting RT to **RGB 1, A 0** (not black). Softness / bilinear
  * samples at coverage edges otherwise pull in black and draw a dark outline
@@ -881,6 +959,11 @@ export function createRelightingShadowFactorMaterial(
     // clipping at the shadow-map far plane.
     return asNode<'float'>(mix(float(1), raw, punctualUmbraWeight(light)));
   };
+  // A ShadowNode owns its shadow render resources. Reuse one node per
+  // contribution so adding fill does not render the same shadow map twice.
+  const shadowTerms = contributions.map((contribution, index) =>
+    shadowTermAt(index, contribution.light),
+  );
 
   let factor: Node<'float'>;
   let shadowed: Node<'float'> = float(1);
@@ -893,43 +976,56 @@ export function createRelightingShadowFactorMaterial(
     for (let i = 0; i < contributions.length; i++) {
       const contribution = contributions[i]!;
       const intensity = contributionIntensity(contribution);
+      if (intensity <= 0) continue;
       const umbra_i = Math.min(1, Math.max(0, 1 - intensity * (1 - umbra)));
-      const term = shadowTermAt(i, contribution.light);
+      const term = shadowTerms[i]!;
       const factor_i = asNode<'float'>(mix(float(umbra_i), float(1), term));
       factorCombined = asNode<'float'>(min(factorCombined, factor_i));
     }
     shadowed = factorCombined;
     factor = asNode<'float'>(mix(float(1), factorCombined, receive));
   } else {
-    if (contributions.length === 1) {
-      shadowed = shadowTermAt(0, contributions[0]!.light);
-    } else if (contributions.length > 1) {
+    const shadowIndices = contributions
+      .map((contribution, index) => ({ index, intensity: contributionIntensity(contribution) }))
+      .filter(({ intensity }) => intensity > 0);
+    if (shadowIndices.length === 1) {
+      shadowed = shadowTerms[shadowIndices[0]!.index]!;
+    } else if (shadowIndices.length > 1) {
       let illum: Node<'float'> = float(0);
       let denom = 0;
-      for (let i = 0; i < contributions.length; i++) {
-        const contribution = contributions[i]!;
-        const intensity = contributionIntensity(contribution);
+      for (const { index, intensity } of shadowIndices) {
         denom += intensity;
-        const term = shadowTermAt(i, contribution.light);
+        const term = shadowTerms[index]!;
         illum = asNode<'float'>(illum.add(float(intensity).mul(term)));
       }
-      shadowed = denom > 0 ? asNode<'float'>(illum.div(float(denom))) : float(1);
+      shadowed = asNode<'float'>(illum.div(float(denom)));
     }
-    const attenuation = mix(float(1), shadowed, receive);
-    factor = mix(float(umbra), float(1), attenuation);
+    if (shadowIndices.length > 0) {
+      const attenuation = mix(float(1), shadowed, receive);
+      factor = mix(float(umbra), float(1), attenuation);
+    } else {
+      factor = float(1);
+    }
   }
 
+  let boost: Node<'vec3'> = vec3(0, 0, 0);
   if (diffuse > 0) {
     const lightColor = uniform(options.color ?? new THREE.Color(1, 1, 1));
     const lightDir = uniform(options.direction ?? new THREE.Vector3(0, 1, 0));
     const ndl = asNode<'float'>(normalWorld.dot(lightDir.normalize()).max(0));
-    const boost = asNode<'vec3'>(
-      lightColor.mul(ndl).mul(float(diffuse)).mul(receive).mul(shadowed),
-    );
-    material.outputNode = vec4(vec3(factor).add(boost), float(1));
-  } else {
-    material.outputNode = vec4(vec3(factor), float(1));
+    boost = asNode<'vec3'>(lightColor.mul(ndl).mul(float(diffuse)).mul(receive).mul(shadowed));
   }
+  for (let i = 0; i < contributions.length; i++) {
+    const contribution = contributions[i]!;
+    const fill = contributionFill(contribution);
+    if (fill <= 0) continue;
+    const light = contribution.light;
+    const vis = shadowTerms[i]!;
+    const punctual = punctualFillTerm(light, fill, vis);
+    const directional = directionalFillTerm(light, fill, vis);
+    boost = asNode<'vec3'>(boost.add(punctual).add(directional));
+  }
+  material.outputNode = vec4(vec3(factor).add(boost), float(1));
   return material;
 }
 

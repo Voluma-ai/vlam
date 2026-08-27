@@ -43,6 +43,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   lights with average or minimum-umbra combination; demo `?effects=relight`
   uses LCC collision tiles or a `?proxy=` surface GLB. See
   `docs/guide/relighting.md`. Worked example: `site/examples/relight.md`.
+- Relighting light contributions accept an optional `fill` boost: directional,
+  point, and spot lights add shadow-occluded Lambert light, with live world-space
+  poses plus distance and cone attenuation for punctual lights.
 - `worldWarpPreset` (`@voluma/vlam/effects`): camera-centered planet / bowl
   splat wrap. Demo: `?effects=warp`. Worked example: `site/examples/tiny-planet.md`.
 - Docs streaming walkthrough (`site/examples/big-scenes.md`) runs Dehaar `.lcc2`
