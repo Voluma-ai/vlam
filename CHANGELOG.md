@@ -40,9 +40,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   screen-space lit-proxy RT; `createRelightingProxy` /
   `createRelightingShadowFactorMaterial` in `@voluma/vlam/effects`; demo
   `?effects=relight` (LCC collision tiles or `?proxy=` surface GLB). See
-  `docs/guide/relighting.md`.
+  `docs/guide/relighting.md`. Worked example: `site/examples/relight.md`.
 - `worldWarpPreset` (`@voluma/vlam/effects`): camera-centered planet / bowl
-  splat wrap. Demo: `?effects=warp`.
+  splat wrap. Demo: `?effects=warp`. Worked example: `site/examples/tiny-planet.md`.
+- Docs streaming walkthrough (`site/examples/big-scenes.md`) runs Dehaar `.lcc2`
+  live via `/remote/`, with a quality slider on `setBudget`.
 - Demo `?hud=1` names the SD/HD toggle and the browser, so a pinned
   `?pixelRatio=` cannot be read as the quality preset. The same panel lists
   MSAA, Gaussian cutoff, contribution profile, native dpr, and whether

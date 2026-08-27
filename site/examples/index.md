@@ -21,16 +21,18 @@ the same source file shown below.
 9. **[Shader effects](/examples/shader-effects)**: cut away, relight, or reveal a capture without changing its data.
 10. **[Select and cut away part of a capture](/examples/select-and-cut)**: select a volume, count its splats, and split the capture.
 11. **[Cinematic depth of field](/examples/depth-of-field)**: focus and aperture like a real lens, plus click-to-focus.
-12. **[Write your own effect](/examples/custom-effect)**: build an efficient modifier from scratch.
+12. **[Relight a capture](/examples/relight)**: sun and shadows on a streamed street, from its collision mesh.
+13. **[Tiny planet](/examples/tiny-planet)**: wrap a streamed street under your feet, or up into a bowl.
+14. **[Write your own effect](/examples/custom-effect)**: build an efficient modifier from scratch.
 
 ## Shipping it
 
-13. **[Use it from React](/examples/react-viewer)**: mount and dispose a viewer safely.
-14. **[Annotations pinned to the capture](/examples/annotations)**: add HTML labels that track and hide behind the capture.
-15. **[Make it fast on a phone](/examples/fast-on-phones)**: tune pixel ratio and device-derived settings.
-16. **[Works everywhere: the WebGL2 fallback](/examples/webgl-fallback)**, support browsers without WebGPU.
-17. **[View it in VR](/examples/in-vr)**: start a headset session and manage its budget.
-18. **[Save and share a viewpoint](/examples/share-a-viewpoint)**: store a camera view in the URL and animate between views.
+15. **[Use it from React](/examples/react-viewer)**: mount and dispose a viewer safely.
+16. **[Annotations pinned to the capture](/examples/annotations)**: add HTML labels that track and hide behind the capture.
+17. **[Make it fast on a phone](/examples/fast-on-phones)**: tune pixel ratio and device-derived settings.
+18. **[Works everywhere: the WebGL2 fallback](/examples/webgl-fallback)**, support browsers without WebGPU.
+19. **[View it in VR](/examples/in-vr)**: start a headset session and manage its budget.
+20. **[Save and share a viewpoint](/examples/share-a-viewpoint)**: store a camera view in the URL and animate between views.
 
 ## Reference
 

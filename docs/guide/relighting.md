@@ -129,6 +129,9 @@ outlines. PlayCanvas does not add this blur — proxy quality is the main lever.
 On `UnifiedSplatRenderer`, the same API modulates the unified draw material
 without invalidating gather caches.
 
+A compact runnable copy lives in the docs as
+[Relight a capture](../../site/examples/relight.md).
+
 ## Demo
 
 In the built-in viewer: `?effects=relight` on an LCC / `.lcc2` scene that

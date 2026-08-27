@@ -37,7 +37,7 @@ const warp = worldWarpPreset({ intensity: 0.55, radius: 2 });
 warp.intensity.value = -0.4; // fold, no recompile
 ```
 
-`worldWarpPreset` is camera-centered: walking/orbiting is unchanged, distant splats wrap. Extreme warps still sort by pre-displacement depth.
+`worldWarpPreset` is camera-centered: walking/orbiting is unchanged, distant splats wrap. Extreme warps still sort by pre-displacement depth. Worked example: [Tiny planet](../../site/examples/tiny-planet.md).
 
 <!-- full file: docs/guide/samples/effects-presets.ts -->
 

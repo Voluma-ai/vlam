@@ -3,7 +3,9 @@
 **What you get:** a large capture that streams detail near the camera and drops
 unneeded chunks.
 
-This is the one example with no live run on this site: it needs a streamed capture, and the small file the other examples share is a single static one. To see it, drop a streamed folder, a `.lcc` directory, or a streamed SOG capture, onto the <a href="/demo/" target="_self">viewer</a>, which takes the `loadLocal` path described below.
+<ExampleEmbed slug="big-scenes" hint="Give it a moment to stream in. Drag to orbit, press to walk, then look around" />
+
+Hold the left button still for a moment to walk forward; a drag in that window still orbits. Once you are walking, moving the mouse looks around.
 
 ## Why a big capture cannot just be loaded
 
@@ -12,7 +14,12 @@ into chunks at several levels of detail, with a manifest describing each chunk.
 `StreamedSplatMesh` fetches fine detail near the camera and coarser detail
 farther away, so a capture larger than the budget is never resident in full.
 
-## The budget is the one number that matters
+This example streams the same Dehaar `.lcc2` the
+<a href="/demo/?scene=/remote/jack/v/Dehaar/Dehaar.lcc2&fallback=goose" target="_self">viewer</a>
+opens. `/remote/…` is the docs/demo proxy onto `assets.voluma.ai`. Point
+`StreamedSplatMesh.load` at your own manifest when you copy this out.
+
+## How the splat budget works
 
 **Budget = the maximum active splat count.** The streamer spends it where detail
 is most useful.
@@ -33,25 +40,33 @@ Changing the budget does not reload anything. The mesh just re-decides which chu
 ```html [index.html]
 <!doctype html>
 <html>
- <head>
- <meta charset="utf-8" />
- <style>
- body {
- margin: 0;
- overflow: hidden;
- }
- #quality {
- position: fixed;
- bottom: 16px;
- left: 16px;
- z-index: 1;
- }
- </style>
- </head>
- <body>
- <input id="quality" type="range" min="0.25" max="1" step="0.05" value="1" />
- <script type="module" src="/main.ts"></script>
- </body>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+      }
+      #ui {
+        position: fixed;
+        bottom: 16px;
+        left: 16px;
+        z-index: 1;
+        display: flex;
+        gap: 18px;
+        align-items: center;
+        color: #fff;
+        text-shadow: 0 1px 4px #000;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="ui">
+      <label>Quality <input id="quality" type="range" min="0.25" max="1" step="0.05" value="1" /></label>
+      <span>Press to walk</span>
+    </div>
+    <script type="module" src="/main.ts"></script>
+  </body>
 </html>
 ```
 
@@ -69,7 +84,7 @@ Changing the budget does not reload anything. The mesh just re-decides which chu
 
 All of them need a host that answers HTTP range requests, any normal static host or CDN does. If the capture sits on a different origin than your page, that origin needs CORS headers, or the fetches fail before anything renders.
 
-For a folder the user drags in from their own disk, use `StreamedSplatMesh.loadLocal` instead; it takes a map of files and needs no server at all.
+For a folder the user drags in from their own disk, use `StreamedSplatMesh.loadLocal` instead; it takes a map of files and needs no server at all. The <a href="/demo/" target="_self">viewer</a> takes that path when you drop a streamed folder onto it.
 
 ## Troubleshooting
 
@@ -81,5 +96,5 @@ For a folder the user drags in from their own disk, use `StreamedSplatMesh.loadL
 
 ## Next
 
+- [Relight a capture](/examples/relight): sun and shadows on this same street
 - [Click on the world](/examples/click-the-world), picking works the same on a streamed mesh
-- [All samples](/examples/all-samples), shared budget governors across several streamed meshes

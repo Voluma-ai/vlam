@@ -98,5 +98,5 @@ That is the whole feature. Tap-to-focus, exactly like a phone camera, in three l
 
 ## Next
 
-- [Write your own effect](/examples/custom-effect): build a look the presets do not cover
+- [Relight a capture](/examples/relight): sun and shadows, also a draw-time material setting
 - [Click on the world](/examples/click-the-world): the pick behind click-to-focus

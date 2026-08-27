@@ -231,6 +231,8 @@ describe('public API surface (@voluma/vlam/effects)', () => {
     expectTypeOf<effects.SdfShapeKind>().toEqualTypeOf<'sphere' | 'box' | 'cylinder'>();
     expectTypeOf<effects.SdfMode>().toEqualTypeOf<'tint' | 'desaturate' | 'hide' | 'rim'>();
     expectTypeOf<effects.RelightingProxy>().toBeObject();
+    expectTypeOf<effects.RelightingLightContribution>().toBeObject();
+    expect(effects.MAX_RELIGHTING_SHADOW_LIGHTS).toBe(4);
   });
 });
 

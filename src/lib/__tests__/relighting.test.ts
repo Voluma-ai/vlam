@@ -189,4 +189,69 @@ describe('createRelightingShadowFactorMaterial', () => {
     expect(material.outputNode).toBeTruthy();
     material.dispose();
   });
+
+  it('builds with intensity-weighted independent lights', () => {
+    const sun = new THREE.DirectionalLight();
+    const fill = new THREE.DirectionalLight();
+    const material = createRelightingShadowFactorMaterial(
+      [
+        { light: sun, intensity: 1 },
+        { light: fill, intensity: 0.25 },
+      ],
+      { umbra: 0.5 },
+    );
+    expect(material.outputNode).toBeTruthy();
+    material.dispose();
+  });
+
+  it('builds with a spotlight as a secondary contribution', () => {
+    const sun = new THREE.DirectionalLight();
+    const spot = new THREE.SpotLight();
+    const material = createRelightingShadowFactorMaterial([
+      { light: sun, intensity: 1 },
+      { light: spot, intensity: 0.6 },
+    ]);
+    expect(material.outputNode).toBeTruthy();
+    material.dispose();
+  });
+
+  it('keeps cascades on the first directional when extra lights are present', () => {
+    const inner = new THREE.DirectionalLight();
+    const far = new THREE.DirectionalLight();
+    const fill = new THREE.SpotLight();
+    const material = createRelightingShadowFactorMaterial(
+      [
+        { light: inner, intensity: 1 },
+        { light: fill, intensity: 0.4 },
+      ],
+      { farLight: far, nearRadius: 40 },
+    );
+    expect(material.outputNode).toBeTruthy();
+    material.dispose();
+  });
+
+  it('skips zero-intensity contributions and empty arrays', () => {
+    const lit = new THREE.DirectionalLight();
+    const dark = new THREE.DirectionalLight();
+    const skipped = createRelightingShadowFactorMaterial([
+      { light: dark, intensity: 0 },
+      { light: lit, intensity: 2 },
+    ]);
+    expect(skipped.outputNode).toBeTruthy();
+    skipped.dispose();
+
+    const empty = createRelightingShadowFactorMaterial([]);
+    expect(empty.outputNode).toBeTruthy();
+    empty.dispose();
+  });
+
+  it('caps independent lights at MAX_RELIGHTING_SHADOW_LIGHTS', () => {
+    const lights = Array.from({ length: 6 }, () => ({
+      light: new THREE.DirectionalLight(),
+      intensity: 1,
+    }));
+    const material = createRelightingShadowFactorMaterial(lights);
+    expect(material.outputNode).toBeTruthy();
+    material.dispose();
+  });
 });

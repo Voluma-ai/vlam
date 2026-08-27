@@ -55,7 +55,7 @@ Where exactly to put it is a matter of looking. The measurement in this example,
 
 ## Two things behave differently, and both are about light
 
-**Lights do not touch the capture.** A capture already has its lighting baked in, that is what was photographed. Adding a `DirectionalLight` brightens your cube and does nothing to the splats. If you want the capture to respond to a light, use the [lighting preset](/examples/shader-effects), which is a stylistic layer, not real relighting.
+**Lights do not touch the capture.** A capture already has its lighting baked in, that is what was photographed. Adding a `DirectionalLight` brightens your cube and does nothing to the splats. The [lighting preset](/examples/shader-effects) is a stylistic layer. For a moving sun with shadows, see [Relight a capture](/examples/relight).
 
 **Matching the look is on you.** A capture shot on an overcast afternoon and a shiny blue cube lit by a hard sun will not look like they belong together. Match your lights to the capture's own lighting, not the other way around.
 

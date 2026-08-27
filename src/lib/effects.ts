@@ -15,8 +15,9 @@
  *    tiles (or raw geometries) for PlayCanvas-style {@link SplatMesh.setRelighting}.
  *  - {@link createRelightingShadowFactorMaterial}: writes a shadow **multiplier**
  *    (1 = lit, &lt;1 = umbra) so coverage does not statically tint splats.
- *    Optional `color` / `diffuse` / `direction` add a Lambert boost on top
- *    of that identity (RGB may exceed 1 on a HalfFloat lighting RT).
+ *    Accepts one light or {@link RelightingLightContribution}[] with intensity
+ *    weights. Optional `color` / `diffuse` / `direction` add a Lambert boost on
+ *    top of that identity (RGB may exceed 1 on a HalfFloat lighting RT).
  *  - {@link worldWarpPreset}: camera-centered sphere wrap (planet / bowl).
  *  - {@link depthOfFieldPreset}: stylized modifier-based depth-of-field (M13).
  *    For physically-modeled camera DoF prefer the core
@@ -660,16 +661,105 @@ export interface RelightingProxy {
   dispose(): void;
 }
 
+/** One independent shadow-casting light for {@link createRelightingShadowFactorMaterial}. */
+export type RelightingLightContribution = {
+  light: THREE.Light;
+  /** Relative umbra weight. Default `1`. Values `<= 0` are skipped. */
+  intensity?: number;
+};
+
+/** Options for {@link createRelightingShadowFactorMaterial}. */
+export type RelightingShadowFactorOptions = {
+  umbra?: number;
+  receiveUpMin?: number;
+  color?: THREE.Color;
+  diffuse?: number;
+  direction?: THREE.Vector3;
+  midLight?: THREE.Light;
+  midRadius?: number;
+  outerLight?: THREE.Light;
+  outerRadius?: number;
+  farLight?: THREE.Light;
+  nearRadius?: number;
+};
+
+/**
+ * Shader-graph cap for independent shadow lights (cascades of the first
+ * directional do not count). Extra contributions are ignored.
+ */
+export const MAX_RELIGHTING_SHADOW_LIGHTS = 4;
+
+const contributionIntensity = (contribution: RelightingLightContribution): number => {
+  const value = contribution.intensity;
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(0, value as number);
+};
+
+const normalizeRelightingLights = (
+  lights: THREE.Light | RelightingLightContribution[],
+): RelightingLightContribution[] => {
+  const list = Array.isArray(lights) ? lights : [{ light: lights, intensity: 1 }];
+  const weighted: RelightingLightContribution[] = [];
+  for (const contribution of list) {
+    if (weighted.length >= MAX_RELIGHTING_SHADOW_LIGHTS) break;
+    if (contributionIntensity(contribution) <= 0) continue;
+    weighted.push(contribution);
+  }
+  return weighted;
+};
+
+const cascadedShadow = (
+  light: THREE.Light,
+  options: RelightingShadowFactorOptions,
+  dist: Node<'float'>,
+): Node<'float'> => {
+  const nearRadius = Number.isFinite(options.nearRadius)
+    ? Math.max(1, options.nearRadius as number)
+    : options.midLight
+      ? 20
+      : 100;
+  const midRadius = Number.isFinite(options.midRadius)
+    ? Math.max(nearRadius, options.midRadius as number)
+    : 50;
+  const outerRadius = Number.isFinite(options.outerRadius)
+    ? Math.max(midRadius, options.outerRadius as number)
+    : 160;
+  const blendAt = (inner: Node<'float'>, outer: Node<'float'>, radius: number): Node<'float'> =>
+    asNode<'float'>(mix(inner, outer, smoothstep(float(radius * 0.7), float(radius * 0.95), dist)));
+  let shadowed = asNode<'float'>(shadow(light));
+  if (options.midLight) {
+    shadowed = blendAt(shadowed, asNode<'float'>(shadow(options.midLight)), nearRadius);
+    if (options.outerLight) {
+      shadowed = blendAt(shadowed, asNode<'float'>(shadow(options.outerLight)), midRadius);
+      if (options.farLight) {
+        shadowed = blendAt(shadowed, asNode<'float'>(shadow(options.farLight)), outerRadius);
+      }
+    } else if (options.farLight) {
+      shadowed = blendAt(shadowed, asNode<'float'>(shadow(options.farLight)), midRadius);
+    }
+  } else if (options.farLight) {
+    shadowed = blendAt(shadowed, asNode<'float'>(shadow(options.farLight)), nearRadius);
+  }
+  return shadowed;
+};
+
 /**
  * Node material for a **shadow-factor** lighting RT used with
  * {@link SplatMesh.setRelighting}.
  *
- * Fragment output is `vec4(vec3(mix(umbra, 1, shadow(light))) + boost, 1)`:
+ * Fragment output is `vec4(vec3(mix(umbra, 1, shadow)) + boost, 1)`:
  *  - covered + lit → RGB ≈ 1 (identity modulate when brightness/background are 1)
  *  - covered + umbra → RGB ≈ `umbra` (soft darken; never pure black)
  *  - uncovered stays clear-alpha 0 from the RT clear
  *  - with `diffuse` &gt; 0, facing surfaces add `color * NdotL * diffuse`
  *    (RGB may exceed 1; use a HalfFloat lighting RT)
+ *
+ * Pass one {@link THREE.Light} (demo / single-sun) or an array of
+ * {@link RelightingLightContribution} so independent lights with different
+ * intensities share one multiplier:
+ * `illum = sum(I_i * shadow_i) / sum(I_i)`. Cascades (`midLight` /
+ * `outerLight` / `farLight`) still attach to the **first** directional only.
+ * At most {@link MAX_RELIGHTING_SHADOW_LIGHTS} independent lights are used.
  *
  * By default, only **upward** proxy faces receive (`receiveUpMin`). Vertical
  * and noisy foliage triangles still **cast**, but they do not self-shadow —
@@ -686,8 +776,9 @@ export interface RelightingProxy {
  * Assign to proxy meshes with `castShadow` and `receiveShadow` both true; the
  * umbra shape follows those triangles (splat foliage cannot cast).
  *
- * @param light - Shadow-casting light (typically a {@link THREE.DirectionalLight}).
- *   Innermost cascade when `midLight` / `outerLight` / `farLight` are set.
+ * @param lights - Shadow-casting light, or intensity-weighted contributions.
+ *   The first entry is the innermost cascade when `midLight` / `outerLight` /
+ *   `farLight` are set.
  * @param options.umbra - Multiplier in full shadow, in `[0, 1]`. Default `0.45`.
  * @param options.receiveUpMin - World-up `normal.y` below which the face does
  *   not receive. Default `0.25`. `0` disables the slope gate.
@@ -699,7 +790,7 @@ export interface RelightingProxy {
  * @param options.direction - World-space direction **toward** the light.
  *   Mutate in place each frame as the sun moves. Default `(0, 1, 0)`.
  * @param options.midLight - Optional mid cascade (demo: ~50 m). Blend from
- *   `light` over `nearRadius`.
+ *   the first light over `nearRadius`.
  * @param options.midRadius - World metres where the mid cascade yields to
  *   `outerLight` (or `farLight`). Default `50`.
  * @param options.outerLight - Optional outer cascade (demo: ~160 m) between
@@ -715,20 +806,8 @@ export interface RelightingProxy {
  *   `midLight`, else `100`.
  */
 export function createRelightingShadowFactorMaterial(
-  light: THREE.Light,
-  options: {
-    umbra?: number;
-    receiveUpMin?: number;
-    color?: THREE.Color;
-    diffuse?: number;
-    direction?: THREE.Vector3;
-    midLight?: THREE.Light;
-    midRadius?: number;
-    outerLight?: THREE.Light;
-    outerRadius?: number;
-    farLight?: THREE.Light;
-    nearRadius?: number;
-  } = {},
+  lights: THREE.Light | RelightingLightContribution[],
+  options: RelightingShadowFactorOptions = {},
 ): THREE.MeshStandardNodeMaterial {
   const umbra = Number.isFinite(options.umbra)
     ? Math.min(1, Math.max(0, options.umbra as number))
@@ -736,17 +815,6 @@ export function createRelightingShadowFactorMaterial(
   const receiveUpMin = Number.isFinite(options.receiveUpMin)
     ? Math.min(0.95, Math.max(0, options.receiveUpMin as number))
     : 0.25;
-  const nearRadius = Number.isFinite(options.nearRadius)
-    ? Math.max(1, options.nearRadius as number)
-    : options.midLight
-      ? 20
-      : 100;
-  const midRadius = Number.isFinite(options.midRadius)
-    ? Math.max(nearRadius, options.midRadius as number)
-    : 50;
-  const outerRadius = Number.isFinite(options.outerRadius)
-    ? Math.max(midRadius, options.outerRadius as number)
-    : 160;
   const diffuse = Number.isFinite(options.diffuse) ? Math.max(0, options.diffuse as number) : 0;
   const material = new THREE.MeshStandardNodeMaterial();
   material.side = THREE.DoubleSide;
@@ -763,21 +831,24 @@ export function createRelightingShadowFactorMaterial(
   // optional Lambert is added on top of identity so unshadowed coverage stays
   // ≈ 1 when `diffuse` is 0.
   const dist = positionWorld.distance(cameraPosition);
-  const blendAt = (inner: Node<'float'>, outer: Node<'float'>, radius: number): Node<'float'> =>
-    asNode<'float'>(mix(inner, outer, smoothstep(float(radius * 0.7), float(radius * 0.95), dist)));
-  let shadowed = asNode<'float'>(shadow(light));
-  if (options.midLight) {
-    shadowed = blendAt(shadowed, asNode<'float'>(shadow(options.midLight)), nearRadius);
-    if (options.outerLight) {
-      shadowed = blendAt(shadowed, asNode<'float'>(shadow(options.outerLight)), midRadius);
-      if (options.farLight) {
-        shadowed = blendAt(shadowed, asNode<'float'>(shadow(options.farLight)), outerRadius);
-      }
-    } else if (options.farLight) {
-      shadowed = blendAt(shadowed, asNode<'float'>(shadow(options.farLight)), midRadius);
+  const contributions = normalizeRelightingLights(lights);
+  let shadowed: Node<'float'> = float(1);
+  if (contributions.length === 1) {
+    shadowed = cascadedShadow(contributions[0]!.light, options, dist);
+  } else if (contributions.length > 1) {
+    let illum: Node<'float'> = float(0);
+    let denom = 0;
+    for (let i = 0; i < contributions.length; i++) {
+      const contribution = contributions[i]!;
+      const intensity = contributionIntensity(contribution);
+      denom += intensity;
+      const term =
+        i === 0
+          ? cascadedShadow(contribution.light, options, dist)
+          : asNode<'float'>(shadow(contribution.light));
+      illum = asNode<'float'>(illum.add(float(intensity).mul(term)));
     }
-  } else if (options.farLight) {
-    shadowed = blendAt(shadowed, asNode<'float'>(shadow(options.farLight)), nearRadius);
+    shadowed = denom > 0 ? asNode<'float'>(illum.div(float(denom))) : float(1);
   }
   const receive =
     receiveUpMin > 0
