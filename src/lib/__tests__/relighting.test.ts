@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SplatMesh } from '../splat-mesh';
 import {
   clampRelightingSettings,
@@ -8,7 +8,11 @@ import {
   DEFAULT_RELIGHT_BLEND,
   DEFAULT_RELIGHT_BRIGHTNESS,
 } from '../relighting';
-import { createRelightingProxy, createRelightingShadowFactorMaterial } from '../effects';
+import {
+  createRelightingProxy,
+  createRelightingShadowFactorMaterial,
+  renderRelightingFactorMap,
+} from '../effects';
 
 describe('clampRelightingSettings', () => {
   it('clamps blend to [0, 1] and keeps non-negative brightness / background', () => {
@@ -253,5 +257,55 @@ describe('createRelightingShadowFactorMaterial', () => {
     const material = createRelightingShadowFactorMaterial(lights);
     expect(material.outputNode).toBeTruthy();
     material.dispose();
+  });
+});
+
+describe('renderRelightingFactorMap', () => {
+  const createRenderer = () => {
+    const storedClear = new THREE.Color(0.1, 0.2, 0.3);
+    return {
+      autoClear: false,
+      shadowMap: { enabled: false, autoUpdate: false },
+      contextNode: { id: 'gamma' } as unknown,
+      getDrawingBufferSize: (target: THREE.Vector2) => target.set(64, 48),
+      getRenderTarget: () => null,
+      setRenderTarget: vi.fn(),
+      getClearColor: (target: THREE.Color) => target.copy(storedClear),
+      getClearAlpha: () => 0.5,
+      setClearColor: vi.fn(),
+      clear: vi.fn(),
+      render: vi.fn(),
+    };
+  };
+
+  it('isolates autoClear, shadow maps, and contextNode then restores them', () => {
+    const renderer = createRenderer();
+    renderer.render.mockImplementation(() => {
+      expect(renderer.autoClear).toBe(true);
+      expect(renderer.shadowMap.enabled).toBe(true);
+      expect(renderer.shadowMap.autoUpdate).toBe(true);
+      // Must keep a real ContextNode (WebGPURenderer reads contextNode.id).
+      expect(renderer.contextNode).not.toBeUndefined();
+      expect(renderer.contextNode).not.toEqual({ id: 'gamma' });
+    });
+    const target = {
+      setSize: vi.fn(),
+    } as unknown as THREE.RenderTarget;
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera();
+
+    renderRelightingFactorMap(renderer, scene, camera, target);
+
+    expect(target.setSize).toHaveBeenCalledWith(64, 48);
+    expect(renderer.setClearColor).toHaveBeenCalledWith(0xffffff, 0);
+    expect(renderer.clear).toHaveBeenCalled();
+    expect(renderer.render).toHaveBeenCalledWith(scene, camera);
+    expect(renderer.setRenderTarget).toHaveBeenNthCalledWith(1, target);
+    expect(renderer.setRenderTarget).toHaveBeenLastCalledWith(null);
+    expect(renderer.autoClear).toBe(false);
+    expect(renderer.shadowMap.enabled).toBe(false);
+    expect(renderer.shadowMap.autoUpdate).toBe(false);
+    expect(renderer.contextNode).toEqual({ id: 'gamma' });
+    expect(renderer.setClearColor).toHaveBeenLastCalledWith(expect.any(THREE.Color), 0.5);
   });
 });

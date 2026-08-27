@@ -3,7 +3,7 @@
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { StreamedSplatMesh, createSplatRenderer } from '@voluma/vlam';
-import { createRelightingProxy, createRelightingShadowFactorMaterial } from '@voluma/vlam/effects';
+import { createRelightingProxy, createRelightingShadowFactorMaterial, renderRelightingFactorMap } from '@voluma/vlam/effects';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);
@@ -84,9 +84,6 @@ splats.setRelighting({
   softness: 2,
 });
 
-const size = new THREE.Vector2();
-const clearColor = new THREE.Color();
-
 renderer.setAnimationLoop(() => {
   controls.update();
 
@@ -96,18 +93,10 @@ renderer.setAnimationLoop(() => {
   sun.target.position.copy(focus);
   sun.target.updateMatrixWorld();
 
-  renderer.getDrawingBufferSize(size);
-  relightTarget.setSize(Math.max(1, size.x), Math.max(1, size.y));
-
-  const clearAlpha = renderer.getClearAlpha();
-  renderer.getClearColor(clearColor);
-  renderer.setRenderTarget(relightTarget);
-  // White + A0: a black clear draws dark triangle outlines under softness.
-  renderer.setClearColor(0xffffff, 0);
-  renderer.clear();
-  renderer.render(relightScene, camera);
-  renderer.setRenderTarget(null);
-  renderer.setClearColor(clearColor, clearAlpha);
+  // Isolates autoClear / shadow maps and swaps a passthrough contextNode so
+  // this works on a host WebGPURenderer, not only createSplatRenderer().
+  // Clears white + A0.
+  renderRelightingFactorMap(renderer, relightScene, camera, relightTarget);
 
   splats.update(camera, renderer);
   renderer.render(scene, camera);

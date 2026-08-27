@@ -18,6 +18,9 @@
  *    Accepts one light or {@link RelightingLightContribution}[] with intensity
  *    weights. Optional `color` / `diffuse` / `direction` add a Lambert boost on
  *    top of that identity (RGB may exceed 1 on a HalfFloat lighting RT).
+ *  - {@link renderRelightingFactorMap}: host-safe lighting pass. Isolates
+ *    `autoClear`, shadow maps, and swaps a passthrough `contextNode` so the
+ *    example works on an existing `WebGPURenderer`, not only `createSplatRenderer`.
  *  - {@link worldWarpPreset}: camera-centered sphere wrap (planet / bowl).
  *  - {@link depthOfFieldPreset}: stylized modifier-based depth-of-field (M13).
  *    For physically-modeled camera DoF prefer the core
@@ -647,6 +650,11 @@ export function worldWarpPreset(
 }
 
 // --- Proxy-mesh relighting helper -------------------------------------------
+
+export {
+  renderRelightingFactorMap,
+  type RelightingFactorRenderer,
+} from './relighting-pass';
 
 /** Handle returned by {@link createRelightingProxy}. */
 export interface RelightingProxy {

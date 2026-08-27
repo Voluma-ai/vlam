@@ -71,6 +71,7 @@ import { SplatMesh, createSplatRenderer, loadScene } from '@voluma/vlam';
 import {
   createRelightingProxy,
   createRelightingShadowFactorMaterial,
+  renderRelightingFactorMap,
 } from '@voluma/vlam/effects';
 
 const proxy = createRelightingProxy({
@@ -104,18 +105,20 @@ splats.setRelighting({
 
 // Each frame, before the main splat draw:
 renderer.shadowMap.enabled = true;
-renderer.setRenderTarget(relightTarget);
-// White + A0 — black clear draws dark triangle outlines under softness.
-renderer.setClearColor(0xffffff, 0);
-renderer.clear();
-renderer.render(relightScene, camera);
-renderer.setRenderTarget(null);
+renderRelightingFactorMap(renderer, relightScene, camera, relightTarget);
 
 splats.update(camera, renderer);
 renderer.render(scene, camera);
 ```
 
 <!-- full file: docs/guide/samples/relighting.ts -->
+
+Use {@link renderRelightingFactorMap} on a host-owned `WebGPURenderer`
+(`autoClear: false`, tone-mapping `contextNode`, and so on). The helper
+resizes the RT, clears white with alpha 0, turns shadow maps on for the pass,
+swaps in a passthrough `contextNode` (never `undefined` — WebGPURenderer
+reads `contextNode.id`), and restores renderer state afterward. Hand-rolling
+`setRenderTarget` only matches a fresh `createSplatRenderer()`.
 
 `blend` / `brightness` / `background` / `softness` are live uniforms (no material
 rebuild). Changing the map texture identity rebuilds once. Pass `null` to
