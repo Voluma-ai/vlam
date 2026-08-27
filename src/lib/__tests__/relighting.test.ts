@@ -261,14 +261,27 @@ describe('createRelightingShadowFactorMaterial', () => {
     material.dispose();
   });
 
-  it('builds with a spotlight as a secondary contribution', () => {
+  it('adds occluded punctual fill gated by distance', () => {
     const sun = new THREE.DirectionalLight();
-    const spot = new THREE.SpotLight();
-    const material = createRelightingShadowFactorMaterial([
-      { light: sun, intensity: 1 },
-      { light: spot, intensity: 0.6 },
-    ]);
-    expect(graphNodesNamed(material, 'ShadowNode')).toHaveLength(2);
+    const spot = new THREE.SpotLight(0xffffff, 1, 6, Math.PI / 8, 0.4, 1);
+    const material = createRelightingShadowFactorMaterial(
+      [
+        { light: sun, intensity: 1 },
+        { light: spot, intensity: 1, fill: 1.6 },
+      ],
+      { umbra: 0.28, combine: 'min' },
+    );
+    expect(new Set(graphNodesNamed(material, 'ShadowNode'))).toHaveLength(2);
+    expect(graphNodesNamed(material, 'ReferenceNode').length).toBeGreaterThanOrEqual(2);
+    expect(graphConstants(material)).toContain(1.6);
+    material.dispose();
+  });
+
+  it('keeps a fill-only contribution from darkening the shadow factor', () => {
+    const spot = new THREE.SpotLight(0xffffff, 1, 6);
+    const material = createRelightingShadowFactorMaterial([{ light: spot, intensity: 0, fill: 1 }]);
+    expect(graphNodesNamed(material, 'ShadowNode')).toHaveLength(1);
+    expect(graphConstants(material)).not.toContain(0.45);
     material.dispose();
   });
 
