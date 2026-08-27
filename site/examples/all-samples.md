@@ -34,6 +34,12 @@ Each is a standalone program. Follow the link for the explanation and a live run
 <<< ../../docs/examples/samples/many-captures.ts
 :::
 
+::: details collision-walk.ts + collision-world.ts, De Haar first-person movement against format collision meshes · [walkthrough](/examples/collision-walk)
+<<< ../../docs/examples/samples/collision-walk.ts
+
+<<< ../../docs/examples/samples/collision-world.ts
+:::
+
 ### Going further
 
 ::: details frame-the-camera.ts, `computeSplatBounds` and fitting the view · [walkthrough](/examples/frame-the-camera)
