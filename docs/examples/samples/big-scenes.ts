@@ -42,20 +42,30 @@ const look = (dx: number, dy: number): void => {
 
 canvas.addEventListener('pointerdown', (event) => {
   if (event.button !== 0) return;
-  hold = { id: event.pointerId, t0: performance.now(), x: event.clientX, y: event.clientY, walking: false };
+  hold = {
+    id: event.pointerId,
+    t0: performance.now(),
+    x: event.clientX,
+    y: event.clientY,
+    walking: false,
+  };
 });
-canvas.addEventListener('pointermove', (event) => {
-  if (!hold || event.pointerId !== hold.id) return;
-  if (hold.walking || performance.now() - hold.t0 > HOLD_MS) {
-    hold.walking = true;
-    controls.enableRotate = false;
-    look(event.clientX - hold.x, event.clientY - hold.y);
-    hold.x = event.clientX;
-    hold.y = event.clientY;
-    return;
-  }
-  if (Math.hypot(event.clientX - hold.x, event.clientY - hold.y) > SLOP_PX) hold = null;
-}, true);
+canvas.addEventListener(
+  'pointermove',
+  (event) => {
+    if (!hold || event.pointerId !== hold.id) return;
+    if (hold.walking || performance.now() - hold.t0 > HOLD_MS) {
+      hold.walking = true;
+      controls.enableRotate = false;
+      look(event.clientX - hold.x, event.clientY - hold.y);
+      hold.x = event.clientX;
+      hold.y = event.clientY;
+      return;
+    }
+    if (Math.hypot(event.clientX - hold.x, event.clientY - hold.y) > SLOP_PX) hold = null;
+  },
+  true,
+);
 const endHold = (event: PointerEvent): void => {
   if (hold?.id !== event.pointerId) return;
   hold = null;
@@ -78,6 +88,12 @@ const splats = await StreamedSplatMesh.load('/remote/jack/v/Dehaar/Dehaar.lcc2',
   lodBaseDistance: 10, // inside this many world units, the finest detail is used
 });
 scene.add(splats);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
 
 // A quality control, if you want to expose one. Raising the budget shows more
 // detail and costs more memory and frame time; lowering it does the reverse.

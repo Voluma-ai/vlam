@@ -38,8 +38,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - Proxy-mesh splat relighting (PlayCanvas-style): `SplatMesh.setRelighting` /
   `UnifiedSplatRenderer.setRelighting` multiply baked splat color from a
   screen-space lit-proxy RT; `createRelightingProxy` /
-  `createRelightingShadowFactorMaterial` in `@voluma/vlam/effects`; demo
-  `?effects=relight` (LCC collision tiles or `?proxy=` surface GLB). See
+  `createRelightingShadowFactorMaterial` / `renderRelightingFactorMap` in
+  `@voluma/vlam/effects`. Shadow-factor materials accept weighted independent
+  lights with average or minimum-umbra combination; demo `?effects=relight`
+  uses LCC collision tiles or a `?proxy=` surface GLB. See
   `docs/guide/relighting.md`. Worked example: `site/examples/relight.md`.
 - `worldWarpPreset` (`@voluma/vlam/effects`): camera-centered planet / bowl
   splat wrap. Demo: `?effects=warp`. Worked example: `site/examples/tiny-planet.md`.

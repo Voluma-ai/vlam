@@ -32,6 +32,9 @@ collision mesh looks muddy even where no shadow falls. Prefer
 Pass `{ umbra: 0.45 }` (default) so full shadow multiplies by ~0.45 instead of
 crushing splat color to black. `{ color, diffuse, direction }` adds a Lambert
 boost on top of that identity (RGB may exceed 1 — use a HalfFloat lighting RT).
+Pass an array of contributions for several casters (up to
+`MAX_RELIGHTING_SHADOW_LIGHTS`, currently 32); the shader unrolls only the
+lights you pass.
 
 Splat foliage cannot cast. Umbra shape follows **proxy triangles** only.
 Floor-only LCC collision yields ground / overhang self-shadow, not canopy

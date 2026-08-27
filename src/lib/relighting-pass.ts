@@ -35,13 +35,21 @@ export type RelightingFactorRenderer = {
   shadowMap: { enabled: boolean; autoUpdate?: boolean };
   getDrawingBufferSize(target: THREE.Vector2): THREE.Vector2;
   getRenderTarget(): THREE.RenderTarget | null;
-  setRenderTarget(target: THREE.RenderTarget | null): void;
+  getActiveCubeFace(): number;
+  getActiveMipmapLevel(): number;
+  getMRT(): THREE.MRTNode | null;
+  setMRT(mrt: THREE.MRTNode | null): void;
+  setRenderTarget(
+    target: THREE.RenderTarget | null,
+    activeCubeFace?: number,
+    activeMipmapLevel?: number,
+  ): void;
   getClearColor(target: THREE.Color): THREE.Color;
   getClearAlpha(): number;
   setClearColor(color: THREE.ColorRepresentation, alpha?: number): void;
   clear(): void;
   render(scene: THREE.Object3D, camera: THREE.Camera): void;
-  contextNode?: unknown;
+  contextNode: unknown;
 };
 
 /**
@@ -63,6 +71,9 @@ export function renderRelightingFactorMap(
   target.setSize(Math.max(1, size.x), Math.max(1, size.y));
 
   const previousTarget = renderer.getRenderTarget();
+  const previousCubeFace = renderer.getActiveCubeFace();
+  const previousMipmapLevel = renderer.getActiveMipmapLevel();
+  const previousMrt = renderer.getMRT();
   const previousAlpha = renderer.getClearAlpha();
   const previousAutoClear = renderer.autoClear;
   const previousShadowEnabled = renderer.shadowMap.enabled;
@@ -75,12 +86,14 @@ export function renderRelightingFactorMap(
     renderer.autoClear = true;
     renderer.shadowMap.enabled = true;
     if (previousShadowAutoUpdate === false) renderer.shadowMap.autoUpdate = true;
+    renderer.setMRT(null);
     renderer.setRenderTarget(target);
     renderer.setClearColor(0xffffff, 0);
     renderer.clear();
     renderer.render(scene, camera);
   } finally {
-    renderer.setRenderTarget(previousTarget);
+    renderer.setRenderTarget(previousTarget, previousCubeFace, previousMipmapLevel);
+    renderer.setMRT(previousMrt);
     renderer.setClearColor(clearColor, previousAlpha);
     renderer.autoClear = previousAutoClear;
     renderer.shadowMap.enabled = previousShadowEnabled;

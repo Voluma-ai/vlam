@@ -652,10 +652,7 @@ export function worldWarpPreset(
 
 // --- Proxy-mesh relighting helper -------------------------------------------
 
-export {
-  renderRelightingFactorMap,
-  type RelightingFactorRenderer,
-} from './relighting-pass';
+export { renderRelightingFactorMap, type RelightingFactorRenderer } from './relighting-pass';
 
 /** Handle returned by {@link createRelightingProxy}. */
 export interface RelightingProxy {
@@ -687,9 +684,9 @@ export type RelightingShadowFactorOptions = {
   /**
    * How independent contributions combine into one multiplier.
    * - `average` (default): intensity-weighted mean of shadows (fill lights).
- * - `min`: union of umbras — each caster keeps its own silhouette. Contribution
- *   `intensity` scales umbra depth: `0` → none, `1` → default `umbra`,
- *   `>1` → darker than default (`umbra_i = clamp(1 - I*(1-umbra), 0, 1)`).
+   * - `min`: union of umbras — each caster keeps its own silhouette. Contribution
+   *   `intensity` scales umbra depth: `0` → none, `1` → default `umbra`,
+   *   `>1` → darker than default (`umbra_i = clamp(1 - I*(1-umbra), 0, 1)`).
    */
   combine?: 'average' | 'min';
   midLight?: THREE.Light;
@@ -701,15 +698,34 @@ export type RelightingShadowFactorOptions = {
 };
 
 /**
- * Shader-graph cap for independent shadow lights (cascades of the first
- * directional do not count). Extra contributions are ignored.
+ * Cap on independent shadow lights (cascades of the first directional do not
+ * count). Extra contributions are ignored. The compiled graph unrolls only
+ * the live contribution count, not a padded 32-wide loop.
  */
-export const MAX_RELIGHTING_SHADOW_LIGHTS = 4;
+export const MAX_RELIGHTING_SHADOW_LIGHTS = 32;
 
 const contributionIntensity = (contribution: RelightingLightContribution): number => {
   const value = contribution.intensity;
   if (!Number.isFinite(value)) return 1;
   return Math.max(0, value as number);
+};
+
+/**
+ * Fade punctual (spot / point) umbras to lit as fragments approach `light.distance`.
+ * Directional lights return 1. Uses the Frostbite cutoff window so weight is 0 at
+ * cutoff (no hard shadow-map cliff). `light.decay` steepens the falloff (&gt;1).
+ */
+const punctualUmbraWeight = (light: THREE.Light): Node<'float'> => {
+  const punctual = light as THREE.SpotLight & THREE.PointLight;
+  const isPunctual = punctual.isSpotLight === true || punctual.isPointLight === true;
+  if (!isPunctual) return float(1);
+  const cutoff = Number(punctual.distance);
+  if (!(cutoff > 0)) return float(1);
+  const decay = Math.max(Number(punctual.decay) || 1, 0.01);
+  const lightDistance = asNode<'float'>(positionWorld.distance(uniform(punctual.position)));
+  // pow2(saturate(1 - pow4(d/cutoff))) → 1 near light, 0 at cutoff
+  const window = asNode<'float'>(lightDistance.div(float(cutoff)).pow4().oneMinus().clamp().pow2());
+  return asNode<'float'>(window.pow(float(decay)));
 };
 
 const normalizeRelightingLights = (
@@ -775,9 +791,13 @@ const cascadedShadow = (
  * {@link RelightingLightContribution} so independent lights share one
  * multiplier. Default combine is intensity-weighted average
  * (`illum = sum(I_i * shadow_i) / sum(I_i)`); pass `combine: 'min'` for a
- * union of umbras so each caster keeps its silhouette. Cascades (`midLight` /
- * `outerLight` / `farLight`) still attach to the **first** directional only.
- * At most {@link MAX_RELIGHTING_SHADOW_LIGHTS} independent lights are used.
+ * union of umbras so each caster keeps its silhouette. Spot / point lights
+ * with `distance &gt; 0` fade their umbra to lit via a Frostbite cutoff window
+ * (steepened by `decay`) so the shadow map far plane is not a hard cliff.
+ * Cascades (`midLight` / `outerLight` / `farLight`) still attach to the
+ * **first** directional only. At most {@link MAX_RELIGHTING_SHADOW_LIGHTS}
+ * independent lights are used; extras are ignored. Graph size follows the
+ * live contribution count (not a padded loop of that width).
  *
  * By default, only **upward** proxy faces receive (`receiveUpMin`). Vertical
  * and noisy foliage triangles still **cast**, but they do not self-shadow —
@@ -855,10 +875,12 @@ export function createRelightingShadowFactorMaterial(
       ? asNode<'float'>(smoothstep(float(receiveUpMin), float(receiveUpMin + 0.3), normalWorld.y))
       : float(1);
 
-  const shadowTermAt = (index: number, light: THREE.Light): Node<'float'> =>
-    index === 0
-      ? cascadedShadow(light, options, dist)
-      : asNode<'float'>(shadow(light));
+  const shadowTermAt = (index: number, light: THREE.Light): Node<'float'> => {
+    const raw = index === 0 ? cascadedShadow(light, options, dist) : asNode<'float'>(shadow(light));
+    // Mix toward lit (1) as punctual range fades so umbras soften instead of
+    // clipping at the shadow-map far plane.
+    return asNode<'float'>(mix(float(1), raw, punctualUmbraWeight(light)));
+  };
 
   let factor: Node<'float'>;
   let shadowed: Node<'float'> = float(1);

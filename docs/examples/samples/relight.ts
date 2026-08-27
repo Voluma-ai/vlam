@@ -3,7 +3,11 @@
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { StreamedSplatMesh, createSplatRenderer } from '@voluma/vlam';
-import { createRelightingProxy, createRelightingShadowFactorMaterial, renderRelightingFactorMap } from '@voluma/vlam/effects';
+import {
+  createRelightingProxy,
+  createRelightingShadowFactorMaterial,
+  renderRelightingFactorMap,
+} from '@voluma/vlam/effects';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);
@@ -17,6 +21,12 @@ camera.position.set(-9.09, 1.65, 8.85);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.target.set(-8.21, 1.67, 7.06);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
 
 const splats = await StreamedSplatMesh.load('/remote/jack/v/Dehaar/Dehaar.lcc2');
 scene.add(splats);

@@ -11,8 +11,32 @@ import {
 import {
   createRelightingProxy,
   createRelightingShadowFactorMaterial,
+  MAX_RELIGHTING_SHADOW_LIGHTS,
   renderRelightingFactorMap,
 } from '../effects';
+
+function materialGraph(material: THREE.MeshStandardNodeMaterial): THREE.Node[] {
+  const nodes: THREE.Node[] = [];
+  material.outputNode?.traverse((node) => nodes.push(node));
+  return nodes;
+}
+
+function graphNodesNamed(material: THREE.MeshStandardNodeMaterial, name: string): THREE.Node[] {
+  return materialGraph(material).filter((node) => node.constructor.name === name);
+}
+
+function graphMathMethods(material: THREE.MeshStandardNodeMaterial): string[] {
+  return graphNodesNamed(material, 'MathNode').flatMap((node) => {
+    const method = (node as THREE.Node & { method?: unknown }).method;
+    return typeof method === 'string' ? [method] : [];
+  });
+}
+
+function graphConstants(material: THREE.MeshStandardNodeMaterial): unknown[] {
+  return graphNodesNamed(material, 'ConstNode').map(
+    (node) => (node as THREE.Node & { value?: unknown }).value,
+  );
+}
 
 describe('clampRelightingSettings', () => {
   it('clamps blend to [0, 1] and keeps non-negative brightness / background', () => {
@@ -204,7 +228,8 @@ describe('createRelightingShadowFactorMaterial', () => {
       ],
       { umbra: 0.5 },
     );
-    expect(material.outputNode).toBeTruthy();
+    expect(graphNodesNamed(material, 'ShadowNode')).toHaveLength(2);
+    expect(graphConstants(material)).toContain(1.25);
     material.dispose();
   });
 
@@ -218,7 +243,9 @@ describe('createRelightingShadowFactorMaterial', () => {
       ],
       { umbra: 0.5, combine: 'min' },
     );
-    expect(material.outputNode).toBeTruthy();
+    expect(graphNodesNamed(material, 'ShadowNode')).toHaveLength(2);
+    expect(graphMathMethods(material).filter((method) => method === 'min')).toHaveLength(2);
+    expect(graphConstants(material)).toEqual(expect.arrayContaining([0.5, 0]));
     material.dispose();
   });
 
@@ -228,7 +255,9 @@ describe('createRelightingShadowFactorMaterial', () => {
       umbra: 0.5,
       combine: 'min',
     });
-    expect(material.outputNode).toBeTruthy();
+    expect(graphNodesNamed(material, 'ShadowNode')).toHaveLength(1);
+    expect(graphMathMethods(material).filter((method) => method === 'min')).toHaveLength(1);
+    expect(graphConstants(material)).toContain(0.95);
     material.dispose();
   });
 
@@ -239,7 +268,17 @@ describe('createRelightingShadowFactorMaterial', () => {
       { light: sun, intensity: 1 },
       { light: spot, intensity: 0.6 },
     ]);
-    expect(material.outputNode).toBeTruthy();
+    expect(graphNodesNamed(material, 'ShadowNode')).toHaveLength(2);
+    material.dispose();
+  });
+
+  it('builds punctual umbra fade when a spot has distance and decay', () => {
+    const spot = new THREE.SpotLight(0xffffff, 1, 5, Math.PI / 4, 0.5, 2);
+    const material = createRelightingShadowFactorMaterial([{ light: spot, intensity: 1 }], {
+      combine: 'min',
+      umbra: 0.5,
+    });
+    expect(graphNodesNamed(material, 'ShadowNode')).toHaveLength(1);
     material.dispose();
   });
 
@@ -254,7 +293,7 @@ describe('createRelightingShadowFactorMaterial', () => {
       ],
       { farLight: far, nearRadius: 40 },
     );
-    expect(material.outputNode).toBeTruthy();
+    expect(graphNodesNamed(material, 'ShadowNode')).toHaveLength(3);
     material.dispose();
   });
 
@@ -265,21 +304,31 @@ describe('createRelightingShadowFactorMaterial', () => {
       { light: dark, intensity: 0 },
       { light: lit, intensity: 2 },
     ]);
-    expect(skipped.outputNode).toBeTruthy();
+    expect(graphNodesNamed(skipped, 'ShadowNode')).toHaveLength(1);
     skipped.dispose();
 
     const empty = createRelightingShadowFactorMaterial([]);
-    expect(empty.outputNode).toBeTruthy();
+    expect(graphNodesNamed(empty, 'ShadowNode')).toHaveLength(0);
     empty.dispose();
   });
 
-  it('caps independent lights at MAX_RELIGHTING_SHADOW_LIGHTS', () => {
-    const lights = Array.from({ length: 6 }, () => ({
+  it('unrolls four independent lights without padding extra ShadowNodes', () => {
+    const lights = Array.from({ length: 4 }, () => ({
       light: new THREE.DirectionalLight(),
       intensity: 1,
     }));
     const material = createRelightingShadowFactorMaterial(lights);
-    expect(material.outputNode).toBeTruthy();
+    expect(graphNodesNamed(material, 'ShadowNode')).toHaveLength(4);
+    material.dispose();
+  });
+
+  it('caps independent lights at MAX_RELIGHTING_SHADOW_LIGHTS', () => {
+    const lights = Array.from({ length: MAX_RELIGHTING_SHADOW_LIGHTS + 1 }, () => ({
+      light: new THREE.DirectionalLight(),
+      intensity: 1,
+    }));
+    const material = createRelightingShadowFactorMaterial(lights);
+    expect(graphNodesNamed(material, 'ShadowNode')).toHaveLength(MAX_RELIGHTING_SHADOW_LIGHTS);
     material.dispose();
   });
 });
@@ -293,6 +342,10 @@ describe('renderRelightingFactorMap', () => {
       contextNode: { id: 'gamma' } as unknown,
       getDrawingBufferSize: (target: THREE.Vector2) => target.set(64, 48),
       getRenderTarget: () => null,
+      getActiveCubeFace: () => 3,
+      getActiveMipmapLevel: () => 2,
+      getMRT: () => ({ id: 'host-mrt' }) as unknown as THREE.MRTNode,
+      setMRT: vi.fn(),
       setRenderTarget: vi.fn(),
       getClearColor: (target: THREE.Color) => target.copy(storedClear),
       getClearAlpha: () => 0.5,
@@ -308,6 +361,7 @@ describe('renderRelightingFactorMap', () => {
       expect(renderer.autoClear).toBe(true);
       expect(renderer.shadowMap.enabled).toBe(true);
       expect(renderer.shadowMap.autoUpdate).toBe(true);
+      expect(renderer.setMRT).toHaveBeenLastCalledWith(null);
       // Must keep a real ContextNode (WebGPURenderer reads contextNode.id).
       expect(renderer.contextNode).not.toBeUndefined();
       expect(renderer.contextNode).not.toEqual({ id: 'gamma' });
@@ -325,7 +379,8 @@ describe('renderRelightingFactorMap', () => {
     expect(renderer.clear).toHaveBeenCalled();
     expect(renderer.render).toHaveBeenCalledWith(scene, camera);
     expect(renderer.setRenderTarget).toHaveBeenNthCalledWith(1, target);
-    expect(renderer.setRenderTarget).toHaveBeenLastCalledWith(null);
+    expect(renderer.setRenderTarget).toHaveBeenLastCalledWith(null, 3, 2);
+    expect(renderer.setMRT).toHaveBeenLastCalledWith({ id: 'host-mrt' });
     expect(renderer.autoClear).toBe(false);
     expect(renderer.shadowMap.enabled).toBe(false);
     expect(renderer.shadowMap.autoUpdate).toBe(false);
