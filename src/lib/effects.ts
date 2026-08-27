@@ -42,6 +42,7 @@ import {
   float,
   int,
   mat3,
+  min,
   mix,
   modelViewMatrix,
   normalWorld,
@@ -683,6 +684,14 @@ export type RelightingShadowFactorOptions = {
   color?: THREE.Color;
   diffuse?: number;
   direction?: THREE.Vector3;
+  /**
+   * How independent contributions combine into one multiplier.
+   * - `average` (default): intensity-weighted mean of shadows (fill lights).
+ * - `min`: union of umbras — each caster keeps its own silhouette. Contribution
+ *   `intensity` scales umbra depth: `0` → none, `1` → default `umbra`,
+ *   `>1` → darker than default (`umbra_i = clamp(1 - I*(1-umbra), 0, 1)`).
+   */
+  combine?: 'average' | 'min';
   midLight?: THREE.Light;
   midRadius?: number;
   outerLight?: THREE.Light;
@@ -763,9 +772,10 @@ const cascadedShadow = (
  *    (RGB may exceed 1; use a HalfFloat lighting RT)
  *
  * Pass one {@link THREE.Light} (demo / single-sun) or an array of
- * {@link RelightingLightContribution} so independent lights with different
- * intensities share one multiplier:
- * `illum = sum(I_i * shadow_i) / sum(I_i)`. Cascades (`midLight` /
+ * {@link RelightingLightContribution} so independent lights share one
+ * multiplier. Default combine is intensity-weighted average
+ * (`illum = sum(I_i * shadow_i) / sum(I_i)`); pass `combine: 'min'` for a
+ * union of umbras so each caster keeps its silhouette. Cascades (`midLight` /
  * `outerLight` / `farLight`) still attach to the **first** directional only.
  * At most {@link MAX_RELIGHTING_SHADOW_LIGHTS} independent lights are used.
  *
@@ -840,30 +850,53 @@ export function createRelightingShadowFactorMaterial(
   // ≈ 1 when `diffuse` is 0.
   const dist = positionWorld.distance(cameraPosition);
   const contributions = normalizeRelightingLights(lights);
-  let shadowed: Node<'float'> = float(1);
-  if (contributions.length === 1) {
-    shadowed = cascadedShadow(contributions[0]!.light, options, dist);
-  } else if (contributions.length > 1) {
-    let illum: Node<'float'> = float(0);
-    let denom = 0;
-    for (let i = 0; i < contributions.length; i++) {
-      const contribution = contributions[i]!;
-      const intensity = contributionIntensity(contribution);
-      denom += intensity;
-      const term =
-        i === 0
-          ? cascadedShadow(contribution.light, options, dist)
-          : asNode<'float'>(shadow(contribution.light));
-      illum = asNode<'float'>(illum.add(float(intensity).mul(term)));
-    }
-    shadowed = denom > 0 ? asNode<'float'>(illum.div(float(denom))) : float(1);
-  }
   const receive =
     receiveUpMin > 0
       ? asNode<'float'>(smoothstep(float(receiveUpMin), float(receiveUpMin + 0.3), normalWorld.y))
       : float(1);
-  const attenuation = mix(float(1), shadowed, receive);
-  const factor = mix(float(umbra), float(1), attenuation);
+
+  const shadowTermAt = (index: number, light: THREE.Light): Node<'float'> =>
+    index === 0
+      ? cascadedShadow(light, options, dist)
+      : asNode<'float'>(shadow(light));
+
+  let factor: Node<'float'>;
+  let shadowed: Node<'float'> = float(1);
+
+  if (options.combine === 'min' && contributions.length > 0) {
+    // Union of umbras with per-light depth from contribution intensity:
+    // umbra_i = clamp(1 - I * (1 - umbra), 0, 1)
+    // so I=0 → no shadow, I=1 → default umbra, I>1 → darker than default.
+    let factorCombined: Node<'float'> = float(1);
+    for (let i = 0; i < contributions.length; i++) {
+      const contribution = contributions[i]!;
+      const intensity = contributionIntensity(contribution);
+      const umbra_i = Math.min(1, Math.max(0, 1 - intensity * (1 - umbra)));
+      const term = shadowTermAt(i, contribution.light);
+      const factor_i = asNode<'float'>(mix(float(umbra_i), float(1), term));
+      factorCombined = asNode<'float'>(min(factorCombined, factor_i));
+    }
+    shadowed = factorCombined;
+    factor = asNode<'float'>(mix(float(1), factorCombined, receive));
+  } else {
+    if (contributions.length === 1) {
+      shadowed = shadowTermAt(0, contributions[0]!.light);
+    } else if (contributions.length > 1) {
+      let illum: Node<'float'> = float(0);
+      let denom = 0;
+      for (let i = 0; i < contributions.length; i++) {
+        const contribution = contributions[i]!;
+        const intensity = contributionIntensity(contribution);
+        denom += intensity;
+        const term = shadowTermAt(i, contribution.light);
+        illum = asNode<'float'>(illum.add(float(intensity).mul(term)));
+      }
+      shadowed = denom > 0 ? asNode<'float'>(illum.div(float(denom))) : float(1);
+    }
+    const attenuation = mix(float(1), shadowed, receive);
+    factor = mix(float(umbra), float(1), attenuation);
+  }
+
   if (diffuse > 0) {
     const lightColor = uniform(options.color ?? new THREE.Color(1, 1, 1));
     const lightDir = uniform(options.direction ?? new THREE.Vector3(0, 1, 0));

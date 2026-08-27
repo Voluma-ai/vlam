@@ -208,6 +208,30 @@ describe('createRelightingShadowFactorMaterial', () => {
     material.dispose();
   });
 
+  it('builds with combine:min so independent umbras stay separate', () => {
+    const sun = new THREE.DirectionalLight();
+    const fill = new THREE.DirectionalLight();
+    const material = createRelightingShadowFactorMaterial(
+      [
+        { light: sun, intensity: 1 },
+        { light: fill, intensity: 2 },
+      ],
+      { umbra: 0.5, combine: 'min' },
+    );
+    expect(material.outputNode).toBeTruthy();
+    material.dispose();
+  });
+
+  it('builds with combine:min and fractional intensity for a soft umbra', () => {
+    const sun = new THREE.DirectionalLight();
+    const material = createRelightingShadowFactorMaterial([{ light: sun, intensity: 0.1 }], {
+      umbra: 0.5,
+      combine: 'min',
+    });
+    expect(material.outputNode).toBeTruthy();
+    material.dispose();
+  });
+
   it('builds with a spotlight as a secondary contribution', () => {
     const sun = new THREE.DirectionalLight();
     const spot = new THREE.SpotLight();
