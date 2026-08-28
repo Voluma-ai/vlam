@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { SplatMesh } from '../splat-mesh';
-import { writeCovariance, type SplatData } from '../splat-data';
-import { createYUpTransform } from '../orientation';
+import { SplatMesh } from '../core/splat-mesh';
+import { writeCovariance, type SplatData } from '../core/splat-data';
+import { createYUpTransform } from '../core/orientation';
 
 /** A one-splat scene, optionally stamped with the format it was decoded from. */
 function makeData(format?: SplatData['format']): SplatData {

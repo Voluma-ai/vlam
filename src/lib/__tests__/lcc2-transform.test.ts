@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { applyLcc2ToThreeTransform, createLcc2ToThreeMatrix } from '../formats/lcc/lcc2-transform';
 import { buildLcc2Scene } from '../formats/lcc/lcc2';
-import { httpDatasetSource } from '../dataset-source';
-import { StreamedSplatMesh } from '../streamed-splat-mesh';
+import { httpDatasetSource } from '../streaming/dataset-source';
+import { StreamedSplatMesh } from '../streaming/streamed-splat-mesh';
 
-vi.mock('../chunk-loader', () => ({
+vi.mock('../loaders/chunk-loader', () => ({
   ChunkLoader: class {
     dispose(): void {}
   },

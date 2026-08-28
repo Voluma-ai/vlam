@@ -1,5 +1,5 @@
 import type * as THREE from 'three/webgpu';
-import type { SplatData } from '../lib';
+import type { SplatData } from '../lib/core';
 import { createSelectionVolume, type SelectionVolumeOptions } from '../lib/selection';
 import type { TriangleMeshData } from '../lib/formats/lcc';
 

@@ -8,10 +8,10 @@ import {
   stampClassicFetchGroups,
   type ClassicFetchWant,
   type SwapGroup,
-} from '../streamed-splat-mesh';
-import { writeCovariance, type SplatData } from '../splat-data';
-import type { LodRun } from '../lod-scheduler';
-import { runKey } from '../lod-scheduler';
+} from '../streaming/streamed-splat-mesh';
+import { writeCovariance, type SplatData } from '../core/splat-data';
+import type { LodRun } from '../streaming/lod-scheduler';
+import { runKey } from '../streaming/lod-scheduler';
 
 /**
  * Classic LCC near-first streaming: fetch nearest/finest before far coarse

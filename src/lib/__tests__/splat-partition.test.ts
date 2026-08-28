@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { createSelectionVolume, selectInData } from '../selection-volume';
-import { partitionSplatData } from '../splat-partition';
-import type { SplatData } from '../splat-data';
+import { createSelectionVolume, selectInData } from '../selection/selection-volume';
+import { partitionSplatData } from '../selection/splat-partition';
+import type { SplatData } from '../core/splat-data';
 
 /**
  * Partition correctness: the halves must sum to the source, gather the right

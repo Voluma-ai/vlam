@@ -1,13 +1,13 @@
 import * as THREE from 'three/webgpu';
 import { describe, expect, it, vi } from 'vitest';
-import { SplatMesh } from '../splat-mesh';
+import { SplatMesh } from '../core/splat-mesh';
 import {
   clampRelightingSettings,
   createPlaceholderRelightTexture,
   DEFAULT_RELIGHT_BACKGROUND,
   DEFAULT_RELIGHT_BLEND,
   DEFAULT_RELIGHT_BRIGHTNESS,
-} from '../relighting';
+} from '../core/relighting';
 import {
   createRelightingProxy,
   createRelightingShadowFactorMaterial,

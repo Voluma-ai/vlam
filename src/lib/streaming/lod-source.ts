@@ -1,10 +1,10 @@
 import * as THREE from 'three/webgpu';
 import { LodScheduler, type LodRun } from './lod-scheduler';
 import { parseLodManifest, type LodManifest } from './lod-manifest';
-import type { ChunkFileFormat } from './loading';
-import type { RadChunkRangeRequest } from './load-worker-protocol';
-import type { LccChunkParams } from './formats/lcc/parse-lcc';
-import type { SplatData } from './splat-data';
+import type { ChunkFileFormat } from '../loaders/loading';
+import type { RadChunkRangeRequest } from '../loaders/load-worker-protocol';
+import type { LccChunkParams } from '../formats/lcc/parse-lcc';
+import type { SplatData } from '../core/splat-data';
 import type { SplatDatasetSource } from './dataset-source';
 
 /**

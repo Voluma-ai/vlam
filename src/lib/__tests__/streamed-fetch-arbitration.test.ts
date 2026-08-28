@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { writeCovariance, type SplatData } from '../splat-data';
+import { writeCovariance, type SplatData } from '../core/splat-data';
 
 /**
  * How a `StreamedSplatMesh` behaves as a client of the shared fetch scheduler:
@@ -20,15 +20,15 @@ class StubWorker {
   terminate(): void {}
 }
 
-vi.mock('../sort-worker?worker&inline', () => ({ default: StubWorker }));
-vi.mock('../load-worker?worker&inline', () => ({ default: StubWorker }));
-vi.mock('../one-shot-worker?worker&inline', () => ({ default: StubWorker }));
+vi.mock('../core/sort-worker?worker&inline', () => ({ default: StubWorker }));
+vi.mock('../loaders/load-worker?worker&inline', () => ({ default: StubWorker }));
+vi.mock('../loaders/one-shot-worker?worker&inline', () => ({ default: StubWorker }));
 
-const { StreamedSplatMesh } = await import('../streamed-splat-mesh');
-const { ChunkFetchScheduler } = await import('../chunk-fetch-scheduler');
+const { StreamedSplatMesh } = await import('../streaming/streamed-splat-mesh');
+const { ChunkFetchScheduler } = await import('../streaming/chunk-fetch-scheduler');
 
 const WIDTH = 2048;
-type StreamedMesh = import('../streamed-splat-mesh').StreamedSplatMesh;
+type StreamedMesh = import('../streaming/streamed-splat-mesh').StreamedSplatMesh;
 
 function makeData(count: number): SplatData {
   const positions = new Float32Array(count * 3);

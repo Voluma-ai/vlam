@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { bool } from 'three/tsl';
-import { SplatMesh, createSplatRenderer, type SplatData } from '../lib';
+import { SplatMesh, createSplatRenderer, type SplatData } from '../lib/core';
 import { StreamedSplatMesh } from '../lib/streaming';
 import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '../lib/unified';
 

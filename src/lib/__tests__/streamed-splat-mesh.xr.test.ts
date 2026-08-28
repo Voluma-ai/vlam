@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { StreamedSplatMesh } from '../streamed-splat-mesh';
+import { StreamedSplatMesh } from '../streaming/streamed-splat-mesh';
 
 /**
  * LOD scheduling under XR. The application camera does not move while a

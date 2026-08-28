@@ -1,15 +1,15 @@
 import * as THREE from 'three/webgpu';
-import type { LodRun } from '../../lod-scheduler';
+import type { LodRun } from '../../streaming/lod-scheduler';
 import type {
   LodSource,
   LodSourceOptions,
   StreamedChunkOptions,
   StreamedScene,
-} from '../../lod-source';
-import type { SplatData, RadTreeData } from '../../splat-data';
-import type { SplatDatasetSource } from '../../dataset-source';
-import { toRequestInit, type SplatRequestOptions } from '../../loading';
-import { liftBudgetToFinestLevel } from '../../splat-budget';
+} from '../../streaming/lod-source';
+import type { SplatData, RadTreeData } from '../../core/splat-data';
+import type { SplatDatasetSource } from '../../streaming/dataset-source';
+import { toRequestInit, type SplatRequestOptions } from '../../loaders/loading';
+import { liftBudgetToFinestLevel } from '../../core/splat-budget';
 import { parseRadChunkStreaming, parseRadHeaderMeta, type RadMeta } from './parse-rad';
 import { RadFoveatedSource } from './rad-foveated-source';
 

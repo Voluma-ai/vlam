@@ -1,9 +1,9 @@
 import type * as THREE from 'three/webgpu';
-import { toRequestInit, type SplatRequestOptions } from '../../loading';
+import { toRequestInit, type SplatRequestOptions } from '../../loaders/loading';
 import { parseMeshPly, type TriangleMeshData } from './parse-mesh-ply';
 import { parseCollisionLci } from './parse-collision-lci';
-import type { CollisionMeshDescriptor, SplatCollisionData } from '../../lod-source';
-import { warn } from '../../logging';
+import type { CollisionMeshDescriptor, SplatCollisionData } from '../../streaming/lod-source';
+import { warn } from '../../core/logging';
 
 /**
  * Fetches the collision-mesh tiles a streamed scene declares.

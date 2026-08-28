@@ -1,8 +1,8 @@
 import * as THREE from 'three/webgpu';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { ComputeSorter } from '../compute-sorter';
-import { RADIX_KEY_MAX, quantizeDepthKey, stableRadixSortReference } from '../radix-sort';
-import type { OrderMessage, SortWorkerRequest } from '../sort-worker';
+import { ComputeSorter } from '../core/compute-sorter';
+import { RADIX_KEY_MAX, quantizeDepthKey, stableRadixSortReference } from '../core/radix-sort';
+import type { OrderMessage, SortWorkerRequest } from '../core/sort-worker';
 
 /**
  * Property-based tests for the per-frame sorter invariants (fable-away E11).
@@ -377,7 +377,7 @@ beforeAll(async () => {
     },
   };
   (globalThis as { self?: unknown }).self = stub;
-  await import('../sort-worker');
+  await import('../core/sort-worker');
   if (!stub.onmessage) throw new Error('sort-worker did not install a message handler');
 });
 

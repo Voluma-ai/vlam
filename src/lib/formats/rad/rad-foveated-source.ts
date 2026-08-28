@@ -1,8 +1,8 @@
 import * as THREE from 'three/webgpu';
-import type { LodRun } from '../../lod-scheduler';
-import type { LodSource, LodSourceOptions } from '../../lod-source';
+import type { LodRun } from '../../streaming/lod-scheduler';
+import type { LodSource, LodSourceOptions } from '../../streaming/lod-source';
 import { RadParentSizes } from './rad-parent-sizes';
-import type { SplatData } from '../../splat-data';
+import type { SplatData } from '../../core/splat-data';
 
 /** Stand-in for an infinite parent size (root, or parent not yet decoded); the
  * frontier cut treats any node at this size as "always big enough to keep".

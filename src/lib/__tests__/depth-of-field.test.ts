@@ -6,8 +6,8 @@ import {
   clampDepthOfFieldSettings,
   computeDofCocVariancePx2,
   computeDofOpacityFade,
-} from '../depth-of-field';
-import { SplatMesh } from '../splat-mesh';
+} from '../core/depth-of-field';
+import { SplatMesh } from '../core/splat-mesh';
 
 describe('projected-2D depth of field', () => {
   it('returns zero CoC variance when aperture is disabled', () => {

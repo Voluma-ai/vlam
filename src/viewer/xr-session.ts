@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { resolveXrSplatBudget } from '../lib';
+import { resolveXrSplatBudget } from '../lib/core';
 
 /** Camera state that three mutates while an immersive session presents. */
 export interface XrCameraState {

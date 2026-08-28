@@ -7,8 +7,8 @@
  * client ({@link ChunkLoader}) be typed without dragging worker source into
  * the shipped declarations.
  */
-import type { LccChunkParams } from './formats/lcc/parse-lcc';
-import type { RadShCodebook, SplatData } from './splat-data';
+import type { LccChunkParams } from '../formats/lcc/parse-lcc';
+import type { RadShCodebook, SplatData } from '../core/splat-data';
 import type { ChunkFileFormat, SerializedSplatLoadError, SplatRequestOptions } from './loading';
 
 /** Where a load's bytes come from. `File` crosses the worker boundary by

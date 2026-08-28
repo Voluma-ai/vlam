@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { StreamedSplatMesh, type StreamedSplatMeshOptions } from '../streamed-splat-mesh';
-import { ChunkCacheBudget } from '../chunk-cache-budget';
+import { StreamedSplatMesh, type StreamedSplatMeshOptions } from '../streaming/streamed-splat-mesh';
+import { ChunkCacheBudget } from '../streaming/chunk-cache-budget';
 
 /**
  * How a `StreamedSplatMesh` behaves as a client of the shared cache budget: it

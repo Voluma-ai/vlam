@@ -4,7 +4,7 @@ import {
   ChunkFetchScheduler,
   type ChunkFetchHandle,
   type ChunkFetchKind,
-} from '../chunk-fetch-scheduler';
+} from '../streaming/chunk-fetch-scheduler';
 
 /**
  * Acceptance tests for cross-mesh fetch arbitration: the focused mesh must take

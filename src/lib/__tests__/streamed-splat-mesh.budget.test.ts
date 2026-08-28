@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { StreamedSplatMesh, type StreamedSplatMeshOptions } from '../streamed-splat-mesh';
-import { setVlamLogHandler } from '../logging';
+import { StreamedSplatMesh, type StreamedSplatMeshOptions } from '../streaming/streamed-splat-mesh';
+import { setVlamLogHandler } from '../core/logging';
 
 /**
  * The governed-budget contract on the mesh itself: `maxBudget` reserves pool

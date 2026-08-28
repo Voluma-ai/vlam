@@ -1,11 +1,11 @@
 import * as THREE from 'three/webgpu';
 import { float } from 'three/tsl';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { writeCovariance, type SplatData } from '../splat-data';
-import { SplatMesh, type SplatRange } from '../splat-mesh';
-import type { SplatModifier } from '../splat-modifier';
-import { UnifiedSplatMesh } from '../unified-splat-mesh';
-import { WorkBufferGather } from '../work-buffer-gather';
+import { writeCovariance, type SplatData } from '../core/splat-data';
+import { SplatMesh, type SplatRange } from '../core/splat-mesh';
+import type { SplatModifier } from '../core/splat-modifier';
+import { UnifiedSplatMesh } from '../unified/unified-splat-mesh';
+import { WorkBufferGather } from '../unified/work-buffer-gather';
 
 /**
  * E2 stress/property tests for the path an embedding app drives: one main mesh

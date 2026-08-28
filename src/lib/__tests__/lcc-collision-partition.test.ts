@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { partitionTriangleMesh } from '../formats/lcc/collision-partition';
-import { createSelectionVolume } from '../selection-volume';
+import { createSelectionVolume } from '../selection/selection-volume';
 import type { TriangleMeshData } from '../formats/lcc/parse-mesh-ply';
 
 /**

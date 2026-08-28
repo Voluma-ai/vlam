@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { float, length, mix, step, vec3, vec4 } from 'three/tsl';
-import type { SplatModifier } from '../lib';
+import type { SplatModifier } from '../lib/core';
 
 type Node<T extends string> = THREE.Node<T>;
 

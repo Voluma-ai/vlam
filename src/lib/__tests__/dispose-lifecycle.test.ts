@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { writeCovariance, type SplatData } from '../splat-data';
+import { writeCovariance, type SplatData } from '../core/splat-data';
 
 /**
  * E8 - dispose / GPU / worker lifetime audit.
@@ -38,15 +38,15 @@ class TrackingWorker {
   }
 }
 
-vi.mock('../sort-worker?worker&inline', () => ({ default: TrackingWorker }));
-vi.mock('../load-worker?worker&inline', () => ({ default: TrackingWorker }));
-vi.mock('../one-shot-worker?worker&inline', () => ({ default: TrackingWorker }));
+vi.mock('../core/sort-worker?worker&inline', () => ({ default: TrackingWorker }));
+vi.mock('../loaders/load-worker?worker&inline', () => ({ default: TrackingWorker }));
+vi.mock('../loaders/one-shot-worker?worker&inline', () => ({ default: TrackingWorker }));
 
 // Imported after the mocks so every spawned worker is a TrackingWorker.
-const { SplatMesh } = await import('../splat-mesh');
-const { StreamedSplatMesh } = await import('../streamed-splat-mesh');
-const { WorkerSorter } = await import('../worker-sorter');
-const { UnifiedSplatMesh } = await import('../unified-splat-mesh');
+const { SplatMesh } = await import('../core/splat-mesh');
+const { StreamedSplatMesh } = await import('../streaming/streamed-splat-mesh');
+const { WorkerSorter } = await import('../core/worker-sorter');
+const { UnifiedSplatMesh } = await import('../unified/unified-splat-mesh');
 
 const WIDTH = 2048;
 
@@ -86,7 +86,7 @@ const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 100);
 camera.position.set(0, 0, 5);
 camera.updateMatrixWorld(true);
 
-type StreamedMesh = import('../streamed-splat-mesh').StreamedSplatMesh;
+type StreamedMesh = import('../streaming/streamed-splat-mesh').StreamedSplatMesh;
 
 /** StreamedSplatMesh via the private constructor over a stub scene (as other tests do). */
 function makeStreamedMesh(): StreamedMesh {

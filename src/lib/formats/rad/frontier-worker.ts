@@ -17,7 +17,7 @@
  */
 import { FrontierPager, type PagerPlan } from './frontier-pager';
 import { frontierView, gatherGlobals, traverseFrontier } from './rad-frontier';
-import type { SplatData } from '../../splat-data';
+import type { SplatData } from '../../core/splat-data';
 
 export type {
   FrontierChunkMessage,

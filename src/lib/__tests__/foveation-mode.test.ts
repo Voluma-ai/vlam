@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isPageTableFoveation, resolveSplatFoveationMode } from '../splat-mesh-types';
+import { isPageTableFoveation, resolveSplatFoveationMode } from '../core/splat-mesh-types';
 
 describe('page-table foveation spelling', () => {
   it('accepts only the canonical page-table spelling', () => {

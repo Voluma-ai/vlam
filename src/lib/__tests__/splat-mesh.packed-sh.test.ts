@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { SplatMesh } from '../splat-mesh';
-import { requantizeShWord } from '../sh-pack';
-import { writeCovariance, type SplatData } from '../splat-data';
+import { SplatMesh } from '../core/splat-mesh';
+import { requantizeShWord } from '../core/sh-pack';
+import { writeCovariance, type SplatData } from '../core/splat-data';
 
 /**
  * Tests for per-splat (non-palette) SH storage in the dynamic pool - the

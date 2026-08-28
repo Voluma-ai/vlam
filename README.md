@@ -13,8 +13,6 @@ A WebGPU Gaussian Splat viewer for three.js.
 
 Local site and generated API: `npm run dev` (http://localhost:5170, viewer at `/demo/`).
 
-> Package `@voluma/vlam`, public **0.2.0**. APIs may still move before 1.0.
-
 ## Important notice!
 This is a pre-release not yet recommended for production. The API can still change in breaking ways before v1.0.
 

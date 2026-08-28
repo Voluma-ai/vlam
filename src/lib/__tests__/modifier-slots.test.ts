@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { vec4 } from 'three/tsl';
-import { SplatMesh } from '../splat-mesh';
-import { ModifierSlots } from '../splat-modifier';
-import type { SplatModifier } from '../splat-modifier';
+import { SplatMesh } from '../core/splat-mesh';
+import { ModifierSlots } from '../core/splat-modifier';
+import type { SplatModifier } from '../core/splat-modifier';
 import { sdfEffects, depthOfFieldPreset } from '../effects';
 
 const WIDTH = 2048; // SplatMesh.DATA_TEXTURE_WIDTH

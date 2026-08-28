@@ -7,7 +7,7 @@ import {
   splatFormatForExtension,
   splatNameExtension,
   splatUrlExtension,
-} from '../loading';
+} from '../loaders/loading';
 
 describe('splatNameExtension', () => {
   it('lower-cases the extension of a plain file name', () => {

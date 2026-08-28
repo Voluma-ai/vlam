@@ -1,14 +1,14 @@
 import * as THREE from 'three/webgpu';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SplatMesh } from '../splat-mesh';
-import { MergedSplatMesh } from '../merged-splat-mesh';
-import { writeCovariance, transformCovariance, type SplatData } from '../splat-data';
-import { ComputeSorter } from '../compute-sorter';
-import { RadixSorter } from '../radix-sorter';
-import { worldBoundsOf } from '../source-transform';
-import { viewDepthRadius } from '../splat-sort-bounds';
-import { unprojectViewDepth } from '../splat-depth-pack';
-import { UnifiedSplatMesh } from '../unified-splat-mesh';
+import { SplatMesh } from '../core/splat-mesh';
+import { MergedSplatMesh } from '../core/merged-splat-mesh';
+import { writeCovariance, transformCovariance, type SplatData } from '../core/splat-data';
+import { ComputeSorter } from '../core/compute-sorter';
+import { RadixSorter } from '../core/radix-sorter';
+import { worldBoundsOf } from '../core/source-transform';
+import { viewDepthRadius } from '../core/splat-sort-bounds';
+import { unprojectViewDepth } from '../core/splat-depth-pack';
+import { UnifiedSplatMesh } from '../unified/unified-splat-mesh';
 
 /**
  * Non-uniform (per-axis) scale contract. `mesh.scale.set(sx, sy, sz)` must be

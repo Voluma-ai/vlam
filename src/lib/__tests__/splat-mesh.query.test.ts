@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { SplatMesh } from '../splat-mesh';
-import { writeCovariance, type SplatData } from '../splat-data';
+import { SplatMesh } from '../core/splat-mesh';
+import { writeCovariance, type SplatData } from '../core/splat-data';
 
 /**
  * Integration tests for M9's CPU spatial queries on a SplatMesh: correctness

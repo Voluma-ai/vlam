@@ -1,8 +1,8 @@
 import * as THREE from 'three/webgpu';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SplatMesh } from '../splat-mesh';
-import { writeCovariance, type SplatData } from '../splat-data';
-import type { SplatSorter } from '../sorter';
+import { SplatMesh } from '../core/splat-mesh';
+import { writeCovariance, type SplatData } from '../core/splat-data';
+import type { SplatSorter } from '../core/sorter';
 
 /**
  * XR presentation path of `SplatMesh.update`: while a session presents, the

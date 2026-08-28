@@ -40,13 +40,15 @@ src/
  chunk-harness.ts / .html ChunkLoader GPU harness (`/chunk-harness.html`)
  unified-harness.ts / .html UnifiedSplatMesh GPU harness (`/unified-harness.html`)
  sort-benchmark.ts frame/sort timing rig behind ?benchmarkSeconds
- lib/ the published library ("@voluma/vlam" on npm)
- index.ts curated public API: core renderer + mesh/scene, no parsers
- loaders.ts → `@voluma/vlam/loaders` (loadSplatData, ChunkLoader, workers)
- static-lod-entry.ts → `@voluma/vlam/static-lod`
- streaming.ts → `@voluma/vlam/streaming`
- unified.ts → `@voluma/vlam/unified`
- selection.ts → `@voluma/vlam/selection`
+ lib/ the published library ("@voluma/vlam" on npm); folders match package
+      subpaths (each `index.ts` is the published entry)
+ core/ → `@voluma/vlam` (SplatMesh, MergedSplatMesh, renderer, sort)
+ loaders/ → `@voluma/vlam/loaders` (loadSplatData, ChunkLoader, workers)
+ static-lod/ → `@voluma/vlam/static-lod`
+ streaming/ → `@voluma/vlam/streaming` (StreamedSplatMesh, governors, LOD)
+ unified/ → `@voluma/vlam/unified`
+ selection/ → `@voluma/vlam/selection`
+ effects/ → `@voluma/vlam/effects`
  formats/
  ply/ → `@voluma/vlam/formats/ply` (parse-splat-ply, parse-compressed-ply)
  sog/ → `@voluma/vlam/formats/sog`
@@ -56,24 +58,38 @@ src/
  splat/ → `@voluma/vlam/formats/splat`
  ksplat/ → `@voluma/vlam/formats/ksplat`
 
- -- rendering / mesh --
+ -- core/ rendering / mesh --
  splat-mesh.ts SplatMesh: the pool, range lifecycle, active list, sort wiring
  splat-mesh-types.ts its public options, result types, and profile defaults
  splat-mesh-material.ts its TSL graph (display + pick), as free functions
  splat-mesh-picking.ts SplatPicker: the GPU pick pass and its resources
  splat-mesh-pool.ts pool data textures + the row-span allocator
  merged-splat-mesh.ts MergedSplatMesh: several fully decoded sources, one pool
- unified-splat-mesh.ts UnifiedSplatMesh: one WebGPU draw over registered meshes
- streamed-splat-mesh.ts LOD streaming pool; dynamic-imports RAD/LCC/frontier
- streamed-splat-mesh-utils.ts format-neutral swap, fetch, and chunk helpers
  splat-data.ts SplatData arrays + shared covariance/SH math
  splat-modifier.ts M7 TSL hook types (SplatContext/SplatOutputs)
- effects.ts tree-shakeable presets → the `@voluma/vlam/effects` subpath
  splat-budget.ts device profiling + per-device default splat budget
  webgpu-limits.ts application requiredLimits helper + storage-buffer size checks
  splat-depth-pack.ts depth pack/unpack + view-depth (un)projection for picking
+ sorter.ts depth-sorter interface (`kind` discriminator)
+ sort-scheduler.ts adaptive sort cadence by active count (see README)
+ compute-sorter.ts GPU counting sort, 8 TSL compute passes (WebGPU)
+ radix-sort.ts radix constants + reference CPU sort (verification)
+ radix-sorter.ts experimental GPU radix sorter (lazy-loaded)
+ worker-sorter.ts CPU counting sort in a worker (WebGL2 fallback)
+ sort-worker.ts the worker script behind worker-sorter
 
- -- loading pipeline --
+ -- unified/ --
+ unified-splat-mesh.ts UnifiedSplatMesh: one WebGPU draw over registered meshes
+
+ -- streaming/ --
+ streamed-splat-mesh.ts LOD streaming pool; dynamic-imports RAD/LCC/frontier
+ streamed-splat-mesh-utils.ts format-neutral swap, fetch, and chunk helpers
+ dataset-source.ts HTTP vs dropped-folder dataset sources
+ lod-source.ts LodSource + StreamedScene abstraction; SOG builder
+ lod-manifest.ts lod-meta.json parser → flat leaves + chunk URLs
+ lod-scheduler.ts SOG LodSource: flat leaves, distance, hysteresis, budget
+
+ -- loaders/ --
  loading.ts shared types, URL/format resolution, SplatLoadError,
  readWholeFile + the 2 GiB ArrayBuffer ceiling
  load-splat-data.ts public whole-file loaders (loadSplatData/loadSplatDataFile)
@@ -90,29 +106,12 @@ src/
                             wasm (16 KB gzipped) stays out of the published entry.
     worker-host.ts          the message loop both workers run (ids, cancel, transfers)
     worker-fetch.ts         range/whole-body fetching + progress, shared by both
-    dataset-source.ts       HTTP vs dropped-folder dataset sources
-
-    -- shared parser infrastructure --
     ply-header.ts           shared PLY header reader used by both PLY flavors and
                             by formats/lcc's collision-mesh PLY
-
-    -- streaming / LOD (format-neutral) --
-    lod-source.ts           LodSource + StreamedScene abstraction; SOG builder
-    lod-manifest.ts         lod-meta.json parser → flat leaves + chunk URLs
-    lod-scheduler.ts        SOG LodSource: flat leaves, distance, hysteresis, budget
-
-    -- sorting --
-    sorter.ts               depth-sorter interface (`kind` discriminator)
-    sort-scheduler.ts       adaptive sort cadence by active count (see README)
-    compute-sorter.ts       GPU counting sort, 8 TSL compute passes (WebGPU)
-    radix-sort.ts           radix constants + reference CPU sort (verification)
-    radix-sorter.ts         experimental GPU radix sorter (lazy-loaded)
-    worker-sorter.ts        CPU counting sort in a worker (WebGL2 fallback)
-    sort-worker.ts          the worker script behind worker-sorter
 ```
 
 The `splat-mesh-*.ts` modules are internal: they are reached through
-`SplatMesh`, never exported from `index.ts`. Two things to know before moving
+`SplatMesh`, never exported from `core/index.ts`. Two things to know before moving
 code between them. The material graph must be handed the mesh's uniform *node
 instances* and its **live** channels map, not copies, display and pick share
 the uniforms, and a rebuild after `defineChannel` has to see the new entry. And
@@ -132,7 +131,7 @@ modes work on both backends: the WebGL2 fallback's CPU sort worker mirrors the
 pool centers and sorts the active spans. shN is dropped on appended ranges
 (per-chunk palettes cannot be merged in the shared pool).
 
-The demo consumes the library through the published entries (`src/lib/index.ts`
+The demo consumes the library through the published entries (`src/lib/core/index.ts`
 and the optional subpaths) - if the demo needs something those entries do not
 export, that is an API design question, not a reason for a deep import. Format
 inspection APIs belong on `@voluma/vlam/formats/*`, not the main entry.
@@ -170,7 +169,7 @@ moves. TSL compiles the same shader graph to WGSL (WebGPU) and GLSL
    (e.g. `camera-controls`, `@voluma/three-transform-gizmo`) live in
    `devDependencies` and must never be
  imported from `src/lib/`, the demo/lib boundary is the published
- `src/lib` entry modules (`index.ts` plus the optional subpaths).
+ `src/lib` entry modules (`core/index.ts` plus the optional subpaths).
  Adding a library dependency needs a very good reason; prefer the
  platform (e.g. we unzip with ~50 lines and decode WebP with
    `ImageDecoder` instead of shipping libraries).
@@ -185,7 +184,7 @@ moves. TSL compiles the same shader graph to WGSL (WebGPU) and GLSL
   JSDoc on every exported symbol. No "what the next line does" comments.
 - Small, single-purpose modules; match the style of neighboring code.
 - Workers communicate through exported, typed message interfaces (see
-  `sort-worker.ts` / `load-worker.ts`).
+  `core/sort-worker.ts` / `loaders/load-worker.ts`).
 
 Everyone can read this code. Write every line as if it is on the front page
 of the repository, because it is. Docs may be lightly playful, but APIs,
@@ -202,7 +201,7 @@ error messages, and comments stay strictly professional.
 | Atomics in TSL | `storage(attr, 'uint', n).toAtomic()`; `atomicAdd(ptr.element(i), v)` returns the old value and can be captured directly. |
 | Dynamic dispatch | `renderer.compute(node, dispatchSize)` exists for dynamic counts; kernel `count` is otherwise baked at build time. |
 | `splatIndex` is float32 | Exact for indices ≤ 2²⁴ (~16.7M splats). Fine today; revisit for larger scenes. |
-| Output color space | Source formats store display-ready sRGB colors; the splat material converts them to the renderer's linear working space in-shader (`colorSpaceToWorking`, see `splat-mesh.ts`). The renderer keeps the default `SRGBColorSpace` output, so standard meshes share the canvas untouched. |
+| Output color space | Source formats store display-ready sRGB colors; the splat material converts them to the renderer's linear working space in-shader (`colorSpaceToWorking`, see `core/splat-mesh.ts`). The renderer keeps the default `SRGBColorSpace` output, so standard meshes share the canvas untouched. |
 | Hidden/embedded previews report 1 FPS | An embedded browser pane often reports `visibilityState: "hidden"`, so rAF is throttled (often fully paused). Drive `splats.update()` + `renderer.render()` manually and time `update()` synchronously; `PerformanceObserver('longtask')` is polluted by background-tab pauses, so it over-reports. |
 | One-time WebGPU pipeline compiles | First `renderer.compute` (sort) and first `copyTextureToTexture` (pool upload) each compile a pipeline (~200 ms) on first use. These spikes are one-time, not per-frame, exclude a couple of warm-up frames before measuring steady-state cost. `suggestAdaptivePixelRatio` ignores those frames (warmup + hitch filter) so they do not pin pixel ratio at 1. |
 | Sort precision scales with scene size | The GPU sort buckets depth linearly across the whole scene's range, so a big scene gives coarse near-camera buckets → thousands of overlapping splats tie → they reshuffle as the camera moves (popping on grass/foliage). It uses 2²² buckets (sub-splat-width) so ties stay coplanar and invisible. Do NOT switch to a multi-pass LSD radix: the parallel `atomicAdd` scatter is **not** stable, so pass 2 scrambles pass 1's order (only the top bits end up sorted). The CPU worker's sequential scatter *is* stable, so it can and does use a 2-pass 24-bit radix. |

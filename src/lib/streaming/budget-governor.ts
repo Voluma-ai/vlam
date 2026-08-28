@@ -18,7 +18,7 @@
  * completely unaffected.
  */
 
-import { resolveSplatBudget } from './splat-budget';
+import { resolveSplatBudget } from '../core/splat-budget';
 
 /**
  * Anything the governor can steer. `StreamedSplatMesh` satisfies this

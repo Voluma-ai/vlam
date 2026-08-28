@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { encodeFloat32ToHalf, floatToHalf, halfToFloat } from '../half-float';
+import { encodeFloat32ToHalf, floatToHalf, halfToFloat } from '../core/half-float';
 
 describe('floatToHalf / halfToFloat', () => {
   it('round-trips common finite values within half precision', () => {

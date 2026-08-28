@@ -72,7 +72,7 @@ at a large complexity and bookkeeping cost.
 
 ## What shipped (M11.2)
 
-- **`src/lib/sh-pack.ts`**: the shared SH packing/requantization primitives,
+- **`src/lib/core/sh-pack.ts`**: the shared SH packing/requantization primitives,
  extracted so LCC, `.rad`, SOG, and the pool use one implementation:
   `packShCoefficients`, `packPaletteSh` (palette → packed), `neutralShWord`,
   `requantizeShWord`, `packedRangesEqual`. Pure array math, safe in the worker.

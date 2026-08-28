@@ -1,8 +1,8 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import * as THREE from 'three/webgpu';
 
-import { StorageMirrorReleaser } from '../storage-attribute-mirror';
-import { setVlamLogHandler } from '../logging';
+import { StorageMirrorReleaser } from '../core/storage-attribute-mirror';
+import { setVlamLogHandler } from '../core/logging';
 
 /**
  * Releasing the JS mirror of a GPU-only storage buffer is only safe while three

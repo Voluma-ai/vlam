@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { SplatData } from '../../lib';
+import type { SplatData } from '../../lib/core';
 import { createSeparationState } from '../separation-state';
 
 /**

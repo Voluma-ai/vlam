@@ -1,8 +1,8 @@
 import * as THREE from 'three/webgpu';
 import { uniform } from 'three/tsl';
 import { describe, expect, it } from 'vitest';
-import { createPlaceholderRelightTexture } from '../relighting';
-import { createWorkBufferMaterial } from '../work-buffer-material';
+import { createPlaceholderRelightTexture } from '../core/relighting';
+import { createWorkBufferMaterial } from '../unified/work-buffer-material';
 
 function relightDefaults() {
   return {

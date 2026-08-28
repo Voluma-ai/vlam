@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { describe, expect, it, vi } from 'vitest';
-import { isXrArrayCamera, resolveXrView, xrSessionInit } from '../xr-view';
+import { isXrArrayCamera, resolveXrView, xrSessionInit } from '../core/xr-view';
 
 /**
  * The XR view resolver. Its whole reason to exist is that three splits its

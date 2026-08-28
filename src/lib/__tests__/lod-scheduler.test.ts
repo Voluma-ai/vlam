@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { LodScheduler, type LodRun } from '../lod-scheduler';
-import type { LodLeaf, LodManifest } from '../lod-manifest';
+import { LodScheduler, type LodRun } from '../streaming/lod-scheduler';
+import type { LodLeaf, LodManifest } from '../streaming/lod-manifest';
 
 /**
  * Tests for the pure scheduler core: hysteresis dead-band, dwell,

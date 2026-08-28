@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { packNormalizedDepth, normalizeViewDepth } from '../splat-depth-pack';
-import { writeCovariance } from '../splat-data';
-import { SplatMesh } from '../splat-mesh';
-import { UnifiedSplatMesh } from '../unified-splat-mesh';
+import { packNormalizedDepth, normalizeViewDepth } from '../core/splat-depth-pack';
+import { writeCovariance } from '../core/splat-data';
+import { SplatMesh } from '../core/splat-mesh';
+import { UnifiedSplatMesh } from '../unified/unified-splat-mesh';
 
 /**
  * E6 unified multi-source picking semantics: every visible source runs its own

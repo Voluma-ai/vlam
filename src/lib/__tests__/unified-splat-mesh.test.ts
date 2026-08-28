@@ -1,10 +1,10 @@
 import * as THREE from 'three/webgpu';
 import { bool, float } from 'three/tsl';
 import { describe, expect, it, vi } from 'vitest';
-import { writeCovariance, type SplatData } from '../splat-data';
-import { SplatMesh } from '../splat-mesh';
-import { MergedSplatMesh } from '../merged-splat-mesh';
-import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '../unified-splat-mesh';
+import { writeCovariance, type SplatData } from '../core/splat-data';
+import { SplatMesh } from '../core/splat-mesh';
+import { MergedSplatMesh } from '../core/merged-splat-mesh';
+import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '../unified/unified-splat-mesh';
 
 function source(
   options: {

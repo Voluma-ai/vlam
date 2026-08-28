@@ -1,5 +1,5 @@
 import type { TriangleMeshData } from './parse-mesh-ply';
-import type { SelectionVolume } from '../../selection-volume';
+import type { SelectionVolume } from '../../selection/selection-volume';
 
 /**
  * Splits a collision triangle mesh by the same {@link SelectionVolume} used to

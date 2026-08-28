@@ -16,9 +16,9 @@ import {
   foldSplatModifierStack,
   type SplatMaterialBuildInputs,
   type SplatSourcePlacement,
-} from '../splat-mesh-material';
+} from '../core/splat-mesh-material';
 import { worldWarpPreset } from '../effects';
-import type { SplatContext, SplatModifier } from '../splat-modifier';
+import type { SplatContext, SplatModifier } from '../core/splat-modifier';
 
 const WIDTH = 4;
 

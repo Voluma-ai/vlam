@@ -11,7 +11,7 @@
  * directly, which is what matters on mobile GPUs.
  */
 
-import type { StreamedSplatFormat } from './loading';
+import type { StreamedSplatFormat } from '../loaders/loading';
 import { shCoefficientCount } from './sh-pack';
 
 /**

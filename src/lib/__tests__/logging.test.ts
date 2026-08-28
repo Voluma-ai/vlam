@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { logError, setVlamLogHandler, warn, type VlamLogLevel } from '../logging';
+import { logError, setVlamLogHandler, warn, type VlamLogLevel } from '../core/logging';
 
 afterEach(() => setVlamLogHandler());
 

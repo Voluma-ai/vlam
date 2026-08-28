@@ -6,8 +6,8 @@ import {
   requantizeShWord,
   shCoefficientCount,
   type ShRange,
-} from '../sh-pack';
-import type { SplatShData } from '../splat-data';
+} from '../core/sh-pack';
+import type { SplatShData } from '../core/splat-data';
 
 /**
  * Tests for the palette→packed SH conversion and range requantization that let

@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { StreamedSplatMesh } from '../streamed-splat-mesh';
-import { SplatLoadError, isAbortError } from '../loading';
+import { StreamedSplatMesh } from '../streaming/streamed-splat-mesh';
+import { SplatLoadError, isAbortError } from '../loaders/loading';
 
 // StreamedSplatMesh's module graph pulls in ChunkLoader's worker; every path
 // under test fails before a mesh (and hence a worker) is ever constructed,

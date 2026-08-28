@@ -4,8 +4,8 @@ import {
   StreamedSplatMesh,
   type StreamedSplatMeshOptions,
   type StreamedSplatPerformanceEvent,
-} from '../streamed-splat-mesh';
-import { writeCovariance, type SplatData } from '../splat-data';
+} from '../streaming/streamed-splat-mesh';
+import { writeCovariance, type SplatData } from '../core/splat-data';
 
 const WIDTH = 2048;
 

@@ -1,10 +1,10 @@
-import { writeCovariance, type SplatData, type SplatPackedShData } from '../../splat-data';
+import { writeCovariance, type SplatData, type SplatPackedShData } from '../../core/splat-data';
 import {
   assertPlyElementFits,
   assertPlyPropertyTypes,
   plyPropertyOffset,
   type PlyHeader,
-} from '../../ply-header';
+} from '../../loaders/ply-header';
 
 /**
  * Decoder for the compressed PLY flavor written by SuperSplat / PlayCanvas

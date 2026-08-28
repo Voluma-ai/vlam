@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { RadFoveatedSource } from '../formats/rad/rad-foveated-source';
-import type { SplatData } from '../splat-data';
+import type { SplatData } from '../core/splat-data';
 
 /** Isotropic covariance whose trace gives `own_size = 2·√(trace/3) = size`. */
 function isoCovariance(size: number): number[] {

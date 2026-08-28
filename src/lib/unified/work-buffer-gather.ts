@@ -22,10 +22,10 @@ import {
   DEFAULT_ISOTROPIC_VARIANCE_SCALE,
   type SplatShInputs,
   type Vec3Uniform,
-} from './splat-mesh-material';
+} from '../core/splat-mesh-material';
 import { colorSpaceToWorking } from 'three/tsl';
-import type { SplatModifier } from './splat-modifier';
-import { StorageMirrorReleaser } from './storage-attribute-mirror';
+import type { SplatModifier } from '../core/splat-modifier';
+import { StorageMirrorReleaser } from '../core/storage-attribute-mirror';
 
 /**
  * GPU gather pass for Phase 0 of the unified renderer. It resolves a source

@@ -17,8 +17,8 @@ import {
   type SplatDeviceProfile,
   type SplatGpuProbeAdapter,
   type SplatGpuProbeEntry,
-} from '../splat-budget';
-import { resolveSplatPerformanceProfile } from '../splat-mesh';
+} from '../core/splat-budget';
+import { resolveSplatPerformanceProfile } from '../core/splat-mesh';
 
 const ANDROID_UA =
   'Mozilla/5.0 (Linux; Android 16; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36';

@@ -5,7 +5,7 @@ import {
   SplatPool,
   type SplatPoolRange,
   type SplatPoolTenant,
-} from '../splat-mesh-pool';
+} from '../core/splat-mesh-pool';
 
 /** A tenant that records what the pool told it, standing in for a mesh. */
 class FakeTenant implements SplatPoolTenant {

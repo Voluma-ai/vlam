@@ -1,7 +1,7 @@
-import { parseSpz } from './formats/spz/parse-spz';
-import { parseSplat } from './formats/splat/parse-splat';
-import { parseKsplat } from './formats/ksplat/parse-ksplat';
-import type { SplatData } from './splat-data';
+import { parseSpz } from '../formats/spz/parse-spz';
+import { parseSplat } from '../formats/splat/parse-splat';
+import { parseKsplat } from '../formats/ksplat/parse-ksplat';
+import type { SplatData } from '../core/splat-data';
 import type { LoadWorkerSource } from './load-worker-protocol';
 import { fetchBuffer } from './worker-fetch';
 import { serveLoadRequests } from './worker-host';

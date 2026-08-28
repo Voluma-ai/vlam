@@ -1,8 +1,8 @@
 import * as THREE from 'three/webgpu';
 import { describe, expect, it, vi } from 'vitest';
-import { writeCovariance } from '../splat-data';
-import { SplatMesh } from '../splat-mesh';
-import { UnifiedSplatMesh } from '../unified-splat-mesh';
+import { writeCovariance } from '../core/splat-data';
+import { SplatMesh } from '../core/splat-mesh';
+import { UnifiedSplatMesh } from '../unified/unified-splat-mesh';
 
 /**
  * The unified renderer does not inherit `SplatMesh.update`, so it needs its own

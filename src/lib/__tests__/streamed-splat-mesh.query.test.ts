@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { StreamedSplatMesh } from '../streamed-splat-mesh';
-import { writeCovariance, type SplatData } from '../splat-data';
+import { StreamedSplatMesh } from '../streaming/streamed-splat-mesh';
+import { writeCovariance, type SplatData } from '../core/splat-data';
 
 /**
  * M9 spatial queries on a StreamedSplatMesh: the query searches only the

@@ -1,8 +1,8 @@
 /** Scheduling and data helpers shared by the streamed mesh implementation. */
-import type { SplatRange } from './splat-mesh';
-import type { SplatData } from './splat-data';
+import type { SplatRange } from '../core/splat-mesh';
+import type { SplatData } from '../core/splat-data';
 import type { LodRun } from './lod-scheduler';
-import { resolveCpuCacheBytes } from './splat-budget';
+import { resolveCpuCacheBytes } from '../core/splat-budget';
 
 const APPEND_CAP = 32_000;
 

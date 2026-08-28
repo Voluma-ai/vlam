@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ComputeSorter } from '../compute-sorter';
+import { ComputeSorter } from '../core/compute-sorter';
 
 interface ComputeSorterInternals {
   clearPass: THREE.ComputeNode;

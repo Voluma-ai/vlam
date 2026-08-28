@@ -1,9 +1,9 @@
 import * as THREE from 'three/webgpu';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SplatMesh } from '../splat-mesh';
-import { writeCovariance } from '../splat-data';
-import type { SortWorkerRequest, OrderMessage, SortMessage } from '../sort-worker';
-import type { SplatSorter } from '../sorter';
+import { SplatMesh } from '../core/splat-mesh';
+import { writeCovariance } from '../core/splat-data';
+import type { SortWorkerRequest, OrderMessage, SortMessage } from '../core/sort-worker';
+import type { SplatSorter } from '../core/sorter';
 
 /**
  * Deterministic reproductions of the WebGL2 CPU-worker sort races behind the
@@ -38,7 +38,7 @@ const workers = vi.hoisted(() => {
   return { FakeSortWorker };
 });
 
-vi.mock('../sort-worker?worker&inline', () => ({ default: workers.FakeSortWorker }));
+vi.mock('../core/sort-worker?worker&inline', () => ({ default: workers.FakeSortWorker }));
 
 interface Internals {
   activeCount: number;

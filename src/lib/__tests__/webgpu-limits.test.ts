@@ -7,12 +7,12 @@ import {
   recommendedWebGpuRequiredLimits,
   supportsWebGpuPowerPreference,
   webGpuPowerPreferenceOptions,
-} from '../webgpu-limits';
+} from '../core/webgpu-limits';
 import {
   estimateLargestStorageBufferBytes,
   WORK_BUFFER_CENTERS_BYTES_PER_SPLAT,
-} from '../unified-work-buffer';
-import { UnifiedSplatMesh } from '../unified-splat-mesh';
+} from '../unified/unified-work-buffer';
+import { UnifiedSplatMesh } from '../unified/unified-splat-mesh';
 
 describe('recommendedWebGpuRequiredLimits', () => {
   it('copies the adapter maxima for requestDevice requiredLimits', () => {

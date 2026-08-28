@@ -1,9 +1,13 @@
 import * as THREE from 'three/webgpu';
-import { LodScheduler } from '../../lod-scheduler';
-import type { LodLeaf, LodManifest, LodRange } from '../../lod-manifest';
-import type { LodSourceOptions, StreamedChunkOptions, StreamedScene } from '../../lod-source';
+import { LodScheduler } from '../../streaming/lod-scheduler';
+import type { LodLeaf, LodManifest, LodRange } from '../../streaming/lod-manifest';
+import type {
+  LodSourceOptions,
+  StreamedChunkOptions,
+  StreamedScene,
+} from '../../streaming/lod-source';
 import { createLcc2ToThreeMatrix } from './lcc2-transform';
-import { MAX_SH_BANDS } from '../../splat-mesh';
+import { MAX_SH_BANDS } from '../../core/splat-mesh';
 import {
   LCC_RECORD_BYTES,
   LCC_SH_RECORD_BYTES,
@@ -12,8 +16,8 @@ import {
   type LccIndexCell,
   type LccManifest,
 } from './parse-lcc';
-import { toRequestInit, toSplatLoadError, type SplatRequestOptions } from '../../loading';
-import type { SplatDatasetSource } from '../../dataset-source';
+import { toRequestInit, toSplatLoadError, type SplatRequestOptions } from '../../loaders/loading';
+import type { SplatDatasetSource } from '../../streaming/dataset-source';
 
 /**
  * Scene builder for XGRIDS' older LCC datasets (`.lcc` / `meta.lcc`, manifest v3–v5;

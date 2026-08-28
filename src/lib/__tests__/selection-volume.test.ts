@@ -5,8 +5,8 @@ import {
   createSelectionVolume,
   selectInData,
   type SelectionVolume,
-} from '../selection-volume';
-import type { SplatData } from '../splat-data';
+} from '../selection/selection-volume';
+import type { SplatData } from '../core/splat-data';
 
 /**
  * Containment tests for the built-in selection volumes: analytic points for the

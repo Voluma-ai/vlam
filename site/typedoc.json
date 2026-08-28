@@ -1,12 +1,12 @@
 {
   "$schema": "https://typedoc.org/schema.json",
   "entryPoints": [
-    "../src/lib/index.ts",
-    "../src/lib/loaders.ts",
-    "../src/lib/static-lod-entry.ts",
-    "../src/lib/streaming.ts",
-    "../src/lib/unified.ts",
-    "../src/lib/selection.ts",
+    "../src/lib/core/index.ts",
+    "../src/lib/loaders/index.ts",
+    "../src/lib/static-lod/index.ts",
+    "../src/lib/streaming/index.ts",
+    "../src/lib/unified/index.ts",
+    "../src/lib/selection/index.ts",
     "../src/lib/formats/ply/index.ts",
     "../src/lib/formats/sog/index.ts",
     "../src/lib/formats/rad/index.ts",
@@ -14,7 +14,7 @@
     "../src/lib/formats/spz/index.ts",
     "../src/lib/formats/splat/index.ts",
     "../src/lib/formats/ksplat/index.ts",
-    "../src/lib/effects.ts"
+    "../src/lib/effects/index.ts"
   ],
   // Keep the reading order above (index, optional subpaths, formats, effects)
   // instead of TypeDoc's alphabetical default.

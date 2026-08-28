@@ -1,14 +1,14 @@
-import { packShCoefficients } from '../../sh-pack';
-import { SH_C0, writeCovariance, type SplatData } from '../../splat-data';
+import { packShCoefficients } from '../../core/sh-pack';
+import { SH_C0, writeCovariance, type SplatData } from '../../core/splat-data';
 import { isCompressedPly, parseCompressedPly } from './parse-compressed-ply';
-import { readWholeFile, type SplatProgressCallback } from '../../loading';
+import { readWholeFile, type SplatProgressCallback } from '../../loaders/loading';
 import {
   assertPlyElementFits,
   assertPlyPropertyTypes,
   parsePlyHeader,
   plyPropertyOffset,
   type PlyElement,
-} from '../../ply-header';
+} from '../../loaders/ply-header';
 
 /**
  * Parser for the "INRIA flavor" Gaussian splat PLY format: a binary

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ChunkCacheBudget, type ChunkCacheHandle } from '../chunk-cache-budget';
+import { ChunkCacheBudget, type ChunkCacheHandle } from '../streaming/chunk-cache-budget';
 
 /**
  * Acceptance tests for the scene-wide decoded-chunk cache ceiling.

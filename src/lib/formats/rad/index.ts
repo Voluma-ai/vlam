@@ -18,4 +18,4 @@ export {
 export { buildRadScene, RadLodSource } from './rad';
 // Names what `ChunkLoader.load`'s `rad` option takes, so a host that wraps the
 // chunk-range path can type it. Mirrors `LccChunkParams` on `@voluma/vlam/formats/lcc`.
-export type { RadChunkRangeRequest } from '../../load-worker-protocol';
+export type { RadChunkRangeRequest } from '../../loaders/load-worker-protocol';

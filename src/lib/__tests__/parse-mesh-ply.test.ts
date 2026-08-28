@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseMeshPly } from '../formats/lcc/parse-mesh-ply';
-import { parsePlyHeader } from '../ply-header';
+import { parsePlyHeader } from '../loaders/ply-header';
 
 /**
  * Tests for the plain triangle-mesh PLY parser, against synthetic files.

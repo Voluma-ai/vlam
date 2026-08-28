@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { SplatMesh, type SplatData, type SplatModifier } from '../lib';
+import { SplatMesh, type SplatData, type SplatModifier } from '../lib/core';
 import { StreamedSplatMesh } from '../lib/streaming';
 import {
   createSelectionVolume,

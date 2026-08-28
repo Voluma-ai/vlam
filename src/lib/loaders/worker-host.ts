@@ -9,7 +9,7 @@
  * cannot drift apart; in particular the transfer list must stay in step with
  * `SplatData`'s shape, and one copy of that is enough.
  */
-import type { SplatData } from './splat-data';
+import type { SplatData } from '../core/splat-data';
 import type { LoadWorkerRequest, LoadWorkerResponse } from './load-worker-protocol';
 import {
   createProgressThrottle,

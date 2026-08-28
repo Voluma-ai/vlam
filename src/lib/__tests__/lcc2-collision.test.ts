@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildLcc2Scene } from '../formats/lcc/lcc2';
-import type { SplatDatasetSource } from '../dataset-source';
+import type { SplatDatasetSource } from '../streaming/dataset-source';
 
 /**
  * Tests for the collision meshes an `.lcc2` manifest declares beside its

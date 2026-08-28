@@ -7,13 +7,13 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
-      "@voluma/vlam": ["../../../src/lib/index.ts"],
-      "@voluma/vlam/loaders": ["../../../src/lib/loaders.ts"],
-      "@voluma/vlam/static-lod": ["../../../src/lib/static-lod-entry.ts"],
-      "@voluma/vlam/streaming": ["../../../src/lib/streaming.ts"],
-      "@voluma/vlam/unified": ["../../../src/lib/unified.ts"],
-      "@voluma/vlam/selection": ["../../../src/lib/selection.ts"],
-      "@voluma/vlam/effects": ["../../../src/lib/effects.ts"],
+      "@voluma/vlam": ["../../../src/lib/core/index.ts"],
+      "@voluma/vlam/loaders": ["../../../src/lib/loaders/index.ts"],
+      "@voluma/vlam/static-lod": ["../../../src/lib/static-lod/index.ts"],
+      "@voluma/vlam/streaming": ["../../../src/lib/streaming/index.ts"],
+      "@voluma/vlam/unified": ["../../../src/lib/unified/index.ts"],
+      "@voluma/vlam/selection": ["../../../src/lib/selection/index.ts"],
+      "@voluma/vlam/effects": ["../../../src/lib/effects/index.ts"],
       "@voluma/vlam/formats/*": ["../../../src/lib/formats/*/index.ts"]
     }
   },
@@ -22,6 +22,6 @@
     // Ambient declarations the library itself compiles with (WebGPU
     // navigator typing, the three.js zstd module shim).
     "../../../src/viewer/webgpu-env.d.ts",
-    "../../../src/lib/three-zstd.d.ts"
+    "../../../src/lib/loaders/three-zstd.d.ts"
   ]
 }

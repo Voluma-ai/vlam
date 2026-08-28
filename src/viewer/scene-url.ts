@@ -7,7 +7,7 @@
  * {@link SINGLE_FILE_EXTENSIONS} and {@link STREAMED_EXTENSIONS}.
  */
 
-import { splatNameExtension } from '../lib/loading';
+import { splatNameExtension } from '../lib/loaders/loading';
 
 /** Self-contained files a single drop (or a single URL) can load. */
 export const SINGLE_FILE_EXTENSIONS = [

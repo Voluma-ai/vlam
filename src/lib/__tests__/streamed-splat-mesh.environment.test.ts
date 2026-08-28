@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { StreamedSplatMesh, type StreamedSplatMeshOptions } from '../streamed-splat-mesh';
-import { writeCovariance, type SplatData } from '../splat-data';
+import { StreamedSplatMesh, type StreamedSplatMeshOptions } from '../streaming/streamed-splat-mesh';
+import { writeCovariance, type SplatData } from '../core/splat-data';
 
 const WIDTH = 2048;
 

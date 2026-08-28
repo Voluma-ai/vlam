@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { SplatData } from '../splat-data';
+import type { SplatData } from '../core/splat-data';
 
 /**
  * `ChunkLoader` runs two workers: the streaming one, inlined into the published
@@ -42,14 +42,14 @@ class SpyWorker {
   }
 }
 
-vi.mock('../load-worker?worker&inline', () => ({
+vi.mock('../loaders/load-worker?worker&inline', () => ({
   default: class {
     constructor() {
       return new SpyWorker('streaming');
     }
   },
 }));
-vi.mock('../one-shot-worker?worker&inline', () => ({
+vi.mock('../loaders/one-shot-worker?worker&inline', () => ({
   default: class {
     constructor() {
       return new SpyWorker('one-shot');
@@ -57,7 +57,7 @@ vi.mock('../one-shot-worker?worker&inline', () => ({
   },
 }));
 
-const { ChunkLoader } = await import('../chunk-loader');
+const { ChunkLoader } = await import('../loaders/chunk-loader');
 
 const workersOfKind = (kind: 'streaming' | 'one-shot') =>
   SpyWorker.built.filter((w) => w.kind === kind);

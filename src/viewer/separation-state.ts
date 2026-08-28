@@ -1,4 +1,4 @@
-import type { SplatData } from '../lib';
+import type { SplatData } from '../lib/core';
 
 /**
  * The bookkeeping behind the separation demo, kept free of DOM and THREE so it

@@ -1,10 +1,10 @@
 import * as THREE from 'three/webgpu';
-import type { FloatUniform, Vec2Uniform } from './splat-mesh-material';
+import type { FloatUniform, Vec2Uniform } from '../core/splat-mesh-material';
 import {
   capProjectedEigenvaluesToScreenRadius,
   equalizeProjectedEigenvalues,
-} from './splat-mesh-material';
-import { MAX_DOF_VARIANCE } from './depth-of-field';
+} from '../core/splat-mesh-material';
+import { MAX_DOF_VARIANCE } from '../core/depth-of-field';
 import {
   Discard,
   Fn,

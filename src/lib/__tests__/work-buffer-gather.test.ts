@@ -1,12 +1,12 @@
 import * as THREE from 'three/webgpu';
 import { bool } from 'three/tsl';
 import { describe, expect, it, vi } from 'vitest';
-import { WorkBuffer, WorkBufferGather } from '../work-buffer-gather';
+import { WorkBuffer, WorkBufferGather } from '../unified/work-buffer-gather';
 import {
   WORK_BUFFER_BYTES_PER_SLOT,
   estimateUnifiedWorkBufferBytes,
   estimateUnifiedWorkBufferPeakBytes,
-} from '../unified-work-buffer';
+} from '../unified/unified-work-buffer';
 
 function textures(width: number) {
   return {

@@ -33,11 +33,11 @@ import {
   type SplatChannelOptions,
   type SplatMeshOptions,
   type SplatUpdateOptions,
-} from './splat-mesh';
-import type { SplatData } from './splat-data';
+} from '../core/splat-mesh';
+import type { SplatData } from '../core/splat-data';
 import { runKey, type LodRun, type LodScheduler } from './lod-scheduler';
 import { buildSogScene, type StreamedScene } from './lod-source';
-import type { CollisionMeshTile } from './formats/lcc/collision-mesh';
+import type { CollisionMeshTile } from '../formats/lcc/collision-mesh';
 import { createLocalDataset, httpDatasetSource, type SplatDatasetSource } from './dataset-source';
 import {
   isAbortError,
@@ -47,25 +47,25 @@ import {
   toSplatLoadError,
   type SplatRequestOptions,
   type StreamedSplatFormat,
-} from './loading';
+} from '../loaders/loading';
 import {
   liftBudgetToFinestLevel,
   recommendedRadMaxStdDev,
   resolveSplatBudget,
   type SplatDeviceProfile,
-} from './splat-budget';
-import { resolveXrView } from './xr-view';
-import { ChunkLoader } from './chunk-loader';
-import { yUpTransformForFormat } from './orientation';
+} from '../core/splat-budget';
+import { resolveXrView } from '../core/xr-view';
+import { ChunkLoader } from '../loaders/chunk-loader';
+import { yUpTransformForFormat } from '../core/orientation';
 import {
   FRONTIER_FOVEATION_DEFAULTS,
   type FrontierFoveation,
   type FrontierPlanMessage,
   type FrontierRequest,
   type PlanSplats,
-} from './formats/rad/frontier-worker-protocol';
-import { shCoefficientCount } from './sh-pack';
-import { warn } from './logging';
+} from '../formats/rad/frontier-worker-protocol';
+import { shCoefficientCount } from '../core/sh-pack';
+import { warn } from '../core/logging';
 import type {
   ChunkFetchHandle,
   ChunkFetchKind,
@@ -916,7 +916,7 @@ export class StreamedSplatMesh extends SplatMesh {
       // The manifest here is the `.rad` file's own header (ranged reads).
       // Contract: only SplatLoadError or AbortError leaves this path.
       try {
-        const { buildRadScene } = await import('./formats/rad');
+        const { buildRadScene } = await import('../formats/rad');
         // `shBands` is a *cap* here: a `.rad` declares its own `maxSh`, so the
         // resolved value decides how much of it to keep. Passing it is what lets
         // the `smooth` profile (and an explicit `shBands: 0`) decline SH on a
@@ -948,11 +948,11 @@ export class StreamedSplatMesh extends SplatMesh {
           // Import the public format entry rather than an internal chunk. Rollup may
           // represent internal chunks through synthetic namespace exports, which a
           // consuming production build can incorrectly tree-shake while rebundling.
-          const { buildLcc2Scene } = await import('./formats/lcc');
+          const { buildLcc2Scene } = await import('../formats/lcc');
           // LCC2 tiles are SOG v2; SH is opt-in like Streamed SOG (tiles may be DC-only).
           scene = buildLcc2Scene(json, source, sourceOptions, options.shBands ?? 0);
         } else if (format === 'lcc') {
-          const { buildLccScene } = await import('./formats/lcc');
+          const { buildLccScene } = await import('../formats/lcc');
           scene = await buildLccScene(json, source, { ...sourceOptions, shBands });
         } else {
           // Streamed SOG SH is strictly opt-in: unlike LCC (whose manifest
@@ -1020,7 +1020,7 @@ export class StreamedSplatMesh extends SplatMesh {
         : resolveSplatFoveationMode(options.foveationMode);
     let FrontierWorkerCtor: InlineWorkerCtor | undefined;
     if (isPageTableFoveation(resolvedFoveationMode)) {
-      const mod = await import('./formats/rad/frontier-worker?worker&inline');
+      const mod = await import('../formats/rad/frontier-worker?worker&inline');
       FrontierWorkerCtor = mod.default;
       signal?.throwIfAborted();
       // The worker cuts the tree itself; per-splat `parent_size` (a GPU-cut input)
@@ -1478,7 +1478,7 @@ export class StreamedSplatMesh extends SplatMesh {
       // per call, so one caller giving up cannot cancel it for the others.
       const controller = new AbortController();
       this.collisionAbort = controller;
-      this.collisionTiles = import('./formats/lcc')
+      this.collisionTiles = import('../formats/lcc')
         .then(({ loadCollisionMeshTiles }) =>
           loadCollisionMeshTiles(collision, {
             ...(this.requestOptions ? { request: this.requestOptions } : {}),

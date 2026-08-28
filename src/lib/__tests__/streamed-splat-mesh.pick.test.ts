@@ -1,8 +1,8 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { StreamedSplatMesh } from '../streamed-splat-mesh';
-import { packNormalizedDepth, normalizeViewDepth } from '../splat-depth-pack';
-import { writeCovariance, type SplatData } from '../splat-data';
+import { StreamedSplatMesh } from '../streaming/streamed-splat-mesh';
+import { packNormalizedDepth, normalizeViewDepth } from '../core/splat-depth-pack';
+import { writeCovariance, type SplatData } from '../core/splat-data';
 
 /**
  * E6 pick robustness on a StreamedSplatMesh: an empty pool (nothing resident
