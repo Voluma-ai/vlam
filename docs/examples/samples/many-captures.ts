@@ -2,7 +2,8 @@
 // as one cloud, each movable at no cost.
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { SplatScene, createSplatRenderer, loadScene } from '@voluma/vlam';
+import { SplatScene, createSplatRenderer } from '@voluma/vlam';
+import { loadScene } from '@voluma/vlam/loaders';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);

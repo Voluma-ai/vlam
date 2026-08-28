@@ -12,8 +12,8 @@ Every multi-line code sample is a real TypeScript file under
 3. [Streaming & LOD](streaming-and-lod.md): `StreamedSplatMesh` for scenes
    larger than GPU memory: budgets, `BudgetGovernor`, local folders,
    collision meshes, the environment tile.
-4. [Multi-mesh & marker budgets](multi-mesh-budgets.md): one shared splat
-   budget across a main scene and several marker meshes, reweighted from the
+4. [Multi-mesh budgets](multi-mesh-budgets.md): one shared splat
+   budget across a main scene and several additional meshes, reweighted from the
    camera so the near one is sharp: `CameraBudgetGovernor`, `maxBudget` pool
    headroom, Spark `lodScale` parity, and what it buys on `.rad`.
 5. [Unified rendering](unified-rendering.md): depth-correct compositing of

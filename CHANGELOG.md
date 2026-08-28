@@ -23,6 +23,24 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Changed
+
+- **Multi-mesh terminology.** Guides and implementation comments call
+  secondary splat content an additional mesh (or a member / source in APIs),
+  not a marker. Viewer-only sort-benchmark JSON reports LOD mutation events
+  as `eventCount`; there is no `markerCount` alias. Visible pins,
+  annotations, and measurement points still use marker.
+
+- **Package entry split (breaking).** Optional systems no longer ship on
+  `@voluma/vlam`. Import loaders from `@voluma/vlam/loaders`, static auto-LOD
+  from `@voluma/vlam/static-lod`, streaming from `@voluma/vlam/streaming`,
+  unified rendering from `@voluma/vlam/unified`, and volume selection from
+  `@voluma/vlam/selection`. There are no deprecated re-exports. The
+  `StreamedSplatMesh.loadAutoLod()` alias is gone; call
+  `StaticLodSplatMesh.load()` on the static-lod entry. Core keeps `SplatMesh`,
+  `SplatPool`, `SplatScene`, renderer helpers, and type-only format contracts
+  used by those signatures.
+
 ### Added
 
 - Quest XR stability harness: recognized standalone headsets use a 0.7 WebGL
@@ -422,7 +440,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   phones took the prefix path at a sixth of the resolution. The choice now also
   tests the budget, against the post-lift value, mirroring the caller's own
   precondition for the lift (neither `budget` nor `maxBudget` pinned), so a
-  host sizing markers explicitly gets the foveated path for the same reason a
+  host sizing additional meshes explicitly gets the foveated path for the same reason a
   phone does. Desktop behaviour is unchanged.
 
 - **A page-table `.rad` handed the worker spherical harmonics the mesh had
@@ -583,8 +601,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `StreamedSplatMesh.setFetchWeight`.** `CameraBudgetGovernor` decides what each
   mesh may *draw*; nothing decided what they may *fetch*. Every mesh owns its
   own `ChunkLoader` and fetches toward its own in-flight cap, so a scene of
-  thirteen streamed markers issued up to ~100 concurrent equal-priority chunk
-  requests and a marker the camera was pointed at queued behind a dozen distant
+  thirteen streamed additional meshes issued up to ~100 concurrent equal-priority chunk
+  requests and a mesh the camera was pointed at queued behind a dozen distant
   ones for bandwidth and connection slots. Spark has no such problem
   structurally: one global traversal orders every fetch want
   biggest-on-screen-first, so its network order *is* its visual priority.
@@ -597,10 +615,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   keep the previous behaviour exactly.
 - **The page-table background sweep is gated on `fetchWeight`.** That sweep
   wants the *entire* capture, and ran regardless of budget or visibility, so
-  every hidden and distant marker was speculating about camera moves that had
-  not happened, which is most of the traffic competing with the marker actually
+  every hidden and distant mesh was speculating about camera moves that had
+  not happened, which is most of the traffic competing with the mesh actually
   being looked at. It now runs only for a mesh with weight. The trade is that
-  re-focusing a marker that went cold refetches rather than hitting a warm
+  re-focusing a mesh that went cold refetches rather than hitting a warm
   worker cache. Unset `fetchWeight` (the default) sweeps as before.
 
 ### Fixed
@@ -629,7 +647,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   intermediate frontier is a superset of the old and new sets' intersection, so
   no slot ever describes data the host did not write, and the traversal still
   runs at the full solved cut, only delivery is spread over frames, as Spark
-  achieves with paced page uploads. Measured on a 13-marker scene: worst plan
+  achieves with paced page uploads. Measured on a 13-mesh scene: worst plan
   141ms -> 37ms with the settled frontier unchanged. The plan message reports
   `converged: false` while the cap is holding it back.
 
@@ -694,7 +712,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - **Gather compute pipelines are compiled off the render frame.** WebGPU defers
   compiling a compute pipeline to its first dispatch, and a source's first
   `gather` runs inside `update`, so each newly added source paid its shader
- compile inside one render frame. Measured on a 13-marker scene: a first
+ compile inside one render frame. Measured on a 13-mesh scene: a first
  dispatch took up to 2.0s while every later dispatch of the same pipeline took
  under 0.4ms, and the worst update frame was 2,022ms. `WorkBufferGather.warmUp`
  now compiles through `computeAsync` when the gather is created, best-effort
@@ -709,7 +727,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   warm-up's output would not reliably be overwritten before the draw.
 
 - **`RadLodSource` no longer re-walks its whole decoded prefix several times a
-  frame.** Two independent causes, together 92% of all frame CPU on a 13-marker
+  frame.** Two independent causes, together 92% of all frame CPU on a 13-mesh
   scene (33.6ms mean per call, 1.1s worst). First, the frontier cache was keyed
   on the exact budget, but a camera-weighted governor rewrites that every frame
   as the camera drifts, a third of all calls missed while selecting the very
@@ -724,7 +742,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 - **`substituteCoverage` no longer allocates a leaf bitmap per call.** It runs
  for every deferred group of every streamed mesh on every reschedule, ~800
- times a second on a marker-heavy scene, at a mean span of 60k leaves, so
+ times a second on a multi-mesh scene, at a mean span of 60k leaves, so
  allocating and zeroing the bitmap each time discarded ~480 MB in ten seconds
  and made it the single most expensive function in the frame. The buffer is now
  a grow-only scratch, coverage is marked with `fill` over each overlap instead
@@ -736,7 +754,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
  what the host asked for.** The floor existed because a `.rad` frontier only
  refines into chunks resident *together*, so a cache far smaller than the working
  set thrashes and the view stays coarse, but as a flat `max(hostShare, 2 GiB)`
- it meant 13 markers were each *allowed* 2 GiB against a 4 GiB tab heap, making
+ it meant 13 additional meshes were each *allowed* 2 GiB against a 4 GiB tab heap, making
  the one number meant to prevent thrashing the largest memory risk in the viewer.
  It is now bounded by the capture's own decoded size, and never below the host's
  value.
@@ -777,8 +795,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   wins over `visible`.
 
 - **`CameraBudgetGovernor`.** Weights a shared splat budget by how large each
-  mesh projects from the camera, so a marker you approach takes budget off the
-  distant ones instead of every marker holding a fixed `total / N` share. Wraps
+  mesh projects from the camera, so an additional mesh you approach takes budget off the
+  distant ones instead of every mesh holding a fixed `total / N` share. Wraps
   `BudgetGovernor` (which stays a pure, camera-free allocation policy), measures
   `computeSplatBounds()` × `matrixWorld` so weighting is correct before a chunk
   has loaded, and throttles internally, call `update(camera)` once per frame.
@@ -790,7 +808,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   Separates the ceiling `setBudget` may raise a mesh to (and the size its pool is
   allocated from) from the budget it starts at. Without it a governed mesh could
   only ever be *shrunk* below its construction budget, the pool is allocated
-  once and never grows, which is why a hand-split marker pool stayed coarse near
+  once and never grows, which is why a hand-split additional-mesh pool stayed coarse near
   the camera however the budget was reallocated.
 - **`StreamedSplatMeshOptions.lodScale`** and the matching mutable accessor.
   Spark's per-mesh `lodScale` for `.rad` `foveationMode: 'pagetable'`: scales the
@@ -802,7 +820,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - **`estimateSplatPoolBytes`.** Prices a pool from its real allocations (pool
   textures, packed SH, sort buffers, CPU backing, capacity factor), so a
   `maxBudget` ceiling is a computation rather than a guess. Pools cost their
- ceilings whatever the shared budget is split to, so for several markers the sum
+ ceilings whatever the shared budget is split to, so for several additional meshes the sum
  of the ceilings is what has to fit.
 - **`BudgetGovernor.setWeights`.** Writes a batch of weights and reallocates
  once. A loop of `setWeight` reallocates per call, and each reallocation pushes
@@ -999,12 +1017,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `src/lib/__tests__/modifier-slots.test.ts`.
 - `BudgetGovernor`: a shared splat-budget API that splits one total budget
  across multiple `StreamedSplatMesh` instances by priority weight (replacing
- the host-side "0.7 when markers exist" hack), with cap-aware reallocation on
+ the host-side "0.7 when additional meshes exist" hack), with cap-aware reallocation on
  register/unregister/weight changes, grow hysteresis against membership
  churn, and a `sum(member budgets) ≤ total` invariant. Applied through the
  public `setBudget` path, so flat-leaf LOD scheduling, the LCC2 octree cut,
  and the RAD page-table draw budget all follow the governed value.
-- E2 stress/property tests for `UnifiedSplatRenderer` (main + N marker
+- E2 stress/property tests for `UnifiedSplatRenderer` (main + N additional
  sources): random add/remove/hide/opacity/modifier/transform churn with a
  shadow model of the shared work buffer asserting slice completeness, no
  double-draw indices, capacity accounting, and gather-cache freshness; plus
@@ -1311,7 +1329,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   pending.
 
 - `UnifiedSplatRenderer` no longer dispatches zero-splat gathers for empty
-  sources (e.g. a streamed marker before its first chunk lands), and a
+  sources (e.g. a streamed additional mesh before its first chunk lands), and a
   modifier stack that throws while its gather pipeline rebuilds no longer
   leaves the source pointing at a disposed pipeline, the old gather survives
   and the rebuild retries on the next update.

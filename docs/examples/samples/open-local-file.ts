@@ -1,13 +1,8 @@
 // Example: site/examples/open-local-file.md - pick or drop a capture from disk.
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import {
-  SplatLoadError,
-  SplatMesh,
-  createSplatRenderer,
-  isAbortError,
-  loadSceneFile,
-} from '@voluma/vlam';
+import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { SplatLoadError, isAbortError, loadSceneFile } from '@voluma/vlam/loaders';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);

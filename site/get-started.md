@@ -14,7 +14,8 @@ npm install @voluma/vlam three
 
 ```ts
 import * as THREE from 'three/webgpu';
-import { SplatMesh, createSplatRenderer, loadScene } from '@voluma/vlam';
+import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { loadScene } from '@voluma/vlam/loaders';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);

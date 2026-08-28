@@ -1,6 +1,7 @@
 // Guide sample: docs/guide/loading-scenes.md - auto-detection, explicit
 // format, and direct parsing through a format subpath.
-import { SplatMesh, loadScene } from '@voluma/vlam';
+import { SplatMesh } from '@voluma/vlam';
+import { loadScene } from '@voluma/vlam/loaders';
 import { parseSog } from '@voluma/vlam/formats/sog';
 import { parseSpz } from '@voluma/vlam/formats/spz';
 

@@ -3,7 +3,7 @@
  *
  * Every {@link StreamedSplatMesh} owns its own `ChunkLoader` worker and issues
  * chunk requests toward its own in-flight cap, so a scene of streamed meshes
- * fetches with no shared ordering: a marker the camera is pointed at competes
+ * fetches with no shared ordering: a mesh the camera is pointed at competes
  * for bandwidth and connection slots against a dozen distant ones, each of
  * which is equally entitled to its own cap. Spark does not have this problem
  * structurally - one global traversal orders every fetch want
@@ -84,7 +84,7 @@ export interface ChunkFetchSchedulerOptions {
    * Slots every registered mesh may hold regardless of weight. Default 1.
    *
    * Without a floor a scene's far meshes stop fetching entirely while the
-   * focused one streams, and a marker with no coarse coverage draws nothing -
+   * focused one streams, and a mesh with no coarse coverage draws nothing -
    * so the floor is what turns "far meshes wait" into "far meshes trickle".
    *
    * One slot is always granted regardless of this setting: a mesh entitled to
@@ -175,7 +175,7 @@ export class ChunkFetchScheduler {
 
     const weight = normalizeWeight(entry.client.weight());
     // A weightless mesh pre-warming its cache is the exact traffic that starves
-    // the focused marker, and it buys nothing while nobody is looking at it.
+    // the focused mesh, and it buys nothing while nobody is looking at it.
     if (kind === 'sweep' && weight <= 0) {
       entry.demanding = false;
       return false;
@@ -252,8 +252,8 @@ export class ChunkFetchScheduler {
    * asks - which is what keeps the first mesh to reschedule from taking the
    * pipe and holding it. Dividing the *remainder* after every participant's
    * floor instead would invert the whole point on a large scene: thirteen
-   * markers and a main at floor 1 consume a 16-slot pipe entirely, leaving the
-   * focused marker a smaller share than the far ones it is competing with.
+   * additional meshes and a main at floor 1 consume a 16-slot pipe entirely, leaving the
+   * focused mesh a smaller share than the far ones it is competing with.
    *
    * The denominator counts every mesh that plausibly wants the pipe - all
    * registered meshes except those both weightless and idle, plus the caller.

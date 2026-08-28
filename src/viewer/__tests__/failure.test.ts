@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { SplatLoadError } from '../../lib';
+import { SplatLoadError } from '../../lib/loaders';
 import { describeLoadError } from '../failure';
 import { filesFromDirectoryInput } from '../drop-zone';
 import { validateSceneUrl, isStreamedScene, isSupportedSplatFile } from '../scene-url';

@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
-import { SplatMesh, type StreamedSplatPerformanceEvent } from '../lib';
+import { SplatMesh } from '../lib';
+import type { StreamedSplatPerformanceEvent } from '../lib/streaming';
 
 type SortDebugMesh = {
   activeCount: number;
@@ -19,7 +20,7 @@ export type SortVerification = {
 
 export type SlowFrameAttribution = {
   frameMs: number;
-  markerCount: number;
+  eventCount: number;
   cpuMs: number;
   activeListMs: number;
   uploadMs: number;
@@ -42,28 +43,28 @@ export function createFrameBenchmark(warmupSeconds: number, sampleSeconds: numbe
   let startedAt: number | null = null;
   let previous: number | null = null;
   const durations: number[] = [];
-  const markersByFrame: StreamedSplatPerformanceEvent[][] = [];
-  let pendingMarkers: StreamedSplatPerformanceEvent[] = [];
+  const eventsByFrame: StreamedSplatPerformanceEvent[][] = [];
+  let pendingEvents: StreamedSplatPerformanceEvent[] = [];
   let result: FrameBenchmarkResult | null = null;
   const record = (
     timestamp: number,
-    markers: readonly StreamedSplatPerformanceEvent[] = [],
+    events: readonly StreamedSplatPerformanceEvent[] = [],
   ): FrameBenchmarkResult | null => {
     startedAt ??= timestamp;
     const elapsed = timestamp - startedAt;
     if (elapsed < warmupSeconds * 1000) {
       previous = null;
-      pendingMarkers = [];
+      pendingEvents = [];
       return null;
     }
     if (previous !== null) {
       durations.push(timestamp - previous);
       // A mutation submitted during the previous frame affects the interval
       // ending at this rAF timestamp, not the interval that preceded it.
-      markersByFrame.push(pendingMarkers);
+      eventsByFrame.push(pendingEvents);
     }
     previous = timestamp;
-    pendingMarkers = [...markers];
+    pendingEvents = [...events];
     if (elapsed < (warmupSeconds + sampleSeconds) * 1000 || result) return result;
     const sorted = [...durations].sort((a, b) => a - b);
     const mean = durations.reduce((sum, value) => sum + value, 0) / durations.length;
@@ -72,23 +73,23 @@ export function createFrameBenchmark(warmupSeconds: number, sampleSeconds: numbe
       const ordered = [...values].sort((a, b) => a - b);
       return ordered[Math.min(ordered.length - 1, Math.floor(ordered.length * fraction))] as number;
     };
-    const swapDurations = durations.filter((_, index) => (markersByFrame[index]?.length ?? 0) > 0);
+    const swapDurations = durations.filter((_, index) => (eventsByFrame[index]?.length ?? 0) > 0);
     const nonSwapDurations = durations.filter(
-      (_, index) => (markersByFrame[index]?.length ?? 0) === 0,
+      (_, index) => (eventsByFrame[index]?.length ?? 0) === 0,
     );
-    const swapEvents = markersByFrame.flat();
+    const swapEvents = eventsByFrame.flat();
     const meanOf = (values: readonly number[]): number =>
       values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
     const worstFrameMs = sorted.at(-1) ?? 0;
     const p99FrameMs = at(sorted, 0.99);
     const slowFrames = durations
       .map((frameMs, index): SlowFrameAttribution => {
-        const markers = markersByFrame[index] ?? [];
+        const frameEvents = eventsByFrame[index] ?? [];
         const sum = (select: (event: StreamedSplatPerformanceEvent) => number): number =>
-          markers.reduce((total, event) => total + select(event), 0);
+          frameEvents.reduce((total, event) => total + select(event), 0);
         return {
           frameMs,
-          markerCount: markers.length,
+          eventCount: frameEvents.length,
           cpuMs: sum((event) => event.cpuMs),
           activeListMs: sum((event) => event.activeListMs),
           uploadMs: sum((event) => event.uploadMs),
@@ -99,9 +100,9 @@ export function createFrameBenchmark(warmupSeconds: number, sampleSeconds: numbe
           removedCount: sum((event) => event.removedCount),
           stagedCount: sum((event) => event.stagedCount),
           uploadCount: sum((event) => event.uploadCount),
-          activeCount: markers.at(-1)?.activeCount ?? 0,
-          forcedSort: markers.some((event) => event.forcedSort),
-          compacted: markers.some((event) => event.compacted),
+          activeCount: frameEvents.at(-1)?.activeCount ?? 0,
+          forcedSort: frameEvents.some((event) => event.forcedSort),
+          compacted: frameEvents.some((event) => event.compacted),
         };
       })
       .sort((a, b) => b.frameMs - a.frameMs)

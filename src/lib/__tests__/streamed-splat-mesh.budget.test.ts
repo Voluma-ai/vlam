@@ -206,8 +206,8 @@ describe('StreamedSplatMesh page-table governance', () => {
     // storage need not be contiguous. A capacity larger than one page and not a
     // multiple of it must give the *final* page the remainder: rounding it up
     // reserves more than the pool holds and the allocation fails. Real `.rad`
-    // markers land here routinely - a 261-row pool asked for a 32-row page it
-    // did not have, and every page-table marker in the scene failed to load.
+    // meshes land here routinely - a 261-row pool asked for a 32-row page it
+    // did not have, and every page-table mesh in the scene failed to load.
     const capacity = 65_536 + WIDTH; // one full page plus one row
     const mesh = track(
       makeMesh({
@@ -226,7 +226,7 @@ describe('StreamedSplatMesh page-table governance', () => {
 
     // Growing to the ceiling adds the short final page: rounding it up to a
     // whole page would ask the pool for more than it holds, which is how every
-    // page-table marker in a real scene failed to load.
+    // page-table mesh in a real scene failed to load.
     mesh.setBudget(capacity);
     const resize = [...(RecordingWorker.last?.posted ?? [])]
       .reverse()

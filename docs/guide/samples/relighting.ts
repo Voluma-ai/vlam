@@ -1,7 +1,8 @@
 // Guide sample: docs/guide/relighting.md - shadow-factor proxy-mesh relight.
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { SplatMesh, createSplatRenderer, loadScene } from '@voluma/vlam';
+import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { loadScene } from '@voluma/vlam/loaders';
 import {
   createRelightingProxy,
   createRelightingShadowFactorMaterial,

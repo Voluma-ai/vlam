@@ -1,13 +1,8 @@
 import * as THREE from 'three/webgpu';
 import { bool } from 'three/tsl';
-import {
-  SplatMesh,
-  StreamedSplatMesh,
-  UnifiedSplatRenderer,
-  supportsUnifiedSplatRenderer,
-  createSplatRenderer,
-  type SplatData,
-} from '../lib';
+import { SplatMesh, createSplatRenderer, type SplatData } from '../lib';
+import { StreamedSplatMesh } from '../lib/streaming';
+import { UnifiedSplatRenderer, supportsUnifiedSplatRenderer } from '../lib/unified';
 
 const SIZE = 256;
 const status = document.querySelector<HTMLDivElement>('#status');

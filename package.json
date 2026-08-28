@@ -1,6 +1,6 @@
 {
   "name": "@voluma/vlam",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "description": "VLAM! - A lightweight WebGPU Gaussian splat viewer for three.js, built for high performance, streaming LOD, and fully customizable rendering through an open shader pipeline.",
   "license": "MIT",
   "author": "Voluma",
@@ -42,6 +42,26 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./loaders": {
+      "types": "./dist/loaders.d.ts",
+      "import": "./dist/loaders.js"
+    },
+    "./static-lod": {
+      "types": "./dist/static-lod-entry.d.ts",
+      "import": "./dist/static-lod.js"
+    },
+    "./streaming": {
+      "types": "./dist/streaming.d.ts",
+      "import": "./dist/streaming.js"
+    },
+    "./unified": {
+      "types": "./dist/unified.d.ts",
+      "import": "./dist/unified.js"
+    },
+    "./selection": {
+      "types": "./dist/selection.d.ts",
+      "import": "./dist/selection.js"
     },
     "./effects": {
       "types": "./dist/effects.d.ts",

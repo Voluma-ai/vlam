@@ -18,14 +18,14 @@ import {
  * Persistent Web Worker that fetches and decodes streamed splat scenes and
  * chunks off the main thread.
  *
- * This worker is inlined into the published entry (`?worker&inline` in
+ * This worker is inlined into `@voluma/vlam/loaders` (`?worker&inline` in
  * `chunk-loader.ts`), so every parser it imports is a string literal in
- * `dist/index.js` that no consumer's bundler can tree-shake. It therefore
+ * `dist/loaders.js` that no consumer's bundler can tree-shake. It therefore
  * carries only the formats the streaming paths need: `rad-chunk`, `lcc-bin`,
  * unbundled SOG directories, and PLY (whose local-file path is streamed). The
  * one-shot whole-file formats - `.spz`, `.splat`, `.ksplat` - live in
  * `one-shot-worker.ts`, which `ChunkLoader` loads on demand; that is what keeps
- * SPZ's ~39 KB ZSTD wasm blob out of the main entry.
+ * SPZ's ~39 KB ZSTD wasm blob out of the loaders entry.
  */
 
 export type {

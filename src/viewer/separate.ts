@@ -1,15 +1,13 @@
 import * as THREE from 'three/webgpu';
+import { SplatMesh, type SplatData, type SplatModifier } from '../lib';
+import { StreamedSplatMesh } from '../lib/streaming';
 import {
   createSelectionVolume,
   partitionSplatData,
-  SplatMesh,
-  StreamedSplatMesh,
   type SelectionVolumeKind,
   type SelectionVolumeOptions,
-  type SplatData,
-  type SplatModifier,
   type SplatPartition,
-} from '../lib';
+} from '../lib/selection';
 import { sdfEffects } from '../lib/effects';
 import { TransformGizmo, type GizmoMode } from '@voluma/three-transform-gizmo';
 import { createSeparationState } from './separation-state';

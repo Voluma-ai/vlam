@@ -23,6 +23,11 @@
   "include": [
     "src/lib/**/*.d.ts",
     "src/lib/index.ts",
+    "src/lib/loaders.ts",
+    "src/lib/static-lod-entry.ts",
+    "src/lib/streaming.ts",
+    "src/lib/unified.ts",
+    "src/lib/selection.ts",
     "src/lib/effects.ts",
     "src/lib/formats/ply/index.ts",
     "src/lib/formats/sog/index.ts",

@@ -19,7 +19,8 @@ import { WebGpuSortScheduler } from './sort-scheduler';
 import { WorkBuffer, WorkBufferGather } from './work-buffer-gather';
 import { createWorkBufferMaterial } from './work-buffer-material';
 import type { FloatUniform, Vec2Uniform } from './splat-mesh-material';
-import { assertStorageBufferFitsDevice, estimateLargestStorageBufferBytes } from './webgpu-limits';
+import { assertStorageBufferFitsDevice } from './webgpu-limits';
+import { estimateLargestStorageBufferBytes } from './unified-work-buffer';
 import { resolveXrView } from './xr-view';
 import { StorageMirrorReleaser } from './storage-attribute-mirror';
 import type { SplatSorter } from './sorter';
@@ -864,7 +865,7 @@ export class UnifiedSplatRenderer extends THREE.Mesh {
     const gather = this.buildGather(view);
     // Compile off the critical frame. WebGPU defers compute-pipeline compilation
     // to the first dispatch, and that dispatch happens inside `update` - a
-    // measured 2.0s frame on a marker-heavy scene. Warming here is best-effort:
+    // measured 2.0s frame on a multi-mesh scene. Warming here is best-effort:
     // if it fails or has not finished by the first real gather, the only cost is
     // the stall this avoids, so nothing waits on it.
     void gather.warmUp(this.renderer).catch(() => undefined);

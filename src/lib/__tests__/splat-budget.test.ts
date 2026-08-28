@@ -944,12 +944,12 @@ describe('estimateSplatPoolBytes', () => {
     expect(staged / exact).toBeCloseTo(1.5, 10);
   });
 
-  it('makes the multi-marker envelope the sum of the ceilings', () => {
-    // The guide's recipe: one main plus four markers, each with headroom to
+  it('makes the multi-mesh envelope the sum of the ceilings', () => {
+    // The guide's recipe: one main plus four additional meshes, each with headroom to
     // 1.5M - this is what has to fit, whatever the shared budget is set to.
     const total = estimateSplatPoolBytes(4_000_000) + 4 * estimateSplatPoolBytes(1_500_000);
     expect(Math.round(total / MIB)).toBeGreaterThan(1000); // over a gigabyte
-    // Halving the marker ceilings roughly halves their contribution.
+    // Halving the additional-mesh ceilings roughly halves their contribution.
     const leaner = estimateSplatPoolBytes(4_000_000) + 4 * estimateSplatPoolBytes(750_000);
     expect(total - leaner).toBeCloseTo(4 * estimateSplatPoolBytes(750_000), -3);
   });

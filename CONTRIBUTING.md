@@ -28,7 +28,7 @@ npm run docs:api   # generate a local TypeDoc reference in .tmp/api-reference/
 npm run docs:samples # type-check the guide code samples in docs/guide/samples/
 npm run build      # docs site + library
 npm run build:lib  # the published package: bundle + .d.ts into dist/ (what prepack runs)
-npm run size:check # gzip-size budget for dist/index.js (scripts/check-bundle-size.mjs)
+npm run size:check # gzip-size budgets for published entries (scripts/check-bundle-size.mjs)
 npm run test:coverage # Vitest with V8 coverage (text + cobertura, what CI runs)
 ```
 
@@ -45,7 +45,7 @@ Required jobs (each independently visible; any failure blocks the run):
 | `test` | `npm run test:coverage` (summary in the job log, not stored) |
 | `docs` | `npm run docs:check` + `npm run docs:samples` |
 | `secrets` | `gitleaks detect --no-git` against [`.gitleaks.toml`](.gitleaks.toml) |
-| `build` | `npm run build` + gzip budget for `dist/index.js` |
+| `build` | `npm run build` + gzip budgets for published entries |
 
 A green local run of those commands means a green CI. Runs happen on pull
 requests and pushes to `main`. Public API docs are generated from JSDoc while
@@ -64,8 +64,8 @@ Run workflow**. It uses repository secrets `CLOUDFLARE_API_TOKEN` and
 **Guide samples are compiled.** Every multi-line code block in
 `docs/guide/*.md` exists as a real TypeScript file under
 `docs/guide/samples/`, type-checked by `npm run docs:samples` against the
-current source (the `@voluma/vlam` import name is path-mapped to `src/lib`, so
-samples read exactly like embedder code). To change a guide snippet, edit
+current source (the `@voluma/vlam` import name is path-mapped to `src/lib`
+entry modules, so samples read exactly like embedder code). To change a guide snippet, edit
 the sample file first, verify with `npm run docs:samples`, then paste the
 relevant lines into the markdown, a `<!-- full file: … -->` comment under a
 fence marks where boilerplate imports were trimmed.

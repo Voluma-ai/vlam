@@ -2,10 +2,10 @@
  * Shared splat-budget governance across multiple streamed meshes.
  *
  * A single `StreamedSplatMesh` keeps itself within a per-device budget, but a
- * host that shows several streamed scenes at once (a main capture plus marker
+ * host that shows several streamed scenes at once (a main capture plus additional
  * or inset meshes) must not let each mesh claim the whole device budget -
  * their pools are separate, so the costs add. Historically hosts hand-tuned
- * this ("shrink the main mesh to 0.7 when markers exist"); the
+ * this ("shrink the main mesh to 0.7 when additional meshes exist"); the
  * {@link BudgetGovernor} makes it a first-class policy: register each mesh
  * with a priority weight and the governor splits one total budget across the
  * members, reallocating when membership, weights, or the total change.
@@ -54,7 +54,7 @@ export interface BudgetGovernorOptions {
   /**
    * Grow dead-band as a fraction of a member's current budget (default
    * `0.1`). A reallocation that would *raise* a member's budget by no more
-   * than this fraction is skipped, so brief membership churn (a marker mesh
+   * than this fraction is skipped, so brief membership churn (an additional mesh
    * appearing for a moment) does not thrash LOD schedules. Shrinks always
    * apply immediately - that is what keeps `sum(member budgets) ≤ total` an
    * invariant rather than a goal.
@@ -143,7 +143,7 @@ export class BudgetGovernor {
    *
    * @param member - The mesh (or compatible object) to govern.
    * @param options - `weight` (default `1`): the member's share is
-   * proportional to its weight - e.g. main mesh `7`, marker `3` reproduces
+   * proportional to its weight - e.g. main mesh `7`, additional mesh `3` reproduces
    * the old 0.7 host split. `0` registers the member suspended.
    */
   register(member: BudgetGovernedMember, options: { weight?: number } = {}): void {

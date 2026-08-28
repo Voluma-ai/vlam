@@ -3,14 +3,9 @@
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformGizmo } from '@voluma/three-transform-gizmo';
-import {
-  SplatMesh,
-  countInData,
-  createSelectionVolume,
-  createSplatRenderer,
-  loadScene,
-  partitionSplatData,
-} from '@voluma/vlam';
+import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { loadScene } from '@voluma/vlam/loaders';
+import { countInData, createSelectionVolume, partitionSplatData } from '@voluma/vlam/selection';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);

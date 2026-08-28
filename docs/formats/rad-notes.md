@@ -184,12 +184,12 @@ capture whose leaf count exceeds the cap uses the **pagetable** pager (default)
 for camera-distance refinement.
 
 **An explicit `budget` suppresses the lift**, deliberately, so an A/B run gets
-the cap it asked for. The trap is a host sharing a budget across several marker
-meshes: passing `budget: total / N` per marker turns the lift off and leaves
-every marker uniformly coarse, which is exactly the case the lift exists for.
+the cap it asked for. The trap is a host sharing a budget across several additional
+meshes: passing `budget: total / N` per mesh turns the lift off and leaves
+every mesh uniformly coarse, which is exactly the case the lift exists for.
 Under a `BudgetGovernor` / `CameraBudgetGovernor`, pass **`maxBudget` ≥ the leaf
 count** instead and let the governor set the working budget: the pool is then
-sized to hold the full leaf set, and a focused marker can actually be given it.
+sized to hold the full leaf set, and a focused additional mesh can actually be given it.
 See [`../guide/multi-mesh-budgets.md`](../guide/multi-mesh-budgets.md).
 
 **The path choice now also tests the budget (2026-07-31).** `buildRadScene`
@@ -203,7 +203,7 @@ approaching a surface never sharpens it, which is strictly worse than foveating.
 
 This softens (but does not remove) the trap above: a pinned budget too small for
 the leaves now foveates rather than going uniformly coarse. Prefer `maxBudget`
-anyway, a marker that *can* hold its leaves still looks better taken whole.
+anyway, a mesh that *can* hold its leaves still looks better taken whole.
 
 Measured on the reference capture at a pinned 1M budget, same camera, both
 settled, mean |gradient| over a 512² readback as a sharpness proxy:

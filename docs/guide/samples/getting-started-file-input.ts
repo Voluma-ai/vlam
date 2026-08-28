@@ -1,5 +1,6 @@
 // Guide sample: docs/guide/getting-started.md - loading a local file.
-import { SplatMesh, loadSceneFile } from '@voluma/vlam';
+import { SplatMesh } from '@voluma/vlam';
+import { loadSceneFile } from '@voluma/vlam/loaders';
 
 export async function onFilePicked(file: File): Promise<SplatMesh> {
   // Decoded in a Web Worker; the bytes never leave the device.

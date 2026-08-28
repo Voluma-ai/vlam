@@ -329,7 +329,7 @@ export class WorkBufferGather {
    * Compiles this gather's compute pipeline without gathering anything.
    *
    * WebGPU compiles a compute pipeline lazily, at its first dispatch - not when
-   * the node graph is built. Measured on a 13-marker scene, a source's *first*
+   * the node graph is built. Measured on a 13-mesh scene, a source's *first*
    * `gather` took up to 2.0s while every later dispatch of the same pipeline
    * took under 0.4ms, and because `gather` runs inside `update` that compile
    * landed whole in one render frame. Running it through the async path here

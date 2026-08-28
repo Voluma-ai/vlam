@@ -2,7 +2,8 @@
 // sliders and by clicking whatever you want sharp.
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { SplatMesh, createSplatRenderer, loadScene } from '@voluma/vlam';
+import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { loadScene } from '@voluma/vlam/loaders';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);

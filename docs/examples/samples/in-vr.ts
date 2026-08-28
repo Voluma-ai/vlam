@@ -4,12 +4,12 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
   SplatMesh,
   createSplatRenderer,
-  loadScene,
   recommendedXrFramebufferScale,
   resolveSplatBudget,
   resolveXrSplatBudget,
   xrSessionInit,
 } from '@voluma/vlam';
+import { loadScene } from '@voluma/vlam/loaders';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);

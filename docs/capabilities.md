@@ -134,7 +134,7 @@ invalidates that source's gather slice, so continuously animating it costs
 reuse their slices and no gather pipeline is rebuilt. This is the same rule as
 the modifier contract: a uniform-style change (matrix, opacity) is cheap and
 per-frame safe; only a graph change rebuilds pipelines. Cheap in practice for
-standalone/streamed meshes and marker-sized unified sources; budget for the
+standalone/streamed meshes and small unified sources; budget for the
 regather when animating a large unified source.
 
 Try it visually with the demo's `?scale=2,0.5,1` query parameter.

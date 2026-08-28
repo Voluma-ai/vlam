@@ -35,7 +35,7 @@ boost on top of that identity (RGB may exceed 1 — use a HalfFloat lighting RT)
 Pass an array of contributions for several casters (up to
 `MAX_RELIGHTING_SHADOW_LIGHTS`, currently 32); the shader unrolls only the
 lights you pass. A contribution such as
-`{ light: marker, intensity: 0, fill: 1.5 }` adds Lambert light without adding
+`{ light: accent, intensity: 0, fill: 1.5 }` adds Lambert light without adding
 an umbra. Point and spot fill is shadow-occluded and fades over the light's
 `distance`; spot fill also follows its cone and penumbra. Light and target
 positions are read in world space, so lights may live under transformed groups.
@@ -74,7 +74,8 @@ any `THREE.Texture` from your own RT.
 ## Minimal loop (shadow-factor)
 
 ```ts
-import { SplatMesh, createSplatRenderer, loadScene } from '@voluma/vlam';
+import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { loadScene } from '@voluma/vlam/loaders';
 import {
   createRelightingProxy,
   createRelightingShadowFactorMaterial,

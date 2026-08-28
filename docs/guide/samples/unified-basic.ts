@@ -1,13 +1,10 @@
 // Guide sample: docs/guide/unified-rendering.md - one depth-correct draw
 // over a static mesh and a streamed mesh (WebGPU only).
 import * as THREE from 'three/webgpu';
-import {
-  SplatMesh,
-  StreamedSplatMesh,
-  UnifiedSplatRenderer,
-  loadScene,
-  supportsUnifiedSplatRenderer,
-} from '@voluma/vlam';
+import { SplatMesh } from '@voluma/vlam';
+import { loadScene } from '@voluma/vlam/loaders';
+import { StreamedSplatMesh } from '@voluma/vlam/streaming';
+import { UnifiedSplatRenderer, supportsUnifiedSplatRenderer } from '@voluma/vlam/unified';
 
 export async function setupUnified(renderer: THREE.WebGPURenderer, scene: THREE.Scene) {
   const main = await StreamedSplatMesh.load('/city/lod-meta.json');

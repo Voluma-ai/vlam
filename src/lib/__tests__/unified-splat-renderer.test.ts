@@ -624,7 +624,7 @@ describe('UnifiedSplatRenderer', () => {
   /**
    * `.rad` stores `alpha ÷ 2`. The standalone display path recovers it, but the
    * unified path used to pass the stored value straight through, so a `.rad`
-   * scene drawn through `UnifiedSplatRenderer` (which is what a marker-bearing
+   * scene drawn through `UnifiedSplatRenderer` (which is what a multi-mesh
    * scene gets) rendered at half opacity and without the merged-node coverage
    * plateau - visibly lighter and softer than the same capture in Spark.
    *

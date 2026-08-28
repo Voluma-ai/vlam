@@ -19,7 +19,7 @@ import {
  * These are single-file loads with no chunked or streamed variant, so nothing
  * needs them resident. Splitting them out of `load-worker.ts` is what keeps
  * SPZ's ZSTD decoder - a ~39 KB base64 wasm blob, 16 KB gzipped - out of the
- * always-inlined streaming worker and therefore out of `dist/index.js`.
+ * always-inlined streaming worker and therefore out of `dist/loaders.js`.
  * `ChunkLoader` dynamic-imports this module the first time one of these formats
  * is actually requested, so the decode still happens off the main thread.
  */

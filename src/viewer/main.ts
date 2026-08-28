@@ -6,9 +6,6 @@ import {
   ModifierSlots,
   SplatMesh,
   SplatScene,
-  StreamedSplatMesh,
-  loadScene,
-  loadSceneFile,
   detectSplatDeviceProfile,
   isFillConstrainedSplatDevice,
   probeSplatGpuClass,
@@ -25,8 +22,13 @@ import {
   type SplatMeshOptions,
   type SplatOrientation,
   type SplatPerformanceProfile,
-  type StreamedSplatPerformanceEvent,
 } from '../lib';
+import { loadScene, loadSceneFile } from '../lib/loaders';
+import {
+  StreamedSplatMesh,
+  type CollisionMeshTile,
+  type StreamedSplatPerformanceEvent,
+} from '../lib/streaming';
 import { createDemoEffects } from './effects';
 import {
   createPaintTool,
@@ -52,7 +54,6 @@ import {
   type WorldWarpPreset,
   type RelightingProxy,
 } from '../lib/effects';
-import type { CollisionMeshTile } from '../lib';
 import { showError, hideError, isErrorVisible, describeLoadError } from './failure';
 import { createDropZone, filesFromDirectoryInput } from './drop-zone';
 import {

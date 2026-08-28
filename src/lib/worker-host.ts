@@ -4,7 +4,7 @@
  * `load-worker.ts` (streaming formats) and `one-shot-worker.ts` (whole-file
  * `.spz` / `.splat` / `.ksplat`) speak the same protocol and differ only in
  * which parsers they embed - which is the whole point of the split, since the
- * streaming worker is inlined into the main entry and the one-shot one is not.
+ * streaming worker is inlined into `@voluma/vlam/loaders` and the one-shot one is not.
  * Request tracking, cancellation and the transfer list live here so the two
  * cannot drift apart; in particular the transfer list must stay in step with
  * `SplatData`'s shape, and one copy of that is enough.

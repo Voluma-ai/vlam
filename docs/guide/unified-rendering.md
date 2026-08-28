@@ -9,7 +9,7 @@ transparent mesh. **WebGPU only.**
 ## Gate on support
 
 ```ts
-import { UnifiedSplatRenderer, supportsUnifiedSplatRenderer } from '@voluma/vlam';
+import { UnifiedSplatRenderer, supportsUnifiedSplatRenderer } from '@voluma/vlam/unified';
 
 // Check after renderer init: answers false on WebGL2 (and before the
 // backend exists). Fall back to standalone draws there.
@@ -113,12 +113,11 @@ above ~8M splats need raised limits, requested at renderer creation.
 here because the optional pre-flight check needs the `adapter` handle itself.
 
 ```ts
+import { deviceMaxStorageBufferBindingSize, recommendedWebGpuRequiredLimits } from '@voluma/vlam';
 import {
- UnifiedSplatRenderer,
- deviceMaxStorageBufferBindingSize,
- estimateLargestStorageBufferBytes,
- recommendedWebGpuRequiredLimits,
-} from '@voluma/vlam';
+  UnifiedSplatRenderer,
+  estimateLargestStorageBufferBytes,
+} from '@voluma/vlam/unified';
 
 const adapter = await navigator.gpu?.requestAdapter();
 const renderer = new THREE.WebGPURenderer({

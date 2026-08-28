@@ -1,12 +1,8 @@
 // Guide sample: docs/guide/unified-rendering.md - capacity planning against
 // the device's storage-buffer bind limit.
 import * as THREE from 'three/webgpu';
-import {
-  UnifiedSplatRenderer,
-  deviceMaxStorageBufferBindingSize,
-  estimateLargestStorageBufferBytes,
-  recommendedWebGpuRequiredLimits,
-} from '@voluma/vlam';
+import { deviceMaxStorageBufferBindingSize, recommendedWebGpuRequiredLimits } from '@voluma/vlam';
+import { UnifiedSplatRenderer, estimateLargestStorageBufferBytes } from '@voluma/vlam/unified';
 
 export async function createRendererAndUnified(capacity: number) {
   // Ask for the adapter's advertised limits up front: unified work buffers

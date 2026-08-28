@@ -16,7 +16,7 @@ extension picks the format (`.lcc2`, `.lcc`, `.rad`, otherwise Streamed SOG),
 overridable with `format`:
 
 ```ts
-import { StreamedSplatMesh } from '@voluma/vlam';
+import { StreamedSplatMesh } from '@voluma/vlam/streaming';
 
 export async function openStreamed(scene: THREE.Scene, signal: AbortSignal) {
   const splats = await StreamedSplatMesh.load('/capture/lod-meta.json', {
@@ -58,7 +58,7 @@ To leave room to be raised *above* the starting budget, which anything sharing
 a budget across meshes needs, construct with `maxBudget`:
 
 ```ts
-const marker = await StreamedSplatMesh.load(url, {
+const extra = await StreamedSplatMesh.load(url, {
   budget: 800_000, // where it starts
   maxBudget: 1_500_000, // the most it may be given; sizes the pool
 });
@@ -69,26 +69,26 @@ with `estimateSplatPoolBytes` first.
 
 ## Sharing one budget: `BudgetGovernor`
 
-Several streamed meshes at once (a main scene plus marker or inset meshes)
+Several streamed meshes at once (a main scene plus additional or inset meshes)
 must not each claim the whole device budget, their pools are separate, so
 the costs add. Register them with a `BudgetGovernor`, which splits one total
 across members by priority weight and reallocates on membership or weight
 changes (with hysteresis, so brief churn does not thrash LOD schedules):
 
 ```ts
-import { BudgetGovernor, StreamedSplatMesh } from '@voluma/vlam';
+import { BudgetGovernor, StreamedSplatMesh } from '@voluma/vlam/streaming';
 
 const main = await StreamedSplatMesh.load('/city/lod-meta.json');
-const markers = await StreamedSplatMesh.load('/markers/lod-meta.json');
+const extra = await StreamedSplatMesh.load('/additional/lod-meta.json');
 
 // The governor splits one total (default: the per-device budget) across
 // members by weight, steering each through its public setBudget.
 const governor = new BudgetGovernor();
 governor.register(main, { weight: 7 }); // main gets 0.7 of the total…
-governor.register(markers, { weight: 3 }); // …markers the remaining 0.3
+governor.register(extra, { weight: 3 }); // …the additional mesh the remaining 0.3
 
-// Later, closing the marker layer returns its share to the main mesh:
-//   governor.unregister(markers);
+// Later, closing the additional mesh returns its share to the main mesh:
+//   governor.unregister(extra);
 ```
 
 <!-- full file: docs/guide/samples/streaming-governor.ts -->
@@ -102,9 +102,9 @@ back is free. Use `setWeights` when several weights change together: one
 reallocation instead of N, each of which would force an LOD reschedule on every
 member.
 
-For weights that should follow the camera rather than app state, several marker
+For weights that should follow the camera rather than app state, several additional
 meshes where the near one should be sharp, see
-[Multi-mesh & marker budgets](multi-mesh-budgets.md), which also covers why
+[Multi-mesh budgets](multi-mesh-budgets.md), which also covers why
 `maxBudget` is required for a governor to be able to grow a mesh at all.
 
 ## Local folders: `loadLocal`
@@ -114,7 +114,7 @@ disk, each file is read through a `blob:` URL, which serves range requests
 just like an HTTP origin, so a 300 MB `data.bin` is never read whole:
 
 ```ts
-import { StreamedSplatMesh } from '@voluma/vlam';
+import { StreamedSplatMesh } from '@voluma/vlam/streaming';
 
 export async function openDroppedFolder(files: ReadonlyMap<string, File>) {
   // `files` maps relative paths ("lod-meta.json", "chunks/0.webp", …) to File

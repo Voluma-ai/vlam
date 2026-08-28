@@ -2,14 +2,16 @@ import { describe, expect, it } from 'vitest';
 import type { WebGPURenderer } from 'three/webgpu';
 import {
   WEBGPU_DEFAULT_MAX_STORAGE_BUFFER_BINDING_SIZE,
-  WORK_BUFFER_CENTERS_BYTES_PER_SPLAT,
   assertStorageBufferFitsDevice,
   deviceMaxStorageBufferBindingSize,
-  estimateLargestStorageBufferBytes,
   recommendedWebGpuRequiredLimits,
   supportsWebGpuPowerPreference,
   webGpuPowerPreferenceOptions,
 } from '../webgpu-limits';
+import {
+  estimateLargestStorageBufferBytes,
+  WORK_BUFFER_CENTERS_BYTES_PER_SPLAT,
+} from '../unified-work-buffer';
 import { UnifiedSplatRenderer } from '../unified-splat-renderer';
 
 describe('recommendedWebGpuRequiredLimits', () => {

@@ -39,7 +39,12 @@ src/
  chunk-harness.ts dev page for ChunkLoader (chunk-harness.html)
  sort-benchmark.ts frame/sort timing rig behind ?benchmarkSeconds
  lib/ the published library ("@voluma/vlam" on npm)
- index.ts curated public API, core renderer + loaders, no parsers
+ index.ts curated public API: core renderer + mesh/scene, no parsers
+ loaders.ts → `@voluma/vlam/loaders` (loadScene, ChunkLoader, workers)
+ static-lod-entry.ts → `@voluma/vlam/static-lod`
+ streaming.ts → `@voluma/vlam/streaming`
+ unified.ts → `@voluma/vlam/unified`
+ selection.ts → `@voluma/vlam/selection`
  formats/
  ply/ → `@voluma/vlam/formats/ply` (parse-splat-ply, parse-compressed-ply)
  sog/ → `@voluma/vlam/formats/sog`
@@ -73,7 +78,7 @@ src/
  load-worker.ts streaming decode off the main thread (transfers arrays):
  rad-chunk, lcc-bin, SOG directories, PLY. Inlined via
                             `?worker&inline`, so every parser it imports is an
-                            untree-shakeable string literal in dist/index.js, keep
+                            untree-shakeable string literal in dist/loaders.js, keep
                             it to the streaming formats. Do not dynamic-import
                             inside it (blob URLs cannot resolve chunks).
     one-shot-worker.ts      whole-file spz/splat/ksplat, dynamic-imported by
@@ -123,10 +128,10 @@ modes work on both backends: the WebGL2 fallback's CPU sort worker mirrors the
 pool centers and sorts the active spans. shN is dropped on appended ranges
 (per-chunk palettes cannot be merged in the shared pool).
 
-The demo consumes the library exclusively through `src/lib/index.ts` -
-if the demo needs something the index does not export, that is an API
-design question, not a reason for a deep import. Format inspection APIs
-belong on `@voluma/vlam/formats/*`, not the main entry.
+The demo consumes the library through the published entries (`src/lib/index.ts`
+and the optional subpaths) - if the demo needs something those entries do not
+export, that is an API design question, not a reason for a deep import. Format
+inspection APIs belong on `@voluma/vlam/formats/*`, not the main entry.
 
 Data flow: loader → `SplatData` (positions, colors, covariances, optional SH
 palette) → `SplatMesh` packs data textures, draws one instanced quad per
@@ -160,7 +165,8 @@ moves. TSL compiles the same shader graph to WGSL (WebGPU) and GLSL
    **one** package: `three` (a peer dependency). Demo-only dependencies
    (e.g. `camera-controls`, `@voluma/three-transform-gizmo`) live in
    `devDependencies` and must never be
- imported from `src/lib/`, the demo/lib boundary is `src/lib/index.ts`.
+ imported from `src/lib/`, the demo/lib boundary is the published
+ `src/lib` entry modules (`index.ts` plus the optional subpaths).
  Adding a library dependency needs a very good reason; prefer the
  platform (e.g. we unzip with ~50 lines and decode WebP with
    `ImageDecoder` instead of shipping libraries).

@@ -7,6 +7,8 @@ format subpaths, structured errors, progress, and cancellation.
 
 Both fetch/read **and decode in a Web Worker**, then transfer (not copy) the
 decoded arrays back, even multi-million-splat decodes never freeze the page.
+Import them from `@voluma/vlam/loaders` so the decode worker stays out of the
+core renderer graph.
 
 - `loadScene(input, options?)`: `input` is a URL (`string | URL`); relative
  URLs resolve against `options.baseUrl` when given.
@@ -25,7 +27,8 @@ By default the URL pathname's extension (or the file's name) picks the
 parser; pass `format` when the URL carries no useful extension:
 
 ```ts
-import { SplatMesh, loadScene } from '@voluma/vlam';
+import { SplatMesh } from '@voluma/vlam';
+import { loadScene } from '@voluma/vlam/loaders';
 import { parseSog } from '@voluma/vlam/formats/sog';
 import { parseSpz } from '@voluma/vlam/formats/spz';
 
@@ -81,7 +84,8 @@ and `StreamedSplatMesh`, reject with exactly two kinds of error:
   `isAbortError(error)` tells deliberate cancellation apart from failure.
 
 ```ts
-import { SplatMesh, SplatLoadError, isAbortError, loadScene } from '@voluma/vlam';
+import { SplatMesh } from '@voluma/vlam';
+import { SplatLoadError, isAbortError, loadScene } from '@voluma/vlam/loaders';
 
 const controller = new AbortController();
 

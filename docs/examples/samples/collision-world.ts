@@ -1,7 +1,7 @@
 // Host-side collision helper for site/examples/collision-walk.md.
 import * as THREE from 'three/webgpu';
 import { MeshBVH } from 'three-mesh-bvh';
-import type { CollisionMeshTile } from '@voluma/vlam';
+import type { CollisionMeshTile } from '@voluma/vlam/streaming';
 
 /** Radians of slope still walkable; steeper triangles count as walls. */
 const MAX_GROUND_SLOPE = Math.cos(THREE.MathUtils.degToRad(50));

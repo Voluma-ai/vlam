@@ -6,13 +6,13 @@ import {
   SplatMesh,
   createSplatRenderer,
   detectSplatDeviceProfile,
-  loadScene,
   recommendedMaxPixelRatio,
   resolveSplatBudget,
   resolveSplatPerformanceProfile,
   suggestAdaptivePixelRatio,
   ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES,
 } from '@voluma/vlam';
+import { loadScene } from '@voluma/vlam/loaders';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);

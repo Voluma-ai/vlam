@@ -35,11 +35,11 @@ describe('BudgetGovernor', () => {
   it('splits by priority weight (the old 0.7 host split)', () => {
     const governor = new BudgetGovernor({ totalBudget: 1_000_000 });
     const main = new FakeMesh(1_000_000);
-    const marker = new FakeMesh(1_000_000);
+    const extra = new FakeMesh(1_000_000);
     governor.register(main, { weight: 7 });
-    governor.register(marker, { weight: 3 });
+    governor.register(extra, { weight: 3 });
     expect(main.budget).toBe(700_000);
-    expect(marker.budget).toBe(300_000);
+    expect(extra.budget).toBe(300_000);
   });
 
   it('never lets the applied sum exceed the total across churn', () => {
@@ -79,37 +79,37 @@ describe('BudgetGovernor', () => {
   it('applies shrinks immediately but dead-bands small grows', () => {
     const governor = new BudgetGovernor({ totalBudget: 1_000_000, hysteresis: 0.1 });
     const main = new FakeMesh(1_000_000);
-    const marker = new FakeMesh(200_000);
+    const extra = new FakeMesh(200_000);
     governor.register(main, { weight: 9 });
     expect(main.budget).toBe(1_000_000);
-    // Marker appears: main must shrink at once (invariant), marker's grow
+    // Extra appears: main must shrink at once (invariant), extra's grow
     // from 200k to ~100k is a shrink too.
-    governor.register(marker, { weight: 1 });
+    governor.register(extra, { weight: 1 });
     expect(main.budget).toBe(900_000);
-    expect(marker.budget).toBe(100_000);
+    expect(extra.budget).toBe(100_000);
     // A tiny weight nudge that would grow main by ≤10% is suppressed…
     const callsBefore = main.setBudgetCalls;
-    governor.setWeight(marker, 0.9); // main share → ~909k: +1% grow, skipped
+    governor.setWeight(extra, 0.9); // main share → ~909k: +1% grow, skipped
     expect(main.setBudgetCalls).toBe(callsBefore);
     expect(main.budget).toBe(900_000);
     // …while a large change still applies.
-    governor.setWeight(marker, 9);
+    governor.setWeight(extra, 9);
     expect(main.budget).toBe(500_000);
   });
 
   it("restores a member's original budget on unregister", () => {
     const governor = new BudgetGovernor({ totalBudget: 1_000_000 });
     const main = new FakeMesh(800_000);
-    const marker = new FakeMesh(300_000);
+    const extra = new FakeMesh(300_000);
     governor.register(main, { weight: 3 });
-    governor.register(marker, { weight: 1 });
+    governor.register(extra, { weight: 1 });
     expect(main.budget).toBe(750_000);
-    governor.unregister(marker);
-    expect(marker.budget).toBe(300_000); // back to its pre-registration value
+    governor.unregister(extra);
+    expect(extra.budget).toBe(300_000); // back to its pre-registration value
     expect(main.budget).toBe(1_000_000); // sole member reclaims the total
     expect(governor.size).toBe(1);
     // Unregistering an unknown member is a no-op.
-    governor.unregister(marker);
+    governor.unregister(extra);
     expect(governor.size).toBe(1);
   });
 

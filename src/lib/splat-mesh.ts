@@ -477,7 +477,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       });
     // A shared pool allocates its packed-SH textures once, so it can only serve
     // tenants with its own band count. Rather than fail the load, such a mesh
-    // falls back to its own pool: in a scene of markers it is usually one odd
+    // falls back to its own pool: in a multi-mesh scene it is usually one odd
     // capture carrying SH, and sizing the shared pool for it would add
     // ~64 B/splat across storage that mostly has no SH to read.
     const shMismatch = suppliedPool !== undefined && packedShBands !== suppliedPool.packedShBands;

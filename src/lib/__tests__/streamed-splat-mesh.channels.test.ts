@@ -326,14 +326,14 @@ describe('StreamedSplatMesh persistent channels (M7.6)', () => {
     );
   });
 
-  it('builds a swap marker with active, upload, and forced-sort counts', () => {
+  it('builds a swap event with active, upload, and forced-sort counts', () => {
     const m = makeStreamedMesh(4 * WIDTH);
     meshes.push(m);
     const inner = internals(m);
     inner.cache.set(0, { data: makeChunk(10), bytes: 0, lastUsed: 0 });
     inner.appendRun(run(0, 0, 10), 0);
 
-    // `reschedule` returns this marker and `update` dispatches it to
+    // `reschedule` returns this event and `update` dispatches it to
     // `onPerformanceEvent` after enriching it with the frame's timings.
     const event = inner.createPerformanceEvent(new Map(), new Map(), 0, performance.now());
 

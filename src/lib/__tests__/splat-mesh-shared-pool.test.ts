@@ -48,7 +48,7 @@ function makeStreamed(budget: number, capacity: number, options: StreamedSplatMe
  * Several meshes drawing from one pool.
  *
  * This is the multi-mesh budget story: instead of every mesh reserving a
- * private ceiling up front (so N markers each get total/N, however close the
+ * private ceiling up front (so N additional meshes each get total/N, however close the
  * camera is to one of them), they draw from a shared envelope and rows go to
  * whoever asks. These tests pin the ownership rules that make that safe.
  */
@@ -145,7 +145,7 @@ describe('SplatMesh sharing a SplatPool', () => {
   });
 
   it('lets streamed meshes share one pool, sized per mesh not per pool', () => {
-    // The marker case: several streamed meshes over one envelope.
+    // The multi-mesh case: several streamed meshes over one envelope.
     const pool = new SplatPool({ capacity: 20 * W });
     const a = makeStreamed(2 * W, 4 * W, { pool });
     const b = makeStreamed(2 * W, 4 * W, { pool });
@@ -186,7 +186,7 @@ describe('SplatMesh sharing a SplatPool', () => {
     const plain = new SplatMesh(data(W), { pool });
     // A shared pool allocates its packed-SH textures once, so it cannot serve a
     // tenant needing more bands. Rather than fail the load, that mesh falls back
-    // to its own pool: in a marker scene it is usually one odd capture carrying
+    // to its own pool: in a multi-mesh scene it is usually one odd capture carrying
     // SH, and sizing the shared pool for it would add ~64 B/splat across
     // storage that mostly has no SH to read.
     const withSh = new SplatMesh({ capacity: W }, { pool, shBands: 2 });

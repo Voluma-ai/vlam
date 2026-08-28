@@ -27,8 +27,9 @@ export interface SplatLoadOptions extends SplatInputOptions {
  * when `options.signal` fires.
  *
  * @example
+ * import { SplatMesh } from '@voluma/vlam';
+ * import { loadScene } from '@voluma/vlam/loaders';
  * const splats = new SplatMesh(await loadScene('/scene.sog'));
- * scene.add(splats);
  */
 export async function loadScene(
   input: string | URL,
@@ -59,8 +60,9 @@ export async function loadScene(
  * `options.signal` fires.
  *
  * @example
+ * import { SplatMesh } from '@voluma/vlam';
+ * import { loadSceneFile } from '@voluma/vlam/loaders';
  * const splats = new SplatMesh(await loadSceneFile(event.dataTransfer.files[0]));
- * scene.add(splats);
  */
 export async function loadSceneFile(
   file: File,

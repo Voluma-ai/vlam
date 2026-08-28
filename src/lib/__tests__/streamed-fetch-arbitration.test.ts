@@ -107,7 +107,7 @@ describe('StreamedSplatMesh fetch arbitration', () => {
     let weight = 2;
     const weighted = makeStreamedMesh({ fetchWeight: () => weight });
     expect((weighted as unknown as Internals).sweepAllowed()).toBe(true);
-    weight = 0; // the camera turned away, or the marker was hidden
+    weight = 0; // the camera turned away, or the mesh was hidden
     expect((weighted as unknown as Internals).sweepAllowed()).toBe(false);
 
     unweighted.dispose();

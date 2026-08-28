@@ -1,42 +1,41 @@
 #!/usr/bin/env node
 /**
- * Bundle-size guard for the published library entries.
+ * Bundle-size and package-boundary guard for the published library entries.
  *
  * Builds the library (unless `--no-build` is passed and `dist/index.js` is
- * already present) and fails when the main entry's gzip size exceeds the
- * budget.
+ * already present) and fails when a gated entry's gzip size exceeds its
+ * budget, or when an optional system has leaked into the wrong static graph.
  *
  * What counts is the **static import graph**, not one file: `dist/index.js`
  * statically imports the shared chunk holding `splat-mesh.ts` and friends, so
- * measuring the entry file alone under-reports the entry by about a third -
- * which is how the budget ended up chasing a number that could not explain its
- * own growth. Dynamic `import()` is deliberately excluded: those chunks are
- * fetched on demand and are not part of what a consumer pays to import the
- * entry.
+ * measuring the entry file alone under-reports the entry. Dynamic `import()`
+ * is deliberately excluded: those chunks are fetched on demand.
  *
- * The budget is set ~15% above the measured size at the time it was last
+ * Each budget is ~15% above the measured size at the time it was last
  * reviewed - raise it deliberately, with a rationale, not as a reflex when the
  * check fires.
  */
 import { execSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 /**
- * Gzip bytes allowed for the `.` entry's static graph.
+ * Gzip budgets for the entries whose static graphs must stay small.
  *
- * Rebased after the M12-M18 renderer work measured 123,655 B on 2026-08-09;
- * 142,500 B restores the guard's documented ~15% review headroom. The mobile
- * HUD diagnostics account for only 77 B of that graph (the parent measured
- * 123,578 B), so this records accumulated shipped capability rather than
- * disguising the diagnostics as the source of the overage.
+ * Root was rebased after the package-boundary split (core renderer only).
+ * `/loaders` is gated separately so static LOD or streaming cannot leak back
+ * into the one-shot decode path.
  */
-const BUDGET_GZIP_BYTES = 142_500;
-
-/** The entry the budget gates; every other export is reported, not gated. */
-const GATED_ENTRY = '.';
+const BUDGET_GZIP_BYTES = {
+  '.': 80_000,
+  './loaders': 40_000,
+  './static-lod': 80_000,
+  './streaming': 160_000,
+  './unified': 80_000,
+  './selection': 20_000,
+};
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const dist = join(root, 'dist');
@@ -77,12 +76,14 @@ function measure(entry) {
   const { chunks, external } = staticGraph(entry);
   let raw = 0;
   let gzip = 0;
+  const code = [];
   for (const chunk of chunks) {
     const bytes = readFileSync(chunk);
     raw += bytes.length;
     gzip += gzipSync(bytes, { level: 9 }).length;
+    code.push(bytes.toString('utf8'));
   }
-  return { chunks, external, raw, gzip };
+  return { chunks, external, raw, gzip, code: code.join('\n') };
 }
 
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
@@ -108,35 +109,125 @@ if (missing.length > 0) {
 }
 
 const rows = entries.map(([name, file]) => [name, measure(file)]);
+const byName = Object.fromEntries(rows);
 const width = Math.max(...rows.map(([name]) => name.length));
 
 console.log('static import graph per published entry (three external, dynamic chunks excluded):\n');
 for (const [name, { chunks, raw, gzip }] of rows) {
-  const gate = name === GATED_ENTRY ? '  <- gated' : '';
+  const gate = name in BUDGET_GZIP_BYTES ? '  <- gated' : '';
   console.log(
     `  ${name.padEnd(width)}  ${String(chunks.length).padStart(2)} chunks  ` +
       `${raw.toLocaleString().padStart(9)} B raw  ${gzip.toLocaleString().padStart(8)} B gzip${gate}`,
   );
 }
 
-const gated = rows.find(([name]) => name === GATED_ENTRY);
-if (!gated) {
-  console.error(`bundle-size check failed: no "${GATED_ENTRY}" entry in package.json#exports.`);
+const failures = [];
+
+function graphOf(name) {
+  const row = byName[name];
+  if (!row) {
+    failures.push(`missing published entry "${name}"`);
+    return { chunks: [], code: '', gzip: 0 };
+  }
+  return row;
+}
+
+function mustNotContain(name, needle, why) {
+  if (graphOf(name).code.includes(needle)) {
+    failures.push(`${name}: static graph contains ${JSON.stringify(needle)} (${why})`);
+  }
+}
+
+function mustContain(name, needle, why) {
+  if (!graphOf(name).code.includes(needle)) {
+    failures.push(`${name}: static graph missing ${JSON.stringify(needle)} (${why})`);
+  }
+}
+
+mustNotContain('.', 'parseSogDirectory', 'decode-worker/parser payload belongs in /loaders');
+mustNotContain('.', 'rad-chunk', 'chunk decode formats belong in /loaders');
+mustNotContain('.', 'Static LOD build aborted.', 'static LOD belongs in /static-lod');
+mustNotContain('.', 'StreamedSplatMesh: maxBudget', 'streaming schedulers belong in /streaming');
+mustNotContain(
+  '.',
+  'UnifiedSplatRenderer requires a WebGPU backend',
+  'unified work buffers belong in /unified',
+);
+mustNotContain('.', 'createSelectionVolume', 'selection volumes belong in /selection');
+
+mustNotContain('./loaders', 'Static LOD build aborted.', 'static LOD must not leak into /loaders');
+mustNotContain(
+  './loaders',
+  'StreamedSplatMesh: maxBudget',
+  'streaming must not leak into /loaders',
+);
+mustNotContain(
+  './loaders',
+  'getUnifiedSourceView',
+  'SplatMesh runtime must not leak into /loaders',
+);
+
+mustContain('./loaders', 'rad-chunk', 'inlined streaming decode worker');
+mustContain(
+  './streaming',
+  'StreamedSplatMesh: maxBudget',
+  'streaming entry owns StreamedSplatMesh',
+);
+mustContain(
+  './static-lod',
+  'Static LOD build aborted.',
+  'static-lod entry owns StaticLodSplatMesh',
+);
+mustContain(
+  './unified',
+  'UnifiedSplatRenderer requires a WebGPU backend',
+  'unified entry owns the compositor',
+);
+mustContain('./selection', 'createSelectionVolume', 'selection entry owns volume tests');
+
+const distJs = [];
+function walkDist(dir) {
+  for (const name of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, name.name);
+    if (name.isDirectory()) walkDist(path);
+    else if (name.name.endsWith('.js')) distJs.push(path);
+  }
+}
+walkDist(dist);
+const allDist = distJs.map((file) => readFileSync(file, 'utf8')).join('\n');
+if (!allDist.includes('parseSpz')) {
+  failures.push('no published chunk contains parseSpz; one-shot worker is unreachable');
+}
+if (!allDist.includes('import("./formats/lcc.js")')) {
+  failures.push('no published chunk lazy-loads formats/lcc.js');
+}
+if (!allDist.includes('import("./formats/rad.js")')) {
+  failures.push('no published chunk lazy-loads formats/rad.js');
+}
+
+console.log(`\n"${'.'}" chunks:`);
+for (const chunk of graphOf('.').chunks) {
+  console.log(`  ${relative(root, chunk).replaceAll('\\', '/')}`);
+}
+console.log(`\n"./loaders" chunks:`);
+for (const chunk of graphOf('./loaders').chunks) {
+  console.log(`  ${relative(root, chunk).replaceAll('\\', '/')}`);
+}
+
+for (const [name, budget] of Object.entries(BUDGET_GZIP_BYTES)) {
+  const { gzip } = graphOf(name);
+  const pct = ((gzip / budget) * 100).toFixed(1);
+  console.log(`\n${name} budget: ${budget.toLocaleString()} B gzip (${pct}% used)`);
+  if (gzip > budget) {
+    failures.push(
+      `${name}: gzip size exceeds budget by ${(gzip - budget).toLocaleString()} B ` +
+        `(${gzip.toLocaleString()} > ${budget.toLocaleString()})`,
+    );
+  }
+}
+
+if (failures.length > 0) {
+  console.error(`\nbundle-size check failed:\n${failures.map((line) => `  - ${line}`).join('\n')}`);
   process.exit(1);
 }
-const { chunks, gzip } = gated[1];
-const pct = ((gzip / BUDGET_GZIP_BYTES) * 100).toFixed(1);
-
-console.log(`\n"${GATED_ENTRY}" chunks:`);
-for (const chunk of chunks) console.log(`  ${relative(root, chunk).replaceAll('\\', '/')}`);
-console.log(`\nbudget: ${BUDGET_GZIP_BYTES.toLocaleString()} B gzip (${pct}% used)`);
-
-if (gzip > BUDGET_GZIP_BYTES) {
-  console.error(
-    `bundle-size check failed: gzip size exceeds budget by ${(gzip - BUDGET_GZIP_BYTES).toLocaleString()} B. ` +
-      'Trim the main entry (heavy code belongs behind the formats/* subpaths or dynamic imports), ' +
-      'or raise BUDGET_GZIP_BYTES in scripts/check-bundle-size.mjs with a rationale.',
-  );
-  process.exit(1);
-}
-console.log('bundle-size check passed');
+console.log('\nbundle-size check passed');

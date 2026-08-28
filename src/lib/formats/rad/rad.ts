@@ -118,7 +118,7 @@ export async function buildRadScene(
   // `budgetLifts` mirrors the caller's own precondition for that lift: it only
   // happens when neither `budget` nor `maxBudget` was pinned. Assuming it always
   // applies would misjudge every host that sizes its meshes explicitly - a
-  // marker given `maxBudget: pool / N` keeps that number, so it needs the
+  // mesh given `maxBudget: pool / N` keeps that number, so it needs the
   // foveated path for the same reason a phone does.
   const effectiveBudget = budgetLifts
     ? liftBudgetToFinestLevel(options.budget, leafCount)
@@ -410,7 +410,7 @@ export class RadLodSource implements LodSource {
    * choosing the very same depth. Each of those misses re-walks `frontierRuns`
    * over the whole decoded prefix (millions of splats, several times over if it
    * steps down levels): measured at 33ms mean and 1.1s worst, it was 92% of all
-   * frame CPU on a marker-heavy scene. Frontier count rises monotonically with
+   * frame CPU on a multi-mesh scene. Frontier count rises monotonically with
    * depth, so the selected depth is stable for any budget in
    * `[thisDepthCount, nextDepthCount)` and the walk can be skipped outright.
    */

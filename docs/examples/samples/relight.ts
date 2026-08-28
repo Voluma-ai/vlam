@@ -2,7 +2,8 @@
 // from its collision mesh rendered into a screen-space lighting map.
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { StreamedSplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { createSplatRenderer } from '@voluma/vlam';
+import { StreamedSplatMesh } from '@voluma/vlam/streaming';
 import {
   createRelightingProxy,
   createRelightingShadowFactorMaterial,

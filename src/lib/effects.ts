@@ -7,8 +7,9 @@
  *    in-shader from a bounded uniform array (a fixed unroll over `maxShapes`
  *    slots, gated by the live count) - add/move/remove shapes is data-only
  *    (no pipeline recompile), on WebGPU and the WebGL2 fallback alike (M7.4).
- *    The kinds mirror the CPU selection volumes (`createSelectionVolume`), so
- *    a host can highlight exactly what a selection would take.
+ *    The kinds mirror the CPU selection volumes (`createSelectionVolume` on
+ *    `@voluma/vlam/selection`), so a host can highlight exactly what a
+ *    selection would take.
  *  - {@link lightingPreset} / {@link revealPreset}: small reference presets,
  *    starting points rather than a framework (M7.5).
  *  - {@link createRelightingProxy}: builds a gray lit mesh group from collision
@@ -870,7 +871,7 @@ const cascadedShadow = (
  * with `distance &gt; 0` fade their umbra to lit via a Frostbite cutoff window
  * (steepened by `decay`) so the shadow map far plane is not a hard cliff.
  * Contribution `fill` adds occluded Lambert (range + cone for punctual lights)
- * on top of that identity so marker lamps can light splats without wrapping
+ * on top of that identity so accent lights can light splats without wrapping
  * through collision. Cascades (`midLight` / `outerLight` / `farLight`) still
  * attach to the **first** directional only. At most
  * {@link MAX_RELIGHTING_SHADOW_LIGHTS} independent lights are used; extras

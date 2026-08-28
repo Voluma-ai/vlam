@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { SplatMesh, createSplatRenderer, isAbortError, loadScene } from '@voluma/vlam';
+import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { isAbortError, loadScene } from '@voluma/vlam/loaders';
 
 interface SplatViewerProps {
   src: string;

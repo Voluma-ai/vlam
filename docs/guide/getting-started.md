@@ -24,7 +24,8 @@ Renderer, camera, one splat mesh, a render loop:
 
 ```ts
 import * as THREE from 'three/webgpu';
-import { SplatMesh, createSplatRenderer, loadScene } from '@voluma/vlam';
+import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { loadScene } from '@voluma/vlam/loaders';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);
@@ -85,7 +86,8 @@ ships no controls of its own.
 Web Worker, nothing is uploaded, nothing blocks the main thread:
 
 ```ts
-import { SplatMesh, loadSceneFile } from '@voluma/vlam';
+import { SplatMesh } from '@voluma/vlam';
+import { loadSceneFile } from '@voluma/vlam/loaders';
 
 export async function onFilePicked(file: File): Promise<SplatMesh> {
   // Decoded in a Web Worker; the bytes never leave the device.

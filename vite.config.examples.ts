@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite';
 import { resolve } from 'node:path';
-import { EXAMPLE_APPS } from './site/.vitepress/viewer-dev-plugin';
+import { EXAMPLE_APPS, vlamPackageAliases } from './site/.vitepress/viewer-dev-plugin';
 
 /**
  * Production build of the runnable example apps → `/examples/live/<slug>/`.
@@ -19,13 +19,7 @@ export default defineConfig({
   resolve: {
     // Matches docs/guide/samples/tsconfig.json - samples import the package
     // name, not a relative path. Longest specifier first.
-    alias: [
-      {
-        find: '@voluma/vlam/effects',
-        replacement: resolve(import.meta.dirname, 'src/lib/effects.ts'),
-      },
-      { find: '@voluma/vlam', replacement: resolve(import.meta.dirname, 'src/lib/index.ts') },
-    ],
+    alias: vlamPackageAliases(import.meta.dirname),
     dedupe: ['three'],
   },
   build: {

@@ -1,6 +1,6 @@
 // Guide sample: docs/guide/streaming-and-lod.md - stream a dropped folder,
 // hand collision meshes to the host, toggle the environment tile.
-import { StreamedSplatMesh } from '@voluma/vlam';
+import { StreamedSplatMesh } from '@voluma/vlam/streaming';
 
 export async function openDroppedFolder(files: ReadonlyMap<string, File>) {
   // `files` maps relative paths ("lod-meta.json", "chunks/0.webp", …) to File

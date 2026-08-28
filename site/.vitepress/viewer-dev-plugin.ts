@@ -37,6 +37,20 @@ export const EXAMPLE_APPS = [
   'react-viewer',
 ] as const;
 
+/** Package-name aliases that match docs/guide/samples/tsconfig.json. Longest specifier first. */
+export function vlamPackageAliases(fromRoot: string) {
+  const lib = (file: string) => path.join(fromRoot, 'src/lib', file);
+  return [
+    { find: '@voluma/vlam/static-lod', replacement: lib('static-lod-entry.ts') },
+    { find: '@voluma/vlam/streaming', replacement: lib('streaming.ts') },
+    { find: '@voluma/vlam/selection', replacement: lib('selection.ts') },
+    { find: '@voluma/vlam/loaders', replacement: lib('loaders.ts') },
+    { find: '@voluma/vlam/unified', replacement: lib('unified.ts') },
+    { find: '@voluma/vlam/effects', replacement: lib('effects.ts') },
+    { find: '@voluma/vlam', replacement: lib('index.ts') },
+  ];
+}
+
 const HTML_PAGES: Readonly<Record<string, string>> = {
   '/demo': 'index.html',
   '/demo/': 'index.html',
@@ -107,13 +121,7 @@ export function viewerDevPlugin(): Plugin {
         // source tree, exactly as docs/guide/samples/tsconfig.json does for
         // the type-check. Longest specifier first: alias matching is ordered.
         resolve: {
-          alias: [
-            {
-              find: '@voluma/vlam/effects',
-              replacement: path.join(repoRoot, 'src/lib/effects.ts'),
-            },
-            { find: '@voluma/vlam', replacement: path.join(repoRoot, 'src/lib/index.ts') },
-          ],
+          alias: vlamPackageAliases(repoRoot),
           dedupe: ['three'],
         },
       };

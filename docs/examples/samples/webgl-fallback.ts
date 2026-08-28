@@ -2,7 +2,8 @@
 // reporting which one it got and adapting what it asks for.
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { SplatMesh, createSplatRenderer, loadScene } from '@voluma/vlam';
+import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { loadScene } from '@voluma/vlam/loaders';
 import { lightingPreset, revealPreset, sdfEffects } from '@voluma/vlam/effects';
 
 // `?backend=webgl` forces the fallback path, so you can see it on a machine
