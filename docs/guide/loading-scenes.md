@@ -3,21 +3,21 @@
 How to get splat data into a `SplatMesh`: format detection, explicit formats,
 format subpaths, structured errors, progress, and cancellation.
 
-## `loadScene` and `loadSceneFile`
+## `loadSplatData` and `loadSplatDataFile`
 
 Both fetch/read **and decode in a Web Worker**, then transfer (not copy) the
 decoded arrays back, even multi-million-splat decodes never freeze the page.
 Import them from `@voluma/vlam/loaders` so the decode worker stays out of the
 core renderer graph.
 
-- `loadScene(input, options?)`: `input` is a URL (`string | URL`); relative
+- `loadSplatData(input, options?)`: `input` is a URL (`string | URL`); relative
  URLs resolve against `options.baseUrl` when given.
-- `loadSceneFile(file, options?)`, a local `File` from a drop or
+- `loadSplatDataFile(file, options?)`, a local `File` from a drop or
   `<input type="file">`; the bytes never leave the device.
 
 Both cover the self-contained formats: `.sog` (bundled), `.ply` (both the
 3DGS "INRIA" and SuperSplat-compressed flavors), `.spz`, `.splat`, `.ksplat`,
-and one-shot `.rad`. Streamed datasets (a `lod-meta.json` directory, `.lcc`,
+and whole-file `.rad`. Streamed datasets (a `lod-meta.json` directory, `.lcc`,
 `.lcc2`, chunked `.radc`) are not single files, they go through
 [`StreamedSplatMesh`](streaming-and-lod.md).
 
@@ -28,16 +28,16 @@ parser; pass `format` when the URL carries no useful extension:
 
 ```ts
 import { SplatMesh } from '@voluma/vlam';
-import { loadScene } from '@voluma/vlam/loaders';
+import { loadSplatData } from '@voluma/vlam/loaders';
 import { parseSog } from '@voluma/vlam/formats/sog';
 import { parseSpz } from '@voluma/vlam/formats/spz';
 
 // Auto-detection: the URL pathname's extension picks the parser
 // (query strings are fine).
-const auto = new SplatMesh(await loadScene('/captures/garden.ply?v=3'));
+const auto = new SplatMesh(await loadSplatData('/captures/garden.ply?v=3'));
 
 // Explicit format: when the URL carries no useful extension.
-const explicit = new SplatMesh(await loadScene('/api/scene/42', { format: 'sog' }));
+const explicit = new SplatMesh(await loadSplatData('/api/scene/42', { format: 'sog' }));
 
 // Direct parsing: hand bytes you already have to a parser. Every parser lives
 // on a subpath, so none of them enter your bundle unless you import them.
@@ -63,7 +63,7 @@ import { parseSplat } from '@voluma/vlam/formats/splat';
 import { parseKsplat } from '@voluma/vlam/formats/ksplat';
 ```
 
-You do **not** need any subpath just to load: `loadScene`, `loadSceneFile`,
+You do **not** need any subpath just to load: `loadSplatData`, `loadSplatDataFile`,
 and `StreamedSplatMesh.load` accept every format and decode it in a worker.
 The subpaths are for direct decode or format inspection.
 
@@ -73,7 +73,7 @@ structured contract below belongs to the loaders, not the parsers.
 
 ## Error handling
 
-The worker-mediated loaders, `loadScene`, `loadSceneFile`, `ChunkLoader`
+The worker-mediated loaders, `loadSplatData`, `loadSplatDataFile`, `ChunkLoader`
 and `StreamedSplatMesh`, reject with exactly two kinds of error:
 
 - **`SplatLoadError`** for real failures, with `phase`
@@ -85,13 +85,13 @@ and `StreamedSplatMesh`, reject with exactly two kinds of error:
 
 ```ts
 import { SplatMesh } from '@voluma/vlam';
-import { SplatLoadError, isAbortError, loadScene } from '@voluma/vlam/loaders';
+import { SplatLoadError, isAbortError, loadSplatData } from '@voluma/vlam/loaders';
 
 const controller = new AbortController();
 
 export async function loadWithFeedback(url: string): Promise<SplatMesh | null> {
  try {
- const data = await loadScene(url, {
+ const data = await loadSplatData(url, {
  signal: controller.signal,
  onProgress: (loaded, total) => {
  // total is 0 when the response has no Content-Length → show a spinner.
@@ -141,5 +141,6 @@ be decoded whole and report a clear error past 2 GiB, convert those to SOG
 
 ## Next
 
+Words for capture vs mesh vs source: [Terminology](terminology.md).
 [Streaming & LOD](streaming-and-lod.md), for datasets that should stream
-in level-of-detail instead of loading in one shot.
+instead of decoding the whole file.

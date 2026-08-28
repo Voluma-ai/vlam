@@ -189,4 +189,4 @@ must be verified on the target headset first.
 - Testing without hardware: Meta's Immersive Web Emulator exercises the session
  lifecycle and the ArrayCamera path. `src/lib/__tests__/xr-view.test.ts`,
   `splat-mesh.xr.test.ts`, `streamed-splat-mesh.xr.test.ts` and
-  `unified-splat-renderer.xr.test.ts` pin the contracts above.
+  `unified-splat-mesh.xr.test.ts` pin the contracts above.

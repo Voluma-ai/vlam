@@ -3,7 +3,7 @@
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
-import { loadScene } from '@voluma/vlam/loaders';
+import { loadSplatData } from '@voluma/vlam/loaders';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);
@@ -15,7 +15,7 @@ camera.position.set(0.8, 0.4, 1.6);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 
-const splats = new SplatMesh(await loadScene('/goose.sog'));
+const splats = new SplatMesh(await loadSplatData('/goose.sog'));
 scene.add(splats);
 
 const readout = document.querySelector<HTMLElement>('#readout')!;

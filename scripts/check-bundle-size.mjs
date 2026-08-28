@@ -91,7 +91,7 @@ const entries = Object.entries(pkg.exports)
   .filter(([, target]) => typeof target === 'object' && target.import)
   .map(([name, target]) => [name, resolve(root, target.import)]);
 
-// A subpath added to `package.json#exports` and `vite.config.lib.ts` but not to
+// A subpath added to `package.json#exports` and `scripts/vite.config.lib.ts` but not to
 // `tsconfig.lib.json#include` builds a `.js` with no `.d.ts` beside it, and the
 // entry resolves untyped for consumers. Cheap to check here, invisible otherwise.
 const missing = Object.entries(pkg.exports)
@@ -150,7 +150,7 @@ mustNotContain('.', 'Static LOD build aborted.', 'static LOD belongs in /static-
 mustNotContain('.', 'StreamedSplatMesh: maxBudget', 'streaming schedulers belong in /streaming');
 mustNotContain(
   '.',
-  'UnifiedSplatRenderer requires a WebGPU backend',
+  'UnifiedSplatMesh requires a WebGPU backend',
   'unified work buffers belong in /unified',
 );
 mustNotContain('.', 'createSelectionVolume', 'selection volumes belong in /selection');
@@ -180,7 +180,7 @@ mustContain(
 );
 mustContain(
   './unified',
-  'UnifiedSplatRenderer requires a WebGPU backend',
+  'UnifiedSplatMesh requires a WebGPU backend',
   'unified entry owns the compositor',
 );
 mustContain('./selection', 'createSelectionVolume', 'selection entry owns volume tests');

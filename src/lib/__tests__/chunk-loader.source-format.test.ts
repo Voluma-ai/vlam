@@ -32,7 +32,7 @@ vi.mock('../one-shot-worker?worker&inline', () => ({ default: FakeWorker }));
 // Imported after the mock so ChunkLoader picks up FakeWorker.
 const { ChunkLoader } = await import('../chunk-loader');
 
-describe('ChunkLoader stamps SplatData.sourceFormat', () => {
+describe('ChunkLoader stamps SplatData.format', () => {
   const loaders: InstanceType<typeof ChunkLoader>[] = [];
   afterEach(() => {
     for (const l of loaders) l.dispose();
@@ -46,17 +46,17 @@ describe('ChunkLoader stamps SplatData.sourceFormat', () => {
 
   it('stamps a dropped file from its extension', async () => {
     const data = await make().loadFile(new File([new Uint8Array(1)], 'scene.ply'));
-    expect(data.sourceFormat).toBe('ply');
+    expect(data.format).toBe('ply');
   });
 
   it('stamps a URL load from its extension', async () => {
     const data = await make().load('https://x.test/scene.spz');
-    expect(data.sourceFormat).toBe('spz');
+    expect(data.format).toBe('spz');
   });
 
   it('stamps a directory (unbundled SOG) load as sog', async () => {
     const data = await make().load('https://x.test/chunk/', { kind: 'directory' });
-    expect(data.sourceFormat).toBe('sog');
+    expect(data.format).toBe('sog');
   });
 
   it('leaves chunk-only formats (rad-chunk) unstamped', async () => {
@@ -64,6 +64,6 @@ describe('ChunkLoader stamps SplatData.sourceFormat', () => {
       format: 'rad-chunk',
       rad: { byteOffset: 0, byteLength: 1 } as never,
     });
-    expect(data.sourceFormat).toBeUndefined();
+    expect(data.format).toBeUndefined();
   });
 });

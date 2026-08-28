@@ -197,7 +197,7 @@ export type SplatShInputs =
     };
 
 /**
- * Per-source placement inputs for a unified pool ({@link SplatScene}): the
+ * Per-source placement inputs for a unified pool ({@link MergedSplatMesh}): the
  * splat's source id plus the shared array of source matrices. Drives two things
  * at once - the splat's mesh-local position (`M · poolCenter`, applied before
  * the modifier stack) and the frame view-dependent SH is evaluated in.
@@ -419,7 +419,7 @@ export interface SplatMaterialBuildInputs {
      * `own_size` (from the covariance) and the `parent_size` packed in
      * `covarianceB.w`. See `docs/formats/rad-notes.md` M14.6.
      */
-    foveationMode?: 'band' | 'frontier' | 'pagetable';
+    foveationMode?: 'band' | 'frontier' | 'page-table' | 'pagetable';
     /**
      * Cap on a rendered splat's major/minor axis ratio (0/undefined = off). Tames
      * far-field needle/spike artifacts from very anisotropic Gaussians and
@@ -475,7 +475,7 @@ export function applySplatMaterialGraph(
   const poolCenter = textureLoad(textures.centersTexture, splatTexel).xyz;
   // Per-source placement is resolved here, ahead of everything else, so the
   // rest of the graph - modifier stack included - sees the splat where it
-  // visually is. In a `SplatScene` the pool frame is an internal storage
+  // visually is. In a `MergedSplatMesh` the pool frame is an internal storage
   // detail; the splat's real mesh-local position is `M · poolCenter`. Applying
   // it outside the fold (rather than as modifier #0, which is what this used to
   // be) also makes it impossible for a host modifier's `offset`/`rotation` to
@@ -844,7 +844,7 @@ export function applySplatMaterialGraph(
       // Per-splat LOD cut. `notBlob` is the "keep this splat" predicate (named
       // for the historical blob cull); null means "no cull, always draw".
       let notBlob: THREE.Node<'bool'> | null;
-      if (settings.foveationMode === 'pagetable') {
+      if (settings.foveationMode === 'page-table' || settings.foveationMode === 'pagetable') {
         // Spark's selected-index model: the CPU frontier already picked exactly
         // one node per root→leaf ray, and only those splats are paged into the
         // slab. Draw them all - any screen-size band here would re-cull the

@@ -133,7 +133,7 @@ camera cell stayed on coarse discs. The classic path now ranks missing chunks
 before issuing them: visible screen-centre transactions first, then near
 out-of-view and background work. LOD *selection* stays frustum-agnostic
 (`frustumAware: false`) so an orbit does not thrash broad XY tiles. Concurrent
-classic fetches match the pagetable cap (8).
+classic fetches match the page-table cap (8).
 
 Distance bands set the **ambition** for classic LCC; budget enforce/fill produce
 the **resolved** cut that the mesh fetches and displays. Ambition never absorbs
@@ -317,7 +317,7 @@ That relationship is only used for verification and is not part of the loader.)
 Optional collision companion. Present on many Lixel Studio / L2 Pro exports
 (e.g. Kaiserpfalz); absent on others. `buildLccScene` probes `collision.lci`
 then `Collision.lci` via the dataset size API and, when found, exposes one
-`SceneCollision` descriptor. `loadCollisionMeshes` / `parseCollisionLci` expand
+`SplatCollisionData` descriptor. `loadCollisionMeshes` / `parseCollisionLci` expand
 the file into per-cell triangle tiles.
 
 Little-endian. Verified against the [LCC whitepaper](https://github.com/xgrids/LCCWhitepaper)

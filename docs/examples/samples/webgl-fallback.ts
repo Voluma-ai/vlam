@@ -3,7 +3,7 @@
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
-import { loadScene } from '@voluma/vlam/loaders';
+import { loadSplatData } from '@voluma/vlam/loaders';
 import { lightingPreset, revealPreset, sdfEffects } from '@voluma/vlam/effects';
 
 // `?backend=webgl` forces the fallback path, so you can see it on a machine
@@ -23,7 +23,7 @@ camera.position.set(0.9, 0.3, 1.7);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 
-const splats = new SplatMesh(await loadScene('/goose.sog'));
+const splats = new SplatMesh(await loadSplatData('/goose.sog'));
 scene.add(splats);
 
 // Portable effects: plain TSL arithmetic, so both backends run them.
@@ -45,7 +45,7 @@ splats.setDepthOfField({ focusDistance: 1.9, aperture: 0.3 });
 const banner = document.querySelector<HTMLElement>('#banner')!;
 banner.innerHTML = isWebGPU
   ? '<b>WebGPU</b> - everything available. <a href="?backend=webgl">See the fallback →</a>'
-  : '<b>WebGL2 fallback</b> - reveal effect and SplatScene unavailable; everything else works. <a href="?">Back to WebGPU →</a>';
+  : '<b>WebGL2 fallback</b> - reveal effect and MergedSplatMesh unavailable; everything else works. <a href="?">Back to WebGPU →</a>';
 
 const start = performance.now();
 

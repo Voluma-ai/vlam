@@ -8,7 +8,8 @@ from public JSDoc and is deliberately not checked in.
 | Document | Purpose |
 | --- | --- |
 | [Getting started](guide/getting-started.md) | Install, render, resize, and dispose |
-| [Loading scenes](guide/loading-scenes.md) | Formats, URLs, local files, and errors |
+| [Terminology](guide/terminology.md) | Capture, data, mesh, source, scene, budgets |
+| [Loading captures](guide/loading-scenes.md) | Formats, URLs, local files, and errors |
 | [Streaming and LOD](guide/streaming-and-lod.md) | Large-scene loading and budgets |
 | [Effects](guide/effects-and-modifiers.md) | Built-in and custom TSL effects |
 | [Proxy-mesh relighting](guide/relighting.md) | Screen-space lit-proxy modulate |

@@ -5,16 +5,12 @@ All notable changes to **VLAM!** are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Pre-1.0 versioning.** `0.2.0` is the first public release. While the
-> version is `0.x`, the public API may change between releases. **`1.0.0`**
+> **Pre-1.0 versioning.** The public API may change between releases. **`1.0.0`**
 > is the stability contract (documented API, green CI, capability matrix,
 > critical device validation, demo policy, migration notes, release tag). Pin
 > an exact version until then.
 >
-> `0.1.0` is skipped: that version was published to npm on 2026-07-18 as a
-> name-reservation placeholder (a single 442-byte file, no `exports`) before
-> the scope was settled. It is not this library, and a published version
-> cannot be replaced, so the first real release is `0.2.0`.
+
 
 > **Git history.** The public repository starts at `0.2.0`. Earlier `0.0.x`
 > package.json bumps were internal: they are recorded below, not as tags. Do
@@ -24,6 +20,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 ## [Unreleased]
 
 ### Changed
+
+- **Repo layout.** Viewer HTML lives in `src/viewer/` (`index.html` plus the
+  GPU harness shells). The docs-site Cloudflare worker is
+  `site/site-worker.js`. TypeDoc configs live in `site/`. Extra Vite configs
+  live in `scripts/`. `npm run dev` still serves `/demo/`,
+  `/chunk-harness.html`, and `/unified-harness.html`.
 
 - **Multi-mesh terminology.** Guides and implementation comments call
   secondary splat content an additional mesh (or a member / source in APIs),
@@ -38,8 +40,33 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `@voluma/vlam/selection`. There are no deprecated re-exports. The
   `StreamedSplatMesh.loadAutoLod()` alias is gone; call
   `StaticLodSplatMesh.load()` on the static-lod entry. Core keeps `SplatMesh`,
-  `SplatPool`, `SplatScene`, renderer helpers, and type-only format contracts
+  `SplatPool`, `MergedSplatMesh`, renderer helpers, and type-only format contracts
   used by those signatures.
+
+- **Public names (breaking).** Composite and loader symbols now match the
+  vocabulary in `docs/guide/terminology.md`. There are no compatibility aliases.
+
+  | Was | Is |
+  | --- | --- |
+  | `UnifiedSplatRenderer` | `UnifiedSplatMesh` |
+  | `UnifiedSplatRendererOptions` | `UnifiedSplatMeshOptions` |
+  | `supportsUnifiedSplatRenderer` | `supportsUnifiedSplatMesh` |
+  | `SplatScene` | `MergedSplatMesh` |
+  | `SplatSceneOptions` | `MergedSplatMeshOptions` |
+  | `AddSourceOptions` | `MergedSplatSourceOptions` |
+  | `MAX_SOURCES` | `MAX_MERGED_SPLAT_SOURCES` |
+  | `loadScene` | `loadSplatData` |
+  | `loadSceneFile` | `loadSplatDataFile` |
+  | `SplatLoadOptions` | `SplatDataLoadOptions` |
+  | `SplatFileLoadOptions` | `SplatDataFileLoadOptions` |
+  | `SplatSourceFormat` | `SplatDataFormat` |
+  | `SplatData.sourceFormat` | `SplatData.format` |
+  | `SceneCollision` | `SplatCollisionData` |
+
+  Subpaths (`@voluma/vlam/unified`, `/loaders`, `/static-lod`) are unchanged.
+  `addSource` / `removeSource` stay; source means a mesh registered with a
+  composite. `'page-table'` is the canonical `.rad` foveation spelling;
+  `'pagetable'` still resolves to the same mode.
 
 ### Added
 
@@ -54,7 +81,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   had previously parsed as explicit `?foveation=0`.
 
 - Proxy-mesh splat relighting (PlayCanvas-style): `SplatMesh.setRelighting` /
-  `UnifiedSplatRenderer.setRelighting` multiply baked splat color from a
+  `UnifiedSplatMesh.setRelighting` multiply baked splat color from a
   screen-space lit-proxy RT; `createRelightingProxy` /
   `createRelightingShadowFactorMaterial` / `renderRelightingFactorMap` in
   `@voluma/vlam/effects`. Shadow-factor materials accept weighted independent

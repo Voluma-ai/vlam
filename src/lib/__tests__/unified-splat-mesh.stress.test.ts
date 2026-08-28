@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { writeCovariance, type SplatData } from '../splat-data';
 import { SplatMesh, type SplatRange } from '../splat-mesh';
 import type { SplatModifier } from '../splat-modifier';
-import { UnifiedSplatRenderer } from '../unified-splat-renderer';
+import { UnifiedSplatMesh } from '../unified-splat-mesh';
 import { WorkBufferGather } from '../work-buffer-gather';
 
 /**
@@ -111,7 +111,7 @@ interface ShadowSlot {
   matrix: THREE.Matrix4;
 }
 
-describe('UnifiedSplatRenderer stress/property', () => {
+describe('UnifiedSplatMesh stress/property', () => {
   const restores: Array<() => void> = [];
   afterEach(() => {
     while (restores.length > 0) restores.pop()?.();
@@ -121,7 +121,7 @@ describe('UnifiedSplatRenderer stress/property', () => {
     const CAPACITY = 64;
     const random = mulberry32(0xe2e2);
     const renderer = mockRenderer();
-    const unified = new UnifiedSplatRenderer(renderer, CAPACITY);
+    const unified = new UnifiedSplatMesh(renderer, CAPACITY);
     const internal = unified as unknown as PrivateUnified;
     const camera = new THREE.PerspectiveCamera();
     const calls: GatherCall[] = [];
@@ -262,7 +262,7 @@ describe('UnifiedSplatRenderer stress/property', () => {
   it('never regathers or rebuilds gather pipelines when only depth of field changes', () => {
     const renderer = mockRenderer();
     const mesh = staticSource(3);
-    const unified = new UnifiedSplatRenderer(renderer, 8);
+    const unified = new UnifiedSplatMesh(renderer, 8);
     const internal = unified as unknown as PrivateUnified;
     unified.addSource(mesh);
     const camera = new THREE.PerspectiveCamera();
@@ -287,7 +287,7 @@ describe('UnifiedSplatRenderer stress/property', () => {
   it('regathers a slice after an opacity change and caches it again afterwards', () => {
     const renderer = mockRenderer();
     const mesh = staticSource(2);
-    const unified = new UnifiedSplatRenderer(renderer, 4);
+    const unified = new UnifiedSplatMesh(renderer, 4);
     unified.addSource(mesh);
     const camera = new THREE.PerspectiveCamera();
     const calls: GatherCall[] = [];
@@ -312,7 +312,7 @@ describe('UnifiedSplatRenderer stress/property', () => {
   it('regathers a static slice after the source mesh moves', () => {
     const renderer = mockRenderer();
     const mesh = staticSource(2);
-    const unified = new UnifiedSplatRenderer(renderer, 4);
+    const unified = new UnifiedSplatMesh(renderer, 4);
     unified.addSource(mesh);
     const camera = new THREE.PerspectiveCamera();
     const calls: GatherCall[] = [];
@@ -333,7 +333,7 @@ describe('UnifiedSplatRenderer stress/property', () => {
     const renderer = mockRenderer();
     const empty = new SplatMesh({ capacity: 2048 });
     const full = staticSource(2);
-    const unified = new UnifiedSplatRenderer(renderer, 4);
+    const unified = new UnifiedSplatMesh(renderer, 4);
     unified.addSource(empty);
     unified.addSource(full);
     const camera = new THREE.PerspectiveCamera();
@@ -353,7 +353,7 @@ describe('UnifiedSplatRenderer stress/property', () => {
   it('survives a modifier stack that throws during gather rebuild and recovers on retry', () => {
     const renderer = mockRenderer();
     const mesh = staticSource(1);
-    const unified = new UnifiedSplatRenderer(renderer, 2);
+    const unified = new UnifiedSplatMesh(renderer, 2);
     const internal = unified as unknown as PrivateUnified;
     unified.addSource(mesh);
     const camera = new THREE.PerspectiveCamera();
@@ -390,7 +390,7 @@ describe('UnifiedSplatRenderer stress/property', () => {
     const renderer = mockRenderer();
     const big = staticSource(6);
     const small = staticSource(3);
-    const unified = new UnifiedSplatRenderer(renderer, 8);
+    const unified = new UnifiedSplatMesh(renderer, 8);
     unified.addSource(big, { priority: 1 });
     unified.addSource(small, { priority: 0 });
     const camera = new THREE.PerspectiveCamera();

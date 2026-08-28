@@ -15,6 +15,8 @@ import {
   type SplatSortStrategy,
   type SplatUpdateOptions,
   type UnifiedSourceView,
+  resolveSplatFoveationMode,
+  type SplatFoveationMode,
 } from './splat-mesh-types';
 export * from './splat-mesh-types';
 import * as THREE from 'three/webgpu';
@@ -239,7 +241,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     stagingTextureAllocations: 0,
     activeListUpdateRanges: 0,
   };
-  // Protected so a unified {@link SplatScene} subclass can substitute a
+  // Protected so a unified {@link MergedSplatMesh} subclass can substitute a
   // world-space sort bound (see {@link refreshSortBounds}).
   protected readonly localBounds = new THREE.Box3().makeEmpty();
   protected readonly boundingSphereLocal = new THREE.Sphere();
@@ -266,7 +268,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private sorter: SplatSorter | null = null;
 
   /**
-   * Set by a unified {@link SplatScene} subclass before the first sort: makes
+   * Set by a unified {@link MergedSplatMesh} subclass before the first sort: makes
    * the WebGPU sorter transform each splat's center to world space by its
    * source's matrix before measuring depth. `null` for an ordinary mesh, whose
    * sorter is byte-identical to before. See `source-transform.ts`.
@@ -384,7 +386,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private readonly maxSplatScreenRadius: number;
   private readonly minSplatScreenRadius: number;
   /** `.rad` foveation cut selector; baked into the material graph. */
-  private readonly foveationMode: 'band' | 'frontier' | 'pagetable';
+  private readonly foveationMode: SplatFoveationMode;
   /** Finest on-screen node size (px) the frontier cut may request. */
   private readonly foveationTargetPx: number;
   /** Target upper bound on the frontier cut's drawn-splat count. */
@@ -557,7 +559,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.minSplatScreenRadius = validateMaxSplatScreenRadius(options.minSplatScreenRadius);
     this.screenBandMin.value = this.minSplatScreenRadius;
     this.screenBandMax.value = this.maxSplatScreenRadius;
-    this.foveationMode = options.foveationMode ?? 'band';
+    this.foveationMode = resolveSplatFoveationMode(options.foveationMode);
     this.foveationTargetPx = validateFoveationTargetPx(options.foveationTargetPx);
     this.foveationDrawBudget = validateFoveationDrawBudget(options.foveationDrawBudget);
     this.foveationLimitPx = this.foveationTargetPx;
@@ -606,8 +608,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       // Gaussian's covariance and view-dependent SH consistently - nothing is
       // baked into the splat data. A dynamic pool has no source format, so it
       // is never auto-oriented (its host applies yUpTransformForFormat itself).
-      const correction =
-        this.orientation === 'y-up' ? yUpTransformForFormat(source.sourceFormat) : null;
+      const correction = this.orientation === 'y-up' ? yUpTransformForFormat(source.format) : null;
       if (correction) {
         this.matrix.copy(correction);
         this.matrix.decompose(this.position, this.quaternion, this.scale);
@@ -1175,7 +1176,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   }
 
   /**
-   * Marks this mesh as a source drawn by {@link UnifiedSplatRenderer}.
+   * Marks this mesh as a source drawn by {@link UnifiedSplatMesh}.
    * The source stays invisible to the regular scene draw, while its own picker
    * mirrors this resolved visibility so existing per-source hit testing works.
    * Internal consumers should clear the state with `null` before disposing.
@@ -1186,7 +1187,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /**
    * The visibility that actually decides whether this mesh's splats reach the
-   * screen: the owning {@link UnifiedSplatRenderer}'s per-source visibility
+   * screen: the owning {@link UnifiedSplatMesh}'s per-source visibility
    * while one owns the draw, else `Object3D.visible`. Consumers that gate on
    * "is this mesh showing" - the picker, `CameraBudgetGovernor` - must read
    * this rather than `visible`, which a unified renderer forces to `false` on
@@ -1319,7 +1320,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * the rebuild (`needsUpdate`, `graphRevision`, picker invalidation).
    *
    * A seam rather than inline code because a subclass can change a *build
-   * input* without changing the modifier list - `SplatScene` installs its
+   * input* without changing the modifier list - `MergedSplatMesh` installs its
    * per-source placement in the constructor, after the base class has already
    * built a placement-free graph. Note `defineChannel` deliberately does *not*
    * rebuild; only structural graph changes come through here.
@@ -2483,7 +2484,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   /**
    * Refreshes {@link boundingSphereLocal} - the sphere the sorter quantizes
    * depth over - when {@link boundsDirty}. The base mesh uses its local splat
-   * bounds; a unified {@link SplatScene} overrides this to supply a world-space
+   * bounds; a unified {@link MergedSplatMesh} overrides this to supply a world-space
    * bound spanning all its sources (whose transforms live in the shader).
    */
   protected refreshSortBounds(): void {

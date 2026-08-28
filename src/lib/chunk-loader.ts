@@ -15,10 +15,10 @@ import {
   splatNameExtension,
   splatUrlExtension,
   type ChunkFileFormat,
-  type SplatFileLoadOptions,
+  type SplatDataFileLoadOptions,
   type SplatFormat,
   type SplatInputOptions,
-  type SplatSourceFormat,
+  type SplatDataFormat,
   type SplatProgressCallback,
 } from './loading';
 // Inlined worker (blob URL): survives library bundling in any consumer
@@ -253,7 +253,7 @@ export class ChunkLoader {
    */
   // `async` so an unknown extension rejects the returned promise rather than
   // throwing synchronously into the caller.
-  async loadFile(file: File, options: SplatFileLoadOptions = {}): Promise<SplatData> {
+  async loadFile(file: File, options: SplatDataFileLoadOptions = {}): Promise<SplatData> {
     const requested = options.format ?? 'auto';
     const format: Exclude<SplatFormat, 'auto'> =
       requested === 'auto'
@@ -345,15 +345,8 @@ export class ChunkLoader {
   }
 }
 
-/** Self-contained scene formats {@link SplatData.sourceFormat} can hold. */
-const SOURCE_FORMATS: readonly SplatSourceFormat[] = [
-  'ply',
-  'spz',
-  'splat',
-  'ksplat',
-  'sog',
-  'rad',
-];
+/** Self-contained scene formats {@link SplatData.format} can hold. */
+const SOURCE_FORMATS: readonly SplatDataFormat[] = ['ply', 'spz', 'splat', 'ksplat', 'sog', 'rad'];
 
 /**
  * Stamps the resolved format onto decoded scene data so {@link SplatMesh} can
@@ -362,7 +355,7 @@ const SOURCE_FORMATS: readonly SplatSourceFormat[] = [
  */
 function withSourceFormat(data: SplatData, format: ChunkFileFormat): SplatData {
   return (SOURCE_FORMATS as readonly string[]).includes(format)
-    ? { ...data, sourceFormat: format as SplatSourceFormat }
+    ? { ...data, format: format as SplatDataFormat }
     : data;
 }
 

@@ -2,7 +2,7 @@ import type * as THREE from 'three/webgpu';
 import { toRequestInit, type SplatRequestOptions } from '../../loading';
 import { parseMeshPly, type TriangleMeshData } from './parse-mesh-ply';
 import { parseCollisionLci } from './parse-collision-lci';
-import type { CollisionMeshDescriptor, SceneCollision } from '../../lod-source';
+import type { CollisionMeshDescriptor, SplatCollisionData } from '../../lod-source';
 import { warn } from '../../logging';
 
 /**
@@ -37,7 +37,7 @@ export interface CollisionMeshTile {
  * @throws a `DOMException` named `AbortError` when cancelled.
  */
 export async function loadCollisionMeshTiles(
-  collision: SceneCollision,
+  collision: SplatCollisionData,
   options: { request?: SplatRequestOptions; signal?: AbortSignal } = {},
 ): Promise<CollisionMeshTile[]> {
   const settled = await Promise.allSettled(

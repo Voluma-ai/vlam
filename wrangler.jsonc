@@ -1,7 +1,7 @@
 {
   "name": "vlam",
   "compatibility_date": "2026-07-15",
-  "main": "./site-worker.js",
+  "main": "./site/site-worker.js",
   "assets": {
     "directory": "./dist-site",
     "not_found_handling": "404-page",

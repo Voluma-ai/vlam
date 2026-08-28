@@ -401,7 +401,7 @@ describe('SplatMesh.pick', () => {
   });
 
   it('picks in the orientation-corrected frame: y-up flips a PLY, source does not', async () => {
-    const data = { ...makeSplatData(1), sourceFormat: 'ply' as const };
+    const data = { ...makeSplatData(1), format: 'ply' as const };
     const yUp = new SplatMesh(data);
     const source = new SplatMesh(data, { orientation: 'source' });
     meshes.push(yUp, source);

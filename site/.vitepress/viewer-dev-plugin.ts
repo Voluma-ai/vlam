@@ -52,11 +52,11 @@ export function vlamPackageAliases(fromRoot: string) {
 }
 
 const HTML_PAGES: Readonly<Record<string, string>> = {
-  '/demo': 'index.html',
-  '/demo/': 'index.html',
-  '/demo/index.html': 'index.html',
-  '/chunk-harness.html': 'chunk-harness.html',
-  '/unified-harness.html': 'unified-harness.html',
+  '/demo': 'src/viewer/index.html',
+  '/demo/': 'src/viewer/index.html',
+  '/demo/index.html': 'src/viewer/index.html',
+  '/chunk-harness.html': 'src/viewer/chunk-harness.html',
+  '/unified-harness.html': 'src/viewer/unified-harness.html',
   ...Object.fromEntries(
     EXAMPLE_APPS.flatMap((slug) => {
       const file = `example-apps/${slug}/index.html`;

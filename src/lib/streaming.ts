@@ -44,7 +44,7 @@ export {
 export { httpDatasetSource, createLocalDataset } from './dataset-source';
 export type { SplatDatasetSource, LocalDataset } from './dataset-source';
 export type { CollisionMeshTile } from './formats/lcc/collision-mesh';
-export type { SceneCollision, CollisionMeshDescriptor, EnvironmentTile } from './lod-source';
+export type { SplatCollisionData, CollisionMeshDescriptor, EnvironmentTile } from './lod-source';
 export { resolveCpuCacheBytes } from './splat-budget';
 export {
   SplatLoadError,

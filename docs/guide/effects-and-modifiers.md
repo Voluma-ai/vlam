@@ -117,7 +117,7 @@ mesh.modifiers = [(ctx) => ({ color: vec4(ctx.color.rgb, ctx.color.a.mul(opacity
 
 <!-- full file: docs/guide/samples/effects-contract.ts -->
 
-`UnifiedSplatRenderer` normally re-gathers modifier-bearing sources every
+`UnifiedSplatMesh` normally re-gathers modifier-bearing sources every
 frame because a uniform can change without a graph rebuild. For a truly static
 modifier, register the source with `cacheModifiers: true`. If its uniforms or
 channels later change, call `unified.invalidateSource(mesh)` before the next
@@ -151,7 +151,7 @@ mesh.modifiers = [heightTint]; // structural change → one recompile
 
 <!-- full file: docs/guide/samples/effects-custom-modifier.ts -->
 
-> **Inside a `SplatScene`,** `localCenter` is the splat's *placed* position: the
+> **Inside a `MergedSplatMesh`,** `localCenter` is the splat's *placed* position: the
 > per-source matrix is applied before the stack runs, so one effect covers every
 > source as a single scene rather than travelling with a moved one. Read
 > `sourceCenter` for the pre-placement position when an effect *should* follow

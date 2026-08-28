@@ -1,6 +1,8 @@
-import { defineConfig } from 'vite';
 import { resolve } from 'node:path';
-import { EXAMPLE_APPS, vlamPackageAliases } from './site/.vitepress/viewer-dev-plugin';
+import { defineConfig } from 'vite';
+import { EXAMPLE_APPS, vlamPackageAliases } from '../site/.vitepress/viewer-dev-plugin';
+
+const repoRoot = resolve(import.meta.dirname, '..');
 
 /**
  * Production build of the runnable example apps → `/examples/live/<slug>/`.
@@ -10,7 +12,7 @@ import { EXAMPLE_APPS, vlamPackageAliases } from './site/.vitepress/viewer-dev-p
  * `viewerDevPlugin` on the VitePress port.
  */
 export default defineConfig({
-  root: 'example-apps',
+  root: resolve(repoRoot, 'example-apps'),
   base: '/examples/live/',
   // No public dir: the examples fetch `/goose.sog` and `/favicon.ico` from the
   // site root, which build-site.mjs puts there. Copying assets/ in here would
@@ -19,11 +21,11 @@ export default defineConfig({
   resolve: {
     // Matches docs/guide/samples/tsconfig.json - samples import the package
     // name, not a relative path. Longest specifier first.
-    alias: vlamPackageAliases(import.meta.dirname),
+    alias: vlamPackageAliases(repoRoot),
     dedupe: ['three'],
   },
   build: {
-    outDir: resolve(import.meta.dirname, 'dist-site/examples/live'),
+    outDir: resolve(repoRoot, 'dist-site/examples/live'),
     emptyOutDir: true,
     // The samples are written as flat scripts with top-level `await` - the
     // shortest honest way to show "load the scene, then render it", and what
@@ -32,10 +34,7 @@ export default defineConfig({
     target: 'es2022',
     rollupOptions: {
       input: Object.fromEntries(
-        EXAMPLE_APPS.map((slug) => [
-          slug,
-          resolve(import.meta.dirname, `example-apps/${slug}/index.html`),
-        ]),
+        EXAMPLE_APPS.map((slug) => [slug, resolve(repoRoot, `example-apps/${slug}/index.html`)]),
       ),
       output: {
         manualChunks(id) {

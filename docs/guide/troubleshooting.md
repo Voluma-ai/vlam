@@ -28,7 +28,7 @@ renderer.setAnimationLoop(() => {
 ```
 
 The same applies to `StreamedSplatMesh` (its `update` also drives LOD
-residency) and to `UnifiedSplatRenderer.update(camera)`.
+residency) and to `UnifiedSplatMesh.update(camera)`.
 
 If `update` *is* being called, check the ordinary three.js causes next: the
 mesh was never `scene.add`-ed, the camera is inside or behind the scene, or
@@ -52,7 +52,7 @@ output conversion.
 | `srgbOutput` | Renderer output conversion |
 | --- | --- |
 | `false` (default) | leave it on, `renderer.outputColorSpace = THREE.SRGBColorSpace` |
-| `true` | the host must configure the renderer to skip output conversion |
+| `true` | the application must configure the renderer to skip output conversion |
 
 ```ts
 // Default path: the shader converts sRGB → working space itself.
@@ -61,12 +61,12 @@ const splats = new SplatMesh(data); // srgbOutput defaults to false
 ```
 
 VLAM! never changes `renderer.outputColorSpace` for you, that setting belongs
-to the host application, which shares the canvas with its own meshes. In a
-`UnifiedSplatRenderer` every registered source must agree on `srgbOutput`.
+to the application, which shares the canvas with its own meshes. In a
+`UnifiedSplatMesh` every registered source must agree on `srgbOutput`.
 Background: [capabilities.md § Color space](../capabilities.md#color-space-srgboutput).
 
 > The `srgbOutput: true` path is exercised by unit tests but is not what the
-> demo runs, so the exact renderer configuration for it is left to the host
+> demo runs, so the exact renderer configuration for it is left to the application
 > rather than prescribed here.
 
 ## WebGPU bind-group / storage-buffer validation errors on large scenes
@@ -87,7 +87,7 @@ Without that early throw you would instead see a cascade of
 **Cause.** WebGPU's default `maxStorageBufferBindingSize` is **128 MiB**. The
 unified work buffer allocates an RGBA32F centers attribute at **16 bytes per
 splat**, so capacities above roughly 8M splats exceed the default. Desktop
-adapters commonly advertise around 2 GiB, but only if the host asks for it at
+adapters commonly advertise around 2 GiB, but only if the application asks for it at
 device creation.
 
 **Fix.** The quickest one is `await createSplatRenderer()`, which does exactly
@@ -178,13 +178,13 @@ bundler two copies of the module graph.
 package-manager `resolutions`/`overrides` pin. Verify with
 `npm ls three`, which should print exactly one resolved version.
 
-## `UnifiedSplatRenderer` throws on WebGL2
+## `UnifiedSplatMesh` throws on WebGL2
 
 **Symptom.**
 
 ```
-UnifiedSplatRenderer requires a WebGPU backend (renderer.backend.isWebGPUBackend).
-On WebGL2 use standalone SplatMesh draws or static SplatScene.
+UnifiedSplatMesh requires a WebGPU backend (renderer.backend.isWebGPUBackend).
+On WebGL2 use standalone SplatMesh draws or static MergedSplatMesh.
 ```
 
 **Cause.** Heterogeneous unified gather/sort/draw is WebGPU-only; there is no
@@ -195,14 +195,14 @@ work fine for everything else.
 **Fix.** Gate construction:
 
 ```ts
-if (supportsUnifiedSplatRenderer(renderer)) {
+if (supportsUnifiedSplatMesh(renderer)) {
  // unified path
 } else {
- // standalone SplatMesh draws, or a static SplatScene
+ // standalone SplatMesh draws, or a static MergedSplatMesh
 }
 ```
 
-Note that `supportsUnifiedSplatRenderer` also answers `false` **before the
+Note that `supportsUnifiedSplatMesh` also answers `false` **before the
 backend has initialized**, so call it after renderer init rather than
 immediately after construction. Full list of fallback differences:
 [capabilities.md § WebGL2 scope statement](../capabilities.md#webgl2-scope-statement).
@@ -256,10 +256,10 @@ argument:
 
 ## Library warnings in the console
 
-**Symptom.** Messages prefixed `vlam:` in the host console that you would
+**Symptom.** Messages prefixed `vlam:` in the application console that you would
 rather route into your own logger, or suppress.
 
-**Cause.** The library never writes to the host console without an opt-out -
+**Cause.** The library never writes to the application console without an opt-out -
 every warning and error goes through one hook.
 
 **Fix.**
@@ -274,7 +274,7 @@ setVlamLogHandler(); // back to the console default
 
 ## Telling a dead link from a flaky network
 
-The worker-mediated loaders (`loadScene`, `loadSceneFile`, `ChunkLoader`,
+The worker-mediated loaders (`loadSplatData`, `loadSplatDataFile`, `ChunkLoader`,
 `StreamedSplatMesh`) reject with a `SplatLoadError` that names the `phase`
 (`resolve`, `manifest`, `fetch`, `decode`, `worker`), the `url`, an HTTP
 `status` where there is one, and a `retryable` flag, so you never have to

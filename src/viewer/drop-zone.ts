@@ -2,7 +2,7 @@
  * Full-window drag-and-drop target for local splat scenes (M8.x demo).
  *
  * The whole viewport is the drop area, and nothing is ever uploaded: a single
- * file decodes through `loadSceneFile`, and a **folder** streams in place via
+ * file decodes through `loadSplatDataFile`, and a **folder** streams in place via
  * `StreamedSplatMesh.loadLocal` - its files are read through `blob:` URLs,
  * which serve range requests just as an HTTP origin does, so a multi-hundred-
  * megabyte `.lcc` `data.bin` is never read whole. The overlay only appears

@@ -2,33 +2,33 @@
 
 Two overlapping splat meshes cannot blend correctly as separate three.js
 draws, transparency needs one global back-to-front order.
-`UnifiedSplatRenderer` gathers every registered source (static and streamed)
+`UnifiedSplatMesh` gathers every registered source (fully loaded and streamed)
 into one work buffer, sorts them together, and draws them as a single
 transparent mesh. **WebGPU only.**
 
 ## Gate on support
 
 ```ts
-import { UnifiedSplatRenderer, supportsUnifiedSplatRenderer } from '@voluma/vlam/unified';
+import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '@voluma/vlam/unified';
 
 // Check after renderer init: answers false on WebGL2 (and before the
 // backend exists). Fall back to standalone draws there.
-if (!supportsUnifiedSplatRenderer(renderer)) {
- scene.add(main, statue); // standalone SplatMesh draws, or static SplatScene
+if (!supportsUnifiedSplatMesh(renderer)) {
+ scene.add(main, statue); // standalone SplatMesh draws, or MergedSplatMesh
 }
 ```
 
-On WebGL2, standalone meshes remain first-class; for several **static**
-clouds there, `SplatScene` inter-sorts them in one shared pool.
+On WebGL2, standalone meshes remain first-class; for several fully loaded
+clouds there, `MergedSplatMesh` inter-sorts them in one shared pool.
 
 ## Creating and registering sources
 
 ```ts
 const main = await StreamedSplatMesh.load('/city/lod-meta.json');
-const statue = new SplatMesh(await loadScene('/statue.sog'));
+const statue = new SplatMesh(await loadSplatData('/statue.sog'));
 statue.position.set(4, 0, -2); // pose the SOURCE meshes, not the unified mesh
 
-const unified = new UnifiedSplatRenderer(renderer, main.capacity + statue.capacity);
+const unified = new UnifiedSplatMesh(renderer, main.capacity + statue.capacity);
 unified.addSource(main);
 unified.addSource(statue, { priority: 1, opacity: 0.8 });
 scene.add(unified); // add the unified mesh INSTEAD of the sources
@@ -115,7 +115,7 @@ here because the optional pre-flight check needs the `adapter` handle itself.
 ```ts
 import { deviceMaxStorageBufferBindingSize, recommendedWebGpuRequiredLimits } from '@voluma/vlam';
 import {
-  UnifiedSplatRenderer,
+  UnifiedSplatMesh,
   estimateLargestStorageBufferBytes,
 } from '@voluma/vlam/unified';
 
@@ -132,7 +132,7 @@ const needed = estimateLargestStorageBufferBytes(capacity);
 const allowed = deviceMaxStorageBufferBindingSize(renderer);
 console.log(`need ${needed} B of ${allowed} B allowed`);
 
-const unified = new UnifiedSplatRenderer(renderer, capacity, { srgbOutput: false });
+const unified = new UnifiedSplatMesh(renderer, capacity, { srgbOutput: false });
 ```
 
 <!-- full file: docs/guide/samples/unified-capacity.ts -->
@@ -145,5 +145,6 @@ are yours to keep or `dispose()` separately.
 
 ## Next
 
+[Terminology](terminology.md) for source vs mesh.
 [Effects & modifiers](effects-and-modifiers.md), per-source shader effects
 that survive unified rendering.

@@ -2,7 +2,7 @@
  * Cross-mesh decoded-chunk cache arbitration.
  *
  * Every {@link StreamedSplatMesh} caps its own decoded-chunk cache, and in
- * `foveationMode: 'pagetable'` that cap is `min(2 GiB, this capture's decoded
+ * `foveationMode: 'page-table'` that cap is `min(2 GiB, this capture's decoded
  * size)` - a number sized for *one* streamed scene. A scene of streamed additional meshes
  * therefore has no ceiling at all: thirteen extras plus a main are thirteen
  * plus one independent caps, and because each is sized to its own capture, a

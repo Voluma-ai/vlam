@@ -22,7 +22,7 @@ const cloneHierarchyForGpu = (data: SplatData): SplatData => {
       ? { shPacked: { ...data.shPacked, packed: data.shPacked.packed.slice() } }
       : {}),
     ...(data.antialias === undefined ? {} : { antialias: data.antialias }),
-    ...(data.sourceFormat === undefined ? {} : { sourceFormat: data.sourceFormat }),
+    ...(data.format === undefined ? {} : { format: data.format }),
   };
 };
 

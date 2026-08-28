@@ -3,7 +3,7 @@
  *
  * Host lights a proxy mesh into an RGBA render target (RGB = lit color,
  * A = coverage), then {@link SplatMesh.setRelighting} /
- * {@link UnifiedSplatRenderer.setRelighting} multiplies baked splat color in
+ * {@link UnifiedSplatMesh.setRelighting} multiplies baked splat color in
  * the display fragment. Not a `SplatModifier` - coverage is per-pixel.
  *
  * See `docs/guide/relighting.md`.

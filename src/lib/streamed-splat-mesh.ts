@@ -26,6 +26,8 @@ import {
   MAX_SH_BANDS,
   resolveSplatPerformanceProfile,
   SplatMesh,
+  isPageTableFoveation,
+  resolveSplatFoveationMode,
   type SplatRange,
   type SplatChannelType,
   type SplatChannelOptions,
@@ -86,8 +88,8 @@ const INITIAL_REVEAL_TIMEOUT_MS = 60_000;
 // invalidation policy: only a region-sized visibility change forces a sort.
 const CONTENT_FORCE_FRACTION = 0.25;
 /**
- * Max chunk fetches in flight at once on the classic (non-pagetable) path.
- * Matches the pagetable pager so near-finest detail can fill the pipe instead
+ * Max chunk fetches in flight at once on the classic (non-page-table) path.
+ * Matches the page-table pager so near-finest detail can fill the pipe instead
  * of waiting behind a long far-coarse pin queue.
  */
 const MAX_INFLIGHT = 8;
@@ -126,7 +128,7 @@ const PAGETABLE_PRIORITY_SLOTS = 3;
 const PAGETABLE_DRAW_BUDGET = 4_000_000;
 
 /**
- * Splats per slab page in `foveationMode: 'pagetable'`.
+ * Splats per slab page in `foveationMode: 'page-table'`.
  *
  * The frontier's slots are backed by pages of this size rather than one
  * contiguous reservation, so a mesh's storage need not be one block - the
@@ -277,7 +279,7 @@ export interface StreamedSplatMeshOptions extends SplatMeshOptions {
    * `> 1` refines further (finer cut, more splats drawn), `< 1` coarsens.
    * Default `1`.
    *
-   * **`.rad` `foveationMode: 'pagetable'` only** - it scales the frontier cut
+   * **`.rad` `foveationMode: 'page-table'` only** - it scales the frontier cut
    * the page-table traversal is given (`pixel_scale × lodScale ≤ limit`, exactly
    * Spark's formula). It does nothing on a mesh with no per-splat cut to scale:
    * a moderate `.rad` read as a chunk prefix, or a Streamed SOG / LCC scene. For
@@ -299,7 +301,7 @@ export interface StreamedSplatMeshOptions extends SplatMeshOptions {
    * later streaming is stopped by {@link SplatMesh.dispose}.
    */
   signal?: AbortSignal;
-  /** Base URL a relative manifest URL resolves against (like {@link loadScene}). */
+  /** Base URL a relative manifest URL resolves against (like {@link loadSplatData}). */
   baseUrl?: string | URL;
   /** World-unit distance inside which the finest LOD is used. Default 10. */
   lodBaseDistance?: number;
@@ -600,7 +602,7 @@ export class StreamedSplatMesh extends SplatMesh {
   /** Desired-but-not-resident files this tick; protected from cache eviction. */
   private readonly neededFiles = new Set<number>();
 
-  /** Non-null in `foveationMode: 'pagetable'`: the worker that owns the chunk
+  /** Non-null in `foveationMode: 'page-table'`: the worker that owns the chunk
    * cache + traversal + pager off the main thread, and the always-active slab it
    * pages the returned frontier into. */
   private readonly frontierWorker: Worker | null;
@@ -673,7 +675,7 @@ export class StreamedSplatMesh extends SplatMesh {
    * governed budget outgrows it, rather than the library's own default. */
   private pageTableDrawTargetExplicit = false;
   /** Last frontier's drawn (non-degenerate) splat count - the true on-screen size
-   * in `pagetable` mode, where the slab is fully "active" but mostly degenerate. */
+   * in `page-table` mode, where the slab is fully "active" but mostly degenerate. */
   private pageTableDrawn = 0;
   /** Monotonic reschedule id; a stale plan (superseded by a newer request) is
    * dropped. `pageTableInFlight` coalesces to one outstanding traversal. */
@@ -861,7 +863,7 @@ export class StreamedSplatMesh extends SplatMesh {
         `StreamedSplatMesh: maxBudget (${ceilingBudget}) must be >= budget (${deviceBudget}).`,
       );
     }
-    // `.rad` now defaults to the `pagetable` selected-index pager, which pages only
+    // `.rad` now defaults to the `page-table` selected-index pager, which pages only
     // the *selected* frontier (Spark's model) and wants the full device budget -
     // Spark runs this scene at ~4M. (The old 2.5M `RAD_PREFIX_DEFAULT_BUDGET` cap
     // was a fallback for the whole-scene prefix reader before the pager landed;
@@ -1006,13 +1008,18 @@ export class StreamedSplatMesh extends SplatMesh {
       Math.ceil((residentCeiling * capacityFactor) / DATA_TEXTURE_WIDTH),
     );
 
-    // Resolve pagetable worker before construction (constructors cannot await).
+    // Resolve page-table worker before construction (constructors cannot await).
     // SOG/LCC hosts never pay for the frontier worker blob.
     const resolvedFoveationMode = scene.foveation
-      ? (options.foveationMode ?? (format === 'rad' ? 'pagetable' : 'frontier'))
-      : options.foveationMode;
+      ? resolveSplatFoveationMode(
+          options.foveationMode,
+          format === 'rad' ? 'page-table' : 'frontier',
+        )
+      : options.foveationMode === undefined
+        ? undefined
+        : resolveSplatFoveationMode(options.foveationMode);
     let FrontierWorkerCtor: InlineWorkerCtor | undefined;
-    if (resolvedFoveationMode === 'pagetable') {
+    if (isPageTableFoveation(resolvedFoveationMode)) {
       const mod = await import('./formats/rad/frontier-worker?worker&inline');
       FrontierWorkerCtor = mod.default;
       signal?.throwIfAborted();
@@ -1189,7 +1196,7 @@ export class StreamedSplatMesh extends SplatMesh {
     // against a 4 GiB tab heap. Bounding it by the capture helped and did not
     // fix it - thirteen 500 MB captures still allow 6.5 GB, because nothing
     // related the meshes to each other. The budget is that missing relation.
-    const isPageTable = options.foveationMode === 'pagetable';
+    const isPageTable = isPageTableFoveation(options.foveationMode);
     const cacheCeilingBytes = isPageTable
       ? Math.max(
           this.cpuCacheBytes,
@@ -1217,9 +1224,9 @@ export class StreamedSplatMesh extends SplatMesh {
     // Page-table mode: reserve the whole pool as one always-active slab (all-zeros
     // → degenerate/invisible until paged) and spin up the worker that owns the
     // chunk cache + traversal + pager. Spark's selected-index model, off-thread.
-    if (options.foveationMode === 'pagetable') {
+    if (isPageTableFoveation(options.foveationMode)) {
       if (!FrontierWorkerCtor) {
-        throw new Error('StreamedSplatMesh: pagetable foveation requires the frontier worker.');
+        throw new Error('StreamedSplatMesh: page-table foveation requires the frontier worker.');
       }
       // Frontier draw target: an explicit `foveationDrawBudget` (`?foveationDraw=`)
       // wins for A/B; otherwise Spark's default. Never above the pool budget.
@@ -1594,7 +1601,7 @@ export class StreamedSplatMesh extends SplatMesh {
    * The drawn-splat target currently driving the `.rad` page-table frontier -
    * the governed budget, capped by
    * {@link SplatMeshOptions.foveationDrawBudget}. `0` on a mesh that is not in
-   * `foveationMode: 'pagetable'`, which has no frontier to target.
+   * `foveationMode: 'page-table'`, which has no frontier to target.
    *
    * This is the number that decides how deep the traversal descends, so it is
    * what to watch when checking that a near mesh really did receive more
@@ -1622,7 +1629,7 @@ export class StreamedSplatMesh extends SplatMesh {
     this.lastScheduleTime = -Infinity;
   }
 
-  /** In `pagetable` mode the slab is fully active but mostly degenerate, so the
+  /** In `page-table` mode the slab is fully active but mostly degenerate, so the
    * base `activeSplatCount` (slab size) is not the on-screen count - report the
    * frontier's drawn size instead. */
   override get activeSplatCount(): number {
@@ -1699,7 +1706,7 @@ export class StreamedSplatMesh extends SplatMesh {
   }
 
   /**
-   * Main-thread cost of applying paging plans in `foveationMode: 'pagetable'`.
+   * Main-thread cost of applying paging plans in `foveationMode: 'page-table'`.
    *
    * A plan is applied whole, off the render loop's own timing, so its cost does
    * not appear in {@link getUpdateTimings} - but it lands on the same thread and
@@ -2278,7 +2285,7 @@ export class StreamedSplatMesh extends SplatMesh {
     // Classic path used to `requestChunk` in leafStart / group order, so far
     // coarse pins filled the in-flight cap while the camera cell stayed on
     // discs. Collect every miss this tick and flush nearest/finest first -
-    // same contract as the pagetable `pageTableFetchPriority` path.
+    // same contract as the page-table `pageTableFetchPriority` path.
     const pendingFetches = new Map<number, ClassicFetchWant>();
     // Environment first: append it before coverage consumes pool rows, and
     // enqueue its fetch ahead of LOD wants so the sky is not last in the pipe.
@@ -3218,7 +3225,7 @@ export class StreamedSplatMesh extends SplatMesh {
   }
 
   /**
-   * Page-table reschedule (`foveationMode: 'pagetable'`): posts the camera to the
+   * Page-table reschedule (`foveationMode: 'page-table'`): posts the camera to the
    * worker, which owns the cache + traversal + pager and replies asynchronously
    * with a paging plan. Coalesced to one outstanding request so the main thread
    * never blocks. Also drives chunk fetching, in priority order.
@@ -3476,8 +3483,8 @@ export class StreamedSplatMesh extends SplatMesh {
   }
 
   /** Parallel chunk fetches. HTTP/2 multiplexes them; on HTTP/1.1 the browser's
-   * per-host cap simply queues. Same cap for classic and pagetable so near
-   * detail is not structurally starved on the non-pagetable path. */
+   * per-host cap simply queues. Same cap for classic and page-table so near
+   * detail is not structurally starved on the non-page-table path. */
   private get maxInflight(): number {
     return MAX_INFLIGHT;
   }

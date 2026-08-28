@@ -4,12 +4,12 @@
  * Public API surface. Everything else under `src/lib/` is internal and may
  * change without notice.
  *
- * Optional systems live on dedicated subpaths so a host that only draws a
- * static mesh does not pay for workers, schedulers, or work buffers:
- *  - `@voluma/vlam/loaders` - {@link loadScene}, {@link ChunkLoader}
+ * Optional systems live on dedicated subpaths so an application that only draws a
+ * fully loaded mesh does not pay for workers, schedulers, or work buffers:
+ *  - `@voluma/vlam/loaders` - {@link loadSplatData}, {@link ChunkLoader}
  *  - `@voluma/vlam/static-lod` - {@link StaticLodSplatMesh}
  *  - `@voluma/vlam/streaming` - {@link StreamedSplatMesh}, budget governors
- *  - `@voluma/vlam/unified` - {@link UnifiedSplatRenderer}
+ *  - `@voluma/vlam/unified` - {@link UnifiedSplatMesh}
  *  - `@voluma/vlam/selection` - volume select and partition
  *  - `@voluma/vlam/effects` - tree-shakeable modifier presets
  *  - `@voluma/vlam/formats/ply` - 3DGS `.ply`, raw and compressed
@@ -20,7 +20,7 @@
  *  - `@voluma/vlam/formats/splat` - antimatter15 `.splat`
  *  - `@voluma/vlam/formats/ksplat` - mkkellogg `.ksplat`
  *
- * {@link loadScene} / {@link StreamedSplatMesh.load} still accept those formats
+ * {@link loadSplatData} / {@link StreamedSplatMesh.load} still accept those formats
  * without importing a format subpath; the library loads format code on demand.
  *
  * @module core
@@ -48,7 +48,7 @@ export {
 // The storage behind a mesh, exported so several meshes can share one envelope
 // (`SplatMeshOptions.pool`) instead of each reserving a private ceiling.
 export { SplatPool, type SplatPoolOptions } from './splat-mesh-pool';
-// Pool texture geometry and the device limit it must fit in, so a host can size
+// Pool texture geometry and the device limit it must fit in, so a caller can size
 // a budget against what the device can actually hold (see `SplatPoolOptions.maxTextureSize`).
 export {
   SPLAT_DATA_TEXTURE_WIDTH,
@@ -80,8 +80,12 @@ export {
   createYUpTransform,
   yUpTransformForFormat,
 } from './orientation';
-export { SplatScene, type SplatSceneOptions, type AddSourceOptions } from './splat-scene';
-export { MAX_SOURCES } from './source-transform';
+export {
+  MergedSplatMesh,
+  type MergedSplatMeshOptions,
+  type MergedSplatSourceOptions,
+} from './merged-splat-mesh';
+export { MAX_MERGED_SPLAT_SOURCES } from './source-transform';
 // Named so embedders can type what `SplatMesh.getUnifiedSourceView` returns
 // (e.g. a custom gather pass); the uniform-node aliases it embeds come along.
 export type { SplatShInputs, Vec3Uniform } from './splat-mesh-material';
@@ -126,8 +130,8 @@ export {
   type WebGpuPowerPreference,
 } from './webgpu-limits';
 export type { SplatData, SplatShData, SplatPackedShData } from './splat-data';
-// `SplatData.sourceFormat` and `SplatBudgetOptions.format` name these unions.
-export type { SplatSourceFormat, StreamedSplatFormat } from './loading';
+// `SplatData.format` and `SplatBudgetOptions.format` name these unions.
+export type { SplatDataFormat, StreamedSplatFormat } from './loading';
 export type {
   SplatModifier,
   SplatContext,
@@ -135,6 +139,6 @@ export type {
   ModifierStackTarget,
 } from './splat-modifier';
 export { ModifierSlots } from './splat-modifier';
-// Every diagnostic the library emits goes through one hook, so a host can
+// Every diagnostic the library emits goes through one hook, so an application can
 // forward VLAM! warnings into its own logger or silence them.
 export { setVlamLogHandler, type VlamLogHandler, type VlamLogLevel } from './logging';

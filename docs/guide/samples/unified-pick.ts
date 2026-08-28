@@ -2,10 +2,10 @@
 // identification, plus unified depth of field.
 import * as THREE from 'three/webgpu';
 import type { SplatMesh } from '@voluma/vlam';
-import type { UnifiedSplatRenderer } from '@voluma/vlam/unified';
+import type { UnifiedSplatMesh } from '@voluma/vlam/unified';
 
 export async function pickAcrossSources(
-  unified: UnifiedSplatRenderer,
+  unified: UnifiedSplatMesh,
   event: PointerEvent,
   camera: THREE.PerspectiveCamera,
   mainMesh: SplatMesh,

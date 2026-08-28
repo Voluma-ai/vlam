@@ -220,7 +220,7 @@ export class WorkBufferGather {
             const channel = channels.get(name);
             if (!channel) {
               throw new Error(
-                `UnifiedSplatRenderer: source modifier reads undefined channel "${name}".`,
+                `UnifiedSplatMesh: source modifier reads undefined channel "${name}".`,
               );
             }
             return textureLoad(channel.texture, texel).r;

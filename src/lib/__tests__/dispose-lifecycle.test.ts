@@ -46,7 +46,7 @@ vi.mock('../one-shot-worker?worker&inline', () => ({ default: TrackingWorker }))
 const { SplatMesh } = await import('../splat-mesh');
 const { StreamedSplatMesh } = await import('../streamed-splat-mesh');
 const { WorkerSorter } = await import('../worker-sorter');
-const { UnifiedSplatRenderer } = await import('../unified-splat-renderer');
+const { UnifiedSplatMesh } = await import('../unified-splat-mesh');
 
 const WIDTH = 2048;
 
@@ -278,10 +278,10 @@ describe('StreamedSplatMesh dispose lifecycle', () => {
   });
 });
 
-describe('UnifiedSplatRenderer dispose lifecycle', () => {
+describe('UnifiedSplatMesh dispose lifecycle', () => {
   function makeUnified() {
     const renderer = mockWebGPURenderer();
-    const unified = new UnifiedSplatRenderer(renderer, 4);
+    const unified = new UnifiedSplatMesh(renderer, 4);
     const source = new SplatMesh(makeData(1));
     unified.addSource(source);
     return { renderer, unified, source };

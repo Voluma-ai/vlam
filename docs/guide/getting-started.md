@@ -25,7 +25,7 @@ Renderer, camera, one splat mesh, a render loop:
 ```ts
 import * as THREE from 'three/webgpu';
 import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
-import { loadScene } from '@voluma/vlam/loaders';
+import { loadSplatData } from '@voluma/vlam/loaders';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);
@@ -36,7 +36,7 @@ const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 1
 camera.position.set(1, 0.5, 1.4);
 camera.lookAt(0, 0, 0);
 
-const splats = new SplatMesh(await loadScene('/scene.sog'));
+const splats = new SplatMesh(await loadSplatData('/scene.sog'));
 scene.add(splats);
 
 renderer.setAnimationLoop(() => {
@@ -64,7 +64,7 @@ Notes on the lines that matter most:
   it and warns ([crbug.com/369219127](https://crbug.com/369219127)). It falls
   back to WebGL2 like a plain `new THREE.WebGPURenderer()`; pass
   `requireWebGpu: true` to throw instead. Every `WebGPURenderer` option passes
- through, and hosts that must own device creation themselves can still call
+ through, and applications that must own device creation themselves can still call
   `recommendedWebGpuRequiredLimits` / `webGpuPowerPreferenceOptions` directly.
 - **Leave `outputColorSpace` alone.** three's default is already
   `SRGBColorSpace`, and the splat shader converts its display-ready sRGB colors
@@ -82,16 +82,16 @@ ships no controls of its own.
 
 ## Loading a local file
 
-`loadSceneFile` decodes a `File` from a drop or `<input type="file">` in a
+`loadSplatDataFile` decodes a `File` from a drop or `<input type="file">` in a
 Web Worker, nothing is uploaded, nothing blocks the main thread:
 
 ```ts
 import { SplatMesh } from '@voluma/vlam';
-import { loadSceneFile } from '@voluma/vlam/loaders';
+import { loadSplatDataFile } from '@voluma/vlam/loaders';
 
 export async function onFilePicked(file: File): Promise<SplatMesh> {
   // Decoded in a Web Worker; the bytes never leave the device.
-  const data = await loadSceneFile(file, {
+  const data = await loadSplatDataFile(file, {
     onProgress: (loaded, total) => console.log(`read ${loaded} / ${total} bytes`),
   });
   return new SplatMesh(data);
@@ -145,12 +145,13 @@ There is no separate code path to write: the shaders are TSL, so the same
 graph compiles to WGSL on WebGPU and GLSL on WebGL2, and
 `THREE.WebGPURenderer` falls back automatically where WebGPU is unavailable.
 Static and streamed rendering, picking, and spatial queries all work on the
-fallback; the exceptions are `UnifiedSplatRenderer` (gate it with
-`supportsUnifiedSplatRenderer`, see [Unified rendering](unified-rendering.md))
+fallback; the exceptions are `UnifiedSplatMesh` (gate it with
+`supportsUnifiedSplatMesh`, see [Unified rendering](unified-rendering.md))
 and `wgslFn`-based effect presets like `revealPreset`. Details:
 [WebGL2 scope statement](../capabilities.md#webgl2-scope-statement).
 
 ## Next
 
-- [Loading scenes](loading-scenes.md), formats, errors, progress, cancellation.
-- [Streaming & LOD](streaming-and-lod.md), scenes larger than GPU memory.
+- [Terminology](terminology.md), capture vs data vs mesh vs source.
+- [Loading captures](loading-scenes.md), formats, errors, progress, cancellation.
+- [Streaming & LOD](streaming-and-lod.md), captures larger than GPU memory.

@@ -2,8 +2,8 @@
 // as one cloud, each movable at no cost.
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { SplatScene, createSplatRenderer } from '@voluma/vlam';
-import { loadScene } from '@voluma/vlam/loaders';
+import { MergedSplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { loadSplatData } from '@voluma/vlam/loaders';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);
@@ -15,12 +15,12 @@ camera.position.set(0, 0.3, 2.1);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 
-const data = await loadScene('/goose.sog');
+const data = await loadSplatData('/goose.sog');
 
 // One shared pool for every cloud, so the sort covers all of them at once.
 // Capacity is in splats and must cover the sum of what you add - it is
 // allocated up front, so size it for the scene you intend to build.
-const flock = new SplatScene({ capacity: data.count * 3 });
+const flock = new MergedSplatMesh({ capacity: data.count * 3 });
 scene.add(flock);
 
 // Close enough that the clouds pass through each other - which is the point:

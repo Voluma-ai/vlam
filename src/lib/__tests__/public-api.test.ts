@@ -27,8 +27,8 @@ import * as splat from '../formats/splat/index';
 import * as ksplat from '../formats/ksplat/index';
 
 const movedOffRoot = [
-  'loadScene',
-  'loadSceneFile',
+  'loadSplatData',
+  'loadSplatDataFile',
   'ChunkLoader',
   'SplatLoadError',
   'isAbortError',
@@ -40,8 +40,8 @@ const movedOffRoot = [
   'ChunkCacheBudget',
   'httpDatasetSource',
   'createLocalDataset',
-  'UnifiedSplatRenderer',
-  'supportsUnifiedSplatRenderer',
+  'UnifiedSplatMesh',
+  'supportsUnifiedSplatMesh',
   'createSelectionVolume',
   'selectInData',
   'countInData',
@@ -54,12 +54,31 @@ const movedOffRoot = [
   'WORK_BUFFER_BYTES_PER_SLOT',
 ] as const;
 
+const removedExports = [
+  'UnifiedSplatRenderer',
+  'UnifiedSplatRendererOptions',
+  'supportsUnifiedSplatRenderer',
+  'SplatScene',
+  'SplatSceneOptions',
+  'AddSourceOptions',
+  'MAX_SOURCES',
+  'loadScene',
+  'loadSceneFile',
+  'SplatLoadOptions',
+  'SplatFileLoadOptions',
+  'SplatSourceFormat',
+  'SceneCollision',
+] as const;
+
 describe('public API surface (vlam)', () => {
   it('exports the core classes', () => {
     expect(typeof vlam.SplatMesh).toBe('function');
-    expect(typeof vlam.SplatScene).toBe('function');
+    expect(typeof vlam.MergedSplatMesh).toBe('function');
     expect(typeof vlam.ModifierSlots).toBe('function');
     for (const name of movedOffRoot) {
+      expect(name in vlam).toBe(false);
+    }
+    for (const name of removedExports) {
       expect(name in vlam).toBe(false);
     }
   });
@@ -73,7 +92,7 @@ describe('public API surface (vlam)', () => {
 
   it('exports renderer constants and profile resolution', () => {
     expect(vlam.MAX_SH_BANDS).toBe(3);
-    expect(vlam.MAX_SOURCES).toBeGreaterThan(0);
+    expect(vlam.MAX_MERGED_SPLAT_SOURCES).toBeGreaterThan(0);
     // Spark parity: the LOD cut is `targetPx · 2·tan(fovY/2) / renderHeight`,
     // and Spark's `lodRenderScale` defaults to 1 px. A larger default stops the
     // descent early on every ray that does not reach leaves - invisible on
@@ -138,8 +157,8 @@ describe('public API surface (vlam)', () => {
     expectTypeOf<vlam.RelightingUniforms>().toBeObject();
     expectTypeOf<vlam.SplatPickOptions>().toBeObject();
     expectTypeOf<vlam.SplatChannelOptions>().toBeObject();
-    expectTypeOf<vlam.SplatSceneOptions>().toBeObject();
-    expectTypeOf<vlam.AddSourceOptions>().toBeObject();
+    expectTypeOf<vlam.MergedSplatMeshOptions>().toBeObject();
+    expectTypeOf<vlam.MergedSplatSourceOptions>().toBeObject();
     expectTypeOf<vlam.AdaptivePixelRatioInput>().toBeObject();
     expectTypeOf<vlam.WebGpuRequiredLimits>().toBeObject();
 
@@ -163,12 +182,10 @@ describe('public API surface (vlam)', () => {
     expectTypeOf<vlam.SplatOrientation>().toEqualTypeOf<'y-up' | 'source'>();
     expectTypeOf<vlam.SplatSortStrategy>().toEqualTypeOf<'counting' | 'radix' | 'exact'>();
     expectTypeOf<vlam.SplatPerformanceProfile>().toEqualTypeOf<'quality' | 'smooth'>();
-    expectTypeOf<vlam.SplatSourceFormat>().toEqualTypeOf<
+    expectTypeOf<vlam.SplatDataFormat>().toEqualTypeOf<
       'ply' | 'sog' | 'spz' | 'splat' | 'ksplat' | 'rad'
     >();
-    expectTypeOf<vlam.SplatData['sourceFormat']>().toEqualTypeOf<
-      vlam.SplatSourceFormat | undefined
-    >();
+    expectTypeOf<vlam.SplatData['format']>().toEqualTypeOf<vlam.SplatDataFormat | undefined>();
     expectTypeOf<vlam.StreamedSplatFormat>().toBeString();
     expectTypeOf<vlam.OrientableFormat>().toBeString();
     expectTypeOf<vlam.SplatChannelType>().toBeString();
@@ -179,14 +196,19 @@ describe('public API surface (vlam)', () => {
 
 describe('public API surface (@voluma/vlam/loaders)', () => {
   it('exports the loading pipeline and keeps mesh/LOD out', () => {
-    expect(typeof loaders.loadScene).toBe('function');
-    expect(typeof loaders.loadSceneFile).toBe('function');
+    expect(typeof loaders.loadSplatData).toBe('function');
+    expect(typeof loaders.loadSplatDataFile).toBe('function');
     expect(typeof loaders.ChunkLoader).toBe('function');
     expect(typeof loaders.SplatLoadError).toBe('function');
     expect(typeof loaders.isAbortError).toBe('function');
     expect('SplatMesh' in loaders).toBe(false);
     expect('StaticLodSplatMesh' in loaders).toBe(false);
     expect('StreamedSplatMesh' in loaders).toBe(false);
+    expect('loadScene' in loaders).toBe(false);
+    expect('loadSceneFile' in loaders).toBe(false);
+    expect('SplatLoadOptions' in loaders).toBe(false);
+    expect('SplatFileLoadOptions' in loaders).toBe(false);
+    expect('SplatSourceFormat' in loaders).toBe(false);
 
     const err = new loaders.SplatLoadError('nope', {
       phase: 'fetch',
@@ -197,12 +219,12 @@ describe('public API surface (@voluma/vlam/loaders)', () => {
     expect(err.phase).toBe('fetch');
     expect(loaders.isAbortError(err)).toBe(false);
 
-    expectTypeOf<loaders.SplatLoadOptions>().toBeObject();
-    expectTypeOf<loaders.SplatFileLoadOptions>().toBeObject();
+    expectTypeOf<loaders.SplatDataLoadOptions>().toBeObject();
+    expectTypeOf<loaders.SplatDataFileLoadOptions>().toBeObject();
     expectTypeOf<loaders.SplatRequestOptions>().toBeObject();
     expectTypeOf<loaders.SplatProgressCallback>().toBeFunction();
     expectTypeOf<loaders.SplatInputOptions>().toBeObject();
-    expectTypeOf<loaders.SplatLoadOptions>().toExtend<loaders.SplatInputOptions>();
+    expectTypeOf<loaders.SplatDataLoadOptions>().toExtend<loaders.SplatInputOptions>();
     expectTypeOf<loaders.SplatLoadPhase>().toEqualTypeOf<
       'resolve' | 'manifest' | 'fetch' | 'decode' | 'worker'
     >();
@@ -251,27 +273,30 @@ describe('public API surface (@voluma/vlam/streaming)', () => {
     expectTypeOf<streaming.PersistentChannelOptions>().toBeObject();
     expectTypeOf<streaming.SplatRequestOptions>().toBeObject();
     expectTypeOf<streaming.CollisionMeshTile>().toBeObject();
-    expectTypeOf<streaming.SceneCollision>().toBeObject();
+    expectTypeOf<streaming.SplatCollisionData>().toBeObject();
     expectTypeOf<streaming.CollisionMeshDescriptor>().toBeObject();
     expectTypeOf<streaming.EnvironmentTile>().toBeObject();
     expectTypeOf<streaming.SplatDatasetSource>().toBeObject();
     expectTypeOf<streaming.LocalDataset>().toBeObject();
     expectTypeOf<streaming.StreamedSplatPerformanceEvent>().toBeObject();
+    expect('SceneCollision' in streaming).toBe(false);
   });
 });
 
 describe('public API surface (@voluma/vlam/unified)', () => {
   it('exports the compositor and work-buffer estimates', () => {
-    expect(typeof unified.UnifiedSplatRenderer).toBe('function');
-    expect(typeof unified.supportsUnifiedSplatRenderer).toBe('function');
+    expect(typeof unified.UnifiedSplatMesh).toBe('function');
+    expect(typeof unified.supportsUnifiedSplatMesh).toBe('function');
     expect(typeof unified.estimateLargestStorageBufferBytes).toBe('function');
     expect(typeof unified.estimateUnifiedWorkBufferBytes).toBe('function');
     expect(typeof unified.estimateUnifiedWorkBufferPeakBytes).toBe('function');
     expect(unified.WORK_BUFFER_CENTERS_BYTES_PER_SPLAT).toBeGreaterThan(0);
     expect(unified.WORK_BUFFER_BYTES_PER_SLOT).toBeGreaterThan(0);
-    expectTypeOf<unified.UnifiedSplatRendererOptions>().toBeObject();
+    expectTypeOf<unified.UnifiedSplatMeshOptions>().toBeObject();
     expectTypeOf<unified.UnifiedSplatSourceOptions>().toBeObject();
     expectTypeOf<unified.UnifiedSplatPickResult['source']>().toEqualTypeOf<vlam.SplatMesh>();
+    expect('UnifiedSplatRenderer' in unified).toBe(false);
+    expect('supportsUnifiedSplatRenderer' in unified).toBe(false);
   });
 });
 

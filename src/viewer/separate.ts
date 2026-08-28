@@ -329,7 +329,7 @@ export function createSeparateTool(context: SeparateToolContext): SeparateTool {
     // The SDF modifier tests mesh-local centers, so map the world volume into
     // the mesh's frame. Note this is the *mesh's* matrix, not
     // `selectionWorldMatrix`: the two agree for a plain mesh, but a separated
-    // `SplatScene` sits at identity while `selectionWorldMatrix` is the source
+    // `MergedSplatMesh` sits at identity while `selectionWorldMatrix` is the source
     // data frame's placement, and the material already places splats before
     // the modifier stack - mapping by the placement too would double-count it.
     // `selectionWorldMatrix` stays the CPU volume's frame (it maps

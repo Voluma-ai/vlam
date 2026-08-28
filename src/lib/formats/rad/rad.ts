@@ -156,7 +156,7 @@ export async function buildRadScene(
   }
   const bounds = boundsOf(chunk0Data);
   // Chunk 0 is a whole-scene overview. Copy a subsample of its centers before
-  // pagetable mode transfers the buffers to the worker, so the demo can place
+  // page-table mode transfers the buffers to the worker, so the demo can place
   // the camera on the terrain instead of the AABB min (underground outliers).
   const overviewPositions = subsampleOverviewPositions(chunk0Data.positions, chunk0Data.count);
   // All-or-nothing, for the reason in the doc comment above: a partial cap
@@ -319,7 +319,7 @@ export class RadLodSource implements LodSource {
    * traversal or force `discoveredDepth` back and visibly coarsen the scene.
    *
    * Bounded in practice by the mode that uses it: `.rad` defaults to
-   * `foveationMode: 'pagetable'`, where the frontier worker owns the traversal
+   * `foveationMode: 'page-table'`, where the frontier worker owns the traversal
    * and this source is never constructed. Only the `'band'` and `'frontier'`
    * A/B modes pay it. Reducing it means changing the tree encoding, not adding
    * an eviction pass here.

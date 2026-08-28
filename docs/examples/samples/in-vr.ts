@@ -9,7 +9,7 @@ import {
   resolveXrSplatBudget,
   xrSessionInit,
 } from '@voluma/vlam';
-import { loadScene } from '@voluma/vlam/loaders';
+import { loadSplatData } from '@voluma/vlam/loaders';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);
@@ -26,7 +26,7 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 1.4, 0);
 controls.enableDamping = true;
 
-const splats = new SplatMesh(await loadScene('/goose.sog'));
+const splats = new SplatMesh(await loadSplatData('/goose.sog'));
 splats.position.y = 1.3; // lift it to eye level for a standing viewer
 scene.add(splats);
 

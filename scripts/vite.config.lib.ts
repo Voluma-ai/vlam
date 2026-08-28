@@ -1,4 +1,7 @@
+import { resolve } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
+
+const repoRoot = resolve(import.meta.dirname, '..');
 
 /**
  * Drops sourcemaps for chunks that were never emitted.
@@ -67,6 +70,7 @@ function verifyStableDynamicImports(): Plugin {
 // Library build: ES module with three externalized (peer dependency).
 // Type declarations are emitted separately via `tsc -p tsconfig.lib.json`.
 export default defineConfig({
+  root: repoRoot,
   plugins: [dropOrphanWorkerMaps(), verifyStableDynamicImports()],
   build: {
     lib: {

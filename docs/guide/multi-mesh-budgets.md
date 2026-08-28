@@ -93,7 +93,7 @@ weight = priority × clamp((radius / distance) ^ falloff) × onScreen
 - `onScreen` is `1` inside the frustum and `offScreenWeight` (default `0.25`)
   outside it, suppressed, never starved. An off-screen member must keep enough
   budget for its coarse shell or turning the camera exposes an unpainted region.
-- `priority` is the host's tier, multiplied on top: Spark's `lodScale` values map
+- `priority` is the caller's tier, multiplied on top: Spark's `lodScale` values map
   directly, focused `2`, default `1`, adjacent `0.25`, hidden `0`.
 
 `minWeight` / `maxWeight` bound the size term, so a distant member keeps a shell
@@ -129,7 +129,7 @@ buys something different on each. Which one you are on decides what to expect:
 | Mesh leaf count | Path | Effect of a larger budget |
 | --- | --- | --- |
 | **≤ 6M leaves** | coarse→fine chunk **prefix**, refinement uniform and camera-independent | **Everything.** At `budget ≥ leafCount` every chunk is resident and the mesh renders its full leaf set, zero blobs, full resolution. Below that it is uniformly coarse *everywhere*, worst up close. There is no foveation on this path and none is needed. |
-| **> 6M leaves** | `foveationMode: 'pagetable'`. Spark's per-splat frontier traversal | Detail is already concentrated near the camera and off-cone content already kept coarse. A larger **draw** budget lets the traversal descend further before the budget stops it, so the near surface sharpens. |
+| **> 6M leaves** | `foveationMode: 'page-table'`. Spark's per-splat frontier traversal | Detail is already concentrated near the camera and off-cone content already kept coarse. A larger **draw** budget lets the traversal descend further before the budget stops it, so the near surface sharpens. |
 
 Two consequences worth knowing:
 
@@ -215,6 +215,7 @@ leaves them alone.
 
 - [Streaming & LOD](streaming-and-lod.md), budgets on a single mesh,
   `setBudget`, local folders, the environment tile.
+- [Terminology](terminology.md): `maxBudget`, `drawBudget`, and what a source is.
 - [Unified rendering](unified-rendering.md): depth-correct compositing when
   those meshes have to blend with each other.
 - [`formats/rad-notes.md`](../formats/rad-notes.md): the `.rad` LOD paths, the

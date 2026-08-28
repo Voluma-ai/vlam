@@ -25,7 +25,7 @@ import { neutralShWord, packShCoefficients, shCoefficientCount } from '../../sh-
  *
  * Two entry points:
  * - {@link parseRad} flattens a whole file into leaf splats only (the original
- *   capture), for a small `.rad` loaded in one piece by `loadScene`.
+ *   capture), for a small `.rad` loaded in one piece by `loadSplatData`.
  * - {@link parseRadChunkStreaming} decodes one chunk keeping *every* splat -
  *   the merged coarse LOD-tree nodes included - plus the per-splat tree
  *   columns, for the streamed reader (see `rad.ts`), which chooses the

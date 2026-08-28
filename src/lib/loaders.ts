@@ -1,7 +1,7 @@
 /**
- * `@voluma/vlam/loaders` - one-shot scene loading and the shared chunk worker.
+ * `@voluma/vlam/loaders` - whole-file splat decode and the shared chunk worker.
  *
- * {@link loadScene} / {@link loadSceneFile} decode a whole file into
+ * {@link loadSplatData} / {@link loadSplatDataFile} decode a whole file into
  * {@link SplatData} for {@link SplatMesh}. {@link ChunkLoader} is the
  * multiplexed worker behind those helpers and behind streamed chunk fetches.
  *
@@ -11,18 +11,18 @@
  * @module loaders
  */
 export {
-  loadScene,
-  loadSceneFile,
-  type SplatLoadOptions,
-  type SplatFileLoadOptions,
-} from './load-scene';
+  loadSplatData,
+  loadSplatDataFile,
+  type SplatDataLoadOptions,
+  type SplatDataFileLoadOptions,
+} from './load-splat-data';
 export { ChunkLoader } from './chunk-loader';
 export {
   SplatLoadError,
   isAbortError,
   type SplatProgressCallback,
   type SplatFormat,
-  type SplatSourceFormat,
+  type SplatDataFormat,
   type StreamedSplatFormat,
   type SplatRequestOptions,
   type SplatLoadPhase,

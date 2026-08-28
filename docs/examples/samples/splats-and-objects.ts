@@ -3,7 +3,7 @@
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
-import { loadScene } from '@voluma/vlam/loaders';
+import { loadSplatData } from '@voluma/vlam/loaders';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);
@@ -23,7 +23,7 @@ const sun = new THREE.DirectionalLight(0xffffff, 2.5);
 sun.position.set(2, 4, 3);
 scene.add(sun);
 
-const splats = new SplatMesh(await loadScene('/goose.sog'));
+const splats = new SplatMesh(await loadSplatData('/goose.sog'));
 
 // A SplatMesh arrives with a rotation of its own: the correction that stands
 // the capture upright. Replacing its orientation outright (rotation.set,

@@ -31,16 +31,18 @@ directory name and `package.json` disagree, trust `package.json`.
 ```
 src/
  viewer/ docs-site / local viewer; never imported by lib/
+ index.html SPA shell; Vite entry, served at `/demo/`
  main.ts viewer entry: renderer, camera-controls, scene loading
  chrome.ts UI presets (`full` / `embed`) for overlays
  drop-zone.ts drag-and-drop file/folder intake
  failure.ts SplatLoadError → friendly failure card
  effects.ts, paint.ts viewer-side effect picker + painting on lib primitives
- chunk-harness.ts dev page for ChunkLoader (chunk-harness.html)
+ chunk-harness.ts / .html ChunkLoader GPU harness (`/chunk-harness.html`)
+ unified-harness.ts / .html UnifiedSplatMesh GPU harness (`/unified-harness.html`)
  sort-benchmark.ts frame/sort timing rig behind ?benchmarkSeconds
  lib/ the published library ("@voluma/vlam" on npm)
  index.ts curated public API: core renderer + mesh/scene, no parsers
- loaders.ts → `@voluma/vlam/loaders` (loadScene, ChunkLoader, workers)
+ loaders.ts → `@voluma/vlam/loaders` (loadSplatData, ChunkLoader, workers)
  static-lod-entry.ts → `@voluma/vlam/static-lod`
  streaming.ts → `@voluma/vlam/streaming`
  unified.ts → `@voluma/vlam/unified`
@@ -60,19 +62,21 @@ src/
  splat-mesh-material.ts its TSL graph (display + pick), as free functions
  splat-mesh-picking.ts SplatPicker: the GPU pick pass and its resources
  splat-mesh-pool.ts pool data textures + the row-span allocator
+ merged-splat-mesh.ts MergedSplatMesh: several fully decoded sources, one pool
+ unified-splat-mesh.ts UnifiedSplatMesh: one WebGPU draw over registered meshes
  streamed-splat-mesh.ts LOD streaming pool; dynamic-imports RAD/LCC/frontier
  streamed-splat-mesh-utils.ts format-neutral swap, fetch, and chunk helpers
  splat-data.ts SplatData arrays + shared covariance/SH math
  splat-modifier.ts M7 TSL hook types (SplatContext/SplatOutputs)
  effects.ts tree-shakeable presets → the `@voluma/vlam/effects` subpath
  splat-budget.ts device profiling + per-device default splat budget
- webgpu-limits.ts host requiredLimits helper + storage-buffer size checks
+ webgpu-limits.ts application requiredLimits helper + storage-buffer size checks
  splat-depth-pack.ts depth pack/unpack + view-depth (un)projection for picking
 
  -- loading pipeline --
  loading.ts shared types, URL/format resolution, SplatLoadError,
  readWholeFile + the 2 GiB ArrayBuffer ceiling
- load-scene.ts public one-shot loaders (loadScene/loadSceneFile)
+ load-splat-data.ts public whole-file loaders (loadSplatData/loadSplatDataFile)
  chunk-loader.ts ChunkLoader: multiplexed, cancellable fetches + progress,
  across two workers (streaming eager, one-shot lazy)
  load-worker.ts streaming decode off the main thread (transfers arrays):
@@ -118,7 +122,7 @@ several tests reach into private members **by name** through
 private constructor plus `reschedule`/`stageGroup`/`cache`/`resident`), so
 those must stay instance members even when the work moves out.
 
-`SplatMesh` has two modes: static (`new SplatMesh(data)`) and
+`SplatMesh` has two modes: fully loaded (`new SplatMesh(data)`) and
 dynamic-capacity (`new SplatMesh({ capacity })`, an empty pool filled with
 `appendRange`/`removeRange`, row-aligned in the pool textures).
 `StreamedSplatMesh extends SplatMesh` drives that pool within a per-device

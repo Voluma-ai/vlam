@@ -54,7 +54,7 @@ interface MeshFixture {
   budget?: number;
   /** Pool capacity in splats. */
   capacity?: number;
-  /** Whether the scene advertises foveation (drives `pagetable` wiring). */
+  /** Whether the scene advertises foveation (drives page-table wiring). */
   foveated?: boolean;
   options?: StreamedSplatMeshOptions;
 }
@@ -161,7 +161,7 @@ describe('StreamedSplatMesh budget ceiling', () => {
     expect(() => mesh.setBudget(-1)).toThrow(RangeError);
   });
 
-  it('reports 0 drawBudget outside pagetable mode', () => {
+  it('reports 0 drawBudget outside page-table mode', () => {
     const mesh = track(makeMesh());
     expect(mesh.drawBudget).toBe(0);
   });
@@ -186,7 +186,7 @@ describe('StreamedSplatMesh page-table governance', () => {
         budget: WIDTH,
         capacity: 8 * WIDTH,
         foveated: true,
-        options: { foveationMode: 'pagetable', maxBudget: 8 * WIDTH },
+        options: { foveationMode: 'page-table', maxBudget: 8 * WIDTH },
       }),
     );
     expect(mesh.drawBudget).toBe(WIDTH);
@@ -199,6 +199,27 @@ describe('StreamedSplatMesh page-table governance', () => {
 
     reschedulePageTable(mesh, 1000);
     expect(RecordingWorker.last?.lastReschedule?.['budget']).toBe(6 * WIDTH);
+  });
+
+  it('treats deprecated pagetable spelling as page-table', () => {
+    const canonical = track(
+      makeMesh({
+        budget: WIDTH,
+        capacity: 8 * WIDTH,
+        foveated: true,
+        options: { foveationMode: 'page-table', maxBudget: 8 * WIDTH },
+      }),
+    );
+    const deprecated = track(
+      makeMesh({
+        budget: WIDTH,
+        capacity: 8 * WIDTH,
+        foveated: true,
+        options: { foveationMode: 'pagetable', maxBudget: 8 * WIDTH },
+      }),
+    );
+    expect(deprecated.drawBudget).toBe(canonical.drawBudget);
+    expect(canonical.drawBudget).toBe(WIDTH);
   });
 
   it('pages a slab whose capacity is not a whole number of pages', () => {
@@ -214,7 +235,7 @@ describe('StreamedSplatMesh page-table governance', () => {
         budget: WIDTH,
         capacity,
         foveated: true,
-        options: { foveationMode: 'pagetable', maxBudget: capacity },
+        options: { foveationMode: 'page-table', maxBudget: capacity },
       }),
     );
     expect(mesh.capacity).toBeGreaterThanOrEqual(capacity);
@@ -249,7 +270,7 @@ describe('StreamedSplatMesh page-table governance', () => {
         capacity: 8 * WIDTH,
         foveated: true,
         options: {
-          foveationMode: 'pagetable',
+          foveationMode: 'page-table',
           maxBudget: 8 * WIDTH,
           foveationDrawBudget: 2 * WIDTH,
         },
@@ -273,7 +294,7 @@ describe('StreamedSplatMesh page-table governance', () => {
         budget: 4 * WIDTH,
         capacity: 4 * WIDTH,
         foveated: true,
-        options: { foveationMode: 'pagetable' },
+        options: { foveationMode: 'page-table' },
       }),
     );
     expect(mesh.lodScale).toBe(1);

@@ -6,7 +6,7 @@
  * transparent draw calls, each depth-sorted only within itself, so where the
  * clouds overlap one is painted wholesale in front of the other ("pasted over")
  * - the same artifact PlayCanvas's unified rendering and Spark's accumulator
- * exist to fix. `SplatScene` concatenates every cloud into **one pool** and
+ * exist to fix. `MergedSplatMesh` concatenates every cloud into **one pool** and
  * runs **one global depth sort**, so splats from different clouds interleave
  * correctly, from any angle.
  *
@@ -17,7 +17,7 @@
  * is a handful of uniform writes - a source can be dragged or animated every
  * frame at full rate, at any splat count, with no data re-upload.
  *
- * The placement runs **before** the modifier stack, so a host effect sees each
+ * The placement runs **before** the modifier stack, so an application effect sees each
  * splat where it visually is: an SDF light shape spanning two sources paints
  * one continuous shape, and a reveal sweeps them together. A modifier that
  * wants to travel *with* a moved source reads `ctx.sourceCenter` instead of
@@ -30,36 +30,35 @@
  * Limitations, all inherited from the dynamic pool: sources may not carry
  * palette (SOG `shN`) view-dependent color - per-file palettes cannot be merged
  * - but DC color and per-splat (LCC) SH are fine; all sources share one
- * antialias setting (from the scene options).
+ * antialias setting (from the mesh options).
  *
- * Sources are **static**: {@link addSource} takes a fully-resident
- * {@link SplatData} and copies it once into the pool, so a streaming
- * {@link StreamedSplatMesh} (which swaps its resident LOD cut every frame)
- * cannot be a source yet - keep a streamed main splat separate and unify only
- * the static sources. Streamed sources are ROADMAP M15.4.
+ * Sources are fully decoded {@link SplatData} copied once into the pool.
+ * {@link StreamedSplatMesh} swaps its resident LOD cut every frame, so it cannot
+ * be a merged source. Compose streamed meshes with fully loaded meshes through
+ * {@link UnifiedSplatMesh} instead.
  */
 import * as THREE from 'three/webgpu';
 import { SplatMesh, type SplatMeshOptions, type SplatRange } from './splat-mesh';
 import type { SplatData } from './splat-data';
 import { yUpTransformForFormat, type SplatOrientation } from './orientation';
 import {
-  MAX_SOURCES,
+  MAX_MERGED_SPLAT_SOURCES,
   SOURCE_ID_CHANNEL,
   SourceMatrixArray,
   worldBoundsOf,
   type SourceBounds,
 } from './source-transform';
 
-/** Construction options for a {@link SplatScene}. */
-export interface SplatSceneOptions extends SplatMeshOptions {
+/** Construction options for a {@link MergedSplatMesh}. */
+export interface MergedSplatMeshOptions extends SplatMeshOptions {
   /** Total pool size in splats - must cover the sum of every source added. */
   capacity: number;
-  /** Maximum number of sources (default {@link MAX_SOURCES}). */
+  /** Maximum number of sources (default {@link MAX_MERGED_SPLAT_SOURCES}). */
   maxSources?: number;
 }
 
 /** Per-source placement options. */
-export interface AddSourceOptions {
+export interface MergedSplatSourceOptions {
   /**
    * Y-up normalization for this source's data frame, like {@link SplatMesh}'s
    * `orientation`. `'y-up'` (default) applies the format's stand-up correction
@@ -76,7 +75,7 @@ interface SourceRecord extends SourceBounds {
   correction: THREE.Matrix4 | null;
   /** Live placement (world = placement · correction); kept for re-placement. */
   placement: THREE.Matrix4;
-  /** The source's own data-frame bounds, for {@link SplatScene.computeSplatBounds}. */
+  /** The source's own data-frame bounds, for {@link MergedSplatMesh.computeSplatBounds}. */
   box: THREE.Box3;
 }
 
@@ -86,15 +85,15 @@ interface SourceRecord extends SourceBounds {
  *
  * @experimental May change in a minor release.
  */
-export class SplatScene extends SplatMesh {
+export class MergedSplatMesh extends SplatMesh {
   private readonly matrices: SourceMatrixArray;
   private readonly maxSources: number;
   /** Indexed by source id; holes are left by {@link removeSource}. */
   private readonly sources: (SourceRecord | undefined)[] = [];
   private nextId = 0;
 
-  constructor(options: SplatSceneOptions) {
-    const maxSources = options.maxSources ?? MAX_SOURCES;
+  constructor(options: MergedSplatMeshOptions) {
+    const maxSources = options.maxSources ?? MAX_MERGED_SPLAT_SOURCES;
     super({ capacity: options.capacity }, options);
     this.matrices = new SourceMatrixArray(maxSources);
     this.maxSources = maxSources;
@@ -103,7 +102,7 @@ export class SplatScene extends SplatMesh {
     // material graph and the world-depth sorter.
     this.defineChannel(SOURCE_ID_CHANNEL, { type: 'float' });
     const sourceIdTexture = this.channelTexture(SOURCE_ID_CHANNEL);
-    if (!sourceIdTexture) throw new Error('SplatScene: sourceId channel texture missing.');
+    if (!sourceIdTexture) throw new Error('MergedSplatMesh: sourceId channel texture missing.');
     this.perSourceSort = {
       sourceIdTexture,
       columns: this.matrices.node,
@@ -134,11 +133,11 @@ export class SplatScene extends SplatMesh {
   addSource(
     data: SplatData,
     placement: THREE.Matrix4 = new THREE.Matrix4(),
-    options: AddSourceOptions = {},
+    options: MergedSplatSourceOptions = {},
   ): number {
     const id = this.nextId;
     if (id >= this.maxSources) {
-      throw new Error(`SplatScene: source limit reached (${this.maxSources}).`);
+      throw new Error(`MergedSplatMesh: source limit reached (${this.maxSources}).`);
     }
     const range = this.appendRange(data); // local space; transform is a uniform
     this.nextId++;
@@ -148,7 +147,7 @@ export class SplatScene extends SplatMesh {
     this.writeChannel(range, SOURCE_ID_CHANNEL, ids);
 
     const orientation = options.orientation ?? 'y-up';
-    const correction = orientation === 'y-up' ? yUpTransformForFormat(data.sourceFormat) : null;
+    const correction = orientation === 'y-up' ? yUpTransformForFormat(data.format) : null;
     const box = new THREE.Box3().setFromArray(data.positions);
     const sphere = box.getBoundingSphere(new THREE.Sphere());
     const record: SourceRecord = {
@@ -179,7 +178,7 @@ export class SplatScene extends SplatMesh {
    */
   setSourceTransform(id: number, placement: THREE.Matrix4): void {
     const record = this.sources[id];
-    if (!record) throw new Error(`SplatScene: no live source ${id}.`);
+    if (!record) throw new Error(`MergedSplatMesh: no live source ${id}.`);
     record.placement.copy(placement);
     this.applyPlacement(record);
   }

@@ -14,7 +14,7 @@ Each is a standalone program. Follow the link for the explanation and a live run
 <<< ../../docs/examples/samples/first-viewer.ts
 :::
 
-::: details open-local-file.ts, `loadSceneFile`, progress, abort, `SplatLoadError` · [walkthrough](/examples/open-local-file)
+::: details open-local-file.ts, `loadSplatDataFile`, progress, abort, `SplatLoadError` · [walkthrough](/examples/open-local-file)
 <<< ../../docs/examples/samples/open-local-file.ts
 :::
 
@@ -30,7 +30,7 @@ Each is a standalone program. Follow the link for the explanation and a live run
 <<< ../../docs/examples/samples/splats-and-objects.ts
 :::
 
-::: details many-captures.ts, `SplatScene` with three sources · [walkthrough](/examples/many-captures)
+::: details many-captures.ts, `MergedSplatMesh` with three sources · [walkthrough](/examples/many-captures)
 <<< ../../docs/examples/samples/many-captures.ts
 :::
 
@@ -110,11 +110,11 @@ Short reference snippets from `docs/guide/samples/`, mostly exported functions r
 
 ### Getting started
 
-::: details getting-started-basic.ts, minimal renderer + `loadScene` + `SplatMesh`
+::: details getting-started-basic.ts, minimal renderer + `loadSplatData` + `SplatMesh`
 <<< ../../docs/guide/samples/getting-started-basic.ts
 :::
 
-::: details getting-started-file-input.ts, load a local `File` with `loadSceneFile`
+::: details getting-started-file-input.ts, load a local `File` with `loadSplatDataFile`
 <<< ../../docs/guide/samples/getting-started-file-input.ts
 :::
 
@@ -186,7 +186,7 @@ Short reference snippets from `docs/guide/samples/`, mostly exported functions r
 
 ### Unified rendering
 
-::: details unified-basic.ts, `UnifiedSplatRenderer` on WebGPU
+::: details unified-basic.ts, `UnifiedSplatMesh` on WebGPU
 <<< ../../docs/guide/samples/unified-basic.ts
 :::
 

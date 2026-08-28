@@ -1,5 +1,5 @@
 // Guide sample: docs/guide/streaming-and-lod.md - stream a dropped folder,
-// hand collision meshes to the host, toggle the environment tile.
+// hand collision meshes to the application, toggle the environment tile.
 import { StreamedSplatMesh } from '@voluma/vlam/streaming';
 
 export async function openDroppedFolder(files: ReadonlyMap<string, File>) {
@@ -9,7 +9,7 @@ export async function openDroppedFolder(files: ReadonlyMap<string, File>) {
   const splats = await StreamedSplatMesh.loadLocal(files);
 
   // .lcc / .lcc2 captures may ship collision geometry as plain triangles; VLAM!
-  // builds no BVH and runs no physics - that is the host's job. Resolves []
+  // builds no BVH and runs no physics - that is the application's job. Resolves []
   // for scenes without collision geometry.
   const collision = await splats.loadCollisionMeshes();
   console.log(`${collision.length} collision tiles`);

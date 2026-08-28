@@ -1,19 +1,19 @@
 /**
  * `@voluma/vlam/unified` - one WebGPU draw over several splat sources.
  *
- * {@link UnifiedSplatRenderer} concatenates static and streamed meshes into a
+ * {@link UnifiedSplatMesh} concatenates static and streamed meshes into a
  * shared work buffer so overlapping clouds inter-sort. WebGL2 is unsupported;
- * {@link supportsUnifiedSplatRenderer} reports that after renderer init.
+ * {@link supportsUnifiedSplatMesh} reports that after renderer init.
  *
  * @module unified
  */
 export {
-  UnifiedSplatRenderer,
-  supportsUnifiedSplatRenderer,
+  UnifiedSplatMesh,
+  supportsUnifiedSplatMesh,
   type UnifiedSplatPickResult,
-  type UnifiedSplatRendererOptions,
+  type UnifiedSplatMeshOptions,
   type UnifiedSplatSourceOptions,
-} from './unified-splat-renderer';
+} from './unified-splat-mesh';
 export {
   estimateLargestStorageBufferBytes,
   estimateUnifiedWorkBufferBytes,

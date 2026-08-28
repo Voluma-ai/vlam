@@ -26,7 +26,7 @@ export async function openStreamed(scene: THREE.Scene, signal: AbortSignal) {
     lodBaseDistance: 10, // world units inside which the finest LOD is used
   });
   scene.add(splats);
-  // Per frame, exactly like a static mesh:
+  // Per frame, exactly like a fully loaded mesh:
   //   splats.update(camera, renderer); renderer.render(scene, camera);
   return splats;
 }
@@ -123,7 +123,7 @@ export async function openDroppedFolder(files: ReadonlyMap<string, File>) {
   const splats = await StreamedSplatMesh.loadLocal(files);
 
   // .lcc / .lcc2 captures may ship collision geometry as plain triangles; VLAM!
-  // builds no BVH and runs no physics, that is the host's job. Resolves []
+  // builds no BVH and runs no physics, that is the application's job. Resolves []
   // for scenes without collision geometry.
   const collision = await splats.loadCollisionMeshes();
   console.log(`${collision.length} collision tiles`);
@@ -142,7 +142,7 @@ export async function openDroppedFolder(files: ReadonlyMap<string, File>) {
 - **`loadCollisionMeshes()`** (also in the sample above) returns the triangle
  tiles some `.lcc` / `.lcc2` captures ship, source-local, so apply the mesh's
   `matrixWorld`. VLAM! hands them over and nothing more: BVH building,
-  raycasts, and character controllers are host code (the demo's
+  raycasts, and character controllers are application code (the demo's
   `src/viewer/collision.ts` shows one).
 - **`setEnvironmentEnabled(enabled)`** toggles the always-resident
  environment/sky tile (`.lcc2`) live; the `environmentEnabled` load option
@@ -157,5 +157,6 @@ polished path there
 
 ## Next
 
+[Terminology](terminology.md) for budget and LOD words.
 [Unified rendering](unified-rendering.md), depth-correct compositing of
-several static and streamed sources in one draw.
+fully loaded and streamed sources in one draw.

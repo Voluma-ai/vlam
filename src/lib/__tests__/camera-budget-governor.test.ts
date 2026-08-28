@@ -169,7 +169,7 @@ describe('CameraBudgetGovernor', () => {
     governor.update(overheadCamera(), 0);
     const before = governor.budgetOf(members[0]!) ?? 0;
 
-    // A UnifiedSplatRenderer takes ownership: it forces `visible = false` on
+    // A UnifiedSplatMesh takes ownership: it forces `visible = false` on
     // every source (to keep the scene draw from double-drawing) while the
     // source stays on screen through the unified draw. The governor must keep
     // weighting it - this is the regression that froze member streaming at

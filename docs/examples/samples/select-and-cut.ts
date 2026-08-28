@@ -4,7 +4,7 @@ import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformGizmo } from '@voluma/three-transform-gizmo';
 import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
-import { loadScene } from '@voluma/vlam/loaders';
+import { loadSplatData } from '@voluma/vlam/loaders';
 import { countInData, createSelectionVolume, partitionSplatData } from '@voluma/vlam/selection';
 
 const renderer = await createSplatRenderer();
@@ -17,7 +17,7 @@ camera.position.set(0.9, 0.4, 1.8);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 
-const data = await loadScene('/goose.sog');
+const data = await loadSplatData('/goose.sog');
 let splats = new SplatMesh(data);
 scene.add(splats);
 

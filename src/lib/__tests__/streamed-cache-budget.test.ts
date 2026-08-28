@@ -89,7 +89,7 @@ function makeMesh(
     scene,
     budget,
     budget,
-    { ...options, foveationMode: 'pagetable' },
+    { ...options, foveationMode: 'page-table' },
     RecordingWorker,
   );
 }

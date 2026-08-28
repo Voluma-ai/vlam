@@ -1,5 +1,5 @@
 /**
- * Byte costs of {@link UnifiedSplatRenderer}'s GPU work buffer.
+ * Byte costs of {@link UnifiedSplatMesh}'s GPU work buffer.
  *
  * Kept off the core entry so hosts that never composite sources do not pay
  * for the accounting, and so the numbers cannot drift from the renderer
@@ -27,7 +27,7 @@ function assertNonNegativeCapacity(capacity: number): void {
  * given splat capacity (unified work-buffer centers: `capacity × 16`).
  *
  * Use with adapter/device limits to decide whether to raise `requiredLimits`
- * or lower the budget before constructing {@link UnifiedSplatRenderer}.
+ * or lower the budget before constructing {@link UnifiedSplatMesh}.
  */
 export function estimateLargestStorageBufferBytes(capacity: number): number {
   assertNonNegativeCapacity(capacity);
@@ -35,7 +35,7 @@ export function estimateLargestStorageBufferBytes(capacity: number): number {
 }
 
 /**
- * Estimates what a {@link UnifiedSplatRenderer}'s work buffer costs, in bytes,
+ * Estimates what a {@link UnifiedSplatMesh}'s work buffer costs, in bytes,
  * once the scene has rendered a frame.
  *
  * This used to be double the figure below, and the doubling was not a detail.
@@ -67,7 +67,7 @@ export function estimateUnifiedWorkBufferBytes(capacity: number): number {
 }
 
 /**
- * Peak bytes a {@link UnifiedSplatRenderer}'s work buffer occupies: the window
+ * Peak bytes a {@link UnifiedSplatMesh}'s work buffer occupies: the window
  * between construction and the first dispatch, while the GPU buffer and the JS
  * array three copied it from are both alive.
  *

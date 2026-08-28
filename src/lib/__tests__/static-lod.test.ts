@@ -50,7 +50,7 @@ describe('buildStaticLod', () => {
       {
         ...input,
         antialias: true,
-        sourceFormat: 'sog',
+        format: 'sog',
         sh: {
           bands: 1,
           labels: Uint32Array.of(4, 9),
@@ -68,7 +68,7 @@ describe('buildStaticLod', () => {
     );
 
     expect(result.data.antialias).toBe(true);
-    expect(result.data.sourceFormat).toBe('sog');
+    expect(result.data.format).toBe('sog');
     expect(result.data.sh?.labels[0]).toBe(4);
     expect([...(result.data.shPacked?.packed ?? new Uint32Array())]).toEqual([1, 2, 3]);
     expect(result.data.colors[3]).toBeGreaterThan(0);

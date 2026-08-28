@@ -13,12 +13,13 @@ chunks, no SH). Read together with `ROADMAP.md` M14. Implemented under
 
 ### Current streaming architecture (large captures)
 
-- **Default `foveationMode: 'pagetable'`** for `.rad` whose leaf count exceeds
+- **Default `foveationMode: 'page-table'`** for `.rad` whose leaf count exceeds
   the budget-lift ceiling (~6M): Spark's selected-index model, off-thread
   [`FrontierPager`](../../src/lib/formats/rad/frontier-pager.ts) +
   [`frontier-worker`](../../src/lib/formats/rad/frontier-worker.ts) page only the CPU-
   selected frontier into a fixed pool slab; sort/vertex cost tracks **drawn**
   splats (`foveationDrawBudget`, default `PAGETABLE_DRAW_BUDGET` = 4M).
+  `'pagetable'` is a deprecated spelling of the same mode.
   The traversal **foveates rather than frustum-culls**, and enforces the draw
   budget inside the descent, see §"Coverage and budget" below.
 - **Moderate captures** (budget auto-lift): [`RadLodSource`](../../src/lib/formats/rad/rad.ts)
@@ -108,7 +109,7 @@ gaps in the foveated far field.
 
 ## One-shot vs. streamed
 
-- **One-shot** (`parseRad`, small files via `loadScene`): decode every chunk,
+- **One-shot** (`parseRad`, small files via `loadSplatData`): decode every chunk,
   keep **leaf splats only** (drop merged nodes), producing a `SplatData`
   identical to the source capture. Only viable under the ~16.7M-splat single-
   texture cap; a 53M capture must stream. That cap is enforced **in `parseRad`
@@ -180,7 +181,7 @@ leaf count (Spark's `input_splat_count`, parsed from the header comment;
 user pinned no budget, the same `liftBudgetToFinestLevel` LCC uses. The
 frontier then loads every chunk and reaches full resolution (verified:
 bentleywar draws all 4,351,017 leaves, zero blobs, at the default budget). A
-capture whose leaf count exceeds the cap uses the **pagetable** pager (default)
+capture whose leaf count exceeds the cap uses the **page-table** pager (default)
 for camera-distance refinement.
 
 **An explicit `budget` suppresses the lift**, deliberately, so an A/B run gets
@@ -308,9 +309,9 @@ count exceeds the 6M budget-lift ceiling; smaller captures keep the prefix reade
 (`RadLodSource`), which is memory-efficient and already full-resolution.
 
 Parked for A/B after the `cest_ca` coverage audit; production default is
-**`pagetable`**.
+**`page-table`**.
 
-### Production default: page-table pager (`foveationMode: 'pagetable'`)
+### Production default: page-table pager (`foveationMode: 'page-table'`)
 
 Spark's CPU traversal + selected-index paging. The worker evaluates the same
 frontier cut, `FrontierPager` diffs updates, and the main thread applies a
@@ -322,7 +323,7 @@ accessor) is Spark's own knob: its cut is `pixel_scale × lodScale ≤ limit`, a
 the traversal only ever sees one side of that comparison, so the mesh posts
 `limit / lodScale` and no protocol field was needed. `> 1` refines further,
 `< 1` coarsens; the draw budget still bounds the result. It applies to
-`pagetable` only, a prefix-read `.rad` has no per-splat cut to scale, and for
+`page-table` only, a prefix-read `.rad` has no per-splat cut to scale, and for
 the GPU cuts (`band` / `frontier`) the equivalent is `foveationTargetPx =
 1 / lodScale`.
 
@@ -375,7 +376,7 @@ Issued after the sweep, the touched requests were dropped by the in-flight cap o
 every tick, so the capture downloaded coarse→fine in file order while the region
 on screen waited.
 
-**Main-thread cost.** In `pagetable` mode `RadFoveatedSource.needsParentSizes` is
+**Main-thread cost.** In `page-table` mode `RadFoveatedSource.needsParentSizes` is
 false: per-splat `parent_size` is a GPU-cut input the worker never reads, and
 computing it kept one pending-range object per internal node alive in
 `RadParentSizes` until its child chunk decoded (tens of millions of live objects

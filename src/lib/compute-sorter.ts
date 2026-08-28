@@ -22,7 +22,7 @@ import { StorageMirrorReleaser } from './storage-attribute-mirror';
 import type { uniformArray } from 'three/tsl';
 
 /**
- * Optional per-source world transform for a unified {@link SplatScene} pool.
+ * Optional per-source world transform for a unified {@link MergedSplatMesh} pool.
  * When present, each splat's center is transformed to world space by its
  * source's matrix (selected by a per-splat id read from `sourceIdTexture`)
  * before its depth is computed, so clouds with different world transforms sort

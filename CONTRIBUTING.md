@@ -82,15 +82,15 @@ approximate splat count, reproduction steps, expected vs actual, and console
 output. Pull requests should name the roadmap item, tests run, manual/device
 validation, docs/changelog updates, and compatibility impact.
 
-## Root-level GPU harnesses
+## Dev GPU harnesses
 
-[`chunk-harness.html`](chunk-harness.html) and
-[`unified-harness.html`](unified-harness.html) are standalone browser pages for
-poking at one subsystem in isolation, chunked streaming upload and the unified
-renderer's work buffer respectively. They are served by `npm run dev` at
-`/chunk-harness.html` and `/unified-harness.html`, are not part of the docs
-site chrome, and are not published. Reach for them when a change needs a smaller
-surface than the full viewer.
+[`src/viewer/chunk-harness.html`](src/viewer/chunk-harness.html) and
+[`src/viewer/unified-harness.html`](src/viewer/unified-harness.html) are
+standalone browser pages for poking at one subsystem in isolation, chunked
+streaming upload and the unified renderer's work buffer respectively. They are
+served by `npm run dev` at `/chunk-harness.html` and `/unified-harness.html`,
+are not part of the docs site chrome, and are not published. Reach for them
+when a change needs a smaller surface than the full viewer.
 
 ## Ground rules (the non-negotiables)
 

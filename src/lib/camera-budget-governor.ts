@@ -60,7 +60,7 @@ export interface CameraBudgetMember extends BudgetGovernedMember {
   /**
    * The visibility that actually decides whether the member's splats reach the
    * screen, when that differs from `visible`. `SplatMesh` provides it: a
-   * `UnifiedSplatRenderer` forces `visible = false` on every source it owns
+   * `UnifiedSplatMesh` forces `visible = false` on every source it owns
    * (only to keep the regular scene draw from double-drawing them) while the
    * source may be fully on screen through the unified draw - without this, the
    * governor would suspend every unified source and freeze its streaming.

@@ -68,14 +68,14 @@ Both are triangle meshes that approximate the scene. They differ by **job**:
 
 You may reuse LCC collision tiles (or a PlayCanvas `.collision.glb`) as the
 proxy when the silhouette is good enough. Prefer a denser reconstructed mesh
-when light edges matter. The core API never requires `SceneCollision`; pass
+when light edges matter. The core API never requires `SplatCollisionData`; pass
 any `THREE.Texture` from your own RT.
 
 ## Minimal loop (shadow-factor)
 
 ```ts
 import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
-import { loadScene } from '@voluma/vlam/loaders';
+import { loadSplatData } from '@voluma/vlam/loaders';
 import {
   createRelightingProxy,
   createRelightingShadowFactorMaterial,
@@ -121,7 +121,7 @@ renderer.render(scene, camera);
 
 <!-- full file: docs/guide/samples/relighting.ts -->
 
-Use {@link renderRelightingFactorMap} on a host-owned `WebGPURenderer`
+Use {@link renderRelightingFactorMap} on an application-owned `WebGPURenderer`
 (`autoClear: false`, tone-mapping `contextNode`, and so on). The helper
 resizes the RT, clears white with alpha 0, turns shadow maps on for the pass,
 swaps in a passthrough `contextNode` (never `undefined` — WebGPURenderer
@@ -137,7 +137,7 @@ Coarse collision proxies leave hard coverage silhouettes. If you use
 alpha-weighted filter (built in); a black clear turns soft edges into mesh
 outlines. PlayCanvas does not add this blur — proxy quality is the main lever.
 
-On `UnifiedSplatRenderer`, the same API modulates the unified draw material
+On `UnifiedSplatMesh`, the same API modulates the unified draw material
 without invalidating gather caches.
 
 A compact runnable copy lives in the docs as

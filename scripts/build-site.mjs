@@ -26,7 +26,7 @@ function run(command, args, env = {}) {
 if (existsSync(distSite)) rmSync(distSite, { recursive: true, force: true });
 mkdirSync(distSite, { recursive: true });
 
-run('npx', ['typedoc', '--options', 'typedoc.site.json']);
+run('npx', ['typedoc', '--options', 'site/typedoc.site.json']);
 run('npx', ['vitepress', 'build', 'site']);
 
 run('npx', ['vite', 'build'], {
@@ -35,7 +35,7 @@ run('npx', ['vite', 'build'], {
 });
 
 // Runnable example apps at /examples/live/<slug>/ (site/examples/*.md links here).
-run('npx', ['vite', 'build', '--config', 'vite.config.examples.ts']);
+run('npx', ['vite', 'build', '--config', 'scripts/vite.config.examples.ts']);
 
 // The examples fetch `/goose.sog` - site root, not the viewer's or the example
 // bundle's own public dir - because that is the URL their published source

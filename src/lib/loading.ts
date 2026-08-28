@@ -1,12 +1,12 @@
 /**
  * The self-contained scene formats - files (or bundles) that decode to a whole
  * scene on their own, with no external manifest. This is the value set of
- * {@link SplatData.sourceFormat} and the non-`auto` half of {@link SplatFormat}.
+ * {@link SplatData.format} and the non-`auto` half of {@link SplatFormat}.
  */
-export type SplatSourceFormat = 'ply' | 'sog' | 'spz' | 'splat' | 'ksplat' | 'rad';
+export type SplatDataFormat = 'ply' | 'sog' | 'spz' | 'splat' | 'ksplat' | 'rad';
 
-/** Explicit formats accepted by {@link loadScene}. */
-export type SplatFormat = 'auto' | SplatSourceFormat;
+/** Explicit formats accepted by {@link loadSplatData}. */
+export type SplatFormat = 'auto' | SplatDataFormat;
 
 /** Explicit formats accepted by {@link StreamedSplatMesh.load}. */
 export type StreamedSplatFormat = 'auto' | 'streamed-sog' | 'lcc2' | 'lcc' | 'rad';
@@ -14,7 +14,7 @@ export type StreamedSplatFormat = 'auto' | 'streamed-sog' | 'lcc2' | 'lcc' | 'ra
 /**
  * Parsers the loading worker can run on a chunk. This extends {@link SplatFormat}
  * with formats that are only ever reached as a streamed chunk, never as a
- * standalone scene handed to {@link loadScene}: `lcc-bin` is a byte range of an
+ * standalone scene handed to {@link loadSplatData}: `lcc-bin` is a byte range of an
  * LCC (`.lcc`) `data.bin`, and `rad-chunk` a byte range of a single-file `.rad` -
  * both meaningless without their manifest/header.
  */
@@ -69,11 +69,11 @@ export function createProgressThrottle(
 /**
  * Options for decoding a local file.
  *
- * Shared by {@link loadSceneFile} and `ChunkLoader.loadFile`. There is no
+ * Shared by {@link loadSplatDataFile} and `ChunkLoader.loadFile`. There is no
  * `baseUrl`/`request` counterpart to {@link SplatInputOptions} here: a file has
  * no URL to resolve and no request to configure.
  */
-export interface SplatFileLoadOptions {
+export interface SplatDataFileLoadOptions {
   signal?: AbortSignal;
   /** Parser selection; the file name's extension is used only for `auto`. */
   format?: SplatFormat;
@@ -173,7 +173,7 @@ export function splatNameExtension(name: string): string {
  * extension, keeping the loader contract uniform: callers of the loading
  * pipeline only ever see `SplatLoadError` or `AbortError`.
  */
-export function splatFormatForExtension(extension: string, label: string): SplatSourceFormat {
+export function splatFormatForExtension(extension: string, label: string): SplatDataFormat {
   switch (extension) {
     case '.ply':
       return 'ply';

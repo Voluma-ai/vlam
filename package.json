@@ -99,9 +99,9 @@
   },
   "scripts": {
     "dev": "npm run docs:api:site && vitepress dev site",
-    "docs:api:site": "typedoc --options typedoc.site.json",
+    "docs:api:site": "typedoc --options site/typedoc.site.json",
     "build:site": "npm run typecheck && node scripts/build-site.mjs",
-    "build:lib": "vite build --config vite.config.lib.ts && tsc -p tsconfig.lib.json",
+    "build:lib": "vite build --config scripts/vite.config.lib.ts && tsc -p tsconfig.lib.json",
     "build": "npm run build:site && npm run build:lib",
     "prepack": "npm run build:lib",
     "typecheck": "tsc --noEmit",
@@ -112,7 +112,7 @@
     "test:coverage": "vitest run --coverage",
     "docs:check": "node scripts/docs-check.mjs",
     "docs:samples": "tsc --noEmit -p docs/guide/samples/tsconfig.json && tsc --noEmit -p docs/examples/samples/tsconfig.json",
-    "docs:api": "typedoc",
+    "docs:api": "typedoc --options site/typedoc.json",
     "size:check": "node scripts/check-bundle-size.mjs",
     "deploy": "npm run build:site && wrangler deploy"
   },

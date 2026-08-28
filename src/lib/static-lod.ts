@@ -416,7 +416,7 @@ export function buildStaticLod(
     ...(sh ? { sh } : {}),
     ...(shPacked ? { shPacked } : {}),
     ...(source.antialias === undefined ? {} : { antialias: source.antialias }),
-    ...(source.sourceFormat === undefined ? {} : { sourceFormat: source.sourceFormat }),
+    ...(source.format === undefined ? {} : { format: source.format }),
     radTree,
   };
   onProgress?.({ completed: source.count, total: source.count });
