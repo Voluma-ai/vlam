@@ -342,7 +342,7 @@ u64; `vertexCount`, `faceCount`, `bvhByteSize`, pad u32.
 **Mesh payload at `dataOffset`:** `vertexCount × float32 × 3` positions, then
 `faceCount × uint32 × 3` indices, then `bvhByteSize` bytes of a proprietary
 serialized BVH. Identity check: `verts×12 + faces×12 + bvh == dataSize`.
-VLAM! **skips the BVH** (same stance as ignoring `.lcc2` `.btree`); hosts build
+VLAM! **skips the BVH** (same stance as ignoring `.lcc2` `.btree`); applications build
 their own acceleration structure. Coordinates are Z-up source-local - apply
 `formatTransform` / `matrixWorld` like the splats.
 

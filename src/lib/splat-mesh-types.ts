@@ -14,27 +14,20 @@ import type { SplatShInputs, Vec3Uniform } from './splat-mesh-material';
 /** Construction-time projected-footprint policy selected by a streamed format. */
 export type ProjectedFilterProfile = 'default' | 'lcc';
 
-/**
- * Canonical `.rad` foveation modes. `'pagetable'` is accepted as a deprecated
- * spelling of `'page-table'` and resolves to the same path.
- */
+/** Canonical `.rad` foveation modes. */
 export type SplatFoveationMode = 'band' | 'frontier' | 'page-table';
 
-/** Input that also accepts the deprecated `'pagetable'` spelling. */
-export type SplatFoveationModeInput = SplatFoveationMode | 'pagetable';
-
-/** Map a caller-supplied foveation mode onto the canonical spelling. */
+/** Resolve a caller-supplied foveation mode, defaulting when unset. */
 export function resolveSplatFoveationMode(
-  mode: SplatFoveationModeInput | undefined,
+  mode: SplatFoveationMode | undefined,
   fallback: SplatFoveationMode = 'band',
 ): SplatFoveationMode {
-  if (mode === undefined) return fallback;
-  return mode === 'pagetable' ? 'page-table' : mode;
+  return mode ?? fallback;
 }
 
-/** True for canonical `'page-table'` and the deprecated `'pagetable'` spelling. */
+/** True when the mode is the `.rad` page-table pager. */
 export function isPageTableFoveation(mode: string | undefined): boolean {
-  return mode === 'page-table' || mode === 'pagetable';
+  return mode === 'page-table';
 }
 
 /**
@@ -214,12 +207,11 @@ export interface SplatMeshOptions {
    *   owns the tree traversal and pages only the *selected* frontier into the
    *   pool (Spark's selected-index model), so the whole splat budget buys
    *   on-screen detail. Requires the streamed `.rad` machinery; on a plain
-   *   `SplatMesh` it has no worker to drive it. `'pagetable'` is accepted as a
-   *   deprecated spelling of this mode.
+   *   `SplatMesh` it has no worker to drive it.
    *
    * @experimental `.rad` foveation option; may change in a minor release.
    */
-  foveationMode?: SplatFoveationModeInput;
+  foveationMode?: SplatFoveationMode;
   /**
    * Target on-screen size (px) for the frontier / page-table cut: it keeps one
    * LOD level per view ray whose projected node size is about this. Larger =

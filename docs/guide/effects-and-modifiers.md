@@ -48,7 +48,7 @@ framework, read their source as starting points.
 
 ## Stacking effects: `ModifierSlots`
 
-Hosts that stack several effects on one mesh should manage them through
+Applications that stack several effects on one mesh should manage them through
 `ModifierSlots`, named, ordered slots that compact into `mesh.modifiers`:
 
 ```ts

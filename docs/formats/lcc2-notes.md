@@ -96,7 +96,7 @@ How VLAM! loads it (`buildLcc2Scene` → `StreamedScene.environment`, applied by
 ## Collision meshes (`data/mesh/*.ply`)
 
 An `.lcc2` capture ships plain triangle meshes beside its splats, the
-walkable/solid geometry, for hosts that want collision or spatial queries.
+walkable/solid geometry, for applications that want collision or spatial queries.
 `parseMeshPly` reads them and `StreamedSplatMesh.loadCollisionMeshes()`
 fetches the set; vlam builds nothing on top (see `ROADMAP.md` M9's scope
 guard). Verified against `Dehaar`:
@@ -214,9 +214,9 @@ if the frozen set cannot finish.
 XGRIDS LCC2 is Z-up. VLAM! normalizes `.lcc2` meshes at load time to the
 same Three.js Y-up frame used by the XGRIDS LCC and Spark viewers with the map
 `(x, y, z) → (-x, z, y)`. Bounds and LOD data remain source-local;
-`matrixWorld` and `worldToLocal` account for the mesh transform. Host apps
+`matrixWorld` and `worldToLocal` account for the mesh transform. Applications
 must not apply another LCC2 rotation. PLY / SOG remain Y-down and still need
-the usual 180° X flip in the host.
+the usual 180° X flip in the application.
 
 ## Licensing
 

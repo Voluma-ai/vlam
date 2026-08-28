@@ -8,7 +8,7 @@ cross-checked against two real captures: `bentleywar.rad` (6.3M splats, 97
 chunks, SH degree 3) and the Eemhart `point_cloud-lod.rad` (53M splats, 816
 chunks, no SH). Read together with `ROADMAP.md` M14. Implemented under
 `src/lib/formats/rad/` (`parse-rad.ts`, `rad.ts`, `rad-frontier.ts`,
-`frontier-pager.ts`, `frontier-worker.ts`) and the one-shot path in
+`frontier-pager.ts`, `frontier-worker.ts`) and the whole-file path in
 `load-worker.ts`.
 
 ### Current streaming architecture (large captures)
@@ -53,7 +53,7 @@ splats `[c·chunkSize, min((c+1)·chunkSize, count))`, and we derive bounds by
 decoding chunk 0 (which coarsely covers the whole scene).
 
 `filename` present on a chunk range ⇒ it is an external `.radc` file (the
-`spark build-lod --rad-chunked` layout). One-shot loading rejects those (it
+`spark build-lod --rad-chunked` layout). Whole-file loading rejects those (it
 needs one self-contained file); **streaming supports them** (M14.3):
 `buildRadScene` resolves each `filename` against the manifest and the worker
 fetches it whole (`RadChunkRangeRequest` with no `start`/`length`), vs a byte
@@ -107,9 +107,9 @@ at alpha=2) so coarse nodes render enlarged enough to cover their subtree,
 matching Spark. Without it merged nodes render up to ~3.8× too small and leave
 gaps in the foveated far field.
 
-## One-shot vs. streamed
+## Whole-file vs. streamed
 
-- **One-shot** (`parseRad`, small files via `loadSplatData`): decode every chunk,
+- **Whole-file** (`parseRad`, small files via `loadSplatData`): decode every chunk,
   keep **leaf splats only** (drop merged nodes), producing a `SplatData`
   identical to the source capture. Only viable under the ~16.7M-splat single-
   texture cap; a 53M capture must stream. That cap is enforced **in `parseRad`
@@ -185,7 +185,7 @@ capture whose leaf count exceeds the cap uses the **page-table** pager (default)
 for camera-distance refinement.
 
 **An explicit `budget` suppresses the lift**, deliberately, so an A/B run gets
-the cap it asked for. The trap is a host sharing a budget across several additional
+the cap it asked for. The trap is an application sharing a budget across several additional
 meshes: passing `budget: total / N` per mesh turns the lift off and leaves
 every mesh uniformly coarse, which is exactly the case the lift exists for.
 Under a `BudgetGovernor` / `CameraBudgetGovernor`, pass **`maxBudget` ≥ the leaf

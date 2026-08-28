@@ -65,8 +65,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
   Subpaths (`@voluma/vlam/unified`, `/loaders`, `/static-lod`) are unchanged.
   `addSource` / `removeSource` stay; source means a mesh registered with a
-  composite. `'page-table'` is the canonical `.rad` foveation spelling;
-  `'pagetable'` still resolves to the same mode.
+  composite. `'page-table'` is the only `.rad` foveation spelling; `'pagetable'`
+  and `SplatFoveationModeInput` are gone. The demo query is
+  `?foveationMode=page-table`.
 
 ### Added
 

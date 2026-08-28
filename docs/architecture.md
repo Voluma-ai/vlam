@@ -197,7 +197,7 @@ error messages, and comments stay strictly professional.
 | --- | --- |
 | PLY vs SOG opacity | PLY stores logits → apply sigmoid. SOG stores linear alpha → use as-is. Mixing these up looks "fine but wrong". |
 | Quaternion order | Both formats reconstruct as (w, x, y, z); SOG uses smallest-three with the omitted component's id in alpha − 252. |
-| Scene orientation | 3DGS/SOG scenes are y-down; the demo flips those meshes upright with `rotation.x = Math.PI`. `.lcc2` is normalized inside `StreamedSplatMesh.load` to Three.js Y-up (`(x,y,z)→(-x,z,y)`); do not also rotate it in the host. SH is evaluated in mesh-local space, so this stays consistent. |
+| Scene orientation | 3DGS/SOG scenes are y-down; the demo flips those meshes upright with `rotation.x = Math.PI`. `.lcc2` is normalized inside `StreamedSplatMesh.load` to Three.js Y-up (`(x,y,z)→(-x,z,y)`); do not also rotate it in the application. SH is evaluated in mesh-local space, so this stays consistent. |
 | TSL typings are stricter than runtime | Use `attribute<'float'>('name', 'float')`, `.toInt()`, `.toMat3()` instead of the loosely-typed constructor forms. `StorageBufferAttribute` wants a typed array in TS, not `(count, itemSize, Type)`. |
 | Atomics in TSL | `storage(attr, 'uint', n).toAtomic()`; `atomicAdd(ptr.element(i), v)` returns the old value and can be captured directly. |
 | Dynamic dispatch | `renderer.compute(node, dispatchSize)` exists for dynamic counts; kernel `count` is otherwise baked at build time. |

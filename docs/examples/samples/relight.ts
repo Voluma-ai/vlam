@@ -105,7 +105,7 @@ renderer.setAnimationLoop(() => {
   sun.target.updateMatrixWorld();
 
   // Isolates autoClear / shadow maps and swaps a passthrough contextNode so
-  // this works on a host WebGPURenderer, not only createSplatRenderer().
+  // this works on an application-owned WebGPURenderer, not only createSplatRenderer().
   // Clears white + A0.
   renderRelightingFactorMap(renderer, relightScene, camera, relightTarget);
 

@@ -1,4 +1,4 @@
-// Host-side collision helper for site/examples/collision-walk.md.
+// Application-side collision helper for site/examples/collision-walk.md.
 import * as THREE from 'three/webgpu';
 import { MeshBVH } from 'three-mesh-bvh';
 import type { CollisionMeshTile } from '@voluma/vlam/streaming';

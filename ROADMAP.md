@@ -23,7 +23,7 @@ Git history, not in this queue.
   `maxStdDev`; `?minSplatPx=1.5` vs `3.5`.
 - **Streamed spherical harmonics** — `[v]` implementation is covered by tests;
   blocked on an SH-bearing streamed capture and headed `?sh=0` versus `?sh=N`.
-- **RAD parity and coverage** — `[v]` pagetable traversal keeps a coarse shell,
+- **RAD parity and coverage** — `[v]` page-table traversal keeps a coarse shell,
   prioritizes touched chunks, and respects the draw budget in tests. Compare a
   large capture against Spark during a headed WebGPU fly-through. See the
   [RAD format notes](docs/formats/rad-notes.md).

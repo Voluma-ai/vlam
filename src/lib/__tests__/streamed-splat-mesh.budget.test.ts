@@ -201,27 +201,6 @@ describe('StreamedSplatMesh page-table governance', () => {
     expect(RecordingWorker.last?.lastReschedule?.['budget']).toBe(6 * WIDTH);
   });
 
-  it('treats deprecated pagetable spelling as page-table', () => {
-    const canonical = track(
-      makeMesh({
-        budget: WIDTH,
-        capacity: 8 * WIDTH,
-        foveated: true,
-        options: { foveationMode: 'page-table', maxBudget: 8 * WIDTH },
-      }),
-    );
-    const deprecated = track(
-      makeMesh({
-        budget: WIDTH,
-        capacity: 8 * WIDTH,
-        foveated: true,
-        options: { foveationMode: 'pagetable', maxBudget: 8 * WIDTH },
-      }),
-    );
-    expect(deprecated.drawBudget).toBe(canonical.drawBudget);
-    expect(canonical.drawBudget).toBe(WIDTH);
-  });
-
   it('pages a slab whose capacity is not a whole number of pages', () => {
     // The slab is reserved as fixed-size pages (65,536 splats) so a mesh's
     // storage need not be contiguous. A capacity larger than one page and not a

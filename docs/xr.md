@@ -1,12 +1,12 @@
 # XR / VR viewing (WebXR)
 
 VLAM renders correctly inside an immersive WebXR session without any special
-host code: `SplatMesh.update(camera, renderer)` detects a presenting session on
+application code: `SplatMesh.update(camera, renderer)` detects a presenting session on
 the renderer and switches itself over, keep passing your application camera.
 The demo viewer shows an "Enter VR" button whenever the browser supports
 `immersive-vr` (`?xr=0` disables, `?foveation=0..1` overrides).
 
-Two things the host still owns, both one-liners, request the session with
+Two things the application still owns, both one-liners, request the session with
 `xrSessionInit(renderer)`, and cap the budget with `resolveXrSplatBudget()`
 while presenting. Both are explained under [Devices](#devices).
 
@@ -35,7 +35,7 @@ while presenting. Both are explained under [Devices](#devices).
   `renderer.render()`. Since `update()` runs before `render()`, VLAM calls
   `xr.updateCamera()` itself; otherwise the sort and SH would trail a frame,
   and order the scene from the world origin on the first presenting frame.
-  A host that manages the XR camera itself (`xr.cameraAutoUpdate = false`)
+  An application that manages the XR camera itself (`xr.cameraAutoUpdate = false`)
   is left alone.
 - **Streamed LOD follows the head**, not the application camera: which does
   not move in session. `StreamedSplatMesh` schedules against the head's union
@@ -151,7 +151,7 @@ must be verified on the target headset first.
  post-processing step *is* WebGL-only, but that is not this knob.)
 - `performanceProfile: 'smooth'` defaults on for mobile-class profiles, headsets
  included. For **streamed** scenes that profile also defaults `shBands` to 0 -
- view-dependent SH is a poor trade at headset budgets, while a static mesh
+ view-dependent SH is a poor trade at headset budgets, while a fully loaded mesh
  allocates no SH pool unless asked either way.
 - Streamed `.rad` scenes: frontier foveation (`foveationMode: 'frontier'`)
  adapts `foveationLimitPx` from the per-eye viewport automatically. Its

@@ -419,7 +419,7 @@ export interface SplatMaterialBuildInputs {
      * `own_size` (from the covariance) and the `parent_size` packed in
      * `covarianceB.w`. See `docs/formats/rad-notes.md` M14.6.
      */
-    foveationMode?: 'band' | 'frontier' | 'page-table' | 'pagetable';
+    foveationMode?: 'band' | 'frontier' | 'page-table';
     /**
      * Cap on a rendered splat's major/minor axis ratio (0/undefined = off). Tames
      * far-field needle/spike artifacts from very anisotropic Gaussians and
@@ -844,7 +844,7 @@ export function applySplatMaterialGraph(
       // Per-splat LOD cut. `notBlob` is the "keep this splat" predicate (named
       // for the historical blob cull); null means "no cull, always draw".
       let notBlob: THREE.Node<'bool'> | null;
-      if (settings.foveationMode === 'page-table' || settings.foveationMode === 'pagetable') {
+      if (settings.foveationMode === 'page-table') {
         // Spark's selected-index model: the CPU frontier already picked exactly
         // one node per root→leaf ray, and only those splats are paged into the
         // slab. Draw them all - any screen-size band here would re-cull the

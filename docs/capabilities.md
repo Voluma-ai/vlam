@@ -8,7 +8,7 @@ and [`architecture.md`](architecture.md).
 
 ## Formats
 
-| Format | Static (`loadSplatData` / `SplatMesh`) | Streamed (`StreamedSplatMesh`) | Local folder drop | Pos / Cov / Opacity / Color | SH (rendered) | Auto tests | Manual / device |
+| Format | Fully loaded (`loadSplatData` / `SplatMesh`) | Streamed (`StreamedSplatMesh`) | Local folder drop | Pos / Cov / Opacity / Color | SH (rendered) | Auto tests | Manual / device |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | **PLY** (3DGS INRIA) | ✅ |, | ✅ file | ✅ | ✅ packed shN (`f_rest_*`, bands 1–3) | `parse-splat-ply.test.ts` | orbit; SH vs DC |
 | **Compressed PLY** (SuperSplat) | ✅ |, | ✅ file | ✅ | ✅ packed shN when `sh` element present | `parse-compressed-ply.test.ts` | large capture |
@@ -48,8 +48,8 @@ and [`architecture.md`](architecture.md).
 | Streamed LOD / budget | ✅ | ✅ | ✅ per-source cut gathered | streamed-splat-mesh.* | `?budget=` |
 | Shared budget across meshes (`BudgetGovernor`) | ✅ weighted split via `setBudget`; flat-leaf, octree-cut and RAD page-table paths | ✅ same | ⚠️ per-source meshes registrable | `budget-governor.test.ts` |, |
 | Float16 pool textures | ⚠️ opt-in `poolFloatTextures: 'float16'` (centers + covA) | ⚠️ same |, | `half-float`, `splat-mesh.pool` | `?poolFloat=float16` |
-| Adaptive pixel ratio | ⚠️ policy `suggestAdaptivePixelRatio`; host applies | ⚠️ same |, | `splat-budget.test.ts` | `?adaptiveDpr=1` |
-| Raised WebGPU storage buffer limits | ✅ `createSplatRenderer()`; hosts owning device creation pass `recommendedWebGpuRequiredLimits(adapter)` |, | ✅ early throw if pool exceeds device bind limit | `webgpu-limits.test.ts` | large LCC2 / unified capacity >8M |
+| Adaptive pixel ratio | ⚠️ policy `suggestAdaptivePixelRatio`; application applies | ⚠️ same |, | `splat-budget.test.ts` | `?adaptiveDpr=1` |
+| Raised WebGPU storage buffer limits | ✅ `createSplatRenderer()`; applications owning device creation pass `recommendedWebGpuRequiredLimits(adapter)` |, | ✅ early throw if pool exceeds device bind limit | `webgpu-limits.test.ts` | large LCC2 / unified capacity >8M |
 | `SplatMesh.pick` (GPU depth) | ✅ | ✅ |, | `splat-mesh.pick` | click focus |
 | Position queries (`queryNearest`, `queryHeight`) | ✅ | ✅ |, (per-source mesh) | `splat-mesh.query`, `streamed-splat-mesh.query` | M9 |
 | Multi-view exact sort (`renderView`) | ✅ | ⚠️ async worker; sequential views | ⚠️ WebGPU: per-view gather+sort | `splat-mesh.render-view` | `?mirror=1` |
@@ -76,7 +76,7 @@ flip is skipped, but LCC's matrix still applies (format semantics, not
 cosmetics). The correction is a rigid **object-level** transform, never baked
 into splat data, so covariances and view-dependent SH stay consistent, and
 `pick` / `queryNearest` / `queryHeight` answer in whichever frame the mesh
-renders. Hosts orienting a dynamic-capacity pool themselves use the exported
+renders. Applications orienting a dynamic-capacity pool themselves use the exported
 `SplatOrientation` / `yUpTransformForFormat` / `createYUpTransform`.
 
 ### Color space (`srgbOutput`)
@@ -86,7 +86,7 @@ converts them to the renderer's linear working space in-shader, so the
 renderer keeps its standard `SRGBColorSpace` output and ordinary meshes share
 the canvas untouched. `srgbOutput: true` instead composites in display (sRGB)
 space, the math 3DGS training optimizes against, and requires a renderer
-configured to skip output conversion; the host owns that renderer setting.
+configured to skip output conversion; the application owns that renderer setting.
 `UnifiedSplatMesh` takes one `srgbOutput` at construction and every
 registered source must match it.
 
@@ -341,7 +341,7 @@ WebGPU's default `maxStorageBufferBindingSize` is **128 MiB**. Unified work
 buffers allocate an RGBA32F centers storage attribute at **16 B/splat**, so
 capacities above ~8M exceed the default. Desktop adapters commonly advertise
 ~2 GiB. `createSplatRenderer()` requests them (along with the adapter's
-features, which is what keeps the device out of compatibility mode); hosts that
+features, which is what keeps the device out of compatibility mode); applications that
 own device creation themselves pass `recommendedWebGpuRequiredLimits(adapter)`
 to `WebGPURenderer` instead.
 `UnifiedSplatMesh` throws a clear error when the device limit is too low

@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { isPageTableFoveation, resolveSplatFoveationMode } from '../splat-mesh-types';
 
 describe('page-table foveation spelling', () => {
-  it('normalizes the deprecated pagetable spelling to page-table', () => {
+  it('accepts only the canonical page-table spelling', () => {
     expect(resolveSplatFoveationMode('page-table')).toBe('page-table');
-    expect(resolveSplatFoveationMode('pagetable')).toBe('page-table');
+    expect(resolveSplatFoveationMode(undefined)).toBe('band');
     expect(isPageTableFoveation('page-table')).toBe(true);
-    expect(isPageTableFoveation('pagetable')).toBe(true);
+    expect(isPageTableFoveation('pagetable')).toBe(false);
     expect(isPageTableFoveation('frontier')).toBe(false);
   });
 });

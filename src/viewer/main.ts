@@ -1384,14 +1384,14 @@ async function main(): Promise<void> {
   // turns it off, `?blobCull=<px>` tunes the threshold. See RAD_BLOB_CULL_PX.
   const blobCull = params.has('blobCull') ? Number(params.get('blobCull')) : undefined;
   // Foveated `.rad` cut: `?foveationMode=band` forces the legacy screen-radius
-  // band (A/B); `?foveationMode=page-table` (or deprecated `pagetable` / `?pageTable`) uses Spark's
-  // selected-index page table (CPU-picked frontier paged into the pool); default
-  // is the GPU frontier cut. `?foveationPx=N` tunes the target node size.
+  // band (A/B); `?foveationMode=page-table` uses Spark's selected-index page
+  // table (CPU-picked frontier paged into the pool); default is the GPU
+  // frontier cut. `?foveationPx=N` tunes the target node size.
   const foveationParam = params.get('foveationMode');
   const foveationMode =
     foveationParam === 'band'
       ? ('band' as const)
-      : foveationParam === 'page-table' || foveationParam === 'pagetable' || params.has('pageTable')
+      : foveationParam === 'page-table'
         ? ('page-table' as const)
         : undefined;
   const foveationTargetPx = params.has('foveationPx')
