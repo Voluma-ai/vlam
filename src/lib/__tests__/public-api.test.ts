@@ -183,9 +183,6 @@ describe('public API surface (vlam)', () => {
     expectTypeOf<vlam.SplatSortStrategy>().toEqualTypeOf<'counting' | 'radix' | 'exact'>();
     expectTypeOf<vlam.SplatPerformanceProfile>().toEqualTypeOf<'quality' | 'smooth'>();
     expectTypeOf<vlam.SplatFoveationMode>().toEqualTypeOf<'band' | 'frontier' | 'page-table'>();
-    expectTypeOf<vlam.SplatFoveationModeInput>().toEqualTypeOf<
-      vlam.SplatFoveationMode | 'pagetable'
-    >();
     expectTypeOf<vlam.SplatDataFormat>().toEqualTypeOf<
       'ply' | 'sog' | 'spz' | 'splat' | 'ksplat' | 'rad'
     >();

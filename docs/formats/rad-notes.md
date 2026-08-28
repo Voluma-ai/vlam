@@ -19,7 +19,6 @@ chunks, no SH). Read together with `ROADMAP.md` M14. Implemented under
   [`frontier-worker`](../../src/lib/formats/rad/frontier-worker.ts) page only the CPU-
   selected frontier into a fixed pool slab; sort/vertex cost tracks **drawn**
   splats (`foveationDrawBudget`, default `PAGETABLE_DRAW_BUDGET` = 4M).
-  `'pagetable'` is a deprecated spelling of the same mode.
   The traversal **foveates rather than frustum-culls**, and enforces the draw
   budget inside the descent, see §"Coverage and budget" below.
 - **Moderate captures** (budget auto-lift): [`RadLodSource`](../../src/lib/formats/rad/rad.ts)

@@ -83,8 +83,7 @@ can only refine into chunks that are resident.
 
 **Foveation** is a cut that spends budget on the view center (and, for `.rad`
 page-table, a cone around the look direction) rather than a uniform screen
-band. Canonical mode name: `'page-table'`. `'pagetable'` is a deprecated
-spelling of the same mode.
+band. The mode name is `'page-table'`.
 
 ## What not to say
 
