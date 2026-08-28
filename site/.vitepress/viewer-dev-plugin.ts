@@ -25,6 +25,7 @@ export const EXAMPLE_APPS = [
   'fast-on-phones',
   'in-vr',
   'many-captures',
+  'collision-walk',
   'custom-effect',
   'depth-of-field',
   'relight',

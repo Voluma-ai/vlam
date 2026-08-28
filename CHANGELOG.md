@@ -63,6 +63,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- Select-and-cut live example now includes the combined transform-gizmo
+  button its script initializes, preventing startup from stopping before the
+  render loop and leaving the goose invisible.
+
 - Demo proxy relight: tree-canopy shadow sparkle. Collision foliage no longer
   self-receives (`receiveUpMin` on `createRelightingShadowFactorMaterial`);
   a 20 / 50 / 160 m cascade stack (`midLight`, `outerLight`) plus a scene-sized

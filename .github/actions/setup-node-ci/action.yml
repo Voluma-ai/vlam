@@ -13,10 +13,11 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v5
       with:
         node-version: ${{ inputs.node-version }}
-    - uses: actions/cache/restore@v4
+        package-manager-cache: false
+    - uses: actions/cache/restore@v5
       id: npm-cache
       with:
         path: ~/.npm
@@ -26,7 +27,7 @@ runs:
     - run: npm ci
       shell: bash
     # Skip when this key already exists — a second save fails the job.
-    - uses: actions/cache/save@v4
+    - uses: actions/cache/save@v5
       if: inputs.save-cache == 'true' && github.ref == 'refs/heads/main' && steps.npm-cache.outputs.cache-hit != 'true'
       with:
         path: ~/.npm

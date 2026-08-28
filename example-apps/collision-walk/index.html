@@ -1,0 +1,63 @@
+<!doctype html>
+<!-- Live runner for site/examples/collision-walk.md. See first-viewer/index.html. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <title>Walk with collision detection. VLAM! example</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #1a1a1f;
+        font: 14px/1.4 system-ui, sans-serif;
+      }
+      canvas {
+        display: block;
+        touch-action: none;
+      }
+      #ui {
+        position: fixed;
+        inset: 14px 14px auto 14px;
+        z-index: 1;
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: center;
+        color: #fff;
+        text-shadow: 0 1px 4px #000;
+        pointer-events: none;
+      }
+      #controls {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+      #enter {
+        border: 1px solid rgb(255 255 255 / 35%);
+        border-radius: 999px;
+        padding: 7px 13px;
+        color: #fff;
+        background: rgb(20 20 25 / 78%);
+        cursor: pointer;
+        pointer-events: auto;
+      }
+      #status {
+        color: rgb(255 255 255 / 78%);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="ui">
+      <div id="controls">
+        <button id="enter" type="button">Start walking</button>
+        <span id="instructions">Click to capture the mouse</span>
+      </div>
+      <span id="status">Loading collision geometry…</span>
+    </div>
+    <script type="module" src="../../docs/examples/samples/collision-walk.ts"></script>
+  </body>
+</html>
