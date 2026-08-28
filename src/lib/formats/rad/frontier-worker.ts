@@ -50,7 +50,7 @@ let neededFiles = new Set<number>();
  * `lastPixelLimit`.
  *
  * The host's `limit` is a *quality target* (one splat per pixel), which is the
- * coarsest cut worth drawing. It is not a budget: a marker granted 4.6 M splats
+ * coarsest cut worth drawing. It is not a budget: a mesh granted 4.6 M splats
  * whose 1 px cut only selects 890 k leaves ~80 % of its budget unspent and looks
  * far softer than Spark at the same pose, because Spark solves for the cut that
  * spends `maxSplats` instead of refining to a fixed pixel size.
@@ -76,7 +76,7 @@ const BUDGET_SPEND_URGENT = 0.5;
  * Most splats a single paging plan may append.
  *
  * The main thread applies a plan whole, and writing a splat into the pool costs
- * ~0.15 µs (measured): a hard camera cut that churned one marker's frontier
+ * ~0.15 µs (measured): a hard camera cut that churned one mesh's frontier
  * produced a single 141 ms plan - a visible freeze. The cap is applied in the
  * *pager* rather than by shrinking the traversal budget, because the stalls are
  * driven by churn, not growth: a sideways camera move replaces the frontier at a

@@ -62,8 +62,8 @@ function sigmoid(x: number): number {
  * @throws {Error} if the file is not a binary little-endian splat PLY.
  *
  * A direct parser call sits outside the `SplatLoadError`-or-`AbortError`
- * contract of the worker-mediated loaders ({@link loadScene},
- * {@link loadSceneFile}, `ChunkLoader`, `StreamedSplatMesh`): malformed input
+ * contract of the worker-mediated loaders ({@link loadSplatData},
+ * {@link loadSplatDataFile}, `ChunkLoader`, `StreamedSplatMesh`): malformed input
  * surfaces here as a plain `Error`.
  */
 export function parseSplatPly(buffer: ArrayBuffer): SplatData {

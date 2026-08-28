@@ -361,7 +361,7 @@ describe('parseRad', () => {
     expect(data.colors[3]).toBe(Math.round(0.5 * 255));
     expect(data.covariances[0]).toBeCloseTo(4, 4);
     // Merged node (slot 1): alpha 1.5 → opacity 0.75·255 (the shader ×2 recovers
-    // 1.5 as a size marker), covariance stays the raw fitted 1² - not inflated.
+    // 1.5 as a size tag), covariance stays the raw fitted 1² - not inflated.
     expect(data.colors[7]).toBe(Math.round(0.75 * 255));
     expect(data.covariances[6]).toBeCloseTo(1, 4);
     expect(data.covariances[9]).toBeCloseTo(1, 4);

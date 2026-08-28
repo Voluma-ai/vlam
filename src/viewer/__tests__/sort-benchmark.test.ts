@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { StreamedSplatPerformanceEvent } from '../../lib';
+import type { StreamedSplatPerformanceEvent } from '../../lib/streaming';
 import { createFrameBenchmark } from '../sort-benchmark';
 
 const swapEvent = (overrides: Partial<StreamedSplatPerformanceEvent> = {}) => ({
@@ -47,13 +47,13 @@ describe('createFrameBenchmark swap attribution', () => {
     expect(result?.slowFrames).toEqual([
       expect.objectContaining({
         frameMs: 50,
-        markerCount: 1,
+        eventCount: 1,
         cpuMs: 4,
         uploadCount: 80,
         forcedSort: true,
       }),
-      expect.objectContaining({ frameMs: 40, markerCount: 0 }),
-      expect.objectContaining({ frameMs: 10, markerCount: 0 }),
+      expect.objectContaining({ frameMs: 40, eventCount: 0 }),
+      expect.objectContaining({ frameMs: 10, eventCount: 0 }),
     ]);
   });
 

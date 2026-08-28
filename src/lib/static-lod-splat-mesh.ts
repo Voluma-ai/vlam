@@ -1,6 +1,6 @@
 /** @role Bridge - Camera-aware rendering for worker-built static splat hierarchies. */
 import * as THREE from 'three/webgpu';
-import { loadScene, type SplatLoadOptions } from './load-scene';
+import { loadSplatData, type SplatDataLoadOptions } from './load-splat-data';
 import type { SplatData } from './splat-data';
 import { SplatMesh, type SplatMeshOptions, type SplatUpdateOptions } from './splat-mesh';
 import type { StaticLodBuildProgress } from './static-lod';
@@ -27,7 +27,7 @@ export interface StaticLodLoadProgress {
 }
 
 export interface StaticLodSplatMeshLoadOptions
-  extends StaticLodSplatMeshOptions, SplatLoadOptions {}
+  extends StaticLodSplatMeshOptions, SplatDataLoadOptions {}
 
 const transferablesFor = (data: SplatData): Transferable[] => {
   const transferables: Transferable[] = [
@@ -161,7 +161,7 @@ export class StaticLodSplatMesh extends SplatMesh {
     options: StaticLodSplatMeshLoadOptions,
   ): Promise<StaticLodSplatMesh> {
     let decodeReported = false;
-    const source = await loadScene(input, {
+    const source = await loadSplatData(input, {
       ...options,
       onProgress: (completed, total) => {
         options.onProgress?.(completed, total);

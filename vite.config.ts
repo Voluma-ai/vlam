@@ -1,4 +1,7 @@
-import { defineConfig } from 'vite';
+import { existsSync, renameSync, rmSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { defineConfig, type Plugin } from 'vite';
 
 /**
  * Viewer production build only. Local `npm run dev` is VitePress on :5170
@@ -6,11 +9,31 @@ import { defineConfig } from 'vite';
  *
  * Docs-site packaging sets `VLAM_VIEWER_BASE=/demo/` and outDir under dist-site.
  */
+const repoRoot = dirname(fileURLToPath(import.meta.url));
+const viewerHtml = resolve(repoRoot, 'src/viewer/index.html');
 const viewerBase = process.env.VLAM_VIEWER_BASE ?? '/';
 const viewerOutDir = process.env.VLAM_VIEWER_OUT ?? 'dist-viewer';
 
+/**
+ * Vite emits nested HTML next to its source path. The site expects
+ * `index.html` at the viewer outDir root (`dist-site/demo/`).
+ */
+function flattenViewerHtml(): Plugin {
+  return {
+    name: 'vlam-flatten-viewer-html',
+    writeBundle(options) {
+      const outDir = options.dir ?? resolve(repoRoot, viewerOutDir);
+      const nested = join(outDir, 'src/viewer/index.html');
+      if (!existsSync(nested)) return;
+      renameSync(nested, join(outDir, 'index.html'));
+      rmSync(join(outDir, 'src'), { recursive: true, force: true });
+    },
+  };
+}
+
 export default defineConfig({
   base: viewerBase,
+  plugins: [flattenViewerHtml()],
   // Serve the repo's assets/ directory as static files, so the viewer can
   // fetch e.g. /goose.ply directly. Large local captures do not go here -
   // drop their folder onto the viewer instead (StreamedSplatMesh.loadLocal),
@@ -24,10 +47,11 @@ export default defineConfig({
   resolve: { dedupe: ['three'] },
   build: {
     // Keep the viewer build out of ./dist - that directory belongs to the
-    // library build (vite.config.lib.ts), which empties it.
+    // library build (scripts/vite.config.lib.ts), which empties it.
     outDir: viewerOutDir,
     emptyOutDir: true,
     rollupOptions: {
+      input: viewerHtml,
       output: {
         // Split the deployable SPA so the library (viewer) can cache
         // independently of viewer UI churn. Paths are normalized for Windows.

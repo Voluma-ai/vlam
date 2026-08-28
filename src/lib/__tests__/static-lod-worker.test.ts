@@ -13,7 +13,7 @@ const packedPlyFixture = (): SplatData => {
     positions: Float32Array.from(Array.from({ length: count }, (_, index) => [index, 0, 0]).flat()),
     colors: Uint8Array.from(Array.from({ length: count }, () => [20, 40, 60, 255]).flat()),
     covariances: Float32Array.from(Array.from({ length: count }, () => [1, 0, 0, 1, 0, 1]).flat()),
-    sourceFormat: 'ply',
+    format: 'ply',
     shPacked: {
       bands: 3,
       packed: Uint32Array.from(

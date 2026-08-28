@@ -5,7 +5,7 @@ Feasibility note (M11.1) and the shipped design (M11.2). Read with
 
 ## The problem
 
-A one-shot `SplatMesh` renders a SOG capture's higher-order SH straight from
+A fully loaded `SplatMesh` renders a SOG capture's higher-order SH straight from
 the file's **palette** (`SplatShData`): each splat stores a 16-bit *label*, and
 a per-file codebook image holds the coefficients the label points at. That form
 is compact but **per file**, the label only means anything against *that*
@@ -103,7 +103,7 @@ carry their shN if a future capture had it.)
 ### A/B in the demo
 
 `?sh=N` (N = 1/2/3) turns it on for a streamed scene; the debug line's `SH n`
-reports the bands actually rendered. Load the same SOG capture as a static mesh
+reports the bands actually rendered. Load the same SOG capture as a fully loaded mesh
 (palette shN) and as a streamed mesh with `?sh=3` (converted packed shN) to
 compare, they should match to within quantization.
 

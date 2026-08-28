@@ -118,7 +118,7 @@ export async function buildRadScene(
   // `budgetLifts` mirrors the caller's own precondition for that lift: it only
   // happens when neither `budget` nor `maxBudget` was pinned. Assuming it always
   // applies would misjudge every host that sizes its meshes explicitly - a
-  // marker given `maxBudget: pool / N` keeps that number, so it needs the
+  // mesh given `maxBudget: pool / N` keeps that number, so it needs the
   // foveated path for the same reason a phone does.
   const effectiveBudget = budgetLifts
     ? liftBudgetToFinestLevel(options.budget, leafCount)
@@ -156,7 +156,7 @@ export async function buildRadScene(
   }
   const bounds = boundsOf(chunk0Data);
   // Chunk 0 is a whole-scene overview. Copy a subsample of its centers before
-  // pagetable mode transfers the buffers to the worker, so the demo can place
+  // page-table mode transfers the buffers to the worker, so the demo can place
   // the camera on the terrain instead of the AABB min (underground outliers).
   const overviewPositions = subsampleOverviewPositions(chunk0Data.positions, chunk0Data.count);
   // All-or-nothing, for the reason in the doc comment above: a partial cap
@@ -319,7 +319,7 @@ export class RadLodSource implements LodSource {
    * traversal or force `discoveredDepth` back and visibly coarsen the scene.
    *
    * Bounded in practice by the mode that uses it: `.rad` defaults to
-   * `foveationMode: 'pagetable'`, where the frontier worker owns the traversal
+   * `foveationMode: 'page-table'`, where the frontier worker owns the traversal
    * and this source is never constructed. Only the `'band'` and `'frontier'`
    * A/B modes pay it. Reducing it means changing the tree encoding, not adding
    * an eviction pass here.
@@ -410,7 +410,7 @@ export class RadLodSource implements LodSource {
    * choosing the very same depth. Each of those misses re-walks `frontierRuns`
    * over the whole decoded prefix (millions of splats, several times over if it
    * steps down levels): measured at 33ms mean and 1.1s worst, it was 92% of all
-   * frame CPU on a marker-heavy scene. Frontier count rises monotonically with
+   * frame CPU on a multi-mesh scene. Frontier count rises monotonically with
    * depth, so the selected depth is stable for any budget in
    * `[thisDepthCount, nextDepthCount)` and the walk can be skipped outright.
    */

@@ -25,7 +25,7 @@ import { neutralShWord, packShCoefficients, shCoefficientCount } from '../../sh-
  *
  * Two entry points:
  * - {@link parseRad} flattens a whole file into leaf splats only (the original
- *   capture), for a small `.rad` loaded in one piece by `loadScene`.
+ *   capture), for a small `.rad` loaded in one piece by `loadSplatData`.
  * - {@link parseRadChunkStreaming} decodes one chunk keeping *every* splat -
  *   the merged coarse LOD-tree nodes included - plus the per-splat tree
  *   columns, for the streamed reader (see `rad.ts`), which chooses the
@@ -754,7 +754,7 @@ function writeSplat(
 ): void {
   // Spark's LOD alpha encoding: store `alpha / 2` in the 8-bit channel so the
   // shader (`×2`) recovers `alpha ∈ [0, 2]`. A leaf's opacity is `≤ 1`; a merged
-  // node's `alpha ∈ (1, 2]` is a size marker (not opacity) - the material grows
+  // node's `alpha ∈ (1, 2]` is a size tag (not opacity) - the material grows
   // that splat's σ-cutoff and reshapes its falloff to cover its subtree, rather
   // than scaling the covariance (which over-inflates and blurs). The covariance
   // is therefore the raw fitted shape for every splat.

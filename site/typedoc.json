@@ -1,21 +1,26 @@
 {
   "$schema": "https://typedoc.org/schema.json",
   "entryPoints": [
-    "src/lib/index.ts",
-    "src/lib/formats/ply/index.ts",
-    "src/lib/formats/sog/index.ts",
-    "src/lib/formats/rad/index.ts",
-    "src/lib/formats/lcc/index.ts",
-    "src/lib/formats/spz/index.ts",
-    "src/lib/formats/splat/index.ts",
-    "src/lib/formats/ksplat/index.ts",
-    "src/lib/effects.ts"
+    "../src/lib/index.ts",
+    "../src/lib/loaders.ts",
+    "../src/lib/static-lod-entry.ts",
+    "../src/lib/streaming.ts",
+    "../src/lib/unified.ts",
+    "../src/lib/selection.ts",
+    "../src/lib/formats/ply/index.ts",
+    "../src/lib/formats/sog/index.ts",
+    "../src/lib/formats/rad/index.ts",
+    "../src/lib/formats/lcc/index.ts",
+    "../src/lib/formats/spz/index.ts",
+    "../src/lib/formats/splat/index.ts",
+    "../src/lib/formats/ksplat/index.ts",
+    "../src/lib/effects.ts"
   ],
-  // Keep the reading order above (index, then formats, then effects) instead of
-  // TypeDoc's alphabetical default.
+  // Keep the reading order above (index, optional subpaths, formats, effects)
+  // instead of TypeDoc's alphabetical default.
   "sortEntryPoints": false,
   "plugin": ["typedoc-plugin-markdown"],
-  "out": ".tmp/api-reference",
+  "out": "../.tmp/api-reference",
   "readme": "none",
   "name": "@voluma/vlam API reference",
   "gitRevision": "main",

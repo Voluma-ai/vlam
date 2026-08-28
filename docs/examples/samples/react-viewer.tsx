@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { SplatMesh, createSplatRenderer, isAbortError, loadScene } from '@voluma/vlam';
+import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { isAbortError, loadSplatData } from '@voluma/vlam/loaders';
 
 interface SplatViewerProps {
   src: string;
@@ -51,7 +52,7 @@ export function SplatViewer({ src, className }: SplatViewerProps) {
         const controls = new OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
 
-        const data = await loadScene(src, { signal: controller.signal });
+        const data = await loadSplatData(src, { signal: controller.signal });
         if (disposed) {
           renderer.dispose();
           controls.dispose();

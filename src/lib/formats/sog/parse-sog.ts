@@ -61,8 +61,8 @@ const MAX_SPLAT_COUNT = 1 << 24;
  * a `DOMException` named `AbortError` when cancelled.
  *
  * A direct parser call sits outside the `SplatLoadError`-or-`AbortError`
- * contract of the worker-mediated loaders ({@link loadScene},
- * {@link loadSceneFile}, `ChunkLoader`, `StreamedSplatMesh`): malformed input
+ * contract of the worker-mediated loaders ({@link loadSplatData},
+ * {@link loadSplatDataFile}, `ChunkLoader`, `StreamedSplatMesh`): malformed input
  * surfaces here as a plain `Error`.
  */
 export async function parseSog(
@@ -89,8 +89,8 @@ export async function parseSog(
  * a `DOMException` named `AbortError` when cancelled.
  *
  * A direct parser call sits outside the `SplatLoadError`-or-`AbortError`
- * contract of the worker-mediated loaders ({@link loadScene},
- * {@link loadSceneFile}, `ChunkLoader`, `StreamedSplatMesh`): malformed input
+ * contract of the worker-mediated loaders ({@link loadSplatData},
+ * {@link loadSplatDataFile}, `ChunkLoader`, `StreamedSplatMesh`): malformed input
  * surfaces here as a plain `Error`.
  */
 export async function parseSogDirectory(

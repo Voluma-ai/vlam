@@ -1,8 +1,8 @@
-# Multi-mesh & marker splat budgets
+# Multi-mesh splat budgets
 
-A scene of one main capture plus several marker meshes has a budget problem that
-a single mesh does not: each `StreamedSplatMesh` owns its own pool, so their
-costs add. The obvious fix, give each one `total / N`, is what makes the marker
+A scene of one main capture plus several additional meshes has a budget problem
+that a single mesh does not: each `StreamedSplatMesh` owns its own pool, so their
+costs add. The obvious fix, give each one `total / N`, is what makes the mesh
 you fly up to look blurry, because a quarter of the budget is exactly as much as
 it gets when the camera is inside it as when it is 200 m away.
 
@@ -14,17 +14,17 @@ camera, so detail concentrates where the viewer is looking.
 ```ts
 const governor = new CameraBudgetGovernor({ totalBudget: 4_000_000 });
 governor.register(main, { fixedWeight: 4 }); // steady share
-for (const marker of markers) governor.register(marker); // camera-weighted
+for (const extra of extras) governor.register(extra); // camera-weighted
 
 // once per frame, before the meshes update:
 governor.update(camera);
 ```
 
 …plus the part that is easy to miss and without which none of the above does
-anything: **construct the markers with `maxBudget`.**
+anything: **construct the additional meshes with `maxBudget`.**
 
 ```ts
-const marker = await StreamedSplatMesh.load(url, {
+const extra = await StreamedSplatMesh.load(url, {
   budget: 800_000, // where it starts
   maxBudget: 1_500_000, // where a governor may take it
 });
@@ -36,12 +36,12 @@ const marker = await StreamedSplatMesh.load(url, {
 
 A mesh's pool is allocated **once, at construction, from its budget**, and it
 never grows. `setBudget` clamps to that ceiling and returns what actually took
-effect. So a marker built at `total / 4`:
+effect. So a mesh built at `total / 4`:
 
 - can be shrunk below `total / 4` by a governor, and
 - can **never** be raised above it, however close the camera gets.
 
-That is the whole reason an evenly-split marker pool stays coarse. `maxBudget`
+That is the whole reason an evenly-split pool stays coarse. `maxBudget`
 separates the two numbers: `budget` is where the mesh starts, `maxBudget` is the
 most it may ever be given and the size its pool is built for.
 
@@ -50,10 +50,10 @@ trying to hand out, a share above the ceiling is silently truncated.
 
 ## Pricing the ceilings
 
-Pools cost their **ceilings**, not the shared budget. Four markers that could
-each reach 4M splats cost four 4M pools whether the total is 4M or 400k. So a
-governor redistributes *sharpness inside a fixed memory envelope*; it does not
-shrink the envelope.
+Pools cost their **ceilings**, not the shared budget. Four additional meshes that
+could each reach 4M splats cost four 4M pools whether the total is 4M or 400k.
+So a governor redistributes *sharpness inside a fixed memory envelope*; it does
+not shrink the envelope.
 
 `estimateSplatPoolBytes` makes that concrete:
 
@@ -64,14 +64,14 @@ const envelope =
 
 | Setup | Envelope (GPU + CPU backing) |
 | --- | --- |
-| main 4M, 4 markers @ 4M ceiling | 3720 MB, will not fit |
-| main 4M, 4 markers @ 1.5M ceiling | 1860 MB |
-| main 4M, 4 markers @ 750k ceiling | 1302 MB |
-| main 4M, 4 markers @ 1.5M, `poolFloatTextures: 'float16'` | 1620 MB (13% less overall, 24% less GPU-side) |
+| main 4M, 4 extras @ 4M ceiling | 3720 MB, will not fit |
+| main 4M, 4 extras @ 1.5M ceiling | 1860 MB |
+| main 4M, 4 extras @ 750k ceiling | 1302 MB |
+| main 4M, 4 extras @ 1.5M, `poolFloatTextures: 'float16'` | 1620 MB (13% less overall, 24% less GPU-side) |
 
 A ceiling around **1.5–2× a member's fair share** is usually the right trade: a
-focused marker gets a real step up in detail without every marker being sized
-for the whole budget. Pick it from what the device has, not from the total.
+focused additional mesh gets a real step up in detail without every mesh being
+sized for the whole budget. Pick it from what the device has, not from the total.
 
 ## How the camera weighting works
 
@@ -93,7 +93,7 @@ weight = priority × clamp((radius / distance) ^ falloff) × onScreen
 - `onScreen` is `1` inside the frustum and `offScreenWeight` (default `0.25`)
   outside it, suppressed, never starved. An off-screen member must keep enough
   budget for its coarse shell or turning the camera exposes an unpainted region.
-- `priority` is the host's tier, multiplied on top: Spark's `lodScale` values map
+- `priority` is the caller's tier, multiplied on top: Spark's `lodScale` values map
   directly, focused `2`, default `1`, adjacent `0.25`, hidden `0`.
 
 `minWeight` / `maxWeight` bound the size term, so a distant member keeps a shell
@@ -126,26 +126,26 @@ change lands on the next frame rather than waiting out the interval.
 `.rad` takes one of two LOD paths, chosen on leaf count, and a bigger budget
 buys something different on each. Which one you are on decides what to expect:
 
-| Marker leaf count | Path | Effect of a larger budget |
+| Mesh leaf count | Path | Effect of a larger budget |
 | --- | --- | --- |
-| **≤ 6M leaves** | coarse→fine chunk **prefix**, refinement uniform and camera-independent | **Everything.** At `budget ≥ leafCount` every chunk is resident and the marker renders its full leaf set, zero blobs, full resolution. Below that it is uniformly coarse *everywhere*, worst up close. There is no foveation on this path and none is needed. |
-| **> 6M leaves** | `foveationMode: 'pagetable'`. Spark's per-splat frontier traversal | Detail is already concentrated near the camera and off-cone content already kept coarse. A larger **draw** budget lets the traversal descend further before the budget stops it, so the near surface sharpens. |
+| **≤ 6M leaves** | coarse→fine chunk **prefix**, refinement uniform and camera-independent | **Everything.** At `budget ≥ leafCount` every chunk is resident and the mesh renders its full leaf set, zero blobs, full resolution. Below that it is uniformly coarse *everywhere*, worst up close. There is no foveation on this path and none is needed. |
+| **> 6M leaves** | `foveationMode: 'page-table'`. Spark's per-splat frontier traversal | Detail is already concentrated near the camera and off-cone content already kept coarse. A larger **draw** budget lets the traversal descend further before the budget stops it, so the near surface sharpens. |
 
 Two consequences worth knowing:
 
 - **Do not pass an explicit `budget` if you want the auto-lift.** A `.rad` (and
   `.lcc`) with no `budget` set has its budget lifted to the capture's full leaf
- count when that fits, which is what makes a moderate marker sharp. Passing
-  `budget: total / N` suppresses it. Under a governor, pass `maxBudget ≥
+ count when that fits, which is what makes a moderate additional mesh sharp.
+  Passing `budget: total / N` suppresses it. Under a governor, pass `maxBudget ≥
   leafCount` instead and let the governor set the working budget.
 - **The lift is desktop-only.** Mobile is exempt on purpose: its cap is a
-  fill-rate limit, not a sizing accident. On a phone, four markers cannot all be
-  full-resolution, camera weighting still delivers "the near one is sharp", not
-  "all four are sharp".
+  fill-rate limit, not a sizing accident. On a phone, four additional meshes
+  cannot all be full-resolution, camera weighting still delivers "the near one is
+  sharp", not "all four are sharp".
 
 Watch `mesh.drawBudget` (the governed page-table draw target) and
 `mesh.activeSplatCount` (what is actually drawn) rather than `mesh.budget` when
-checking a page-table marker: `budget` is the pool's allowance, `drawBudget` is
+checking a page-table mesh: `budget` is the pool's allowance, `drawBudget` is
 what gets spent.
 
 ### Spark's `lodScale`
@@ -196,10 +196,10 @@ directly, same total, same invariant, no per-frame call:
 ```ts
 const governor = new BudgetGovernor({ totalBudget: 4_000_000 });
 governor.register(main, { weight: 7 });
-governor.register(markers, { weight: 3 });
+governor.register(extra, { weight: 3 });
 governor.setWeights([
   [main, 5],
-  [markers, 5],
+  [extra, 5],
 ]); // one reallocation, not two
 ```
 
@@ -215,6 +215,7 @@ leaves them alone.
 
 - [Streaming & LOD](streaming-and-lod.md), budgets on a single mesh,
   `setBudget`, local folders, the environment tile.
+- [Terminology](terminology.md): `maxBudget`, `drawBudget`, and what a source is.
 - [Unified rendering](unified-rendering.md): depth-correct compositing when
   those meshes have to blend with each other.
 - [`formats/rad-notes.md`](../formats/rad-notes.md): the `.rad` LOD paths, the

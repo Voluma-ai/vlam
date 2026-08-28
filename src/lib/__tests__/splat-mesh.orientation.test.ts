@@ -5,7 +5,7 @@ import { writeCovariance, type SplatData } from '../splat-data';
 import { createYUpTransform } from '../orientation';
 
 /** A one-splat scene, optionally stamped with the format it was decoded from. */
-function makeData(sourceFormat?: SplatData['sourceFormat']): SplatData {
+function makeData(format?: SplatData['format']): SplatData {
   const covariances = new Float32Array(6);
   writeCovariance(covariances, 0, 0.05, 0.05, 0.05, 1, 0, 0, 0);
   return {
@@ -13,7 +13,7 @@ function makeData(sourceFormat?: SplatData['sourceFormat']): SplatData {
     positions: new Float32Array(3),
     colors: new Uint8Array([255, 255, 255, 255]),
     covariances,
-    ...(sourceFormat === undefined ? {} : { sourceFormat }),
+    ...(format === undefined ? {} : { format }),
   };
 }
 

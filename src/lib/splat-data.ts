@@ -1,4 +1,4 @@
-import type { SplatSourceFormat } from './loading';
+import type { SplatDataFormat } from './loading';
 
 /**
  * CPU-side representation of a set of 3D Gaussians, ready for GPU upload.
@@ -37,7 +37,7 @@ export interface SplatData {
    * Per-splat LOD-tree links for a streamed `.rad` chunk (the merged coarse
    * nodes and leaves are all present in {@link positions} etc.). The streamed
    * reader uses this to pick the rendered cut across chunks; other formats and
-   * the one-shot path leave it undefined. See `parse-rad.ts` and `rad.ts`.
+   * the whole-file path leave it undefined. See `parse-rad.ts` and `rad.ts`.
    */
   readonly radTree?: RadTreeData;
   /**
@@ -53,11 +53,11 @@ export interface SplatData {
   readonly radShCodebook?: RadShCodebook;
   /**
    * The self-contained format this scene was decoded from, stamped by the
-   * loaders ({@link loadScene}/{@link loadSceneFile}). {@link SplatMesh} reads
+   * loaders ({@link loadSplatData}/{@link loadSplatDataFile}). {@link SplatMesh} reads
    * it to pick the `orientation: 'y-up'` correction. Absent on hand-built data
    * and streamed chunks, in which case no orientation is ever inferred.
    */
-  readonly sourceFormat?: SplatSourceFormat;
+  readonly format?: SplatDataFormat;
 }
 
 /** Palette emitted once in chunk zero by Spark's clustered RAD SH encoding. */

@@ -84,7 +84,7 @@ matches the capture's gravity. (LCC still applies its own matrix under
 
 ## Unified multi-source picks
 
-`UnifiedSplatRenderer.pick(ndc, camera, options?)` runs a depth pick on
+`UnifiedSplatMesh.pick(ndc, camera, options?)` runs a depth pick on
 every **visible** registered source; the hit nearest the camera wins and
 carries its source (`{ source, point, distance }`), per-splat depth, exactly
 what the unified draw composites, so the cursor lands on what the user sees
@@ -100,5 +100,5 @@ worked sample.
 | Click-to-focus, placement anchor under the cursor | `pick` (GPU, async) |
 | Nearest surface to a 3D point, measurements | `queryNearest` (CPU, sync) |
 | Floor following, teleport validation | `queryHeight` (CPU, sync) |
-| Cursor hit across several unified sources | `UnifiedSplatRenderer.pick` |
+| Cursor hit across several unified sources | `UnifiedSplatMesh.pick` |
 | Physics / watertight collision (`.lcc` / `.lcc2`) | `loadCollisionMeshes` + your own BVH |

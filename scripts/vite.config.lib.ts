@@ -1,4 +1,7 @@
+import { resolve } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
+
+const repoRoot = resolve(import.meta.dirname, '..');
 
 /**
  * Drops sourcemaps for chunks that were never emitted.
@@ -41,12 +44,15 @@ function verifyStableDynamicImports(): Plugin {
   return {
     name: 'vlam:verify-stable-dynamic-imports',
     generateBundle(_options, bundle) {
-      const entry = bundle['index.js'];
-      if (entry?.type !== 'chunk') {
-        this.error('The library build must emit dist/index.js as a JavaScript chunk.');
+      const streaming = bundle['streaming.js'];
+      if (streaming?.type !== 'chunk') {
+        this.error('The library build must emit dist/streaming.js as a JavaScript chunk.');
       }
-      if (!entry.code.includes('import("./formats/lcc.js")')) {
-        this.error('dist/index.js must lazy-load LCC through the public formats/lcc.js entry.');
+      if (!streaming.code.includes('import("./formats/lcc.js")')) {
+        this.error('dist/streaming.js must lazy-load LCC through the public formats/lcc.js entry.');
+      }
+      if (!streaming.code.includes('import("./formats/rad.js")')) {
+        this.error('dist/streaming.js must lazy-load RAD through the public formats/rad.js entry.');
       }
       for (const output of Object.values(bundle)) {
         if (output.type !== 'chunk') continue;
@@ -64,16 +70,21 @@ function verifyStableDynamicImports(): Plugin {
 // Library build: ES module with three externalized (peer dependency).
 // Type declarations are emitted separately via `tsc -p tsconfig.lib.json`.
 export default defineConfig({
+  root: repoRoot,
   plugins: [dropOrphanWorkerMaps(), verifyStableDynamicImports()],
   build: {
     lib: {
-      // Core renderer, optional effects, and format subpaths. Format entries
-      // emit their own chunks so a host that never imports them (and never
-      // loads that format via StreamedSplatMesh) can leave them out of its
-      // initial graph. Note: the inlined load-worker inside ChunkLoader still
-      // embeds every parser - see AGENTS.md.
+      // Core renderer plus optional loaders, streaming, unified, selection,
+      // effects, and format subpaths. Format entries emit their own chunks
+      // so a host that never imports them can leave them out. The inlined
+      // load-worker lives behind `@voluma/vlam/loaders`, not the core entry.
       entry: {
         index: 'src/lib/index.ts',
+        loaders: 'src/lib/loaders.ts',
+        'static-lod': 'src/lib/static-lod-entry.ts',
+        streaming: 'src/lib/streaming.ts',
+        unified: 'src/lib/unified.ts',
+        selection: 'src/lib/selection.ts',
         effects: 'src/lib/effects.ts',
         'formats/ply': 'src/lib/formats/ply/index.ts',
         'formats/sog': 'src/lib/formats/sog/index.ts',

@@ -2,7 +2,8 @@
 // collision meshes shipped beside a streamed De Haar capture.
 import * as THREE from 'three/webgpu';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-import { StreamedSplatMesh, createSplatRenderer, isAbortError } from '@voluma/vlam';
+import { createSplatRenderer } from '@voluma/vlam';
+import { StreamedSplatMesh, isAbortError } from '@voluma/vlam/streaming';
 import { createCollisionWorld, type CollisionWorld } from './collision-world';
 
 const EYE_HEIGHT = 1.7;

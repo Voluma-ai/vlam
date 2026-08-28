@@ -6,7 +6,7 @@ import { ChunkCacheBudget, type ChunkCacheHandle } from '../chunk-cache-budget';
  * Acceptance tests for the scene-wide decoded-chunk cache ceiling.
  *
  * The invariant that matters is `Σ allowance <= totalBytes` in every branch:
- * the whole point of the class is that a scene of thirteen markers cannot each
+ * the whole point of the class is that a scene of thirteen additional meshes cannot each
  * take `min(2 GiB, its own capture)` and collectively exceed the tab's heap. A
  * budget that can be overrun by registering another mesh would be worse than
  * none, because it reads as a bound while not being one.
@@ -50,7 +50,7 @@ describe('ChunkCacheBudget', () => {
   it('never allocates more than the scene total, however many meshes register', () => {
     const budget = new ChunkCacheBudget({ totalBytes: 1024 * MIB, perMeshFloorBytes: 32 * MIB });
     const meshes: FakeMesh[] = [];
-    // Fourteen is the shape that motivated this: one main plus thirteen markers.
+    // Fourteen is the shape that motivated this: one main plus thirteen additional meshes.
     for (let i = 0; i < 14; i++) {
       meshes.push(new FakeMesh(i + 1).join(budget));
       expect(allocated(budget, meshes)).toBeLessThanOrEqual(budget.totalBytes);

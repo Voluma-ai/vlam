@@ -54,7 +54,7 @@ Each frame, update the camera controls, update the splats, then render.
 
 :::
 
-Put a capture named `goose.sog` in your `public/` folder (or point `loadScene` at any URL), run your dev server, and drag.
+Put a capture named `goose.sog` in your `public/` folder (or point `loadSplatData` at any URL), run your dev server, and drag.
 
 ## Why the order in the loop matters
 

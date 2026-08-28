@@ -6,13 +6,13 @@ import {
   SplatMesh,
   createSplatRenderer,
   detectSplatDeviceProfile,
-  loadScene,
   recommendedMaxPixelRatio,
   resolveSplatBudget,
   resolveSplatPerformanceProfile,
   suggestAdaptivePixelRatio,
   ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES,
 } from '@voluma/vlam';
+import { loadSplatData } from '@voluma/vlam/loaders';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);
@@ -36,7 +36,7 @@ camera.position.set(0.8, 0.3, 1.6);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 
-const splats = new SplatMesh(await loadScene('/goose.sog'), {
+const splats = new SplatMesh(await loadSplatData('/goose.sog'), {
   // 'smooth' culls faint splats harder than 'quality'. Resolved from the
   // device unless you pass one - mobile gets 'smooth', desktop 'quality'.
   performanceProfile: resolveSplatPerformanceProfile(),

@@ -26,7 +26,7 @@ export default tseslint.config(
       'dist-site/',
       '.wrangler/',
       'coverage/',
-      'site-worker.js',
+      'site/site-worker.js',
       'scripts/',
       '.cursor/',
       // Git-ignored tooling scratch (agent worktrees carry their own

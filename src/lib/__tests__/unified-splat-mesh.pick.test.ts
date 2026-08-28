@@ -3,7 +3,7 @@ import * as THREE from 'three/webgpu';
 import { packNormalizedDepth, normalizeViewDepth } from '../splat-depth-pack';
 import { writeCovariance } from '../splat-data';
 import { SplatMesh } from '../splat-mesh';
-import { UnifiedSplatRenderer } from '../unified-splat-renderer';
+import { UnifiedSplatMesh } from '../unified-splat-mesh';
 
 /**
  * E6 unified multi-source picking semantics: every visible source runs its own
@@ -94,10 +94,10 @@ function hitPixel(viewDepth: number, camera: THREE.PerspectiveCamera): Uint8Arra
 
 const MISS = new Uint8Array([0, 0, 0, 0]);
 
-describe('UnifiedSplatRenderer.pick (E6)', () => {
+describe('UnifiedSplatMesh.pick (E6)', () => {
   it('returns null with no sources registered', async () => {
     const renderer = mockRenderer();
-    const unified = new UnifiedSplatRenderer(renderer, 4);
+    const unified = new UnifiedSplatMesh(renderer, 4);
     expect(await unified.pick(new THREE.Vector2(0, 0), makeCamera())).toBeNull();
     unified.dispose();
   });
@@ -107,7 +107,7 @@ describe('UnifiedSplatRenderer.pick (E6)', () => {
     const camera = makeCamera();
     const near = source();
     const far = source();
-    const unified = new UnifiedSplatRenderer(renderer, 4);
+    const unified = new UnifiedSplatMesh(renderer, 4);
     unified.addSource(near);
     unified.addSource(far);
     // Readbacks resolve in registration order: near at depth 2, far at depth 6.
@@ -129,7 +129,7 @@ describe('UnifiedSplatRenderer.pick (E6)', () => {
     const camera = makeCamera();
     const a = source();
     const b = source();
-    const unified = new UnifiedSplatRenderer(renderer, 4);
+    const unified = new UnifiedSplatMesh(renderer, 4);
     unified.addSource(a);
     unified.addSource(b);
     renderer.queuePixels(MISS, hitPixel(4, camera));
@@ -147,7 +147,7 @@ describe('UnifiedSplatRenderer.pick (E6)', () => {
     const renderer = mockRenderer();
     const camera = makeCamera();
     const a = source();
-    const unified = new UnifiedSplatRenderer(renderer, 4);
+    const unified = new UnifiedSplatMesh(renderer, 4);
     unified.addSource(a);
     renderer.queuePixels(MISS);
     expect(await unified.pick(new THREE.Vector2(0, 0), camera)).toBeNull();
@@ -160,7 +160,7 @@ describe('UnifiedSplatRenderer.pick (E6)', () => {
     const camera = makeCamera();
     const hidden = source();
     const visible = source();
-    const unified = new UnifiedSplatRenderer(renderer, 4);
+    const unified = new UnifiedSplatMesh(renderer, 4);
     unified.addSource(hidden);
     unified.addSource(visible);
     unified.setSourceVisible(hidden, false);
@@ -182,7 +182,7 @@ describe('UnifiedSplatRenderer.pick (E6)', () => {
     const camera = makeCamera();
     const near = source();
     const far = source();
-    const unified = new UnifiedSplatRenderer(renderer, 4);
+    const unified = new UnifiedSplatMesh(renderer, 4);
     unified.addSource(near);
     unified.addSource(far);
 
@@ -218,7 +218,7 @@ describe('UnifiedSplatRenderer.pick (E6)', () => {
     const renderer = mockRenderer();
     const camera = makeCamera();
     const mesh = source();
-    const unified = new UnifiedSplatRenderer(renderer, 4);
+    const unified = new UnifiedSplatMesh(renderer, 4);
     unified.addSource(mesh);
 
     let release!: () => void;

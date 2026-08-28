@@ -35,7 +35,7 @@ boost on top of that identity (RGB may exceed 1 — use a HalfFloat lighting RT)
 Pass an array of contributions for several casters (up to
 `MAX_RELIGHTING_SHADOW_LIGHTS`, currently 32); the shader unrolls only the
 lights you pass. A contribution such as
-`{ light: marker, intensity: 0, fill: 1.5 }` adds Lambert light without adding
+`{ light: accent, intensity: 0, fill: 1.5 }` adds Lambert light without adding
 an umbra. Point and spot fill is shadow-occluded and fades over the light's
 `distance`; spot fill also follows its cone and penumbra. Light and target
 positions are read in world space, so lights may live under transformed groups.
@@ -68,13 +68,14 @@ Both are triangle meshes that approximate the scene. They differ by **job**:
 
 You may reuse LCC collision tiles (or a PlayCanvas `.collision.glb`) as the
 proxy when the silhouette is good enough. Prefer a denser reconstructed mesh
-when light edges matter. The core API never requires `SceneCollision`; pass
+when light edges matter. The core API never requires `SplatCollisionData`; pass
 any `THREE.Texture` from your own RT.
 
 ## Minimal loop (shadow-factor)
 
 ```ts
-import { SplatMesh, createSplatRenderer, loadScene } from '@voluma/vlam';
+import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { loadSplatData } from '@voluma/vlam/loaders';
 import {
   createRelightingProxy,
   createRelightingShadowFactorMaterial,
@@ -120,7 +121,7 @@ renderer.render(scene, camera);
 
 <!-- full file: docs/guide/samples/relighting.ts -->
 
-Use {@link renderRelightingFactorMap} on a host-owned `WebGPURenderer`
+Use {@link renderRelightingFactorMap} on an application-owned `WebGPURenderer`
 (`autoClear: false`, tone-mapping `contextNode`, and so on). The helper
 resizes the RT, clears white with alpha 0, turns shadow maps on for the pass,
 swaps in a passthrough `contextNode` (never `undefined` — WebGPURenderer
@@ -136,7 +137,7 @@ Coarse collision proxies leave hard coverage silhouettes. If you use
 alpha-weighted filter (built in); a black clear turns soft edges into mesh
 outlines. PlayCanvas does not add this blur — proxy quality is the main lever.
 
-On `UnifiedSplatRenderer`, the same API modulates the unified draw material
+On `UnifiedSplatMesh`, the same API modulates the unified draw material
 without invalidating gather caches.
 
 A compact runnable copy lives in the docs as

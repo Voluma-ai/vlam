@@ -31,15 +31,22 @@ directory name and `package.json` disagree, trust `package.json`.
 ```
 src/
  viewer/ docs-site / local viewer; never imported by lib/
+ index.html SPA shell; Vite entry, served at `/demo/`
  main.ts viewer entry: renderer, camera-controls, scene loading
  chrome.ts UI presets (`full` / `embed`) for overlays
  drop-zone.ts drag-and-drop file/folder intake
  failure.ts SplatLoadError → friendly failure card
  effects.ts, paint.ts viewer-side effect picker + painting on lib primitives
- chunk-harness.ts dev page for ChunkLoader (chunk-harness.html)
+ chunk-harness.ts / .html ChunkLoader GPU harness (`/chunk-harness.html`)
+ unified-harness.ts / .html UnifiedSplatMesh GPU harness (`/unified-harness.html`)
  sort-benchmark.ts frame/sort timing rig behind ?benchmarkSeconds
  lib/ the published library ("@voluma/vlam" on npm)
- index.ts curated public API, core renderer + loaders, no parsers
+ index.ts curated public API: core renderer + mesh/scene, no parsers
+ loaders.ts → `@voluma/vlam/loaders` (loadSplatData, ChunkLoader, workers)
+ static-lod-entry.ts → `@voluma/vlam/static-lod`
+ streaming.ts → `@voluma/vlam/streaming`
+ unified.ts → `@voluma/vlam/unified`
+ selection.ts → `@voluma/vlam/selection`
  formats/
  ply/ → `@voluma/vlam/formats/ply` (parse-splat-ply, parse-compressed-ply)
  sog/ → `@voluma/vlam/formats/sog`
@@ -55,25 +62,27 @@ src/
  splat-mesh-material.ts its TSL graph (display + pick), as free functions
  splat-mesh-picking.ts SplatPicker: the GPU pick pass and its resources
  splat-mesh-pool.ts pool data textures + the row-span allocator
+ merged-splat-mesh.ts MergedSplatMesh: several fully decoded sources, one pool
+ unified-splat-mesh.ts UnifiedSplatMesh: one WebGPU draw over registered meshes
  streamed-splat-mesh.ts LOD streaming pool; dynamic-imports RAD/LCC/frontier
  streamed-splat-mesh-utils.ts format-neutral swap, fetch, and chunk helpers
  splat-data.ts SplatData arrays + shared covariance/SH math
  splat-modifier.ts M7 TSL hook types (SplatContext/SplatOutputs)
  effects.ts tree-shakeable presets → the `@voluma/vlam/effects` subpath
  splat-budget.ts device profiling + per-device default splat budget
- webgpu-limits.ts host requiredLimits helper + storage-buffer size checks
+ webgpu-limits.ts application requiredLimits helper + storage-buffer size checks
  splat-depth-pack.ts depth pack/unpack + view-depth (un)projection for picking
 
  -- loading pipeline --
  loading.ts shared types, URL/format resolution, SplatLoadError,
  readWholeFile + the 2 GiB ArrayBuffer ceiling
- load-scene.ts public one-shot loaders (loadScene/loadSceneFile)
+ load-splat-data.ts public whole-file loaders (loadSplatData/loadSplatDataFile)
  chunk-loader.ts ChunkLoader: multiplexed, cancellable fetches + progress,
  across two workers (streaming eager, one-shot lazy)
  load-worker.ts streaming decode off the main thread (transfers arrays):
  rad-chunk, lcc-bin, SOG directories, PLY. Inlined via
                             `?worker&inline`, so every parser it imports is an
-                            untree-shakeable string literal in dist/index.js, keep
+                            untree-shakeable string literal in dist/loaders.js, keep
                             it to the streaming formats. Do not dynamic-import
                             inside it (blob URLs cannot resolve chunks).
     one-shot-worker.ts      whole-file spz/splat/ksplat, dynamic-imported by
@@ -113,7 +122,7 @@ several tests reach into private members **by name** through
 private constructor plus `reschedule`/`stageGroup`/`cache`/`resident`), so
 those must stay instance members even when the work moves out.
 
-`SplatMesh` has two modes: static (`new SplatMesh(data)`) and
+`SplatMesh` has two modes: fully loaded (`new SplatMesh(data)`) and
 dynamic-capacity (`new SplatMesh({ capacity })`, an empty pool filled with
 `appendRange`/`removeRange`, row-aligned in the pool textures).
 `StreamedSplatMesh extends SplatMesh` drives that pool within a per-device
@@ -123,10 +132,10 @@ modes work on both backends: the WebGL2 fallback's CPU sort worker mirrors the
 pool centers and sorts the active spans. shN is dropped on appended ranges
 (per-chunk palettes cannot be merged in the shared pool).
 
-The demo consumes the library exclusively through `src/lib/index.ts` -
-if the demo needs something the index does not export, that is an API
-design question, not a reason for a deep import. Format inspection APIs
-belong on `@voluma/vlam/formats/*`, not the main entry.
+The demo consumes the library through the published entries (`src/lib/index.ts`
+and the optional subpaths) - if the demo needs something those entries do not
+export, that is an API design question, not a reason for a deep import. Format
+inspection APIs belong on `@voluma/vlam/formats/*`, not the main entry.
 
 Data flow: loader → `SplatData` (positions, colors, covariances, optional SH
 palette) → `SplatMesh` packs data textures, draws one instanced quad per
@@ -160,7 +169,8 @@ moves. TSL compiles the same shader graph to WGSL (WebGPU) and GLSL
    **one** package: `three` (a peer dependency). Demo-only dependencies
    (e.g. `camera-controls`, `@voluma/three-transform-gizmo`) live in
    `devDependencies` and must never be
- imported from `src/lib/`, the demo/lib boundary is `src/lib/index.ts`.
+ imported from `src/lib/`, the demo/lib boundary is the published
+ `src/lib` entry modules (`index.ts` plus the optional subpaths).
  Adding a library dependency needs a very good reason; prefer the
  platform (e.g. we unzip with ~50 lines and decode WebP with
    `ImageDecoder` instead of shipping libraries).
@@ -187,7 +197,7 @@ error messages, and comments stay strictly professional.
 | --- | --- |
 | PLY vs SOG opacity | PLY stores logits → apply sigmoid. SOG stores linear alpha → use as-is. Mixing these up looks "fine but wrong". |
 | Quaternion order | Both formats reconstruct as (w, x, y, z); SOG uses smallest-three with the omitted component's id in alpha − 252. |
-| Scene orientation | 3DGS/SOG scenes are y-down; the demo flips those meshes upright with `rotation.x = Math.PI`. `.lcc2` is normalized inside `StreamedSplatMesh.load` to Three.js Y-up (`(x,y,z)→(-x,z,y)`); do not also rotate it in the host. SH is evaluated in mesh-local space, so this stays consistent. |
+| Scene orientation | 3DGS/SOG scenes are y-down; the demo flips those meshes upright with `rotation.x = Math.PI`. `.lcc2` is normalized inside `StreamedSplatMesh.load` to Three.js Y-up (`(x,y,z)→(-x,z,y)`); do not also rotate it in the application. SH is evaluated in mesh-local space, so this stays consistent. |
 | TSL typings are stricter than runtime | Use `attribute<'float'>('name', 'float')`, `.toInt()`, `.toMat3()` instead of the loosely-typed constructor forms. `StorageBufferAttribute` wants a typed array in TS, not `(count, itemSize, Type)`. |
 | Atomics in TSL | `storage(attr, 'uint', n).toAtomic()`; `atomicAdd(ptr.element(i), v)` returns the old value and can be captured directly. |
 | Dynamic dispatch | `renderer.compute(node, dispatchSize)` exists for dynamic counts; kernel `count` is otherwise baked at build time. |

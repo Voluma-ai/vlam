@@ -1,6 +1,6 @@
 {
   "name": "@voluma/vlam",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "description": "VLAM! - A lightweight WebGPU Gaussian splat viewer for three.js, built for high performance, streaming LOD, and fully customizable rendering through an open shader pipeline.",
   "license": "MIT",
   "author": "Voluma",
@@ -43,6 +43,26 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./loaders": {
+      "types": "./dist/loaders.d.ts",
+      "import": "./dist/loaders.js"
+    },
+    "./static-lod": {
+      "types": "./dist/static-lod-entry.d.ts",
+      "import": "./dist/static-lod.js"
+    },
+    "./streaming": {
+      "types": "./dist/streaming.d.ts",
+      "import": "./dist/streaming.js"
+    },
+    "./unified": {
+      "types": "./dist/unified.d.ts",
+      "import": "./dist/unified.js"
+    },
+    "./selection": {
+      "types": "./dist/selection.d.ts",
+      "import": "./dist/selection.js"
+    },
     "./effects": {
       "types": "./dist/effects.d.ts",
       "import": "./dist/effects.js"
@@ -79,9 +99,9 @@
   },
   "scripts": {
     "dev": "npm run docs:api:site && vitepress dev site",
-    "docs:api:site": "typedoc --options typedoc.site.json",
+    "docs:api:site": "typedoc --options site/typedoc.site.json",
     "build:site": "npm run typecheck && node scripts/build-site.mjs",
-    "build:lib": "vite build --config vite.config.lib.ts && tsc -p tsconfig.lib.json",
+    "build:lib": "vite build --config scripts/vite.config.lib.ts && tsc -p tsconfig.lib.json",
     "build": "npm run build:site && npm run build:lib",
     "prepack": "npm run build:lib",
     "typecheck": "tsc --noEmit",
@@ -92,7 +112,7 @@
     "test:coverage": "vitest run --coverage",
     "docs:check": "node scripts/docs-check.mjs",
     "docs:samples": "tsc --noEmit -p docs/guide/samples/tsconfig.json && tsc --noEmit -p docs/examples/samples/tsconfig.json",
-    "docs:api": "typedoc",
+    "docs:api": "typedoc --options site/typedoc.json",
     "size:check": "node scripts/check-bundle-size.mjs",
     "deploy": "npm run build:site && wrangler deploy"
   },

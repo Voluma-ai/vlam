@@ -7,8 +7,9 @@
  *    in-shader from a bounded uniform array (a fixed unroll over `maxShapes`
  *    slots, gated by the live count) - add/move/remove shapes is data-only
  *    (no pipeline recompile), on WebGPU and the WebGL2 fallback alike (M7.4).
- *    The kinds mirror the CPU selection volumes (`createSelectionVolume`), so
- *    a host can highlight exactly what a selection would take.
+ *    The kinds mirror the CPU selection volumes (`createSelectionVolume` on
+ *    `@voluma/vlam/selection`), so a host can highlight exactly what a
+ *    selection would take.
  *  - {@link lightingPreset} / {@link revealPreset}: small reference presets,
  *    starting points rather than a framework (M7.5).
  *  - {@link createRelightingProxy}: builds a gray lit mesh group from collision
@@ -24,12 +25,12 @@
  *  - {@link worldWarpPreset}: camera-centered sphere wrap (planet / bowl).
  *  - {@link depthOfFieldPreset}: stylized modifier-based depth-of-field (M13).
  *    For physically-modeled camera DoF prefer the core
- *    {@link SplatMesh.setDepthOfField} / `UnifiedSplatRenderer.setDepthOfField`
+ *    {@link SplatMesh.setDepthOfField} / `UnifiedSplatMesh.setDepthOfField`
  *    path - this preset is the soft/approximate alternative built purely on
  *    the modifier hook.
  *
  * Every preset here reads positions from `ctx.localCenter` - mesh-local space,
- * which inside a `SplatScene` is the splat's **placed** position. So a shape or
+ * which inside a `MergedSplatMesh` is the splat's **placed** position. So a shape or
  * a reveal spans every source as one scene instead of travelling with a moved
  * one; see `docs/guide/effects-and-modifiers.md` for what that looks like, and
  * `ctx.sourceCenter` for the opposite behaviour.
@@ -175,7 +176,7 @@ const DEFAULT_ROTATION: readonly [number, number, number, number] = [0, 0, 0, 1]
  * time (and the uniform array; very large values can exceed WebGL2's uniform
  * limits), so keep it to what a scene needs.
  *
- * Shape positions are mesh-local. In a `SplatScene` that means scene
+ * Shape positions are mesh-local. In a `MergedSplatMesh` that means scene
  * coordinates - a shape overlapping two sources covers both as one continuous
  * shape - so place them with `computeSplatBounds()`, which reports the sources
  * at their current placement.
@@ -372,7 +373,7 @@ export interface LightingPreset {
   readonly modifier: SplatModifier;
   /**
    * Mesh-local light direction; mutate `.value` to animate (no recompile).
-   * Inside a `SplatScene` that frame is the scene's, so one direction lights
+   * Inside a `MergedSplatMesh` that frame is the scene's, so one direction lights
    * every source consistently however they are posed.
    */
   readonly direction: { value: THREE.Vector3 };
@@ -383,7 +384,7 @@ export interface LightingPreset {
  * (`ctx.normal`, the least-variance covariance axis). A starting point for
  * relit product shots - not a lighting rig. Works on both backends.
  *
- * In a `SplatScene` the normal comes from the *placed* covariance, so a source
+ * In a `MergedSplatMesh` the normal comes from the *placed* covariance, so a source
  * that rotates relights as it turns.
  */
 export function lightingPreset(
@@ -434,7 +435,7 @@ export interface DepthOfFieldPreset {
  * than adding a truly isotropic screen-space disc. The physically exact aperture
  * model adds `coc²·I` to the *projected 2D* covariance with the same √(det)
  * opacity conservation the antialias filter uses - that path is
- * `SplatMesh.setDepthOfField` / `UnifiedSplatRenderer.setDepthOfField`
+ * `SplatMesh.setDepthOfField` / `UnifiedSplatMesh.setDepthOfField`
  * (see `docs/guide/effects-and-modifiers.md`, M13).
  *
  * Opacity conservation is exact only with `antialias` on: without it, the
@@ -486,7 +487,7 @@ export interface RevealPreset {
  * the M7 escape hatch - so this preset is **WebGPU-only** (see the fallback
  * notes); force WebGL2 and it will not compile.
  *
- * The field is anchored to the mesh, so in a `SplatScene` a moved source
+ * The field is anchored to the mesh, so in a `MergedSplatMesh` a moved source
  * reveals in step with whatever it now sits beside (and the pattern slides
  * across it as it travels) rather than carrying its own schedule around.
  */
@@ -870,7 +871,7 @@ const cascadedShadow = (
  * with `distance &gt; 0` fade their umbra to lit via a Frostbite cutoff window
  * (steepened by `decay`) so the shadow map far plane is not a hard cliff.
  * Contribution `fill` adds occluded Lambert (range + cone for punctual lights)
- * on top of that identity so marker lamps can light splats without wrapping
+ * on top of that identity so accent lights can light splats without wrapping
  * through collision. Cascades (`midLight` / `outerLight` / `farLight`) still
  * attach to the **first** directional only. At most
  * {@link MAX_RELIGHTING_SHADOW_LIGHTS} independent lights are used; extras

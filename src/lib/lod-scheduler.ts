@@ -379,7 +379,7 @@ export class LodScheduler implements LodSource {
 
       const current = this.level[i] as number;
       // Blanket force-finest only when fill may still climb past the distance
-      // band (octree / pagetable). Classic LCC never uses this path.
+      // band (octree / page-table). Classic LCC never uses this path.
       if (
         this.fillPastDistance &&
         this.forceFinestWithin !== undefined &&
@@ -539,7 +539,7 @@ export class LodScheduler implements LodSource {
    * Uses leftover budget to restore detail after {@link enforceBudget}
    * demoted leaves, nearest first, while the total stays under the fill
    * target. By default this may also refine *past* the distance-chosen level
-   * when headroom remains (octree / pagetable streams). With
+   * when headroom remains (octree / page-table streams). With
    * {@link fillPastDistance} false (classic LCC), fill never goes finer than
    * each leaf's distance-selected level - so a cell at the L1 band does not
    * fetch L0 only to demote moments later with the camera still.

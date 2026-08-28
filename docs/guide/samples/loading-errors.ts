@@ -1,6 +1,7 @@
 // Guide sample: docs/guide/loading-scenes.md - structured errors,
 // cancellation, and progress.
-import { SplatMesh, SplatLoadError, isAbortError, loadScene } from '@voluma/vlam';
+import { SplatMesh } from '@voluma/vlam';
+import { SplatLoadError, isAbortError, loadSplatData } from '@voluma/vlam/loaders';
 
 const controller = new AbortController();
 // e.g. cancel when the user navigates away:
@@ -8,7 +9,7 @@ const controller = new AbortController();
 
 export async function loadWithFeedback(url: string): Promise<SplatMesh | null> {
   try {
-    const data = await loadScene(url, {
+    const data = await loadSplatData(url, {
       signal: controller.signal,
       onProgress: (loaded, total) => {
         // total is 0 when the response has no Content-Length → show a spinner.

@@ -11,7 +11,7 @@ export interface SplatContext {
   /**
    * Splat center in mesh-local space (pre-displacement).
    *
-   * Inside a `SplatScene` this is the splat's **placed** position
+   * Inside a `MergedSplatMesh` this is the splat's **placed** position
    * (`sourceMatrix · poolCenter`) - the placement is applied before the stack
    * runs, so effects stay anchored to the scene rather than travelling with a
    * moved source. Use {@link sourceCenter} for the pre-placement position.
@@ -19,14 +19,14 @@ export interface SplatContext {
   readonly localCenter: Node<'vec3'>;
   /**
    * The splat's position in its own source's data frame. Identical to
-   * {@link localCenter} on a plain mesh; inside a `SplatScene` it is the
+   * {@link localCenter} on a plain mesh; inside a `MergedSplatMesh` it is the
    * **pre-placement** position, for effects that should travel *with* a moved
    * source instead of staying put in the scene.
    */
   readonly sourceCenter: Node<'vec3'>;
   /**
    * Linear transform from the source data frame to mesh-local space. This is
-   * identity on a plain mesh; inside a {@link SplatScene} it is the linear part
+   * identity on a plain mesh; inside a {@link MergedSplatMesh} it is the linear part
    * of the source placement. Apply it to source-frame displacement vectors.
    * To express a source-frame rotation `R` as a mesh-local `rotation` output,
    * conjugate it: `sourceToLocal · R · sourceToLocal.inverse()`.
@@ -117,8 +117,8 @@ export interface ModifierStackTarget {
  *  - An **empty slot costs nothing**: it is omitted from the compacted list
  *    entirely, never compiled as a passthrough. All slots empty ⇒ the mesh
  *    gets an empty list ⇒ the unhooked graph (and the unified renderer's
- *    zero-modifier gather fast path stays eligible - except for a `SplatScene`,
- *    which `UnifiedSplatRenderer` does not accept as a source at all).
+ *    zero-modifier gather fast path stays eligible - except for a `MergedSplatMesh`,
+ *    which `UnifiedSplatMesh` does not accept as a source at all).
  *  - {@link apply} hands the mesh a **compacted array whose reference is
  *    stable** while the occupancy is unchanged, so re-applying after
  *    uniform-only changes is a guaranteed no-op on the mesh's identity diff -

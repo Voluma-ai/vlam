@@ -28,8 +28,8 @@ Pass `requireWebGpu: true` if you would rather fail loudly than degrade, reasona
 | Depth of field | ✓ | ✓ |
 | `sdfEffects`, `lightingPreset`, plain-TSL modifiers | ✓ | ✓ |
 | `revealPreset` and other `wgslFn` shaders | ✓ | **inert** |
-| `SplatScene` (many captures, one sort) | ✓ | **unavailable** |
-| `UnifiedSplatRenderer` | ✓ | **unavailable** |
+| `MergedSplatMesh` (many captures, one sort) | ✓ | **unavailable** |
+| `UnifiedSplatMesh` | ✓ | **unavailable** |
 
 **"Inert" is the dangerous word.** A `wgslFn`-based modifier on WebGL2 does not throw and does not warn, it simply does nothing. If your load sequence hides the capture behind a reveal that never plays, the capture never appears, and the bug report you get says "black screen on my work laptop".
 

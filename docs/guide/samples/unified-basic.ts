@@ -1,27 +1,24 @@
 // Guide sample: docs/guide/unified-rendering.md - one depth-correct draw
-// over a static mesh and a streamed mesh (WebGPU only).
+// over a fully loaded mesh and a streamed mesh (WebGPU only).
 import * as THREE from 'three/webgpu';
-import {
-  SplatMesh,
-  StreamedSplatMesh,
-  UnifiedSplatRenderer,
-  loadScene,
-  supportsUnifiedSplatRenderer,
-} from '@voluma/vlam';
+import { SplatMesh } from '@voluma/vlam';
+import { loadSplatData } from '@voluma/vlam/loaders';
+import { StreamedSplatMesh } from '@voluma/vlam/streaming';
+import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '@voluma/vlam/unified';
 
 export async function setupUnified(renderer: THREE.WebGPURenderer, scene: THREE.Scene) {
   const main = await StreamedSplatMesh.load('/city/lod-meta.json');
-  const statue = new SplatMesh(await loadScene('/statue.sog'));
+  const statue = new SplatMesh(await loadSplatData('/statue.sog'));
   statue.position.set(4, 0, -2); // pose the SOURCE meshes, not the unified mesh
 
   // Check after renderer init: answers false on WebGL2 (and before the
   // backend exists). Fall back to standalone draws there.
-  if (!supportsUnifiedSplatRenderer(renderer)) {
+  if (!supportsUnifiedSplatMesh(renderer)) {
     scene.add(main, statue);
     return null;
   }
 
-  const unified = new UnifiedSplatRenderer(renderer, main.capacity + statue.capacity);
+  const unified = new UnifiedSplatMesh(renderer, main.capacity + statue.capacity);
   unified.addSource(main);
   unified.addSource(statue, { priority: 1, opacity: 0.8 });
   scene.add(unified); // add the unified mesh INSTEAD of the sources

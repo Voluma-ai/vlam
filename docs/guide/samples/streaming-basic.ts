@@ -1,6 +1,6 @@
 // Guide sample: docs/guide/streaming-and-lod.md - open a streamed scene.
 import * as THREE from 'three/webgpu';
-import { StreamedSplatMesh } from '@voluma/vlam';
+import { StreamedSplatMesh } from '@voluma/vlam/streaming';
 
 export async function openStreamed(scene: THREE.Scene, signal: AbortSignal) {
   const splats = await StreamedSplatMesh.load('/capture/lod-meta.json', {
@@ -10,7 +10,7 @@ export async function openStreamed(scene: THREE.Scene, signal: AbortSignal) {
     lodBaseDistance: 10, // world units inside which the finest LOD is used
   });
   scene.add(splats);
-  // Per frame, exactly like a static mesh:
+  // Per frame, exactly like a fully loaded mesh:
   //   splats.update(camera, renderer); renderer.render(scene, camera);
   return splats;
 }

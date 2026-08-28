@@ -4,7 +4,7 @@ import type {
   CollisionMeshDescriptor,
   LodSource,
   LodSourceOptions,
-  SceneCollision,
+  SplatCollisionData,
   StreamedScene,
 } from '../../lod-source';
 import type { SplatDatasetSource } from '../../dataset-source';
@@ -189,7 +189,7 @@ export function buildLcc2Scene(
 function collisionFrom(
   raw: RawManifest,
   dataset: SplatDatasetSource,
-): { collision?: SceneCollision } {
+): { collision?: SplatCollisionData } {
   const meshFiles = raw.root.meshFiles;
   if (!meshFiles || meshFiles.length === 0) return {};
 

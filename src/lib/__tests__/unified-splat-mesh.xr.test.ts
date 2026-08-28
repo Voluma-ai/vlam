@@ -2,7 +2,7 @@ import * as THREE from 'three/webgpu';
 import { describe, expect, it, vi } from 'vitest';
 import { writeCovariance } from '../splat-data';
 import { SplatMesh } from '../splat-mesh';
-import { UnifiedSplatRenderer } from '../unified-splat-renderer';
+import { UnifiedSplatMesh } from '../unified-splat-mesh';
 
 /**
  * The unified renderer does not inherit `SplatMesh.update`, so it needs its own
@@ -48,11 +48,11 @@ function xrRenderer(): { renderer: THREE.WebGPURenderer; head: THREE.ArrayCamera
   return { renderer, head };
 }
 
-describe('UnifiedSplatRenderer under XR presentation', () => {
+describe('UnifiedSplatMesh under XR presentation', () => {
   it('takes the per-eye viewport and focal, and sorts from the head', () => {
     const { renderer, head } = xrRenderer();
     const mesh = source();
-    const unified = new UnifiedSplatRenderer(renderer, 4);
+    const unified = new UnifiedSplatMesh(renderer, 4);
     unified.addSource(mesh);
     // The child resolves XR for itself; stub it out so this test observes only
     // the unified renderer's own uniforms and sort.
@@ -87,7 +87,7 @@ describe('UnifiedSplatRenderer under XR presentation', () => {
     // `renderView` states both explicitly, so the XR path must not override it.
     const { renderer } = xrRenderer();
     const mesh = source();
-    const unified = new UnifiedSplatRenderer(
+    const unified = new UnifiedSplatMesh(
       Object.assign(renderer, {
         getRenderTarget: () => null,
         setRenderTarget: vi.fn(),

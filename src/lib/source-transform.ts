@@ -1,5 +1,5 @@
 /**
- * Per-source world transforms for a unified {@link SplatScene} pool.
+ * Per-source world transforms for a unified {@link MergedSplatMesh} pool.
  *
  * Multiple splat clouds are concatenated into one pool in their own local
  * space; each cloud ("source") then carries a world matrix applied **in the
@@ -21,10 +21,10 @@ import { uniformArray } from 'three/tsl';
 
 /**
  * Maximum number of sources a unified pool can hold. Sized generously - the
- * uniform array costs `4 · MAX_SOURCES` vec4s (16 KB at 256), well under the
+ * uniform array costs `4 · MAX_MERGED_SPLAT_SOURCES` vec4s (16 KB at 256), well under the
  * uniform-buffer limit - while bounding the per-splat index range.
  */
-export const MAX_SOURCES = 256;
+export const MAX_MERGED_SPLAT_SOURCES = 256;
 
 /** The channel both the material graph and the sorter read as a source id. */
 export const SOURCE_ID_CHANNEL = 'sourceId';
@@ -36,13 +36,13 @@ export const SOURCE_ID_CHANNEL = 'sourceId';
  * the frame's uniforms - no material or pipeline rebuild.
  */
 export class SourceMatrixArray {
-  /** `4 · MAX_SOURCES` vec4 columns; the TSL node both consumers index. */
+  /** `4 · MAX_MERGED_SPLAT_SOURCES` vec4 columns; the TSL node both consumers index. */
   readonly node: ReturnType<typeof uniformArray>;
   /** CPU mirror of the same column-major matrices, for the WebGL2 sorter. */
   readonly matrices: Float32Array;
   private readonly columns: THREE.Vector4[];
 
-  constructor(maxSources = MAX_SOURCES) {
+  constructor(maxSources = MAX_MERGED_SPLAT_SOURCES) {
     this.matrices = new Float32Array(16 * maxSources);
     this.columns = Array.from({ length: 4 * maxSources }, (_, i) => {
       // Initialize every slot to the identity matrix's columns.

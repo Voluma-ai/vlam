@@ -616,7 +616,7 @@ export interface SplatPoolBytesOptions {
  * that envelope, it does not shrink it. Price the ceilings before choosing them:
  *
  * ```js
- * // 1 main + 4 markers, each able to reach 1.5M splats
+ * // 1 main + 4 additional meshes, each able to reach 1.5M splats
  * const bytes = estimateSplatPoolBytes(4_000_000) + 4 * estimateSplatPoolBytes(1_500_000);
  * ```
  *

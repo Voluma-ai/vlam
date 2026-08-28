@@ -113,7 +113,7 @@ describe('material graph - per-source placement', () => {
   }
 
   it('builds the unhooked graph with a placement and no modifiers', () => {
-    // Newly reachable: before M16 a SplatScene always carried the placement
+    // Newly reachable: before M16 a MergedSplatMesh always carried the placement
     // modifier, so its stack was never empty. The placement must survive the
     // `stack.offset === null` fast path.
     const material = new THREE.NodeMaterial();

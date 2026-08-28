@@ -2,7 +2,8 @@
 // an eased flight between saved viewpoints.
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { SplatMesh, createSplatRenderer, loadScene } from '@voluma/vlam';
+import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { loadSplatData } from '@voluma/vlam/loaders';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);
@@ -13,7 +14,7 @@ const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 1
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 
-const splats = new SplatMesh(await loadScene('/goose.sog'));
+const splats = new SplatMesh(await loadSplatData('/goose.sog'));
 scene.add(splats);
 
 interface Viewpoint {

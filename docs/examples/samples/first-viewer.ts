@@ -2,7 +2,8 @@
 // Renderer + scene + camera + splats, plus OrbitControls for mouse input.
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { SplatMesh, createSplatRenderer, loadScene } from '@voluma/vlam';
+import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { loadSplatData } from '@voluma/vlam/loaders';
 
 // 1. The renderer draws pixels into a <canvas>. `createSplatRenderer` picks
 //    WebGPU when the browser has it and falls back to WebGL2 when it does not.
@@ -23,9 +24,9 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.target.set(0, 0, 0);
 
-// 5. The capture itself. `loadScene` downloads and decodes the file; the
+// 5. The capture itself. `loadSplatData` downloads and decodes the file; the
 //    `SplatMesh` is the three.js object that draws it.
-const splats = new SplatMesh(await loadScene('/goose.sog'));
+const splats = new SplatMesh(await loadSplatData('/goose.sog'));
 scene.add(splats);
 
 // Keep filling the window when it is resized.

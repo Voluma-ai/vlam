@@ -14,6 +14,22 @@ import type { SplatShInputs, Vec3Uniform } from './splat-mesh-material';
 /** Construction-time projected-footprint policy selected by a streamed format. */
 export type ProjectedFilterProfile = 'default' | 'lcc';
 
+/** Canonical `.rad` foveation modes. */
+export type SplatFoveationMode = 'band' | 'frontier' | 'page-table';
+
+/** Resolve a caller-supplied foveation mode, defaulting when unset. */
+export function resolveSplatFoveationMode(
+  mode: SplatFoveationMode | undefined,
+  fallback: SplatFoveationMode = 'band',
+): SplatFoveationMode {
+  return mode ?? fallback;
+}
+
+/** True when the mode is the `.rad` page-table pager. */
+export function isPageTableFoveation(mode: string | undefined): boolean {
+  return mode === 'page-table';
+}
+
 /**
  * Opaque handle for a range of splats appended to a {@link SplatMesh},
  * used to remove the range again.
@@ -187,7 +203,7 @@ export interface SplatMeshOptions {
    *   too big and it is small enough (`parentPixelScale > limit ≥ ownPixelScale`),
    *   using per-splat `own_size`/`parent_size`. Full coverage by construction, no
    *   band leapfrogging. Baked into the material graph. See `docs/formats/rad-notes.md`.
-   * - `'pagetable'`: the {@link StreamedSplatMesh} default for `.rad` - a worker
+   * - `'page-table'`: the {@link StreamedSplatMesh} default for `.rad` - a worker
    *   owns the tree traversal and pages only the *selected* frontier into the
    *   pool (Spark's selected-index model), so the whole splat budget buys
    *   on-screen detail. Requires the streamed `.rad` machinery; on a plain
@@ -195,7 +211,7 @@ export interface SplatMeshOptions {
    *
    * @experimental `.rad` foveation option; may change in a minor release.
    */
-  foveationMode?: 'band' | 'frontier' | 'pagetable';
+  foveationMode?: SplatFoveationMode;
   /**
    * Target on-screen size (px) for the frontier / page-table cut: it keeps one
    * LOD level per view ray whose projected node size is about this. Larger =
@@ -244,9 +260,9 @@ export interface SplatMeshOptions {
    * cosmetic flip and renders in the data frame (raw Spark / mkkellogg parity);
    * LCC still self-orients (that is format semantics, not part of the switch).
    *
-   * For a static mesh the flip is chosen from {@link SplatData.sourceFormat}
-   * (stamped by the loaders); a dynamic-capacity mesh carries no format, so its
-   * host applies {@link yUpTransformForFormat} itself. See {@link SplatOrientation}.
+   * For a fully loaded mesh the flip is chosen from {@link SplatData.format}
+   * (stamped by the loaders); a dynamic-capacity mesh carries no format, so the
+   * caller applies {@link yUpTransformForFormat} itself. See {@link SplatOrientation}.
    */
   orientation?: SplatOrientation;
   /**
@@ -293,7 +309,7 @@ export type SplatSortStrategy = 'counting' | 'radix' | 'exact';
 
 /** Controls optional work during a per-frame source update. */
 export interface SplatUpdateOptions {
-  /** Leave sorting to {@link UnifiedSplatRenderer}; uploads and LOD state still update. */
+  /** Leave sorting to {@link UnifiedSplatMesh}; uploads and LOD state still update. */
   sort?: boolean;
 }
 
@@ -331,8 +347,8 @@ export interface UnifiedSourceView {
   readonly modifiers: readonly SplatModifier[];
   /**
    * True when this source is itself a unified pool with per-source placement
-   * (`SplatScene`). The gather path cannot resolve nested placement, so
-   * `UnifiedSplatRenderer` rejects these sources.
+   * (`MergedSplatMesh`). The gather path cannot resolve nested placement, so
+   * `UnifiedSplatMesh` rejects these sources.
    */
   readonly hasSourcePlacement: boolean;
   readonly channels: ReadonlyMap<string, { texture: THREE.DataTexture }>;

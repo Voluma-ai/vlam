@@ -30,13 +30,13 @@ Order matters: stop the loop before disposing what the loop reads, or a frame al
 
 ## The async setup problem
 
-`createSplatRenderer` and `loadScene` are both async. React can, and in development *will*, unmount your component while they are still running. When the promise finally resolves, the effect that started it is long gone, and the code cheerfully appends a canvas to a DOM node nobody is looking at.
+`createSplatRenderer` and `loadSplatData` are both async. React can, and in development *will*, unmount your component while they are still running. When the promise finally resolves, the effect that started it is long gone, and the code cheerfully appends a canvas to a DOM node nobody is looking at.
 
 Two guards handle it:
 
 **A `disposed` flag,** checked after every `await`. If the effect was cleaned up while you were waiting, throw away whatever you just built instead of attaching it.
 
-**An `AbortController`,** passed to `loadScene`. This cancels the download itself rather than letting a hundred-megabyte capture finish arriving for a component that no longer exists. The resulting rejection is an abort, not a failure, `isAbortError` is how you tell them apart, and showing an error state for a cancelled load is a bug users will see as a flash of "something went wrong" during normal navigation.
+**An `AbortController`,** passed to `loadSplatData`. This cancels the download itself rather than letting a hundred-megabyte capture finish arriving for a component that no longer exists. The resulting rejection is an abort, not a failure, `isAbortError` is how you tell them apart, and showing an error state for a cancelled load is a bug users will see as a flash of "something went wrong" during normal navigation.
 
 ## StrictMode is doing you a favour
 

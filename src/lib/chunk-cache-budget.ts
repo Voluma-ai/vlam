@@ -2,9 +2,9 @@
  * Cross-mesh decoded-chunk cache arbitration.
  *
  * Every {@link StreamedSplatMesh} caps its own decoded-chunk cache, and in
- * `foveationMode: 'pagetable'` that cap is `min(2 GiB, this capture's decoded
- * size)` - a number sized for *one* streamed scene. A scene of streamed markers
- * therefore has no ceiling at all: thirteen markers plus a main are thirteen
+ * `foveationMode: 'page-table'` that cap is `min(2 GiB, this capture's decoded
+ * size)` - a number sized for *one* streamed scene. A scene of streamed additional meshes
+ * therefore has no ceiling at all: thirteen extras plus a main are thirteen
  * plus one independent caps, and because each is sized to its own capture, a
  * desktop that fits them never evicts. The background sweep then runs to
  * completion against every one of them, pulling every capture in the scene into
@@ -44,8 +44,8 @@ export interface ChunkCacheClient {
    *
    * Bytes above it are handed to siblings that can use them, the way
    * `BudgetGovernor` waterfills past a member's `maxBudget`. Without it a scene
-   * of one large capture and a dozen small markers would reserve most of the
-   * envelope for markers that cannot fill it.
+   * of one large capture and a dozen small additional meshes would reserve most of the
+   * envelope for extras that cannot fill it.
    */
   readonly ceilingBytes: number;
   /**

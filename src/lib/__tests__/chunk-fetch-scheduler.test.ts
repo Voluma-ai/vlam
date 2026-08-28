@@ -91,7 +91,7 @@ describe('ChunkFetchScheduler', () => {
     const far = new FakeMesh(0.01).join(scheduler);
 
     focused.fill(scheduler);
-    // The far marker still has to draw *something*; its coarse coverage is what
+    // The far mesh still has to draw *something*; its coarse coverage is what
     // the deferred swaps substitute from.
     expect(far.fill(scheduler, 'base')).toBeGreaterThanOrEqual(1);
   });
@@ -239,7 +239,7 @@ describe('ChunkFetchScheduler', () => {
 
   it('holds the global cap under churn across many meshes', () => {
     const scheduler = new ChunkFetchScheduler({ maxGlobalInflight: 16, perMeshFloor: 1 });
-    // The reference scene: one focused marker among thirteen.
+    // The reference scene: one focused mesh among thirteen.
     const meshes = Array.from({ length: 13 }, (_, i) =>
       new FakeMesh(i === 0 ? 8 : 0.05).join(scheduler),
     );
@@ -251,15 +251,15 @@ describe('ChunkFetchScheduler', () => {
     }
     for (const mesh of meshes) mesh.release(scheduler, mesh.held);
     expect(scheduler.inflight).toBe(0);
-    // The focused marker got materially more of the pipe than any far one.
+    // The focused mesh got materially more of the pipe than any far one.
     expect(meshes[0]!.wakeCount).toBeGreaterThanOrEqual(0);
   });
 
   it('still favours the focused mesh when a scene has more meshes than slots', () => {
-    // The reference scene: a main plus thirteen markers against a 16-slot pipe,
+    // The reference scene: a main plus thirteen additional meshes against a 16-slot pipe,
     // so per-mesh floors alone would consume the whole thing. Dividing only the
-    // remainder after floors would leave the focused marker with *less* than
-    // the far markers it is competing against - the opposite of the point.
+    // remainder after floors would leave the focused mesh with *less* than
+    // the far meshes it is competing against - the opposite of the point.
     const scheduler = new ChunkFetchScheduler({ maxGlobalInflight: 16, perMeshFloor: 1 });
     const focused = new FakeMesh(8).join(scheduler);
     const far = Array.from({ length: 13 }, () => new FakeMesh(0.05).join(scheduler));
@@ -281,7 +281,7 @@ describe('ChunkFetchScheduler', () => {
     new FakeMesh(0.05).join(scheduler);
 
     // Entitlement is a ceiling against the whole pipe, not a fixed partition,
-    // so a focused marker is not throttled to a third of it by two idle ones.
+    // so a focused mesh is not throttled to a third of it by two idle ones.
     expect(focused.fill(scheduler, 'priority')).toBeGreaterThanOrEqual(5);
   });
 

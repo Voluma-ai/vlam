@@ -10,7 +10,7 @@ drop, with progress and useful errors.
 
 ## The bytes stay on the device
 
-`loadSceneFile` accepts a `File` from an `<input type="file">` or drop event
+`loadSplatDataFile` accepts a `File` from an `<input type="file">` or drop event
 and decodes it in a Web Worker. The file stays on the device and the page stays
 responsive while it loads.
 
@@ -77,7 +77,7 @@ not reclaim automatically.
 
 ## Keeping your bundle small
 
-`loadScene` and `loadSceneFile` accept anything, which means they must be able to reach every parser. If your app only ever loads one format, your own pipeline's output, say, you are shipping five decoders you will never call.
+`loadSplatData` and `loadSplatDataFile` accept anything, which means they must be able to reach every parser. If your app only ever loads one format, your own pipeline's output, say, you are shipping five decoders you will never call.
 
 Each format is a separate entry point, so import just the one you need:
 
@@ -90,7 +90,7 @@ This includes only the SOG decoder. Available subpaths are
 
 The effects presets work the same way. They live behind `@voluma/vlam/effects` and cost nothing unless you import them, so a viewer that never applies an effect never pays for the effects code.
 
-Use the general `loadScene` when the user chooses the file, as they do here. Reach for a direct parser when *you* choose it.
+Use the general `loadSplatData` when the user chooses the file, as they do here. Reach for a direct parser when *you* choose it.
 
 Folders of streamed data, a `.lcc` directory, a streamed SOG capture, go through `StreamedSplatMesh.loadLocal` instead, since those are many files rather than one. See [Huge scenes](/examples/big-scenes).
 

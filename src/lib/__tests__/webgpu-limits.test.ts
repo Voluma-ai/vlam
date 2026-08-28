@@ -2,15 +2,17 @@ import { describe, expect, it } from 'vitest';
 import type { WebGPURenderer } from 'three/webgpu';
 import {
   WEBGPU_DEFAULT_MAX_STORAGE_BUFFER_BINDING_SIZE,
-  WORK_BUFFER_CENTERS_BYTES_PER_SPLAT,
   assertStorageBufferFitsDevice,
   deviceMaxStorageBufferBindingSize,
-  estimateLargestStorageBufferBytes,
   recommendedWebGpuRequiredLimits,
   supportsWebGpuPowerPreference,
   webGpuPowerPreferenceOptions,
 } from '../webgpu-limits';
-import { UnifiedSplatRenderer } from '../unified-splat-renderer';
+import {
+  estimateLargestStorageBufferBytes,
+  WORK_BUFFER_CENTERS_BYTES_PER_SPLAT,
+} from '../unified-work-buffer';
+import { UnifiedSplatMesh } from '../unified-splat-mesh';
 
 describe('recommendedWebGpuRequiredLimits', () => {
   it('copies the adapter maxima for requestDevice requiredLimits', () => {
@@ -152,11 +154,9 @@ describe('assertStorageBufferFitsDevice', () => {
     ).not.toThrow();
   });
 
-  it('rejects UnifiedSplatRenderer construction under the default limit', () => {
+  it('rejects UnifiedSplatMesh construction under the default limit', () => {
     const capacity = 14_401_536;
     const renderer = rendererWithLimit(WEBGPU_DEFAULT_MAX_STORAGE_BUFFER_BINDING_SIZE);
-    expect(() => new UnifiedSplatRenderer(renderer, capacity)).toThrow(
-      /maxStorageBufferBindingSize/,
-    );
+    expect(() => new UnifiedSplatMesh(renderer, capacity)).toThrow(/maxStorageBufferBindingSize/);
   });
 });

@@ -8,7 +8,7 @@ and [`architecture.md`](architecture.md).
 
 ## Formats
 
-| Format | Static (`loadScene` / `SplatMesh`) | Streamed (`StreamedSplatMesh`) | Local folder drop | Pos / Cov / Opacity / Color | SH (rendered) | Auto tests | Manual / device |
+| Format | Fully loaded (`loadSplatData` / `SplatMesh`) | Streamed (`StreamedSplatMesh`) | Local folder drop | Pos / Cov / Opacity / Color | SH (rendered) | Auto tests | Manual / device |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | **PLY** (3DGS INRIA) | ✅ |, | ✅ file | ✅ | ✅ packed shN (`f_rest_*`, bands 1–3) | `parse-splat-ply.test.ts` | orbit; SH vs DC |
 | **Compressed PLY** (SuperSplat) | ✅ |, | ✅ file | ✅ | ✅ packed shN when `sh` element present | `parse-compressed-ply.test.ts` | large capture |
@@ -19,7 +19,7 @@ and [`architecture.md`](architecture.md).
 | **SPZ** | ✅ |, | ✅ file | ✅ | ✅ packed shN when `shDegree` > 0 (caps at 3 bands) | `parse-spz.test.ts` |, |
 | **LCC** (`.lcc` / `meta.lcc`, v3–v5) |, | ✅ | ✅ manifest + siblings | ✅ | ⚠️ `Quality` profile: packed SH (`shBands`); `Portable` DC | `lcc.test.ts`, `parse-lcc.test.ts` | Quality vs Portable |
 | **LCC2** (XGRIDS tiles) |, | ✅ | ✅ manifest + `.sog` tiles | ✅ | ⚠️ opt-in `shBands` (palette → packed at decode; verified tiles DC-only) | `lcc2-*` tests | octree LOD orbit |
-| **RAD** / **RADC** (Spark) | ✅ one-shot ≤ ~16.7M leaves | ✅ prefix or **pagetable** foveation | ✅ `.rad` + `.radc` folder | ✅ | ✅ packed SH when capture has `maxSh` | `parse-rad`, `rad-*`, `frontier-pager` | pagetable fly-through |
+| **RAD** / **RADC** (Spark) | ✅ whole-file ≤ ~16.7M leaves | ✅ prefix or **page-table** foveation | ✅ `.rad` + `.radc` folder | ✅ | ✅ packed SH when capture has `maxSh` | `parse-rad`, `rad-*`, `frontier-pager` | page-table fly-through |
 
 ### Format notes
 
@@ -31,7 +31,7 @@ and [`architecture.md`](architecture.md).
   re-quantized into the shared pool at decode (`formats/streamed-shn-notes.md`).
 - **LCC manifest versions:** `.lcc` / `meta.lcc` v3.x, 4.x and 5.x share one
   binary layout; v3 often omits `fileType` (inferred). See `formats/lcc-notes.md`.
-- **RAD paging:** large captures default `foveationMode: 'pagetable'`
+- **RAD paging:** large captures default `foveationMode: 'page-table'`
   (`FrontierPager` + `frontier-worker`). Moderate scenes budget-lift to full
   leaves via prefix `RadLodSource`. History: `history/rad-paging-history.md`.
 - **Over 2 GiB PLY:** streamed window decode ✅ (including `f_rest_*` SH).
@@ -48,13 +48,13 @@ and [`architecture.md`](architecture.md).
 | Streamed LOD / budget | ✅ | ✅ | ✅ per-source cut gathered | streamed-splat-mesh.* | `?budget=` |
 | Shared budget across meshes (`BudgetGovernor`) | ✅ weighted split via `setBudget`; flat-leaf, octree-cut and RAD page-table paths | ✅ same | ⚠️ per-source meshes registrable | `budget-governor.test.ts` |, |
 | Float16 pool textures | ⚠️ opt-in `poolFloatTextures: 'float16'` (centers + covA) | ⚠️ same |, | `half-float`, `splat-mesh.pool` | `?poolFloat=float16` |
-| Adaptive pixel ratio | ⚠️ policy `suggestAdaptivePixelRatio`; host applies | ⚠️ same |, | `splat-budget.test.ts` | `?adaptiveDpr=1` |
-| Raised WebGPU storage buffer limits | ✅ `createSplatRenderer()`; hosts owning device creation pass `recommendedWebGpuRequiredLimits(adapter)` |, | ✅ early throw if pool exceeds device bind limit | `webgpu-limits.test.ts` | large LCC2 / unified capacity >8M |
+| Adaptive pixel ratio | ⚠️ policy `suggestAdaptivePixelRatio`; application applies | ⚠️ same |, | `splat-budget.test.ts` | `?adaptiveDpr=1` |
+| Raised WebGPU storage buffer limits | ✅ `createSplatRenderer()`; applications owning device creation pass `recommendedWebGpuRequiredLimits(adapter)` |, | ✅ early throw if pool exceeds device bind limit | `webgpu-limits.test.ts` | large LCC2 / unified capacity >8M |
 | `SplatMesh.pick` (GPU depth) | ✅ | ✅ |, | `splat-mesh.pick` | click focus |
 | Position queries (`queryNearest`, `queryHeight`) | ✅ | ✅ |, (per-source mesh) | `splat-mesh.query`, `streamed-splat-mesh.query` | M9 |
 | Multi-view exact sort (`renderView`) | ✅ | ⚠️ async worker; sequential views | ⚠️ WebGPU: per-view gather+sort | `splat-mesh.render-view` | `?mirror=1` |
-| Static multi-cloud (`SplatScene`) | ✅ | ✅ inter-sort |, (fast path) | `splat-scene.test.ts` | overlap readback |
-| Heterogeneous `UnifiedSplatRenderer` | ✅ | ❌ | ✅ static + streamed sources | `unified-splat-renderer.test.ts` · `unified-harness.html` | harness + streamed/SH pixel gates |
+| Fully loaded multi-cloud (`MergedSplatMesh`) | ✅ | ✅ inter-sort |, (fast path) | `merged-splat-mesh.test.ts` | overlap readback |
+| Heterogeneous `UnifiedSplatMesh` | ✅ | ❌ | ✅ fully loaded + streamed sources | `unified-splat-mesh.test.ts` · `src/viewer/unified-harness.html` | harness + streamed/SH pixel gates |
 | `revealPreset` / `wgslFn` effects | ✅ | ❌ | ⚠️ per-source modifiers at gather | `effects.test.ts` | WebGPU only |
 | `lightingPreset`, `depthOfFieldPreset`, `worldWarpPreset` | ✅ | ✅ | ⚠️ folded at gather when unified | `effects.test.ts` |, |
 | `setRelighting` (proxy-mesh screen-space) | ✅ | ✅ | ✅ draw-time (no gather) | `relighting.test.ts` | `?effects=relight` |
@@ -76,7 +76,7 @@ flip is skipped, but LCC's matrix still applies (format semantics, not
 cosmetics). The correction is a rigid **object-level** transform, never baked
 into splat data, so covariances and view-dependent SH stay consistent, and
 `pick` / `queryNearest` / `queryHeight` answer in whichever frame the mesh
-renders. Hosts orienting a dynamic-capacity pool themselves use the exported
+renders. Applications orienting a dynamic-capacity pool themselves use the exported
 `SplatOrientation` / `yUpTransformForFormat` / `createYUpTransform`.
 
 ### Color space (`srgbOutput`)
@@ -86,8 +86,8 @@ converts them to the renderer's linear working space in-shader, so the
 renderer keeps its standard `SRGBColorSpace` output and ordinary meshes share
 the canvas untouched. `srgbOutput: true` instead composites in display (sRGB)
 space, the math 3DGS training optimizes against, and requires a renderer
-configured to skip output conversion; the host owns that renderer setting.
-`UnifiedSplatRenderer` takes one `srgbOutput` at construction and every
+configured to skip output conversion; the application owns that renderer setting.
+`UnifiedSplatMesh` takes one `srgbOutput` at construction and every
 registered source must match it.
 
 ### Non-uniform scale
@@ -128,13 +128,13 @@ textures are written in local space and the transform flows through per-frame
 matrix uniforms only. Animating `mesh.scale` every frame on a standalone or
 streamed mesh costs nothing beyond the sort re-requests the camera already
 pays for (a streamed mesh may also re-evaluate its LOD cut, exactly as camera
-motion does). In a `UnifiedSplatRenderer`, changing a source's transform
+motion does). In a `UnifiedSplatMesh`, changing a source's transform
 invalidates that source's gather slice, so continuously animating it costs
 **one gather compute dispatch per frame for that source**, untouched sources
 reuse their slices and no gather pipeline is rebuilt. This is the same rule as
 the modifier contract: a uniform-style change (matrix, opacity) is cheap and
 per-frame safe; only a graph change rebuilds pipelines. Cheap in practice for
-standalone/streamed meshes and marker-sized unified sources; budget for the
+standalone/streamed meshes and small unified sources; budget for the
 regather when animating a large unified source.
 
 Try it visually with the demo's `?scale=2,0.5,1` query parameter.
@@ -173,8 +173,8 @@ the version you install (`>= 0.185.0` is the peer range).
 
 **What the WebGL2 fallback costs you.** It is a first-class fallback for
 standalone rendering, static `SplatMesh`, streamed `StreamedSplatMesh`,
-static `SplatScene` inter-sort, picking, and spatial queries all work, but
-not full parity: no heterogeneous `UnifiedSplatRenderer`, no `wgslFn`-only
+static `MergedSplatMesh` inter-sort, picking, and spatial queries all work, but
+not full parity: no heterogeneous `UnifiedSplatMesh`, no `wgslFn`-only
 effect presets such as `revealPreset`, multi-view via an async worker sort,
 and streamed sorting can flicker under camera motion (ROADMAP L5). The exact
 list is the [WebGL2 scope statement](#webgl2-scope-statement) below.
@@ -320,13 +320,13 @@ after secondary views.
 ## WebGL2 scope statement
 
 WebGL2 is a **first-class fallback for standalone rendering**: static
-`SplatMesh`, streamed `StreamedSplatMesh`, static `SplatScene` multi-cloud
+`SplatMesh`, streamed `StreamedSplatMesh`, static `MergedSplatMesh` multi-cloud
 inter-sort, picking, and position queries. It is **not** full feature parity:
 
-- No heterogeneous `UnifiedSplatRenderer` (no CPU gather implementation).
- Gate with `supportsUnifiedSplatRenderer(renderer)`, it answers `false` on
+- No heterogeneous `UnifiedSplatMesh` (no CPU gather implementation).
+ Gate with `supportsUnifiedSplatMesh(renderer)`, it answers `false` on
  WebGL2 and before the backend is initialized, so check it after renderer
- init and fall back to standalone meshes / static `SplatScene`.
+ init and fall back to standalone meshes / static `MergedSplatMesh`.
 - No `revealPreset` / other `wgslFn`-only presets.
 - Multi-view uses async worker sort between sequential draws.
 - Streamed LCC / Streamed SOG / RAD: CPU worker sort can flicker under camera
@@ -341,10 +341,10 @@ WebGPU's default `maxStorageBufferBindingSize` is **128 MiB**. Unified work
 buffers allocate an RGBA32F centers storage attribute at **16 B/splat**, so
 capacities above ~8M exceed the default. Desktop adapters commonly advertise
 ~2 GiB. `createSplatRenderer()` requests them (along with the adapter's
-features, which is what keeps the device out of compatibility mode); hosts that
+features, which is what keeps the device out of compatibility mode); applications that
 own device creation themselves pass `recommendedWebGpuRequiredLimits(adapter)`
 to `WebGPURenderer` instead.
-`UnifiedSplatRenderer` throws a clear error when the device limit is too low
+`UnifiedSplatMesh` throws a clear error when the device limit is too low
 instead of cascading `GPUValidationError`s from `CreateBindGroup`.
 
 ## SH rendering summary

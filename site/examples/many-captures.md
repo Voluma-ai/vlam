@@ -7,13 +7,13 @@
 ## Why two meshes are not enough
 
 Separate `SplatMesh` objects sort only their own splats. That works until they
-overlap: transparent splats require a single shared draw order. `SplatScene`
+overlap: transparent splats require a single shared draw order. `MergedSplatMesh`
 places every capture in one pool and sorts them together.
 
 ## The trade: capacity up front
 
 ```ts
-const scene = new SplatScene({ capacity: data.count * 3 });
+const scene = new MergedSplatMesh({ capacity: data.count * 3 });
 const id = scene.addSource(data, placement);
 ```
 
@@ -63,18 +63,18 @@ Each source keeps its own upright correction too, so captures from different too
 
 ## When to reach for it
 
-**Use `SplatScene`** when captures share space: a room assembled from several scans, an object placed inside a captured environment, anything the user can drag through something else.
+**Use `MergedSplatMesh`** when captures share space: a room assembled from several scans, an object placed inside a captured environment, anything the user can drag through something else.
 
 **Use separate meshes** when they do not: captures in different rooms, a gallery of items with gaps between them, anything where you would never see two at once through the same pixels. Separate meshes are simpler, need no capacity planning, and can be disposed independently.
 
 ## Constraints
 
 - **WebGPU only.** The shared per-source sort has no WebGL2 fallback path.
-- **`UnifiedSplatRenderer` does not accept a `SplatScene` as a source.** They are two different answers to overlapping content; pick one.
+- **`UnifiedSplatMesh` does not accept a `MergedSplatMesh` as a source.** They are two different answers to overlapping content; pick one.
 - **Higher-order spherical harmonics are not rotated per source.** A source you rotate keeps its view-dependent lighting in its original orientation. On most captures this is invisible; on a shiny one it is not.
 - **Removing a source** frees its slot, but the pool stays the size you allocated.
 
 ## Next
 
 - [Mix splats with ordinary 3D objects](/examples/splats-and-objects), the other kind of "two things in one scene"
-- [All samples](/examples/all-samples): `UnifiedSplatRenderer`, capacity sizing, and picking with a source id
+- [All samples](/examples/all-samples): `UnifiedSplatMesh`, capacity sizing, and picking with a source id

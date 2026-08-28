@@ -6,7 +6,7 @@
     "declaration": true,
     // Declaration maps would point at `src/`, which `package.json#files` never
     // ships - every map would be a dead link and go-to-definition would break.
-    // JS source maps (emitted by vite, see vite.config.lib.ts) are kept: they
+    // JS source maps (emitted by vite, see scripts/vite.config.lib.ts) are kept: they
     // embed `sourcesContent`, so they stand alone and are debuggable, which an
     // MIT library owes its users even at ~1.26 MB of dist's ~2.12 MB.
     "declarationMap": false,
@@ -23,6 +23,11 @@
   "include": [
     "src/lib/**/*.d.ts",
     "src/lib/index.ts",
+    "src/lib/loaders.ts",
+    "src/lib/static-lod-entry.ts",
+    "src/lib/streaming.ts",
+    "src/lib/unified.ts",
+    "src/lib/selection.ts",
     "src/lib/effects.ts",
     "src/lib/formats/ply/index.ts",
     "src/lib/formats/sog/index.ts",

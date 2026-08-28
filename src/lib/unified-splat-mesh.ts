@@ -19,7 +19,8 @@ import { WebGpuSortScheduler } from './sort-scheduler';
 import { WorkBuffer, WorkBufferGather } from './work-buffer-gather';
 import { createWorkBufferMaterial } from './work-buffer-material';
 import type { FloatUniform, Vec2Uniform } from './splat-mesh-material';
-import { assertStorageBufferFitsDevice, estimateLargestStorageBufferBytes } from './webgpu-limits';
+import { assertStorageBufferFitsDevice } from './webgpu-limits';
+import { estimateLargestStorageBufferBytes } from './unified-work-buffer';
 import { resolveXrView } from './xr-view';
 import { StorageMirrorReleaser } from './storage-attribute-mirror';
 import type { SplatSorter } from './sorter';
@@ -58,7 +59,7 @@ interface LayoutEntry {
   activeCount: number;
 }
 
-/** Registration settings for one source in a {@link UnifiedSplatRenderer}. */
+/** Registration settings for one source in a {@link UnifiedSplatMesh}. */
 export interface UnifiedSplatSourceOptions {
   /** Whole-source opacity applied after its modifier stack. Defaults to `1`. */
   opacity?: number;
@@ -67,7 +68,7 @@ export interface UnifiedSplatSourceOptions {
   /** Higher values survive a fixed work-buffer overflow first. Defaults to `0`. */
   priority?: number;
   /**
-   * Cache a modifier-bearing source until {@link UnifiedSplatRenderer.invalidateSource}
+   * Cache a modifier-bearing source until {@link UnifiedSplatMesh.invalidateSource}
    * is called. Defaults to `false`, which safely re-gathers live modifier
    * uniforms every frame.
    *
@@ -79,7 +80,7 @@ export interface UnifiedSplatSourceOptions {
 }
 
 /**
- * Result of a successful {@link UnifiedSplatRenderer.pick}: the frontmost hit
+ * Result of a successful {@link UnifiedSplatMesh.pick}: the frontmost hit
  * across every visible registered source, tagged with the source it landed on.
  */
 export interface UnifiedSplatPickResult extends SplatPickResult {
@@ -92,7 +93,7 @@ export interface UnifiedSplatPickResult extends SplatPickResult {
  *
  * @experimental May change in a minor release.
  */
-export interface UnifiedSplatRendererOptions {
+export interface UnifiedSplatMeshOptions {
   /** Composite source colors in display (sRGB) space. Defaults to `false`. */
   srgbOutput?: boolean;
   /**
@@ -107,11 +108,11 @@ export interface UnifiedSplatRendererOptions {
 }
 
 /**
- * Returns true when `renderer` can drive {@link UnifiedSplatRenderer}.
+ * Returns true when `renderer` can drive {@link UnifiedSplatMesh}.
  * Heterogeneous gather/sort/draw is WebGPU-only; WebGL2 hosts keep standalone
- * `SplatMesh` draws or static {@link SplatScene}.
+ * `SplatMesh` draws or static {@link MergedSplatMesh}.
  */
-export function supportsUnifiedSplatRenderer(renderer: object): boolean {
+export function supportsUnifiedSplatMesh(renderer: object): boolean {
   return (
     (renderer as { backend?: { isWebGPUBackend?: boolean } }).backend?.isWebGPUBackend === true
   );
@@ -126,11 +127,11 @@ export function supportsUnifiedSplatRenderer(renderer: object): boolean {
  * registered source mesh instead - sorter bounds and the draw material both
  * consume world-space centers written by gather.
  *
- * WebGPU only. Prefer {@link supportsUnifiedSplatRenderer} before construction.
+ * WebGPU only. Prefer {@link supportsUnifiedSplatMesh} before construction.
  *
  * @experimental May change in a minor release.
  */
-export class UnifiedSplatRenderer extends THREE.Mesh {
+export class UnifiedSplatMesh extends THREE.Mesh {
   private readonly workBuffer: WorkBuffer;
   private readonly workSourceIndex: THREE.StorageBufferAttribute;
   /** The sorted draw-order buffer; lives outside the geometry, freed on dispose. */
@@ -198,12 +199,12 @@ export class UnifiedSplatRenderer extends THREE.Mesh {
   constructor(
     renderer: THREE.WebGPURenderer,
     capacity: number,
-    options: UnifiedSplatRendererOptions = {},
+    options: UnifiedSplatMeshOptions = {},
   ) {
-    if (!supportsUnifiedSplatRenderer(renderer)) {
+    if (!supportsUnifiedSplatMesh(renderer)) {
       throw new Error(
-        'UnifiedSplatRenderer requires a WebGPU backend (renderer.backend.isWebGPUBackend). ' +
-          'On WebGL2 use standalone SplatMesh draws or static SplatScene.',
+        'UnifiedSplatMesh requires a WebGPU backend (renderer.backend.isWebGPUBackend). ' +
+          'On WebGL2 use standalone SplatMesh draws or static MergedSplatMesh.',
       );
     }
     // Fail before allocating StorageBufferAttributes that would trip a cryptic
@@ -317,31 +318,27 @@ export class UnifiedSplatRenderer extends THREE.Mesh {
       // placement, so a nested scene would draw every one of its sources at
       // its pool-local position. Reject rather than draw it wrong.
       throw new Error(
-        'UnifiedSplatRenderer: a SplatScene is already a unified pool with its own global ' +
-          'sort; add its sources individually, or draw the scene directly.',
+        'UnifiedSplatMesh: a MergedSplatMesh is already a unified pool with its own global ' +
+          'sort; add its sources individually, or draw the mesh directly.',
       );
     }
     if (view.srgbOutput !== this.srgbOutput) {
-      throw new Error(
-        "UnifiedSplatRenderer: every source must use the renderer's srgbOutput setting.",
-      );
+      throw new Error("UnifiedSplatMesh: every source must use the renderer's srgbOutput setting.");
     }
     if (this.sourceMaxStdDev === null) {
       this.sourceMaxStdDev = view.maxStdDev;
       this.maxStdDev.value = view.maxStdDev;
       this.minSplatSizePx.value = view.minSplatSizePx;
     } else if (this.sourceMaxStdDev !== view.maxStdDev) {
-      throw new Error('UnifiedSplatRenderer: every source must use the same maxStdDev setting.');
+      throw new Error('UnifiedSplatMesh: every source must use the same maxStdDev setting.');
     } else if (this.minSplatSizePx.value !== view.minSplatSizePx) {
-      throw new Error(
-        'UnifiedSplatRenderer: every source must use the same minSplatSizePx setting.',
-      );
+      throw new Error('UnifiedSplatMesh: every source must use the same minSplatSizePx setting.');
     }
     if (this.sourceAntialias === null) {
       this.sourceAntialias = view.antialias;
       this.antialias.value = view.antialias ? 1 : 0;
     } else if (this.sourceAntialias !== view.antialias) {
-      throw new Error('UnifiedSplatRenderer: every source must use the same antialias setting.');
+      throw new Error('UnifiedSplatMesh: every source must use the same antialias setting.');
     }
     if (this.sourceProjectedFilterProfile === null) {
       this.sourceProjectedFilterProfile = view.projectedFilterProfile;
@@ -349,9 +346,7 @@ export class UnifiedSplatRenderer extends THREE.Mesh {
       this.projectedLowPassVariance.value = lccProfile ? 0.1 : 0.3;
       this.compensateProjectedLowPass.value = lccProfile ? 1 : 0;
     } else if (this.sourceProjectedFilterProfile !== view.projectedFilterProfile) {
-      throw new Error(
-        'UnifiedSplatRenderer: every source must use the same projected filter profile.',
-      );
+      throw new Error('UnifiedSplatMesh: every source must use the same projected filter profile.');
     }
     this.sources.push({
       source,
@@ -401,7 +396,7 @@ export class UnifiedSplatRenderer extends THREE.Mesh {
   setSourceOpacity(source: SplatMesh, opacity: number): void {
     this.assertNotDisposed('setSourceOpacity');
     const record = this.sources.find((entry) => entry.source === source);
-    if (!record) throw new Error('UnifiedSplatRenderer: source is not registered.');
+    if (!record) throw new Error('UnifiedSplatMesh: source is not registered.');
     record.opacity = opacity;
   }
 
@@ -409,7 +404,7 @@ export class UnifiedSplatRenderer extends THREE.Mesh {
   setSourceVisible(source: SplatMesh, visible: boolean): void {
     this.assertNotDisposed('setSourceVisible');
     const record = this.sources.find((entry) => entry.source === source);
-    if (!record) throw new Error('UnifiedSplatRenderer: source is not registered.');
+    if (!record) throw new Error('UnifiedSplatMesh: source is not registered.');
     record.visible = visible;
     record.source.setUnifiedPickVisibility(visible);
   }
@@ -556,11 +551,11 @@ export class UnifiedSplatRenderer extends THREE.Mesh {
   ): void {
     if (this.disposed) return;
     if (renderer !== this.renderer) {
-      throw new Error('UnifiedSplatRenderer: renderView must use its construction renderer.');
+      throw new Error('UnifiedSplatMesh: renderView must use its construction renderer.');
     }
-    if (!supportsUnifiedSplatRenderer(renderer)) {
+    if (!supportsUnifiedSplatMesh(renderer)) {
       throw new Error(
-        'UnifiedSplatRenderer requires a WebGPU backend (renderer.backend.isWebGPUBackend).',
+        'UnifiedSplatMesh requires a WebGPU backend (renderer.backend.isWebGPUBackend).',
       );
     }
     // A secondary view must sort for its own camera regardless of cadence, and
@@ -586,9 +581,9 @@ export class UnifiedSplatRenderer extends THREE.Mesh {
     targetSize?: THREE.Vector2,
     forceSort = false,
   ): void {
-    if (!supportsUnifiedSplatRenderer(this.renderer)) {
+    if (!supportsUnifiedSplatMesh(this.renderer)) {
       throw new Error(
-        'UnifiedSplatRenderer requires a WebGPU backend (renderer.backend.isWebGPUBackend).',
+        'UnifiedSplatMesh requires a WebGPU backend (renderer.backend.isWebGPUBackend).',
       );
     }
     // Hosts must not pose this mesh; world centers already include source transforms.
@@ -826,7 +821,7 @@ export class UnifiedSplatRenderer extends THREE.Mesh {
 
   private assertNotDisposed(operation: string): void {
     if (this.disposed) {
-      throw new Error(`UnifiedSplatRenderer: ${operation} called after dispose.`);
+      throw new Error(`UnifiedSplatMesh: ${operation} called after dispose.`);
     }
   }
 
@@ -864,7 +859,7 @@ export class UnifiedSplatRenderer extends THREE.Mesh {
     const gather = this.buildGather(view);
     // Compile off the critical frame. WebGPU defers compute-pipeline compilation
     // to the first dispatch, and that dispatch happens inside `update` - a
-    // measured 2.0s frame on a marker-heavy scene. Warming here is best-effort:
+    // measured 2.0s frame on a multi-mesh scene. Warming here is best-effort:
     // if it fails or has not finished by the first real gather, the only cost is
     // the stall this avoids, so nothing waits on it.
     void gather.warmUp(this.renderer).catch(() => undefined);

@@ -1,5 +1,5 @@
 import type { SdfShapeKind } from '../lib/effects';
-import type { SelectionVolumeKind } from '../lib';
+import type { SelectionVolumeKind } from '../lib/selection';
 
 /**
  * The frame math behind the `?separate=1` placement gizmo.

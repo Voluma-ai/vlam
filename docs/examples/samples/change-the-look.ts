@@ -1,7 +1,8 @@
 // Example: site/examples/shader-effects.md - cut, light and reveal a capture.
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { SplatMesh, createSplatRenderer, loadScene } from '@voluma/vlam';
+import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { loadSplatData } from '@voluma/vlam/loaders';
 import { lightingPreset, revealPreset, sdfEffects } from '@voluma/vlam/effects';
 
 const renderer = await createSplatRenderer();
@@ -14,7 +15,7 @@ camera.position.set(1, 0.5, 1.4);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 
-const splats = new SplatMesh(await loadScene('/goose.sog'));
+const splats = new SplatMesh(await loadSplatData('/goose.sog'));
 scene.add(splats);
 
 // Build each effect ONCE, outside the frame loop. Each one is a small piece of

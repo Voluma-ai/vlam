@@ -6,7 +6,7 @@ import {
   WORK_BUFFER_BYTES_PER_SLOT,
   estimateUnifiedWorkBufferBytes,
   estimateUnifiedWorkBufferPeakBytes,
-} from '../webgpu-limits';
+} from '../unified-work-buffer';
 
 function textures(width: number) {
   return {

@@ -1,4 +1,4 @@
-import { SplatLoadError } from '../lib';
+import { SplatLoadError } from '../lib/loaders';
 
 /** A button shown on the error card (e.g. Retry / Reload). */
 export interface ErrorAction {

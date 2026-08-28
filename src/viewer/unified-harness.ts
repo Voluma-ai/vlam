@@ -1,13 +1,8 @@
 import * as THREE from 'three/webgpu';
 import { bool } from 'three/tsl';
-import {
-  SplatMesh,
-  StreamedSplatMesh,
-  UnifiedSplatRenderer,
-  supportsUnifiedSplatRenderer,
-  createSplatRenderer,
-  type SplatData,
-} from '../lib';
+import { SplatMesh, createSplatRenderer, type SplatData } from '../lib';
+import { StreamedSplatMesh } from '../lib/streaming';
+import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '../lib/unified';
 
 const SIZE = 256;
 const status = document.querySelector<HTMLDivElement>('#status');
@@ -96,7 +91,7 @@ async function sampleScene(
   scene: THREE.Scene,
   camera: THREE.PerspectiveCamera,
   target: THREE.RenderTarget,
-  unified: UnifiedSplatRenderer,
+  unified: UnifiedSplatMesh,
   z: number,
   x = SIZE >> 1,
 ): Promise<readonly [number, number, number, number]> {
@@ -123,7 +118,7 @@ async function run(): Promise<void> {
   renderer.setClearColor(0x000000, 1);
   document.body.append(renderer.domElement);
   await renderer.init();
-  if (!supportsUnifiedSplatRenderer(renderer)) {
+  if (!supportsUnifiedSplatMesh(renderer)) {
     throw new Error('Unified renderer GPU harness requires a WebGPU backend.');
   }
 
@@ -132,7 +127,7 @@ async function run(): Promise<void> {
   const target = new THREE.RenderTarget(SIZE, SIZE, { type: THREE.UnsignedByteType });
   const red = makeSource([255, 0, 0], 0.1);
   const blue = makeSource([0, 0, 255], -0.1);
-  const unified = new UnifiedSplatRenderer(renderer, 2);
+  const unified = new UnifiedSplatMesh(renderer, 2);
   unified.addSource(red, { opacity: 0.6 });
   unified.addSource(blue, { opacity: 0.6 });
   scene.add(unified);
@@ -208,7 +203,7 @@ async function run(): Promise<void> {
   unified.addSource(blue, { opacity: 0.6 });
 
   // Overflow eviction and later re-admission.
-  const tiny = new UnifiedSplatRenderer(renderer, 1);
+  const tiny = new UnifiedSplatMesh(renderer, 1);
   const low = makeSource([255, 0, 0], 0.1);
   const high = makeSource([0, 0, 255], -0.1);
   tiny.addSource(low, { priority: 0 });
@@ -233,7 +228,7 @@ async function run(): Promise<void> {
   const rotated = makeSource([128, 128, 128], 0);
   rotated.rotation.y = Math.PI / 2;
   rotated.updateMatrixWorld();
-  const rotatedUnified = new UnifiedSplatRenderer(renderer, 1);
+  const rotatedUnified = new UnifiedSplatMesh(renderer, 1);
   rotatedUnified.addSource(rotated);
   const rotatedScene = new THREE.Scene();
   rotatedScene.add(rotatedUnified);
@@ -244,7 +239,7 @@ async function run(): Promise<void> {
   // Streamed + static overlap: order must flip with camera (not "static always front").
   const streamed = makeStreamedSource([255, 0, 0], 0.1);
   const staticOverStreamed = makeSource([0, 0, 255], -0.1);
-  const streamedUnified = new UnifiedSplatRenderer(renderer, 2);
+  const streamedUnified = new UnifiedSplatMesh(renderer, 2);
   streamedUnified.addSource(streamed, { opacity: 0.6 });
   streamedUnified.addSource(staticOverStreamed, { opacity: 0.6 });
   const streamedScene = new THREE.Scene();
@@ -273,7 +268,7 @@ async function run(): Promise<void> {
 
   // SH under opposite views + rotated source (unified SH direction transform).
   const shMesh = makeShSource();
-  const shUnified = new UnifiedSplatRenderer(renderer, 1);
+  const shUnified = new UnifiedSplatMesh(renderer, 1);
   shUnified.addSource(shMesh);
   const shScene = new THREE.Scene();
   shScene.add(shUnified);

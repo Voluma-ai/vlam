@@ -7,7 +7,7 @@ import { selectInData, type SelectionVolume } from './selection-volume';
  * transformed (and therefore independently animated) object.
  *
  * Both halves keep the source's local frame - separation does not bake any
- * transform. Register them as `SplatScene` or `UnifiedSplatRenderer` sources
+ * transform. Register them as `MergedSplatMesh` or `UnifiedSplatMesh` sources
  * for one global sort while they are posed independently. Separate
  * `SplatMesh` draw calls sort only within each mesh and can misblend where
  * their Gaussian footprints overlap.
@@ -102,7 +102,7 @@ function gatherSplatData(data: SplatData, indices: Uint32Array): SplatData {
     sh?: SplatData['sh'];
     shPacked?: SplatData['shPacked'];
     antialias?: boolean;
-    sourceFormat?: SplatData['sourceFormat'];
+    format?: SplatData['format'];
   } = { count, positions, colors, covariances };
 
   if (data.sh) {
@@ -123,7 +123,7 @@ function gatherSplatData(data: SplatData, indices: Uint32Array): SplatData {
     result.shPacked = { ...data.shPacked, packed };
   }
   if (data.antialias !== undefined) result.antialias = data.antialias;
-  if (data.sourceFormat !== undefined) result.sourceFormat = data.sourceFormat;
+  if (data.format !== undefined) result.format = data.format;
   return result;
 }
 

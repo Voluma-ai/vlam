@@ -129,7 +129,7 @@ describe('partitionSplatData', () => {
     const data: SplatData = {
       ...base,
       antialias: true,
-      sourceFormat: 'sog',
+      format: 'sog',
       frontierParent: new Float32Array(3),
       radTree: {
         childCount: new Uint16Array(3),
@@ -140,7 +140,7 @@ describe('partitionSplatData', () => {
     };
     const { inside, outside } = partitionSplatData(data, new Uint32Array([0]));
     expect(inside.antialias).toBe(true);
-    expect(inside.sourceFormat).toBe('sog');
+    expect(inside.format).toBe('sog');
     // Index topology over the whole cloud is meaningless on a subset, so the
     // streamed-only fields must not travel with either half.
     for (const half of [inside, outside]) {

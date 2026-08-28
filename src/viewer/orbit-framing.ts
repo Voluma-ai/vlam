@@ -295,7 +295,7 @@ function sampleOccupancy(
  *
  * Prefers LOD leaf centers (Streamed SOG / classic LCC). Falls back to a
  * `.rad` chunk-0 overview subsample, which is copied onto the scene because
- * pagetable mode transfers those buffers to a worker.
+ * page-table mode transfers those buffers to a worker.
  */
 export function heightSamplesFromStreamedMesh(
   mesh: object,

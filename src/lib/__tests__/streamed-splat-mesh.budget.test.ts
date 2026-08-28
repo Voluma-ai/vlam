@@ -54,7 +54,7 @@ interface MeshFixture {
   budget?: number;
   /** Pool capacity in splats. */
   capacity?: number;
-  /** Whether the scene advertises foveation (drives `pagetable` wiring). */
+  /** Whether the scene advertises foveation (drives page-table wiring). */
   foveated?: boolean;
   options?: StreamedSplatMeshOptions;
 }
@@ -161,7 +161,7 @@ describe('StreamedSplatMesh budget ceiling', () => {
     expect(() => mesh.setBudget(-1)).toThrow(RangeError);
   });
 
-  it('reports 0 drawBudget outside pagetable mode', () => {
+  it('reports 0 drawBudget outside page-table mode', () => {
     const mesh = track(makeMesh());
     expect(mesh.drawBudget).toBe(0);
   });
@@ -186,7 +186,7 @@ describe('StreamedSplatMesh page-table governance', () => {
         budget: WIDTH,
         capacity: 8 * WIDTH,
         foveated: true,
-        options: { foveationMode: 'pagetable', maxBudget: 8 * WIDTH },
+        options: { foveationMode: 'page-table', maxBudget: 8 * WIDTH },
       }),
     );
     expect(mesh.drawBudget).toBe(WIDTH);
@@ -206,15 +206,15 @@ describe('StreamedSplatMesh page-table governance', () => {
     // storage need not be contiguous. A capacity larger than one page and not a
     // multiple of it must give the *final* page the remainder: rounding it up
     // reserves more than the pool holds and the allocation fails. Real `.rad`
-    // markers land here routinely - a 261-row pool asked for a 32-row page it
-    // did not have, and every page-table marker in the scene failed to load.
+    // meshes land here routinely - a 261-row pool asked for a 32-row page it
+    // did not have, and every page-table mesh in the scene failed to load.
     const capacity = 65_536 + WIDTH; // one full page plus one row
     const mesh = track(
       makeMesh({
         budget: WIDTH,
         capacity,
         foveated: true,
-        options: { foveationMode: 'pagetable', maxBudget: capacity },
+        options: { foveationMode: 'page-table', maxBudget: capacity },
       }),
     );
     expect(mesh.capacity).toBeGreaterThanOrEqual(capacity);
@@ -226,7 +226,7 @@ describe('StreamedSplatMesh page-table governance', () => {
 
     // Growing to the ceiling adds the short final page: rounding it up to a
     // whole page would ask the pool for more than it holds, which is how every
-    // page-table marker in a real scene failed to load.
+    // page-table mesh in a real scene failed to load.
     mesh.setBudget(capacity);
     const resize = [...(RecordingWorker.last?.posted ?? [])]
       .reverse()
@@ -249,7 +249,7 @@ describe('StreamedSplatMesh page-table governance', () => {
         capacity: 8 * WIDTH,
         foveated: true,
         options: {
-          foveationMode: 'pagetable',
+          foveationMode: 'page-table',
           maxBudget: 8 * WIDTH,
           foveationDrawBudget: 2 * WIDTH,
         },
@@ -273,7 +273,7 @@ describe('StreamedSplatMesh page-table governance', () => {
         budget: 4 * WIDTH,
         capacity: 4 * WIDTH,
         foveated: true,
-        options: { foveationMode: 'pagetable' },
+        options: { foveationMode: 'page-table' },
       }),
     );
     expect(mesh.lodScale).toBe(1);

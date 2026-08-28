@@ -253,10 +253,10 @@ describe('buildRadScene prefix-vs-foveated choice', () => {
   });
 
   it('foveates for a pinned budget that cannot hold the leaves, on any device', async () => {
-    // A host sizing markers explicitly (`maxBudget: pool / N`) gets that number
+    // A host sizing additional meshes explicitly (`maxBudget: pool / N`) gets that number
     // - the lift never runs for it. Judging the path as if the lift *had* run
-    // would put every such marker back on the camera-independent prefix reader,
-    // which is the multi-marker version of the same blur.
+    // would put every such mesh back on the camera-independent prefix reader,
+    // which is the multi-mesh version of the same blur.
     stubScene();
     const scene = await buildRadScene(
       httpDatasetSource('http://host/scene.rad'),

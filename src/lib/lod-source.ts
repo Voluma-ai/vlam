@@ -115,7 +115,7 @@ export interface CollisionMeshDescriptor {
  * Coordinates are source-local, the same frame as {@link StreamedScene.bounds}:
  * {@link StreamedScene.formatTransform} maps them to world.
  */
-export interface SceneCollision {
+export interface SplatCollisionData {
   readonly meshes: readonly CollisionMeshDescriptor[];
 }
 
@@ -165,7 +165,7 @@ export interface StreamedScene {
    */
   readonly formatTransform?: THREE.Matrix4;
   /** Optional collision geometry the format ships; undefined when it has none. */
-  readonly collision?: SceneCollision;
+  readonly collision?: SplatCollisionData;
   /**
    * Optional always-resident environment tile the format ships outside its LOD
    * structure (the `.lcc2` sky) - present only when the dataset carries one.
@@ -182,20 +182,20 @@ export interface StreamedScene {
   /**
    * Splats per chunk file, so a `(file, localIndex)` pair maps to a stable global
    * splat index (`file * chunkSize + local`). Set by `.rad`; the page-table
-   * renderer (`foveationMode: 'pagetable'`) keys frontier splats by that global.
+   * renderer (`foveationMode: 'page-table'`) keys frontier splats by that global.
    */
   readonly chunkSize?: number;
   /**
    * A chunk the scene builder already fetched and decoded (`.rad` decodes chunk
    * 0 for the scene bounds and the SH codebook). Handing it straight to the
-   * renderer saves a second round trip - and in `pagetable` mode it is what
+   * renderer saves a second round trip - and in `page-table` mode it is what
    * seeds the worker's tree roots, without which the first traversals return an
    * empty frontier and the view stays blank until chunk 0 arrives a second time.
    */
   readonly bootstrapChunk?: { readonly file: number; readonly data: SplatData };
   /**
    * Source-local xyz subsample of the coarsest overview (`.rad` chunk 0).
-   * Survives after pagetable mode transfers chunk-0 buffers to the worker, so
+   * Survives after page-table mode transfers chunk-0 buffers to the worker, so
    * a host can estimate terrain height before any later chunk decodes.
    */
   readonly overviewPositions?: Float32Array;

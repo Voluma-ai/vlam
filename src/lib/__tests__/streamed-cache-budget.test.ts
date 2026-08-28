@@ -89,7 +89,7 @@ function makeMesh(
     scene,
     budget,
     budget,
-    { ...options, foveationMode: 'pagetable' },
+    { ...options, foveationMode: 'page-table' },
     RecordingWorker,
   );
 }
@@ -97,7 +97,7 @@ function makeMesh(
 /**
  * A classic streamed mesh: no frontier worker, so its chunk cache lives on the
  * main thread and evicts against `cpuCacheBytes`. This is what a `.lcc2` or SOG
- * marker is, and it must join the same scene envelope the `.rad` meshes do.
+ * mesh is, and it must join the same scene envelope the `.rad` meshes do.
  */
 function makeClassicMesh(options: StreamedSplatMeshOptions = {}): StreamedSplatMesh {
   const budget = 4 * WIDTH;
@@ -210,8 +210,8 @@ describe('StreamedSplatMesh chunk cache budget', () => {
   });
 
   it('bounds a classic streamed mesh too, not only the page-table ones', () => {
-    // A scene of `.lcc2` markers has no frontier worker anywhere, so a budget
-    // that only covered the page-table path would leave exactly the marker-heavy
+    // A scene of `.lcc2` additional meshes has no frontier worker anywhere, so a budget
+    // that only covered the page-table path would leave exactly the multi-mesh
     // scenes it exists for outside the envelope.
     const cacheBudget = new ChunkCacheBudget({ totalBytes: 64 * MIB, perMeshFloorBytes: 0 });
     const a = track(makeClassicMesh({ cacheBudget, fetchWeight: () => 1 }));

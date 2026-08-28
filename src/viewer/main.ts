@@ -5,10 +5,7 @@ import CameraControls from 'camera-controls';
 import {
   ModifierSlots,
   SplatMesh,
-  SplatScene,
-  StreamedSplatMesh,
-  loadScene,
-  loadSceneFile,
+  MergedSplatMesh,
   detectSplatDeviceProfile,
   isFillConstrainedSplatDevice,
   probeSplatGpuClass,
@@ -25,8 +22,13 @@ import {
   type SplatMeshOptions,
   type SplatOrientation,
   type SplatPerformanceProfile,
-  type StreamedSplatPerformanceEvent,
 } from '../lib';
+import { loadSplatData, loadSplatDataFile } from '../lib/loaders';
+import {
+  StreamedSplatMesh,
+  type CollisionMeshTile,
+  type StreamedSplatPerformanceEvent,
+} from '../lib/streaming';
 import { createDemoEffects } from './effects';
 import {
   createPaintTool,
@@ -52,7 +54,6 @@ import {
   type WorldWarpPreset,
   type RelightingProxy,
 } from '../lib/effects';
-import type { CollisionMeshTile } from '../lib';
 import { showError, hideError, isErrorVisible, describeLoadError } from './failure';
 import { createDropZone, filesFromDirectoryInput } from './drop-zone';
 import {
@@ -322,7 +323,7 @@ function splitSplatData(data: SplatData, parts: number): SplatData[] {
       // Carry the source format so each chunk mesh can self-orient like the
       // whole-scene path (the chunked/paint mesh is dynamic, so the demo applies
       // the correction manually - see buildStaticScene).
-      ...(data.sourceFormat ? { sourceFormat: data.sourceFormat } : {}),
+      ...(data.format ? { format: data.format } : {}),
     });
   }
   return chunks;
@@ -1383,15 +1384,15 @@ async function main(): Promise<void> {
   // turns it off, `?blobCull=<px>` tunes the threshold. See RAD_BLOB_CULL_PX.
   const blobCull = params.has('blobCull') ? Number(params.get('blobCull')) : undefined;
   // Foveated `.rad` cut: `?foveationMode=band` forces the legacy screen-radius
-  // band (A/B); `?foveationMode=pagetable` (or `?pageTable`) uses Spark's
-  // selected-index page table (CPU-picked frontier paged into the pool); default
-  // is the GPU frontier cut. `?foveationPx=N` tunes the target node size.
+  // band (A/B); `?foveationMode=page-table` uses Spark's selected-index page
+  // table (CPU-picked frontier paged into the pool); default is the GPU
+  // frontier cut. `?foveationPx=N` tunes the target node size.
   const foveationParam = params.get('foveationMode');
   const foveationMode =
     foveationParam === 'band'
       ? ('band' as const)
-      : foveationParam === 'pagetable' || params.has('pageTable')
-        ? ('pagetable' as const)
+      : foveationParam === 'page-table'
+        ? ('page-table' as const)
         : undefined;
   const foveationTargetPx = params.has('foveationPx')
     ? Number(params.get('foveationPx'))
@@ -2160,9 +2161,9 @@ async function main(): Promise<void> {
     /** Suffix for the overlay line, e.g. ' (paint)'. */
     readonly note: string;
     readonly paint: PaintTool | null;
-    /** Source-local → world matrix for selection when the mesh is a SplatScene. */
+    /** Source-local → world matrix for selection when the mesh is a MergedSplatMesh. */
     readonly selectionWorldMatrix?: THREE.Matrix4;
-    /** Exact rendered bounds when source transforms live inside a SplatScene. */
+    /** Exact rendered bounds when source transforms live inside a MergedSplatMesh. */
     readonly worldBounds?: THREE.Box3;
     /** Source transforms already include host orientation/rotation/scale. */
     readonly preservesTransform?: boolean;
@@ -2184,7 +2185,7 @@ async function main(): Promise<void> {
     const mesh = new SplatMesh({ capacity: data.count + 4 * 2048 }, meshOptions()); // row-alignment headroom
     // A dynamic-capacity pool has no source format, so SplatMesh cannot
     // self-orient it - apply the same Y-up correction the whole-scene path gets.
-    const correction = orientation === 'y-up' ? yUpTransformForFormat(data.sourceFormat) : null;
+    const correction = orientation === 'y-up' ? yUpTransformForFormat(data.format) : null;
     if (correction) {
       mesh.matrix.copy(correction);
       mesh.matrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
@@ -2662,12 +2663,12 @@ async function main(): Promise<void> {
       },
       canSeparate: () => effectMode !== 'paint',
       commit: async (partition) => {
-        // `SplatScene` combines both halves in one pool and sort, so their
+        // `MergedSplatMesh` combines both halves in one pool and sort, so their
         // splats interleave correctly while the inside source animates.
         const placement = splats.matrixWorld.clone();
         const rowCapacity = (count: number): number =>
           Math.ceil(count / SPLAT_POOL_ROW_WIDTH) * SPLAT_POOL_ROW_WIDTH;
-        const separated = new SplatScene({
+        const separated = new MergedSplatMesh({
           ...meshOptions(),
           capacity: rowCapacity(partition.outside.count) + rowCapacity(partition.inside.count),
           maxSources: 2,
@@ -2836,7 +2837,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    void loadSceneFile(file, {
+    void loadSplatDataFile(file, {
       onProgress: (loaded, total) => {
         // A superseded drop must not drive the bar for the one that replaced it.
         if (sequence === dropSequence) loadingProgress = { loaded, total };
@@ -2994,7 +2995,7 @@ async function main(): Promise<void> {
       try {
         loadingTitle = sceneLabel(DEFAULT_SCENE);
         refreshOverlay();
-        const data = await loadScene(resolveSceneUrl(DEFAULT_SCENE), {
+        const data = await loadSplatData(resolveSceneUrl(DEFAULT_SCENE), {
           onProgress: (loaded, total) => {
             if (!dropMounted) loadingProgress = { loaded, total };
           },
@@ -3023,7 +3024,7 @@ async function main(): Promise<void> {
     if (!streamed) {
       // `?scene=` can point at a scene as big as any drop, so it reports the
       // download the same way.
-      const data = await loadScene(resolveSceneUrl(sceneName), {
+      const data = await loadSplatData(resolveSceneUrl(sceneName), {
         onProgress: (loaded, total) => {
           if (!dropMounted) loadingProgress = { loaded, total };
         },

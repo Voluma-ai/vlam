@@ -1,14 +1,14 @@
 import * as THREE from 'three/webgpu';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SplatMesh } from '../splat-mesh';
-import { SplatScene } from '../splat-scene';
+import { MergedSplatMesh } from '../merged-splat-mesh';
 import { writeCovariance, transformCovariance, type SplatData } from '../splat-data';
 import { ComputeSorter } from '../compute-sorter';
 import { RadixSorter } from '../radix-sorter';
 import { worldBoundsOf } from '../source-transform';
 import { viewDepthRadius } from '../splat-sort-bounds';
 import { unprojectViewDepth } from '../splat-depth-pack';
-import { UnifiedSplatRenderer } from '../unified-splat-renderer';
+import { UnifiedSplatMesh } from '../unified-splat-mesh';
 
 /**
  * Non-uniform (per-axis) scale contract. `mesh.scale.set(sx, sy, sz)` must be
@@ -438,7 +438,7 @@ describe('non-uniform scale: animated scale stays upload-free (pinned)', () => {
     const renderer = mockRenderer();
     const animated = new SplatMesh(staticData(2));
     const still = new SplatMesh(staticData(2));
-    const unified = new UnifiedSplatRenderer(renderer, 8);
+    const unified = new UnifiedSplatMesh(renderer, 8);
     const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 100);
     camera.position.set(0, 0, 5);
     camera.updateMatrixWorld(true);
@@ -498,13 +498,13 @@ describe('non-uniform scale: unified per-source bounds', () => {
     }
   });
 
-  it('SplatScene bounds and worldBoundsOf agree on a non-uniformly scaled source', () => {
+  it('MergedSplatMesh bounds and worldBoundsOf agree on a non-uniformly scaled source', () => {
     // `computeSplatBounds` drives where a host places its effects, and
     // `worldBoundsOf` drives the sort's depth quantization. Both have to see
     // the same stretched extent, or effects land off the splats they should
     // cover - the one case where an SDF shape and the sort disagree silently.
     const matrix = nonUniformModel();
-    const scene = new SplatScene({ capacity: 2048 });
+    const scene = new MergedSplatMesh({ capacity: 2048 });
     // A unit cube of splats, so the data-frame box is exactly [-1, 1]³.
     const count = 8;
     const positions = new Float32Array(count * 3);

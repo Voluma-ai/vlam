@@ -13,7 +13,7 @@ import { setVlamLogHandler } from '../logging';
  * it cannot probe.
  *
  * The ownership boundary is asserted in `compute-sorter.test.ts` and
- * `unified-splat-renderer.test.ts`: a sorter must free its own working buffers
+ * `unified-splat-mesh.test.ts`: a sorter must free its own working buffers
  * and never the mesh's `splatIndex`/`sourceIndex`, which the CPU rewrites every
  * frame.
  */

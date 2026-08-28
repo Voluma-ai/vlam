@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { MeshBVH } from 'three-mesh-bvh';
-import type { CollisionMeshTile } from '../lib';
+import type { CollisionMeshTile } from '../lib/streaming';
 
 /**
  * Camera collision against a scene's collision meshes, for the demo.

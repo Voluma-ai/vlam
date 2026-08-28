@@ -152,7 +152,7 @@ describe('SplatMesh CPU queries (M9)', () => {
 
   it('honors orientation: y-up flips the queried frame, source keeps it', () => {
     const data = dataAt([[0, 1, 0]]);
-    const stamped = { ...data, sourceFormat: 'ply' as const };
+    const stamped = { ...data, format: 'ply' as const };
     const yUp = new SplatMesh(stamped);
     const source = new SplatMesh(stamped, { orientation: 'source' });
 

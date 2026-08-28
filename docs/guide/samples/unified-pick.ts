@@ -1,10 +1,11 @@
 // Guide sample: docs/guide/unified-rendering.md - unified pick with source
 // identification, plus unified depth of field.
 import * as THREE from 'three/webgpu';
-import type { SplatMesh, UnifiedSplatRenderer } from '@voluma/vlam';
+import type { SplatMesh } from '@voluma/vlam';
+import type { UnifiedSplatMesh } from '@voluma/vlam/unified';
 
 export async function pickAcrossSources(
-  unified: UnifiedSplatRenderer,
+  unified: UnifiedSplatMesh,
   event: PointerEvent,
   camera: THREE.PerspectiveCamera,
   mainMesh: SplatMesh,

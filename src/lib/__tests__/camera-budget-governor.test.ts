@@ -5,9 +5,9 @@ import { BudgetGovernor } from '../budget-governor';
 import { CameraBudgetGovernor, type CameraBudgetMember } from '../camera-budget-governor';
 
 /**
- * Acceptance tests for the multi-mesh marker-budget behavior: with one shared
- * total, the marker the camera approaches must take budget off the far ones,
- * hidden markers must give theirs up, and none of it may break the underlying
+ * Acceptance tests for the multi-mesh budget behavior: with one shared
+ * total, the member the camera approaches must take budget off the far ones,
+ * hidden members must give theirs up, and none of it may break the underlying
  * governor's "applied budgets never exceed the total" invariant.
  *
  * `FakeMember` mirrors `StreamedSplatMesh`'s governed contract - clamp to a
@@ -57,7 +57,7 @@ class EmptyMember extends FakeMember {
 }
 
 const TOTAL = 4_000_000;
-/** Four markers on a ring, far enough apart that one is clearly nearest. */
+/** Four members on a ring, far enough apart that one is clearly nearest. */
 const RING = 200;
 
 function camera(x: number, y: number, z: number): THREE.PerspectiveCamera {
@@ -69,9 +69,9 @@ function camera(x: number, y: number, z: number): THREE.PerspectiveCamera {
 }
 
 /**
- * An overhead view that holds all four markers inside the frustum, so a test
+ * An overhead view that holds all four members inside the frustum, so a test
  * comparing their shares is measuring *distance* and not the off-screen
- * penalty. At 420 units up, a marker on the 200-unit ring sits 25.5° off axis,
+ * penalty. At 420 units up, a member on the 200-unit ring sits 25.5° off axis,
  * inside the 30° half-FOV; the 1-unit Z offset keeps `lookAt`'s up vector from
  * being parallel to the view direction.
  */
@@ -79,8 +79,8 @@ function overheadCamera(): THREE.PerspectiveCamera {
   return camera(0, 420, 1);
 }
 
-/** Four markers at ±RING on X and Z, each 10 units in radius. */
-function makeMarkers(maxBudget = Infinity): FakeMember[] {
+/** Four members at ±RING on X and Z, each 10 units in radius. */
+function makeMembers(maxBudget = Infinity): FakeMember[] {
   return [
     new THREE.Vector3(RING, 0, 0),
     new THREE.Vector3(-RING, 0, 0),
@@ -94,38 +94,38 @@ function sumBudgets(members: FakeMember[]): number {
 }
 
 describe('CameraBudgetGovernor', () => {
-  it('gives the near marker the larger share and takes it off the far ones', () => {
+  it('gives the near member the larger share and takes it off the far ones', () => {
     const governor = new CameraBudgetGovernor({ totalBudget: TOTAL });
-    const markers = makeMarkers();
-    for (const marker of markers) governor.register(marker);
+    const members = makeMembers();
+    for (const member of members) governor.register(member);
 
-    // Overhead: every marker is equidistant and on screen, so shares match.
+    // Overhead: every member is equidistant and on screen, so shares match.
     governor.update(overheadCamera(), 0);
-    const centred = markers.map((m) => governor.budgetOf(m) ?? 0);
+    const centred = members.map((m) => governor.budgetOf(m) ?? 0);
     const baseline = centred[0] as number;
     for (const budget of centred) {
       expect(Math.abs(budget - baseline) / baseline).toBeLessThan(0.1);
     }
 
-    // Fly to marker 0 (at +X). Its share must rise, the others' must fall.
+    // Fly to member 0 (at +X). Its share must rise, the others' must fall.
     governor.update(camera(RING + 15, 0, 0), 1000);
-    const near = governor.budgetOf(markers[0]!) ?? 0;
+    const near = governor.budgetOf(members[0]!) ?? 0;
     expect(near).toBeGreaterThan(baseline);
-    for (const far of markers.slice(1)) {
+    for (const far of members.slice(1)) {
       const budget = governor.budgetOf(far) ?? 0;
       expect(budget).toBeLessThan(baseline);
       // The whole point: near is not merely ahead, it dominates.
       expect(near).toBeGreaterThan(4 * budget);
     }
-    expect(sumBudgets(markers)).toBeLessThanOrEqual(TOTAL);
+    expect(sumBudgets(members)).toBeLessThanOrEqual(TOTAL);
   });
 
   it('holds the sum invariant across a camera walk', () => {
     const governor = new CameraBudgetGovernor({ totalBudget: TOTAL, minIntervalMs: 0 });
-    const markers = makeMarkers();
+    const members = makeMembers();
     const main = new FakeMember(new THREE.Vector3(0, 0, 0), 300, 1_000_000);
     governor.register(main, { fixedWeight: 4 });
-    for (const marker of markers) governor.register(marker);
+    for (const member of members) governor.register(member);
 
     // A deterministic orbit-and-dive path, sampled every step.
     for (let step = 0; step < 300; step++) {
@@ -135,79 +135,79 @@ describe('CameraBudgetGovernor', () => {
         camera(Math.cos(angle) * distance, ((step % 40) - 20) * 3, Math.sin(angle) * distance),
         step * 100,
       );
-      expect(sumBudgets([main, ...markers])).toBeLessThanOrEqual(TOTAL);
+      expect(sumBudgets([main, ...members])).toBeLessThanOrEqual(TOTAL);
     }
   });
 
   it('suspends a hidden member and releases its share', () => {
     const governor = new CameraBudgetGovernor({ totalBudget: TOTAL, minIntervalMs: 0 });
-    const markers = makeMarkers();
-    for (const marker of markers) governor.register(marker);
+    const members = makeMembers();
+    for (const member of members) governor.register(member);
     governor.update(overheadCamera(), 0);
-    const before = governor.budgetOf(markers[1]!) ?? 0;
+    const before = governor.budgetOf(members[1]!) ?? 0;
 
-    markers[0]!.visible = false;
+    members[0]!.visible = false;
     governor.update(overheadCamera(), 100);
 
-    expect(governor.weightOf(markers[0]!)).toBe(0);
-    expect(markers[0]!.budget).toBeLessThanOrEqual(1);
+    expect(governor.weightOf(members[0]!)).toBe(0);
+    expect(members[0]!.budget).toBeLessThanOrEqual(1);
     // Still governed - the mesh stays warm, it just holds no budget.
     expect(governor.size).toBe(4);
-    expect(governor.budgetOf(markers[1]!) ?? 0).toBeGreaterThan(before);
-    expect(sumBudgets(markers)).toBeLessThanOrEqual(TOTAL);
+    expect(governor.budgetOf(members[1]!) ?? 0).toBeGreaterThan(before);
+    expect(sumBudgets(members)).toBeLessThanOrEqual(TOTAL);
 
     // Showing it again recovers a share.
-    markers[0]!.visible = true;
+    members[0]!.visible = true;
     governor.update(overheadCamera(), 200);
-    expect(markers[0]!.budget).toBeGreaterThan(1);
+    expect(members[0]!.budget).toBeGreaterThan(1);
   });
 
   it('weighs a unified-owned source by effectiveVisibility, not Object3D.visible', () => {
     const governor = new CameraBudgetGovernor({ totalBudget: TOTAL, minIntervalMs: 0 });
-    const markers = makeMarkers();
-    for (const marker of markers) governor.register(marker);
+    const members = makeMembers();
+    for (const member of members) governor.register(member);
     governor.update(overheadCamera(), 0);
-    const before = governor.budgetOf(markers[0]!) ?? 0;
+    const before = governor.budgetOf(members[0]!) ?? 0;
 
-    // A UnifiedSplatRenderer takes ownership: it forces `visible = false` on
+    // A UnifiedSplatMesh takes ownership: it forces `visible = false` on
     // every source (to keep the scene draw from double-drawing) while the
     // source stays on screen through the unified draw. The governor must keep
-    // weighting it - this is the regression that froze marker streaming at
+    // weighting it - this is the regression that froze member streaming at
     // whatever detail was resident when the unified renderer attached.
-    for (const marker of markers) {
-      marker.visible = false;
-      marker.effectiveVisibility = true;
+    for (const member of members) {
+      member.visible = false;
+      member.effectiveVisibility = true;
     }
     governor.update(overheadCamera(), 100);
-    expect(governor.weightOf(markers[0]!)).toBeGreaterThan(0);
-    expect(governor.budgetOf(markers[0]!) ?? 0).toBeCloseTo(before, -1);
+    expect(governor.weightOf(members[0]!)).toBeGreaterThan(0);
+    expect(governor.budgetOf(members[0]!) ?? 0).toBeCloseTo(before, -1);
 
     // Hiding the source *through the unified renderer* still suspends it.
-    markers[0]!.effectiveVisibility = false;
+    members[0]!.effectiveVisibility = false;
     governor.update(overheadCamera(), 200);
-    expect(governor.weightOf(markers[0]!)).toBe(0);
-    expect(markers[0]!.budget).toBeLessThanOrEqual(1);
-    expect(sumBudgets(markers)).toBeLessThanOrEqual(TOTAL);
+    expect(governor.weightOf(members[0]!)).toBe(0);
+    expect(members[0]!.budget).toBeLessThanOrEqual(1);
+    expect(sumBudgets(members)).toBeLessThanOrEqual(TOTAL);
   });
 
   it('suspends a priority-0 member the same way', () => {
     const governor = new CameraBudgetGovernor({ totalBudget: TOTAL, minIntervalMs: 0 });
-    const markers = makeMarkers();
-    for (const marker of markers) governor.register(marker);
+    const members = makeMembers();
+    for (const member of members) governor.register(member);
     governor.update(overheadCamera(), 0);
 
-    governor.setPriority(markers[0]!, 0);
+    governor.setPriority(members[0]!, 0);
     governor.update(overheadCamera(), 10); // forced: bypasses the interval
-    expect(markers[0]!.budget).toBeLessThanOrEqual(1);
+    expect(members[0]!.budget).toBeLessThanOrEqual(1);
 
-    governor.setPriority(markers[0]!, 1);
+    governor.setPriority(members[0]!, 1);
     governor.update(overheadCamera(), 20);
-    expect(markers[0]!.budget).toBeGreaterThan(1);
+    expect(members[0]!.budget).toBeGreaterThan(1);
   });
 
   it("releases a capped member's slack even when it is the nearest", () => {
     const governor = new CameraBudgetGovernor({ totalBudget: TOTAL, minIntervalMs: 0 });
-    // The near marker's pool tops out at 250k - the rest must go elsewhere.
+    // The near member's pool tops out at 250k - the rest must go elsewhere.
     const near = new FakeMember(new THREE.Vector3(RING, 0, 0), 10, 100_000, 250_000);
     const far = new FakeMember(new THREE.Vector3(-RING, 0, 0), 10, 100_000);
     governor.register(near);
@@ -221,8 +221,8 @@ describe('CameraBudgetGovernor', () => {
 
   it('throttles to minIntervalMs and forces through on membership change', () => {
     const governor = new CameraBudgetGovernor({ totalBudget: TOTAL, minIntervalMs: 250 });
-    const markers = makeMarkers();
-    for (const marker of markers) governor.register(marker);
+    const members = makeMembers();
+    for (const member of members) governor.register(member);
     const spy = vi.spyOn(governor.governor, 'setWeights');
 
     // First call is forced by registration.
@@ -243,18 +243,18 @@ describe('CameraBudgetGovernor', () => {
 
   it('does not force a reweight when setPriority re-asserts the same tier', () => {
     const governor = new CameraBudgetGovernor({ totalBudget: TOTAL, minIntervalMs: 250 });
-    const markers = makeMarkers();
-    for (const marker of markers) governor.register(marker);
+    const members = makeMembers();
+    for (const member of members) governor.register(member);
     governor.update(overheadCamera(), 1000);
 
     // Hosts re-assert tiers from sync loops; an unchanged priority must not
     // bypass the interval, or the governor reweights (and reschedules every
     // member) on each sync tick.
-    governor.setPriority(markers[0]!, 1);
+    governor.setPriority(members[0]!, 1);
     expect(governor.update(overheadCamera(), 1010)).toBe(false);
 
     // A real tier change still forces through.
-    governor.setPriority(markers[0]!, 2);
+    governor.setPriority(members[0]!, 2);
     expect(governor.update(overheadCamera(), 1020)).toBe(true);
   });
 
@@ -264,14 +264,14 @@ describe('CameraBudgetGovernor', () => {
       minIntervalMs: 0,
       weightDeadband: 0.15,
     });
-    const markers = makeMarkers();
-    for (const marker of markers) governor.register(marker);
+    const members = makeMembers();
+    for (const member of members) governor.register(member);
     governor.update(overheadCamera(), 0);
 
-    const callsBefore = markers.map((m) => m.setBudgetCalls);
+    const callsBefore = members.map((m) => m.setBudgetCalls);
     // A 2 cm nudge at 420 units out: nowhere near a 15% weight change.
     expect(governor.update(camera(0, 420.02, 1), 100)).toBe(false);
-    expect(markers.map((m) => m.setBudgetCalls)).toEqual(callsBefore);
+    expect(members.map((m) => m.setBudgetCalls)).toEqual(callsBefore);
 
     // A real move does reweight.
     expect(governor.update(camera(RING + 15, 0, 0), 200)).toBe(true);
@@ -280,16 +280,16 @@ describe('CameraBudgetGovernor', () => {
   it('keeps fixedWeight members out of camera weighting but still in the split', () => {
     const governor = new CameraBudgetGovernor({ totalBudget: TOTAL, minIntervalMs: 0 });
     const main = new FakeMember(new THREE.Vector3(0, 0, 0), 300, 1_000_000);
-    const marker = new FakeMember(new THREE.Vector3(RING, 0, 0), 10, 100_000);
+    const member = new FakeMember(new THREE.Vector3(RING, 0, 0), 10, 100_000);
     governor.register(main, { fixedWeight: 4 });
-    governor.register(marker);
+    governor.register(member);
 
     governor.update(overheadCamera(), 0);
     expect(governor.weightOf(main)).toBe(4);
     const mainFar = main.budget;
 
-    // Flying to the marker must not change main's weight, but must shrink its
-    // budget - the marker's rising weight is what takes the share.
+    // Flying to the member must not change main's weight, but must shrink its
+    // budget - the member's rising weight is what takes the share.
     governor.update(camera(RING + 15, 0, 0), 100);
     expect(governor.weightOf(main)).toBe(4);
     expect(main.budget).toBeLessThan(mainFar);
@@ -337,12 +337,12 @@ describe('CameraBudgetGovernor', () => {
     const fixed = new FakeMember(new THREE.Vector3(0, 0, 0), 300, 1_000_000);
     shared.register(fixed, { weight: 4 }); // host-managed, not camera-weighted
     const governor = new CameraBudgetGovernor({ governor: shared });
-    const marker = new FakeMember(new THREE.Vector3(RING, 0, 0), 10, 100_000);
-    governor.register(marker);
+    const member = new FakeMember(new THREE.Vector3(RING, 0, 0), 10, 100_000);
+    governor.register(member);
 
     governor.update(camera(RING + 15, 0, 0), 0);
     expect(shared.size).toBe(2);
-    expect(fixed.budget + marker.budget).toBeLessThanOrEqual(TOTAL);
+    expect(fixed.budget + member.budget).toBeLessThanOrEqual(TOTAL);
 
     // dispose only takes back what this helper registered.
     governor.dispose();
@@ -352,16 +352,16 @@ describe('CameraBudgetGovernor', () => {
 
   it('restores pre-registration budgets on dispose', () => {
     const governor = new CameraBudgetGovernor({ totalBudget: TOTAL, minIntervalMs: 0 });
-    const markers = makeMarkers();
-    for (const marker of markers) governor.register(marker);
+    const members = makeMembers();
+    for (const member of members) governor.register(member);
     governor.update(overheadCamera(), 0);
     governor.dispose();
 
-    for (const marker of markers) expect(marker.budget).toBe(100_000);
+    for (const member of members) expect(member.budget).toBe(100_000);
     expect(governor.size).toBe(0);
     // Still usable afterwards.
-    governor.register(markers[0]!);
-    expect(markers[0]!.budget).toBe(TOTAL);
+    governor.register(members[0]!);
+    expect(members[0]!.budget).toBe(TOTAL);
   });
 
   it('validates options, member options, and membership', () => {

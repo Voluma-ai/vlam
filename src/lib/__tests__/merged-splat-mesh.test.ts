@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { SplatScene } from '../splat-scene';
+import { MergedSplatMesh } from '../merged-splat-mesh';
 import { SourceMatrixArray, worldBoundsOf, type SourceBounds } from '../source-transform';
 import { writeCovariance, type SplatData } from '../splat-data';
 
 /** A `count`-splat cloud with all centers at `origin` (+x spread), optional format. */
-function makeData(count: number, sourceFormat?: SplatData['sourceFormat'], x = 0): SplatData {
+function makeData(count: number, format?: SplatData['format'], x = 0): SplatData {
   const positions = new Float32Array(count * 3);
   const covariances = new Float32Array(count * 6);
   const colors = new Uint8Array(count * 4);
@@ -14,7 +14,7 @@ function makeData(count: number, sourceFormat?: SplatData['sourceFormat'], x = 0
     writeCovariance(covariances, i, 0.05, 0.05, 0.05, 1, 0, 0, 0);
     colors.set([255, 255, 255, 255], i * 4);
   }
-  return { count, positions, colors, covariances, ...(sourceFormat ? { sourceFormat } : {}) };
+  return { count, positions, colors, covariances, ...(format ? { format } : {}) };
 }
 
 interface Internals {
@@ -29,16 +29,16 @@ interface Internals {
   boundsDirty: boolean;
   refreshSortBounds(): void;
 }
-const peek = (s: SplatScene) => s as unknown as Internals;
+const peek = (s: MergedSplatMesh) => s as unknown as Internals;
 
-describe('SplatScene', () => {
-  const scenes: SplatScene[] = [];
+describe('MergedSplatMesh', () => {
+  const scenes: MergedSplatMesh[] = [];
   afterEach(() => {
     for (const s of scenes) s.dispose();
     scenes.length = 0;
   });
-  const make = (capacity = 8192): SplatScene => {
-    const scene = new SplatScene({ capacity });
+  const make = (capacity = 8192): MergedSplatMesh => {
+    const scene = new MergedSplatMesh({ capacity });
     scenes.push(scene);
     return scene;
   };

@@ -4,12 +4,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { writeCovariance, type SplatData } from '../splat-data';
 import { SplatMesh, type SplatRange } from '../splat-mesh';
 import type { SplatModifier } from '../splat-modifier';
-import { UnifiedSplatRenderer } from '../unified-splat-renderer';
+import { UnifiedSplatMesh } from '../unified-splat-mesh';
 import { WorkBufferGather } from '../work-buffer-gather';
 
 /**
  * E2 stress/property tests for the path an embedding app drives: one main mesh
- * plus N marker meshes with frequent add/remove/hide, live opacity, modifier
+ * plus N additional meshes with frequent add/remove/hide, live opacity, modifier
  * churn, and DoF on the unified draw. GPU work is mocked; correctness is
  * asserted on the work-buffer *layout* and on a shadow model of every slice
  * a gather pass wrote.
@@ -111,7 +111,7 @@ interface ShadowSlot {
   matrix: THREE.Matrix4;
 }
 
-describe('UnifiedSplatRenderer stress/property', () => {
+describe('UnifiedSplatMesh stress/property', () => {
   const restores: Array<() => void> = [];
   afterEach(() => {
     while (restores.length > 0) restores.pop()?.();
@@ -121,17 +121,17 @@ describe('UnifiedSplatRenderer stress/property', () => {
     const CAPACITY = 64;
     const random = mulberry32(0xe2e2);
     const renderer = mockRenderer();
-    const unified = new UnifiedSplatRenderer(renderer, CAPACITY);
+    const unified = new UnifiedSplatMesh(renderer, CAPACITY);
     const internal = unified as unknown as PrivateUnified;
     const camera = new THREE.PerspectiveCamera();
     const calls: GatherCall[] = [];
     restores.push(instrumentGather(calls));
 
-    // One "main" dynamic pool plus marker meshes appearing/disappearing.
+    // One "main" dynamic pool plus additional meshes appearing/disappearing.
     const main = new SplatMesh({ capacity: 4096 });
     const mainRanges: SplatRange[] = [];
     unified.addSource(main, { priority: 1 });
-    const markers: SplatMesh[] = [];
+    const extras: SplatMesh[] = [];
     const registered = new Set<SplatMesh>([main]);
     const modifierPool: SplatModifier[] = [() => ({}), () => ({ scaleSquared: float(1.5) })];
 
@@ -143,23 +143,23 @@ describe('UnifiedSplatRenderer stress/property', () => {
     for (let frame = 0; frame < FRAMES; frame++) {
       const op = random();
       if (op < 0.18) {
-        // Marker add (a host application's marker load adds meshes mid-stream).
-        const marker = staticSource(1 + Math.floor(random() * 12));
-        markers.push(marker);
-        unified.addSource(marker, { priority: 0, opacity: random() });
-        registered.add(marker);
-      } else if (op < 0.3 && markers.length > 0) {
-        const marker = markers.splice(Math.floor(random() * markers.length), 1)[0]!;
-        expect(unified.removeSource(marker)).toBe(true);
-        registered.delete(marker);
-        marker.dispose();
-      } else if (op < 0.42 && markers.length > 0) {
-        const marker = markers[Math.floor(random() * markers.length)]!;
-        unified.setSourceVisible(marker, random() < 0.5);
+        // Additional-mesh add (a host application's extra load adds meshes mid-stream).
+        const extra = staticSource(1 + Math.floor(random() * 12));
+        extras.push(extra);
+        unified.addSource(extra, { priority: 0, opacity: random() });
+        registered.add(extra);
+      } else if (op < 0.3 && extras.length > 0) {
+        const extra = extras.splice(Math.floor(random() * extras.length), 1)[0]!;
+        expect(unified.removeSource(extra)).toBe(true);
+        registered.delete(extra);
+        extra.dispose();
+      } else if (op < 0.42 && extras.length > 0) {
+        const extra = extras[Math.floor(random() * extras.length)]!;
+        unified.setSourceVisible(extra, random() < 0.5);
       } else if (op < 0.54) {
         const target =
-          markers.length > 0 && random() < 0.5
-            ? markers[Math.floor(random() * markers.length)]!
+          extras.length > 0 && random() < 0.5
+            ? extras[Math.floor(random() * extras.length)]!
             : main;
         unified.setSourceOpacity(target, random());
       } else if (op < 0.66) {
@@ -170,14 +170,14 @@ describe('UnifiedSplatRenderer stress/property', () => {
           const count = 1 + Math.floor(random() * 8);
           if (main.freeSplatCapacity >= 2048) mainRanges.push(main.appendRange(splatData(count)));
         }
-      } else if (op < 0.74 && markers.length > 0) {
-        const marker = markers[Math.floor(random() * markers.length)]!;
-        marker.modifiers =
+      } else if (op < 0.74 && extras.length > 0) {
+        const extra = extras[Math.floor(random() * extras.length)]!;
+        extra.modifiers =
           random() < 0.5 ? [] : [modifierPool[Math.floor(random() * modifierPool.length)]!];
-      } else if (op < 0.82 && markers.length > 0) {
-        const marker = markers[Math.floor(random() * markers.length)]!;
-        marker.position.set(random() * 10, random() * 10, random() * 10);
-        marker.updateMatrixWorld(true);
+      } else if (op < 0.82 && extras.length > 0) {
+        const extra = extras[Math.floor(random() * extras.length)]!;
+        extra.position.set(random() * 10, random() * 10, random() * 10);
+        extra.updateMatrixWorld(true);
       } else if (op < 0.9) {
         unified.setDepthOfField({ focusDistance: 1 + random() * 20, aperture: random() * 0.1 });
       }
@@ -255,14 +255,14 @@ describe('UnifiedSplatRenderer stress/property', () => {
     }
 
     unified.dispose();
-    for (const marker of markers) marker.dispose();
+    for (const extra of extras) extra.dispose();
     main.dispose();
   });
 
   it('never regathers or rebuilds gather pipelines when only depth of field changes', () => {
     const renderer = mockRenderer();
     const mesh = staticSource(3);
-    const unified = new UnifiedSplatRenderer(renderer, 8);
+    const unified = new UnifiedSplatMesh(renderer, 8);
     const internal = unified as unknown as PrivateUnified;
     unified.addSource(mesh);
     const camera = new THREE.PerspectiveCamera();
@@ -287,7 +287,7 @@ describe('UnifiedSplatRenderer stress/property', () => {
   it('regathers a slice after an opacity change and caches it again afterwards', () => {
     const renderer = mockRenderer();
     const mesh = staticSource(2);
-    const unified = new UnifiedSplatRenderer(renderer, 4);
+    const unified = new UnifiedSplatMesh(renderer, 4);
     unified.addSource(mesh);
     const camera = new THREE.PerspectiveCamera();
     const calls: GatherCall[] = [];
@@ -312,7 +312,7 @@ describe('UnifiedSplatRenderer stress/property', () => {
   it('regathers a static slice after the source mesh moves', () => {
     const renderer = mockRenderer();
     const mesh = staticSource(2);
-    const unified = new UnifiedSplatRenderer(renderer, 4);
+    const unified = new UnifiedSplatMesh(renderer, 4);
     unified.addSource(mesh);
     const camera = new THREE.PerspectiveCamera();
     const calls: GatherCall[] = [];
@@ -333,7 +333,7 @@ describe('UnifiedSplatRenderer stress/property', () => {
     const renderer = mockRenderer();
     const empty = new SplatMesh({ capacity: 2048 });
     const full = staticSource(2);
-    const unified = new UnifiedSplatRenderer(renderer, 4);
+    const unified = new UnifiedSplatMesh(renderer, 4);
     unified.addSource(empty);
     unified.addSource(full);
     const camera = new THREE.PerspectiveCamera();
@@ -353,7 +353,7 @@ describe('UnifiedSplatRenderer stress/property', () => {
   it('survives a modifier stack that throws during gather rebuild and recovers on retry', () => {
     const renderer = mockRenderer();
     const mesh = staticSource(1);
-    const unified = new UnifiedSplatRenderer(renderer, 2);
+    const unified = new UnifiedSplatMesh(renderer, 2);
     const internal = unified as unknown as PrivateUnified;
     unified.addSource(mesh);
     const camera = new THREE.PerspectiveCamera();
@@ -390,7 +390,7 @@ describe('UnifiedSplatRenderer stress/property', () => {
     const renderer = mockRenderer();
     const big = staticSource(6);
     const small = staticSource(3);
-    const unified = new UnifiedSplatRenderer(renderer, 8);
+    const unified = new UnifiedSplatMesh(renderer, 8);
     unified.addSource(big, { priority: 1 });
     unified.addSource(small, { priority: 0 });
     const camera = new THREE.PerspectiveCamera();

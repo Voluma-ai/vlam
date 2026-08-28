@@ -2,7 +2,7 @@
  * `@voluma/vlam/formats/ply` - 3DGS `.ply` parser, raw and compressed
  * (SuperSplat / PlayCanvas) flavors alike.
  *
- * Loading through {@link loadScene} / {@link loadSceneFile} does not require
+ * Loading through {@link loadSplatData} / {@link loadSplatDataFile} does not require
  * this import; the loading worker already knows this format. Use this subpath
  * for direct decode outside the default loaders.
  *

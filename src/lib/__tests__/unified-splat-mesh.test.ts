@@ -3,8 +3,8 @@ import { bool, float } from 'three/tsl';
 import { describe, expect, it, vi } from 'vitest';
 import { writeCovariance, type SplatData } from '../splat-data';
 import { SplatMesh } from '../splat-mesh';
-import { SplatScene } from '../splat-scene';
-import { UnifiedSplatRenderer, supportsUnifiedSplatRenderer } from '../unified-splat-renderer';
+import { MergedSplatMesh } from '../merged-splat-mesh';
+import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '../unified-splat-mesh';
 
 function source(
   options: {
@@ -47,7 +47,7 @@ function mockRenderer(extras: Record<string, unknown> = {}): THREE.WebGPURendere
   } as unknown as THREE.WebGPURenderer;
 }
 
-function gatherSpies(unified: UnifiedSplatRenderer) {
+function gatherSpies(unified: UnifiedSplatMesh) {
   const records = (
     unified as unknown as {
       sources: Array<{ source: SplatMesh; gather: { gather: (...args: unknown[]) => void } }>;
@@ -59,19 +59,19 @@ function gatherSpies(unified: UnifiedSplatRenderer) {
   }));
 }
 
-describe('supportsUnifiedSplatRenderer', () => {
+describe('supportsUnifiedSplatMesh', () => {
   it('accepts a WebGPU backend and rejects others', () => {
-    expect(supportsUnifiedSplatRenderer(mockRenderer())).toBe(true);
-    expect(supportsUnifiedSplatRenderer({ backend: {} })).toBe(false);
-    expect(supportsUnifiedSplatRenderer({})).toBe(false);
+    expect(supportsUnifiedSplatMesh(mockRenderer())).toBe(true);
+    expect(supportsUnifiedSplatMesh({ backend: {} })).toBe(false);
+    expect(supportsUnifiedSplatMesh({})).toBe(false);
   });
 });
 
-describe('UnifiedSplatRenderer', () => {
+describe('UnifiedSplatMesh', () => {
   it('copies the source projected-footprint floor into the unified draw path', () => {
     const renderer = mockRenderer();
     const mesh = source({ minSplatSizePx: 1.5 });
-    const unified = new UnifiedSplatRenderer(renderer, 1);
+    const unified = new UnifiedSplatMesh(renderer, 1);
     unified.addSource(mesh);
     expect((unified as unknown as { minSplatSizePx: { value: number } }).minSplatSizePx.value).toBe(
       1.5,
@@ -84,7 +84,7 @@ describe('UnifiedSplatRenderer', () => {
     const renderer = mockRenderer();
     const first = source();
     const second = source();
-    const unified = new UnifiedSplatRenderer(renderer, 4);
+    const unified = new UnifiedSplatMesh(renderer, 4);
     expect(unified.capacity).toBe(4);
     unified.addSource(first);
     unified.addSource(second);
@@ -103,7 +103,7 @@ describe('UnifiedSplatRenderer', () => {
     const renderer = mockRenderer();
     const mesh = source();
     const pickVisibility = vi.spyOn(mesh, 'setUnifiedPickVisibility');
-    const unified = new UnifiedSplatRenderer(renderer, 1);
+    const unified = new UnifiedSplatMesh(renderer, 1);
     unified.addSource(mesh);
     expect(mesh.visible).toBe(false);
     expect(pickVisibility).toHaveBeenLastCalledWith(true);
@@ -120,7 +120,7 @@ describe('UnifiedSplatRenderer', () => {
     const renderer = mockRenderer();
     const mesh = source();
     mesh.visible = false;
-    const unified = new UnifiedSplatRenderer(renderer, 1);
+    const unified = new UnifiedSplatMesh(renderer, 1);
     unified.addSource(mesh);
     unified.removeSource(mesh);
     expect(mesh.visible).toBe(false);
@@ -137,7 +137,7 @@ describe('UnifiedSplatRenderer', () => {
       render,
     });
     const mesh = source();
-    const unified = new UnifiedSplatRenderer(renderer, 1);
+    const unified = new UnifiedSplatMesh(renderer, 1);
     unified.addSource(mesh);
     const target = new THREE.RenderTarget(320, 180);
     unified.renderView(new THREE.PerspectiveCamera(), renderer, target);
@@ -161,7 +161,7 @@ describe('UnifiedSplatRenderer', () => {
       }),
     });
     const mesh = source();
-    const unified = new UnifiedSplatRenderer(renderer, 1);
+    const unified = new UnifiedSplatMesh(renderer, 1);
     unified.addSource(mesh);
     const invalidate = vi.spyOn(
       (unified as unknown as { sortScheduler: { invalidate(): void } }).sortScheduler,
@@ -185,7 +185,7 @@ describe('UnifiedSplatRenderer', () => {
     const renderer = mockRenderer();
     const low = source();
     const high = source();
-    const unified = new UnifiedSplatRenderer(renderer, 1);
+    const unified = new UnifiedSplatMesh(renderer, 1);
     unified.addSource(low, { priority: 0 });
     unified.addSource(high, { priority: 1 });
     unified.update(new THREE.PerspectiveCamera());
@@ -201,7 +201,7 @@ describe('UnifiedSplatRenderer', () => {
     const compute = vi.fn();
     const renderer = mockRenderer({ compute });
     const mesh = source();
-    const unified = new UnifiedSplatRenderer(renderer, 1);
+    const unified = new UnifiedSplatMesh(renderer, 1);
     unified.addSource(mesh);
     const camera = new THREE.PerspectiveCamera();
     unified.update(camera);
@@ -217,7 +217,7 @@ describe('UnifiedSplatRenderer', () => {
   it('reuses SH gathers until the camera position changes', () => {
     const renderer = mockRenderer();
     const mesh = source({ sh: true });
-    const unified = new UnifiedSplatRenderer(renderer, 1);
+    const unified = new UnifiedSplatMesh(renderer, 1);
     unified.addSource(mesh);
     const gather = gatherSpies(unified)[0]!.gather;
     const camera = new THREE.PerspectiveCamera();
@@ -239,7 +239,7 @@ describe('UnifiedSplatRenderer', () => {
     const renderer = mockRenderer();
     const mesh = source();
     mesh.modifiers = [() => ({ visible: bool(true) })];
-    const unified = new UnifiedSplatRenderer(renderer, 1);
+    const unified = new UnifiedSplatMesh(renderer, 1);
     unified.addSource(mesh, { cacheModifiers: true });
     const gather = gatherSpies(unified)[0]!.gather;
     const camera = new THREE.PerspectiveCamera();
@@ -263,7 +263,7 @@ describe('UnifiedSplatRenderer', () => {
     const renderer = mockRenderer();
     const mesh = source();
     mesh.modifiers = [() => ({ visible: bool(true) })];
-    const unified = new UnifiedSplatRenderer(renderer, 1);
+    const unified = new UnifiedSplatMesh(renderer, 1);
     unified.addSource(mesh);
     const gather = gatherSpies(unified)[0]!.gather;
     const camera = new THREE.PerspectiveCamera();
@@ -285,7 +285,7 @@ describe('UnifiedSplatRenderer', () => {
       colors: new Uint8Array([255, 0, 0, 255]),
       covariances: new Float32Array([1, 0, 0, 1, 0, 1]),
     });
-    const unified = new UnifiedSplatRenderer(renderer, 2048);
+    const unified = new UnifiedSplatMesh(renderer, 2048);
     unified.addSource(mesh);
     const camera = new THREE.PerspectiveCamera();
     unified.update(camera);
@@ -301,7 +301,7 @@ describe('UnifiedSplatRenderer', () => {
     const renderer = mockRenderer();
     const first = source();
     const second = source();
-    const unified = new UnifiedSplatRenderer(renderer, 4);
+    const unified = new UnifiedSplatMesh(renderer, 4);
     unified.addSource(first);
     unified.addSource(second);
     const camera = new THREE.PerspectiveCamera();
@@ -335,7 +335,7 @@ describe('UnifiedSplatRenderer', () => {
     const renderer = mockRenderer();
     const low = source();
     const high = source();
-    const unified = new UnifiedSplatRenderer(renderer, 1);
+    const unified = new UnifiedSplatMesh(renderer, 1);
     unified.addSource(low, { priority: 0 });
     const camera = new THREE.PerspectiveCamera();
     unified.update(camera);
@@ -366,7 +366,7 @@ describe('UnifiedSplatRenderer', () => {
     const renderer = mockRenderer();
     const leading = source();
     const following = source();
-    const unified = new UnifiedSplatRenderer(renderer, 4);
+    const unified = new UnifiedSplatMesh(renderer, 4);
     unified.addSource(leading);
     unified.addSource(following);
     const camera = new THREE.PerspectiveCamera();
@@ -388,7 +388,7 @@ describe('UnifiedSplatRenderer', () => {
   it('resets shared maxStdDev and antialias constraints when the last source is removed', () => {
     const renderer = mockRenderer();
     const first = source({ maxStdDev: 3, antialias: false });
-    const unified = new UnifiedSplatRenderer(renderer, 2);
+    const unified = new UnifiedSplatMesh(renderer, 2);
     unified.addSource(first);
     expect(unified.removeSource(first)).toBe(true);
     const second = source({ maxStdDev: 2.5, antialias: true });
@@ -398,14 +398,14 @@ describe('UnifiedSplatRenderer', () => {
     second.dispose();
   });
 
-  it('rejects a SplatScene, which carries a placement the gather cannot resolve', () => {
-    // A scene's sources move by writing its own uniform array; the gather only
+  it('rejects a MergedSplatMesh, which carries a placement the gather cannot resolve', () => {
+    // A merged mesh's sources move by writing its own uniform array; the gather only
     // knows the mesh's `matrixWorld`, so nesting one would draw every source at
     // its pool-local position - and, with an empty modifier list, the gather
     // cache would then happily reuse that wrong result.
     const renderer = mockRenderer();
-    const unified = new UnifiedSplatRenderer(renderer, 4);
-    const scene = new SplatScene({ capacity: 2048 });
+    const unified = new UnifiedSplatMesh(renderer, 4);
+    const scene = new MergedSplatMesh({ capacity: 2048 });
     expect(scene.getUnifiedSourceView().hasSourcePlacement).toBe(true);
     expect(() => unified.addSource(scene)).toThrow(/already a unified pool/);
     const plain = source();
@@ -419,7 +419,7 @@ describe('UnifiedSplatRenderer', () => {
     const renderer = mockRenderer();
     const mesh = source();
     const pickVisibility = vi.spyOn(mesh, 'setUnifiedPickVisibility');
-    const unified = new UnifiedSplatRenderer(renderer, 1);
+    const unified = new UnifiedSplatMesh(renderer, 1);
     unified.addSource(mesh);
     pickVisibility.mockClear();
     unified.dispose();
@@ -437,7 +437,7 @@ describe('UnifiedSplatRenderer', () => {
   it('fails early when constructed without a WebGPU backend', () => {
     expect(
       () =>
-        new UnifiedSplatRenderer(
+        new UnifiedSplatMesh(
           { backend: { isWebGPUBackend: false } } as unknown as THREE.WebGPURenderer,
           1,
         ),
@@ -448,7 +448,7 @@ describe('UnifiedSplatRenderer', () => {
     const renderer = mockRenderer();
     const mesh = source();
     mesh.modifiers = [() => ({ visible: bool(false) })];
-    const unified = new UnifiedSplatRenderer(renderer, 1);
+    const unified = new UnifiedSplatMesh(renderer, 1);
     unified.addSource(mesh);
     unified.update(new THREE.PerspectiveCamera());
     expect((unified.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(1);
@@ -465,7 +465,7 @@ describe('UnifiedSplatRenderer', () => {
         isotropicVarianceScale: float(0.35 * 0.35),
       }),
     ];
-    const unified = new UnifiedSplatRenderer(renderer, 1);
+    const unified = new UnifiedSplatMesh(renderer, 1);
     unified.addSource(mesh);
     expect(() => unified.update(new THREE.PerspectiveCamera())).not.toThrow();
     unified.dispose();
@@ -481,7 +481,7 @@ describe('UnifiedSplatRenderer', () => {
         isotropicScreenRadiusPx: float(1),
       }),
     ];
-    const unified = new UnifiedSplatRenderer(renderer, 1);
+    const unified = new UnifiedSplatMesh(renderer, 1);
     unified.addSource(mesh);
     expect(() => unified.update(new THREE.PerspectiveCamera())).not.toThrow();
     unified.dispose();
@@ -489,7 +489,7 @@ describe('UnifiedSplatRenderer', () => {
   });
 
   describe('sort gating', () => {
-    function sorterSpy(unified: UnifiedSplatRenderer) {
+    function sorterSpy(unified: UnifiedSplatMesh) {
       const sorter = (
         unified as unknown as {
           sorter: { sort: (...args: unknown[]) => boolean };
@@ -501,7 +501,7 @@ describe('UnifiedSplatRenderer', () => {
     it('skips the sorter dispatch for a stationary camera with unchanged content', () => {
       const renderer = mockRenderer();
       const mesh = source();
-      const unified = new UnifiedSplatRenderer(renderer, 1);
+      const unified = new UnifiedSplatMesh(renderer, 1);
       unified.addSource(mesh);
       const sort = sorterSpy(unified);
       const camera = new THREE.PerspectiveCamera();
@@ -517,7 +517,7 @@ describe('UnifiedSplatRenderer', () => {
     it('re-sorts when the camera moves', () => {
       const renderer = mockRenderer();
       const mesh = source();
-      const unified = new UnifiedSplatRenderer(renderer, 1);
+      const unified = new UnifiedSplatMesh(renderer, 1);
       unified.addSource(mesh);
       const sort = sorterSpy(unified);
       const camera = new THREE.PerspectiveCamera();
@@ -533,7 +533,7 @@ describe('UnifiedSplatRenderer', () => {
     it('re-sorts after a content regather under a stationary camera', () => {
       const renderer = mockRenderer();
       const mesh = source();
-      const unified = new UnifiedSplatRenderer(renderer, 1);
+      const unified = new UnifiedSplatMesh(renderer, 1);
       unified.addSource(mesh);
       const sort = sorterSpy(unified);
       const camera = new THREE.PerspectiveCamera();
@@ -560,7 +560,7 @@ describe('UnifiedSplatRenderer', () => {
           covariances: new Float32Array([1, 0, 0, 1, 0, 1]),
         }) as SplatData;
       const first = mesh.appendRange(chunk());
-      const unified = new UnifiedSplatRenderer(renderer, 4096);
+      const unified = new UnifiedSplatMesh(renderer, 4096);
       unified.addSource(mesh);
       const sort = sorterSpy(unified);
       const camera = new THREE.PerspectiveCamera();
@@ -581,7 +581,7 @@ describe('UnifiedSplatRenderer', () => {
     it('does not re-sort on a depth-of-field change', () => {
       const renderer = mockRenderer();
       const mesh = source();
-      const unified = new UnifiedSplatRenderer(renderer, 1);
+      const unified = new UnifiedSplatMesh(renderer, 1);
       unified.addSource(mesh);
       const sort = sorterSpy(unified);
       const camera = new THREE.PerspectiveCamera();
@@ -601,7 +601,7 @@ describe('UnifiedSplatRenderer', () => {
         render: vi.fn(),
       });
       const mesh = source();
-      const unified = new UnifiedSplatRenderer(renderer, 1);
+      const unified = new UnifiedSplatMesh(renderer, 1);
       unified.addSource(mesh);
       const sort = sorterSpy(unified);
       const camera = new THREE.PerspectiveCamera();
@@ -624,7 +624,7 @@ describe('UnifiedSplatRenderer', () => {
   /**
    * `.rad` stores `alpha ÷ 2`. The standalone display path recovers it, but the
    * unified path used to pass the stored value straight through, so a `.rad`
-   * scene drawn through `UnifiedSplatRenderer` (which is what a marker-bearing
+   * scene drawn through `UnifiedSplatMesh` (which is what a multi-mesh
    * scene gets) rendered at half opacity and without the merged-node coverage
    * plateau - visibly lighter and softer than the same capture in Spark.
    *
@@ -640,7 +640,7 @@ describe('UnifiedSplatRenderer', () => {
       expect(rad.getUnifiedSourceView().lodAlpha).toBe(true);
       expect(plain.getUnifiedSourceView().lodAlpha).toBe(false);
 
-      const unified = new UnifiedSplatRenderer(renderer, 4);
+      const unified = new UnifiedSplatMesh(renderer, 4);
       unified.addSource(rad);
       unified.addSource(plain);
       const records = (
@@ -661,7 +661,7 @@ describe('UnifiedSplatRenderer', () => {
       const renderer = mockRenderer();
       const rad = source({ lodAlpha: true });
       const plain = source();
-      const unified = new UnifiedSplatRenderer(renderer, 4);
+      const unified = new UnifiedSplatMesh(renderer, 4);
       unified.addSource(rad);
       // maxStdDev/antialias/srgbOutput must still match; lodAlpha must not.
       expect(() => unified.addSource(plain)).not.toThrow();
@@ -673,7 +673,7 @@ describe('UnifiedSplatRenderer', () => {
 
   it('stays at identity with matrixAutoUpdate disabled', () => {
     const renderer = mockRenderer();
-    const unified = new UnifiedSplatRenderer(renderer, 1);
+    const unified = new UnifiedSplatMesh(renderer, 1);
     expect(unified.matrixAutoUpdate).toBe(false);
     expect(unified.matrix.equals(new THREE.Matrix4())).toBe(true);
     unified.dispose();

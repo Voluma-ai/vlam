@@ -1,11 +1,11 @@
 import type { SplatData } from './splat-data';
 import { ChunkLoader } from './chunk-loader';
-import type { SplatFormat, SplatFileLoadOptions, SplatInputOptions } from './loading';
+import type { SplatFormat, SplatDataFileLoadOptions, SplatInputOptions } from './loading';
 
-export type { SplatFileLoadOptions };
+export type { SplatDataFileLoadOptions };
 
-/** Options for {@link loadScene}. */
-export interface SplatLoadOptions extends SplatInputOptions {
+/** Options for {@link loadSplatData}. */
+export interface SplatDataLoadOptions extends SplatInputOptions {
   /** Parser selection; URL extension detection is used only for `auto`. */
   format?: SplatFormat;
 }
@@ -16,10 +16,10 @@ export interface SplatLoadOptions extends SplatInputOptions {
  * even multi-million-splat decodes never block the main thread. The
  * decoded arrays are transferred back, not copied.
  *
- * One-shot convenience over {@link ChunkLoader}; use `ChunkLoader`
+ * Whole-file convenience over {@link ChunkLoader}; use `ChunkLoader`
  * directly when loading many chunks or when cancellation is needed.
  *
- * @param input - Scene URL; its extension selects the parser unless an
+ * @param input - Capture URL; its extension selects the parser unless an
  * explicit `format` option is provided.
  * @returns The decoded splat data, ready for {@link SplatMesh}.
  * @throws Rejects only with `SplatLoadError` (resolve, fetch or decode
@@ -27,12 +27,13 @@ export interface SplatLoadOptions extends SplatInputOptions {
  * when `options.signal` fires.
  *
  * @example
- * const splats = new SplatMesh(await loadScene('/scene.sog'));
- * scene.add(splats);
+ * import { SplatMesh } from '@voluma/vlam';
+ * import { loadSplatData } from '@voluma/vlam/loaders';
+ * const splats = new SplatMesh(await loadSplatData('/scene.sog'));
  */
-export async function loadScene(
+export async function loadSplatData(
   input: string | URL,
-  options: SplatLoadOptions = {},
+  options: SplatDataLoadOptions = {},
 ): Promise<SplatData> {
   const loader = new ChunkLoader();
   try {
@@ -49,7 +50,7 @@ export async function loadScene(
  *
  * Only self-contained files are supported: `.ply`, `.spz`, `.splat`, `.ksplat`
  * and bundled `.sog`. An unbundled SOG directory needs sibling fetches, so it
- * must be served over HTTP and loaded with {@link loadScene}.
+ * must be served over HTTP and loaded with {@link loadSplatData}.
  *
  * @param file - The file; its name selects the parser unless an explicit
  * `format` option is provided.
@@ -59,12 +60,13 @@ export async function loadScene(
  * `options.signal` fires.
  *
  * @example
- * const splats = new SplatMesh(await loadSceneFile(event.dataTransfer.files[0]));
- * scene.add(splats);
+ * import { SplatMesh } from '@voluma/vlam';
+ * import { loadSplatDataFile } from '@voluma/vlam/loaders';
+ * const splats = new SplatMesh(await loadSplatDataFile(event.dataTransfer.files[0]));
  */
-export async function loadSceneFile(
+export async function loadSplatDataFile(
   file: File,
-  options: SplatFileLoadOptions = {},
+  options: SplatDataFileLoadOptions = {},
 ): Promise<SplatData> {
   const loader = new ChunkLoader();
   try {

@@ -3,7 +3,8 @@
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { mix, sin, smoothstep, uniform, vec3, vec4 } from 'three/tsl';
-import { SplatMesh, type SplatModifier, createSplatRenderer, loadScene } from '@voluma/vlam';
+import { SplatMesh, type SplatModifier, createSplatRenderer } from '@voluma/vlam';
+import { loadSplatData } from '@voluma/vlam/loaders';
 
 const renderer = await createSplatRenderer();
 renderer.setSize(innerWidth, innerHeight);
@@ -47,7 +48,7 @@ const gradient: SplatModifier = (ctx) => {
   };
 };
 
-const splats = new SplatMesh(await loadScene('/goose.sog'));
+const splats = new SplatMesh(await loadSplatData('/goose.sog'));
 
 // Assigning the list is the structural step - it compiles the shader once.
 // Keep the function identity stable: a fresh arrow function here every frame

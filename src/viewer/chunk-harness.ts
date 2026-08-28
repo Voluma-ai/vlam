@@ -1,4 +1,4 @@
-import { ChunkLoader } from '../lib';
+import { ChunkLoader } from '../lib/loaders';
 
 /**
  * M2.2 acceptance harness: loads chunks of the Streamed SOG fixture on

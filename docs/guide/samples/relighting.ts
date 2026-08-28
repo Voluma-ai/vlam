@@ -1,7 +1,8 @@
 // Guide sample: docs/guide/relighting.md - shadow-factor proxy-mesh relight.
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { SplatMesh, createSplatRenderer, loadScene } from '@voluma/vlam';
+import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { loadSplatData } from '@voluma/vlam/loaders';
 import {
   createRelightingProxy,
   createRelightingShadowFactorMaterial,
@@ -26,7 +27,7 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
-const splats = new SplatMesh(await loadScene('/goose.sog'));
+const splats = new SplatMesh(await loadSplatData('/goose.sog'));
 scene.add(splats);
 
 // Stand-in proxy (real scenes: createRelightingProxy({ tiles, matrixWorld })).

@@ -2,16 +2,16 @@
  * Camera-driven splat-budget weighting across several streamed meshes.
  *
  * {@link BudgetGovernor} splits one total by *priority*, which a host must
- * choose and maintain. That is the wrong axis for a scene of markers: what
- * makes a marker worth splats is that the camera is near it, and that changes
- * every frame. Splitting a pool evenly instead (`pool / N`) gives the marker
- * you fly up to a quarter of the budget it needs while three markers nobody is
+ * choose and maintain. That is the wrong axis for a scene of additional meshes:
+ * what makes a mesh worth splats is that the camera is near it, and that changes
+ * every frame. Splitting a pool evenly instead (`pool / N`) gives the mesh
+ * you fly up to a quarter of the budget it needs while three meshes nobody is
  * looking at hold the rest.
  *
  * {@link CameraBudgetGovernor} closes that loop: each update it measures every
  * member's projected size from the camera, multiplies in the host's priority
  * tier, and writes the resulting weights to a `BudgetGovernor` in one batch.
- * Approaching one of four markers pulls budget off the far ones automatically.
+ * Approaching one of four additional meshes pulls budget off the far ones automatically.
  *
  * This is Spark's model, reached differently. Spark shares one `lodSplatCount`
  * and biases meshes with a per-mesh `lodScale` (focused 2, adjacent 0.25,
@@ -60,7 +60,7 @@ export interface CameraBudgetMember extends BudgetGovernedMember {
   /**
    * The visibility that actually decides whether the member's splats reach the
    * screen, when that differs from `visible`. `SplatMesh` provides it: a
-   * `UnifiedSplatRenderer` forces `visible = false` on every source it owns
+   * `UnifiedSplatMesh` forces `visible = false` on every source it owns
    * (only to keep the regular scene draw from double-drawing them) while the
    * source may be fully on screen through the unified draw - without this, the
    * governor would suspend every unified source and freeze its streaming.
@@ -126,8 +126,8 @@ export interface CameraBudgetMemberOptions {
   /**
    * Pins this member's weight, opting it out of camera weighting while it still
    * competes for the same total. Use it for a main scene that should hold a
-   * steady share while markers fight over the rest - e.g. `fixedWeight: 4`
-   * against markers averaging `1`.
+   * steady share while additional meshes fight over the rest - e.g. `fixedWeight: 4`
+   * against extras averaging `1`.
    */
   fixedWeight?: number;
 }
@@ -158,8 +158,8 @@ const _sphere = new THREE.Sphere();
  * ```js
  * const governor = new CameraBudgetGovernor({ totalBudget: 4_000_000 });
  * governor.register(main, { fixedWeight: 4 }); // steady share
- * governor.register(markerA); // camera-weighted, priority 1
- * governor.register(markerB);
+ * governor.register(extraA); // camera-weighted, priority 1
+ * governor.register(extraB);
  *
  * // once per frame, after the scene graph is up to date:
  * governor.update(camera);
@@ -171,7 +171,7 @@ const _sphere = new THREE.Sphere();
  *
  * **A member can only grow into a budget its pool can hold.** A streamed mesh
  * allocates its pool once, from its construction budget, and clamps `setBudget`
- * to it - so a marker built at a quarter of the total can never be given more
+ * to it - so a mesh built at a quarter of the total can never be given more
  * than a quarter, however close the camera gets. Construct governed meshes with
  * `maxBudget` set to the largest share they should ever reach, and price those
  * ceilings with `estimateSplatPoolBytes` first: the pools cost their ceilings
