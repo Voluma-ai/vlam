@@ -1,8 +1,8 @@
 import * as THREE from 'three/webgpu';
 import { describe, expect, it } from 'vitest';
 import { RadLodSource } from '../formats/rad/rad';
-import type { LodRun } from '../lod-scheduler';
-import type { SplatData } from '../splat-data';
+import type { LodRun } from '../streaming/lod-scheduler';
+import type { SplatData } from '../core/splat-data';
 
 const CAMERA = new THREE.Vector3();
 const FRUSTUM = new THREE.Frustum();

@@ -79,13 +79,13 @@ export default defineConfig({
       // so a host that never imports them can leave them out. The inlined
       // load-worker lives behind `@voluma/vlam/loaders`, not the core entry.
       entry: {
-        index: 'src/lib/index.ts',
-        loaders: 'src/lib/loaders.ts',
-        'static-lod': 'src/lib/static-lod-entry.ts',
-        streaming: 'src/lib/streaming.ts',
-        unified: 'src/lib/unified.ts',
-        selection: 'src/lib/selection.ts',
-        effects: 'src/lib/effects.ts',
+        index: 'src/lib/core/index.ts',
+        loaders: 'src/lib/loaders/index.ts',
+        'static-lod': 'src/lib/static-lod/index.ts',
+        streaming: 'src/lib/streaming/index.ts',
+        unified: 'src/lib/unified/index.ts',
+        selection: 'src/lib/selection/index.ts',
+        effects: 'src/lib/effects/index.ts',
         'formats/ply': 'src/lib/formats/ply/index.ts',
         'formats/sog': 'src/lib/formats/sog/index.ts',
         'formats/rad': 'src/lib/formats/rad/index.ts',

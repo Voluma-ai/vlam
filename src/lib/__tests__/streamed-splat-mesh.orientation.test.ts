@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { StreamedSplatMesh } from '../streamed-splat-mesh';
+import { StreamedSplatMesh } from '../streaming/streamed-splat-mesh';
 import { createLcc2ToThreeMatrix } from '../formats/lcc/lcc2-transform';
-import { createYUpTransform } from '../orientation';
+import { createYUpTransform } from '../core/orientation';
 
 // The mesh is built from the manifest only; no chunk actually streams here.
-vi.mock('../chunk-loader', () => ({
+vi.mock('../loaders/chunk-loader', () => ({
   ChunkLoader: class {
     dispose(): void {}
   },

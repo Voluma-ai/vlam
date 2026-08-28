@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createLocalDataset, httpDatasetSource } from '../dataset-source';
+import { createLocalDataset, httpDatasetSource } from '../streaming/dataset-source';
 
 /**
  * Tests for resolving a streamed dataset's files out of a dropped folder,

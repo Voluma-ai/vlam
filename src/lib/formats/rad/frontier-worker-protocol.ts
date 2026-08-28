@@ -6,7 +6,7 @@
  * without pulling worker source into the published declarations - the worker is
  * reached only through `?worker&inline` and is not a public entry point.
  */
-import type { SplatData } from '../../splat-data';
+import type { SplatData } from '../../core/splat-data';
 
 /**
  * Foveation ramp for the frontier traversal, matching Spark's `SparkRenderer`

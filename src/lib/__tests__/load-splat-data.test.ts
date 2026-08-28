@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { SplatData } from '../splat-data';
-import { SplatLoadError } from '../loading';
+import type { SplatData } from '../core/splat-data';
+import { SplatLoadError } from '../loaders/loading';
 
 /**
  * Controllable stand-in for both load workers. Settles on demand so URL,
@@ -55,7 +55,7 @@ class ManualWorker {
 
 let currentWorker: ManualWorker;
 
-vi.mock('../load-worker?worker&inline', () => ({
+vi.mock('../loaders/load-worker?worker&inline', () => ({
   default: class {
     constructor() {
       currentWorker = new ManualWorker();
@@ -64,7 +64,7 @@ vi.mock('../load-worker?worker&inline', () => ({
   },
 }));
 
-vi.mock('../one-shot-worker?worker&inline', () => ({
+vi.mock('../loaders/one-shot-worker?worker&inline', () => ({
   default: class {
     constructor() {
       currentWorker = new ManualWorker();
@@ -73,7 +73,7 @@ vi.mock('../one-shot-worker?worker&inline', () => ({
   },
 }));
 
-const { loadSplatData, loadSplatDataFile } = await import('../load-splat-data');
+const { loadSplatData, loadSplatDataFile } = await import('../loaders/load-splat-data');
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 

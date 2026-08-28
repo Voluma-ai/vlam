@@ -26,7 +26,7 @@ kept authoritative so this one does not drift.
   JSDoc is rendered into the generated site; do not commit TypeDoc output.
 - **Never commit** `node_modules/`, `dist/`, large scene captures, or internal
  strategy documents. Non-redistributable test scenes stay on local disks.
-- **Do not widen the public API casually.** `src/lib/index.ts` is curated;
+- **Do not widen the public API casually.** `src/lib/core/index.ts` is curated;
  format inspection belongs on the `@voluma/vlam/formats/*` subpaths.
 
 Pick the top open roadmap item you can unblock, implement it end-to-end

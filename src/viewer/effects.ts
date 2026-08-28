@@ -1,5 +1,5 @@
 import { clamp, mix, sin, uniform, vec3, vec4 } from 'three/tsl';
-import type { SplatModifier } from '../lib';
+import type { SplatModifier } from '../lib/core';
 
 /**
  * A pair of demo {@link SplatModifier}s (`?effects=demo`) that exercise the

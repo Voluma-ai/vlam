@@ -1,5 +1,5 @@
 /** @role Bridge - Builds and traverses static splat LOD hierarchies off-thread. */
-import type { SplatData } from './splat-data';
+import type { SplatData } from '../core/splat-data';
 import { handleStaticLodWorkerRequest } from './static-lod-worker-handler';
 import type { StaticLodWorkerRequest, StaticLodWorkerResponse } from './static-lod-worker-protocol';
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildSogScene } from '../lod-source';
-import type { SplatDatasetSource } from '../dataset-source';
+import { buildSogScene } from '../streaming/lod-source';
+import type { SplatDatasetSource } from '../streaming/dataset-source';
 
 /**
  * Tests that opting into streamed-SOG view-dependent color (M11) wires the

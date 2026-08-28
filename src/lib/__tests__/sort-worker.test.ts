@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { OrderMessage, SortWorkerRequest } from '../sort-worker';
+import type { OrderMessage, SortWorkerRequest } from '../core/sort-worker';
 
 /**
  * Tests for the CPU depth sorter in sort-worker.ts.
@@ -31,7 +31,7 @@ beforeAll(async () => {
     },
   };
   (globalThis as { self?: unknown }).self = stub;
-  await import('../sort-worker');
+  await import('../core/sort-worker');
   if (!stub.onmessage) throw new Error('sort-worker did not install a message handler');
 });
 

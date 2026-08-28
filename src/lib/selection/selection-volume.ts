@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import type { SplatData } from './splat-data';
+import type { SplatData } from '../core/splat-data';
 
 /**
  * Volume selection over splat centers (CPU).

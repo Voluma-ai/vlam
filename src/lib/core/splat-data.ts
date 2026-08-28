@@ -1,4 +1,4 @@
-import type { SplatDataFormat } from './loading';
+import type { SplatDataFormat } from '../loaders/loading';
 
 /**
  * CPU-side representation of a set of 3D Gaussians, ready for GPU upload.

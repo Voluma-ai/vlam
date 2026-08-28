@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { abs, length, max, min, sin, smoothstep, uniform, vec3, vec4 } from 'three/tsl';
-import type { SplatModifier } from '../lib';
+import type { SplatModifier } from '../lib/core';
 import type { SelectionVolumeKind } from '../lib/selection';
 
 /** Animated wind-like displacement confined to a committed selection volume. */

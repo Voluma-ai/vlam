@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { buildLccScene } from '../formats/lcc/lcc';
-import { httpDatasetSource } from '../dataset-source';
-import type { StreamedChunkOptions } from '../lod-source';
+import { httpDatasetSource } from '../streaming/dataset-source';
+import type { StreamedChunkOptions } from '../streaming/lod-source';
 import type { LccChunkParams } from '../formats/lcc/parse-lcc';
 
 afterEach(() => {

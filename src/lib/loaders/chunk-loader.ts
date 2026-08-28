@@ -1,11 +1,11 @@
-import type { SplatData } from './splat-data';
+import type { SplatData } from '../core/splat-data';
 import type {
   LoadWorkerRequest,
   LoadWorkerResponse,
   LoadWorkerSource,
   RadChunkRangeRequest,
 } from './load-worker-protocol';
-import type { LccChunkParams } from './formats/lcc/parse-lcc';
+import type { LccChunkParams } from '../formats/lcc/parse-lcc';
 import {
   createAbortError,
   deserializeSplatLoadError,

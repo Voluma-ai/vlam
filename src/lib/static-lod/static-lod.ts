@@ -1,5 +1,5 @@
-import type { RadTreeData, SplatData, SplatPackedShData, SplatShData } from './splat-data';
-import { shCoefficientCount } from './sh-pack';
+import type { RadTreeData, SplatData, SplatPackedShData, SplatShData } from '../core/splat-data';
+import { shCoefficientCount } from '../core/sh-pack';
 
 /** Progress emitted while a static scene is spatially ordered and merged. */
 export interface StaticLodBuildProgress {

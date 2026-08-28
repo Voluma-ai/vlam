@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { vec4, float } from 'three/tsl';
-import { SplatMesh } from '../splat-mesh';
-import type { SplatModifier } from '../splat-modifier';
-import { writeCovariance } from '../splat-data';
+import { SplatMesh } from '../core/splat-mesh';
+import type { SplatModifier } from '../core/splat-modifier';
+import { writeCovariance } from '../core/splat-data';
 
 const WIDTH = 2048; // SplatMesh.DATA_TEXTURE_WIDTH
 

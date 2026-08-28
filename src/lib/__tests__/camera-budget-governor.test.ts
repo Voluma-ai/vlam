@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
 
-import { BudgetGovernor } from '../budget-governor';
-import { CameraBudgetGovernor, type CameraBudgetMember } from '../camera-budget-governor';
+import { BudgetGovernor } from '../streaming/budget-governor';
+import { CameraBudgetGovernor, type CameraBudgetMember } from '../streaming/camera-budget-governor';
 
 /**
  * Acceptance tests for the multi-mesh budget behavior: with one shared

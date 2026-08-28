@@ -1,10 +1,10 @@
-import { SH_C0, writeCovariance, type SplatData, type SplatShData } from '../../splat-data';
+import { SH_C0, writeCovariance, type SplatData, type SplatShData } from '../../core/splat-data';
 import {
   isAbortError,
   toRequestInit,
   toSplatLoadError,
   type SplatRequestOptions,
-} from '../../loading';
+} from '../../loaders/loading';
 
 /**
  * Decoder for PlayCanvas's SOG format (v2), Voluma's canonical delivery

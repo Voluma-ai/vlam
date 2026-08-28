@@ -1,15 +1,15 @@
 import * as THREE from 'three/webgpu';
-import type { LodRun } from '../../lod-scheduler';
+import type { LodRun } from '../../streaming/lod-scheduler';
 import type {
   CollisionMeshDescriptor,
   LodSource,
   LodSourceOptions,
   SplatCollisionData,
   StreamedScene,
-} from '../../lod-source';
-import type { SplatDatasetSource } from '../../dataset-source';
+} from '../../streaming/lod-source';
+import type { SplatDatasetSource } from '../../streaming/dataset-source';
 import { createLcc2ToThreeMatrix } from './lcc2-transform';
-import { warn } from '../../logging';
+import { warn } from '../../core/logging';
 
 /**
  * Reader for XGRIDS' `.lcc2` datasets (see `docs/formats/lcc2-notes.md`).

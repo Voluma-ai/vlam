@@ -1,7 +1,7 @@
 import { ZSTDDecoder } from 'three/examples/jsm/libs/zstddec.module.js';
-import { halfToFloat } from '../../half-float';
-import { packShCoefficients, shCoefficientCount } from '../../sh-pack';
-import { SH_C0, writeCovariance, type SplatData } from '../../splat-data';
+import { halfToFloat } from '../../core/half-float';
+import { packShCoefficients, shCoefficientCount } from '../../core/sh-pack';
+import { SH_C0, writeCovariance, type SplatData } from '../../core/splat-data';
 
 const SPZ_MAGIC = 0x5053474e;
 const LEGACY_HEADER_BYTES = 16;

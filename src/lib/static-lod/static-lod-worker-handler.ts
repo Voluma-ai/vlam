@@ -1,5 +1,5 @@
-import { frontierView, traverseFrontier } from './formats/rad/rad-frontier';
-import type { SplatData } from './splat-data';
+import { frontierView, traverseFrontier } from '../formats/rad/rad-frontier';
+import type { SplatData } from '../core/splat-data';
 import { buildStaticLod, validateStaticLodSource } from './static-lod';
 import type { StaticLodWorkerRequest, StaticLodWorkerResponse } from './static-lod-worker-protocol';
 

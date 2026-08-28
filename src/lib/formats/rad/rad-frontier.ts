@@ -1,4 +1,4 @@
-import type { SplatData } from '../../splat-data';
+import type { SplatData } from '../../core/splat-data';
 import { FRONTIER_FOVEATION_DEFAULTS, type FrontierFoveation } from './frontier-worker-protocol';
 
 /**

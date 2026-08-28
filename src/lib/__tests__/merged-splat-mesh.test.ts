@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { MergedSplatMesh } from '../merged-splat-mesh';
-import { SourceMatrixArray, worldBoundsOf, type SourceBounds } from '../source-transform';
-import { writeCovariance, type SplatData } from '../splat-data';
+import { MergedSplatMesh } from '../core/merged-splat-mesh';
+import { SourceMatrixArray, worldBoundsOf, type SourceBounds } from '../core/source-transform';
+import { writeCovariance, type SplatData } from '../core/splat-data';
 
 /** A `count`-splat cloud with all centers at `origin` (+x spread), optional format. */
 function makeData(count: number, format?: SplatData['format'], x = 0): SplatData {

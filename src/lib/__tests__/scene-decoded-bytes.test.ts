@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { describe, expect, it } from 'vitest';
-import { estimateSceneDecodedBytes } from '../streamed-splat-mesh';
-import type { LodSource, StreamedScene } from '../lod-source';
+import { estimateSceneDecodedBytes } from '../streaming/streamed-splat-mesh';
+import type { LodSource, StreamedScene } from '../streaming/lod-source';
 
 /**
  * This number sizes the page-table worker's cache floor, and it is the whole

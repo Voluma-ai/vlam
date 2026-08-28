@@ -1,8 +1,8 @@
 import * as THREE from 'three/webgpu';
 import { uniform } from 'three/tsl';
-import { ComputeSorter, releaseRendererAttributes } from './compute-sorter';
-import { RadixSorter } from './radix-sorter';
-import { clampDepthOfFieldSettings, type DepthOfFieldSettings } from './depth-of-field';
+import { ComputeSorter, releaseRendererAttributes } from '../core/compute-sorter';
+import { RadixSorter } from '../core/radix-sorter';
+import { clampDepthOfFieldSettings, type DepthOfFieldSettings } from '../core/depth-of-field';
 import {
   clampRelightingSettings,
   createPlaceholderRelightTexture,
@@ -11,19 +11,19 @@ import {
   DEFAULT_RELIGHT_SOFTNESS,
   type RelightingSettings,
   type RelightingUniforms,
-} from './relighting';
-import { SplatMesh } from './splat-mesh';
-import type { SplatPickOptions, SplatPickResult, UnifiedSourceView } from './splat-mesh';
-import { isFillConstrainedSplatDevice } from './splat-budget';
-import { WebGpuSortScheduler } from './sort-scheduler';
+} from '../core/relighting';
+import { SplatMesh } from '../core/splat-mesh';
+import type { SplatPickOptions, SplatPickResult, UnifiedSourceView } from '../core/splat-mesh';
+import { isFillConstrainedSplatDevice } from '../core/splat-budget';
+import { WebGpuSortScheduler } from '../core/sort-scheduler';
 import { WorkBuffer, WorkBufferGather } from './work-buffer-gather';
 import { createWorkBufferMaterial } from './work-buffer-material';
-import type { FloatUniform, Vec2Uniform } from './splat-mesh-material';
-import { assertStorageBufferFitsDevice } from './webgpu-limits';
+import type { FloatUniform, Vec2Uniform } from '../core/splat-mesh-material';
+import { assertStorageBufferFitsDevice } from '../core/webgpu-limits';
 import { estimateLargestStorageBufferBytes } from './unified-work-buffer';
-import { resolveXrView } from './xr-view';
-import { StorageMirrorReleaser } from './storage-attribute-mirror';
-import type { SplatSorter } from './sorter';
+import { resolveXrView } from '../core/xr-view';
+import { StorageMirrorReleaser } from '../core/storage-attribute-mirror';
+import type { SplatSorter } from '../core/sorter';
 
 interface SourceRecord {
   source: SplatMesh;

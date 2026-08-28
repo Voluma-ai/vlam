@@ -5,7 +5,7 @@ import {
   plyPropertyOffset,
   plyTypeSize,
   type PlyElement,
-} from '../../ply-header';
+} from '../../loaders/ply-header';
 
 /**
  * Parser for plain binary triangle-mesh PLY files - vertices and faces, no

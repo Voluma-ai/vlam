@@ -6,7 +6,7 @@ import {
   packNormalizedDepth,
   unpackNormalizedDepth,
   unprojectViewDepth,
-} from '../splat-depth-pack';
+} from '../core/splat-depth-pack';
 
 describe('packNormalizedDepth / unpackNormalizedDepth', () => {
   it('round-trips near, middle, and far normalized depths', () => {

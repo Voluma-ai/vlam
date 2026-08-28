@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { shCoefficientCount } from '../sh-pack';
-import type { SplatData } from '../splat-data';
-import { buildStaticLod } from '../static-lod';
-import { handleStaticLodWorkerRequest } from '../static-lod-worker-handler';
-import type { StaticLodWorkerResponse } from '../static-lod-worker-protocol';
+import { shCoefficientCount } from '../core/sh-pack';
+import type { SplatData } from '../core/splat-data';
+import { buildStaticLod } from '../static-lod/static-lod';
+import { handleStaticLodWorkerRequest } from '../static-lod/static-lod-worker-handler';
+import type { StaticLodWorkerResponse } from '../static-lod/static-lod-worker-protocol';
 
 const packedPlyFixture = (): SplatData => {
   const count = 8;

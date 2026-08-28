@@ -1,5 +1,5 @@
 /** Typed-array column decoders used by the RAD container parser. */
-import { halfToFloat } from '../../half-float';
+import { halfToFloat } from '../../core/half-float';
 import type { RadChunkProperty } from './parse-rad';
 
 function shEncodingBytes(prop: RadChunkProperty): number {

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { SplatMesh } from '../splat-mesh';
-import { writeCovariance, type SplatData } from '../splat-data';
+import { SplatMesh } from '../core/splat-mesh';
+import { writeCovariance, type SplatData } from '../core/splat-data';
 
 function makeData(): SplatData {
   const covariances = new Float32Array(6);

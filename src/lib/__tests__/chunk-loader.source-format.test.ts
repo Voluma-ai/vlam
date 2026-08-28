@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { SplatData } from '../splat-data';
+import type { SplatData } from '../core/splat-data';
 
 /**
  * A stand-in for the inlined load worker: it echoes a fixed one-splat scene for
@@ -25,12 +25,12 @@ class FakeWorker {
   terminate(): void {}
 }
 
-vi.mock('../load-worker?worker&inline', () => ({ default: FakeWorker }));
+vi.mock('../loaders/load-worker?worker&inline', () => ({ default: FakeWorker }));
 // `.spz` routes to the one-shot worker, which is loaded on demand.
-vi.mock('../one-shot-worker?worker&inline', () => ({ default: FakeWorker }));
+vi.mock('../loaders/one-shot-worker?worker&inline', () => ({ default: FakeWorker }));
 
 // Imported after the mock so ChunkLoader picks up FakeWorker.
-const { ChunkLoader } = await import('../chunk-loader');
+const { ChunkLoader } = await import('../loaders/chunk-loader');
 
 describe('ChunkLoader stamps SplatData.format', () => {
   const loaders: InstanceType<typeof ChunkLoader>[] = [];

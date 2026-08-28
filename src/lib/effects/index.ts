@@ -61,10 +61,10 @@ import {
   frameGroup,
   cos,
 } from 'three/tsl';
-import type { SplatContext, SplatModifier } from './splat-modifier';
-import { warn } from './logging';
-import type { CollisionMeshTile } from './formats/lcc/collision-mesh';
-import type { TriangleMeshData } from './formats/lcc/parse-mesh-ply';
+import type { SplatContext, SplatModifier } from '../core/splat-modifier';
+import { warn } from '../core/logging';
+import type { CollisionMeshTile } from '../formats/lcc/collision-mesh';
+import type { TriangleMeshData } from '../formats/lcc/parse-mesh-ply';
 
 type Node<T extends string> = THREE.Node<T>;
 function asNode<T extends string>(node: unknown): Node<T> {
@@ -657,7 +657,7 @@ export function worldWarpPreset(
 
 // --- Proxy-mesh relighting helper -------------------------------------------
 
-export { renderRelightingFactorMap, type RelightingFactorRenderer } from './relighting-pass';
+export { renderRelightingFactorMap, type RelightingFactorRenderer } from '../core/relighting-pass';
 
 /** Handle returned by {@link createRelightingProxy}. */
 export interface RelightingProxy {

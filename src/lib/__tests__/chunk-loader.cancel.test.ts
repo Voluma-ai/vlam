@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { SplatData } from '../splat-data';
+import type { SplatData } from '../core/splat-data';
 
 /**
  * A controllable stand-in for the inlined load worker: requests do not settle
@@ -59,7 +59,7 @@ class ManualWorker {
 
 let currentWorker: ManualWorker;
 
-vi.mock('../load-worker?worker&inline', () => ({
+vi.mock('../loaders/load-worker?worker&inline', () => ({
   default: class {
     constructor() {
       currentWorker = new ManualWorker();
@@ -70,10 +70,10 @@ vi.mock('../load-worker?worker&inline', () => ({
 
 // Every format exercised here is a streaming one, so the one-shot worker is
 // never constructed - the mock only guarantees a real one cannot be.
-vi.mock('../one-shot-worker?worker&inline', () => ({ default: ManualWorker }));
+vi.mock('../loaders/one-shot-worker?worker&inline', () => ({ default: ManualWorker }));
 
 // Imported after the mock so ChunkLoader picks up ManualWorker.
-const { ChunkLoader } = await import('../chunk-loader');
+const { ChunkLoader } = await import('../loaders/chunk-loader');
 
 /** Resolves once queued microtasks (promise reactions) have run. */
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));

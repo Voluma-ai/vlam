@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MAX_SH_BANDS, SplatMesh } from '../splat-mesh';
-import { writeCovariance, type SplatData } from '../splat-data';
+import { MAX_SH_BANDS, SplatMesh } from '../core/splat-mesh';
+import { writeCovariance, type SplatData } from '../core/splat-data';
 
 /**
  * A *static* mesh carries its spherical harmonics in the data, and for a long

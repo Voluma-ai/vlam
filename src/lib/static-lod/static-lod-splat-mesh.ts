@@ -1,8 +1,8 @@
 /** @role Bridge - Camera-aware rendering for worker-built static splat hierarchies. */
 import * as THREE from 'three/webgpu';
-import { loadSplatData, type SplatDataLoadOptions } from './load-splat-data';
-import type { SplatData } from './splat-data';
-import { SplatMesh, type SplatMeshOptions, type SplatUpdateOptions } from './splat-mesh';
+import { loadSplatData, type SplatDataLoadOptions } from '../loaders/load-splat-data';
+import type { SplatData } from '../core/splat-data';
+import { SplatMesh, type SplatMeshOptions, type SplatUpdateOptions } from '../core/splat-mesh';
 import type { StaticLodBuildProgress } from './static-lod';
 import type { StaticLodWorkerRequest, StaticLodWorkerResponse } from './static-lod-worker-protocol';
 

@@ -4,7 +4,7 @@ import {
   WebGpuSortScheduler,
   automaticSortIntervalMs,
   validateSortIntervalMs,
-} from '../sort-scheduler';
+} from '../core/sort-scheduler';
 
 function pose(x: number): THREE.Matrix4 {
   return new THREE.Matrix4().makeTranslation(x, 0, 0);

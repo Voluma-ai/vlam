@@ -3,7 +3,7 @@ import {
   toRequestInit,
   type SplatRequestOptions,
   type StreamedSplatFormat,
-} from './loading';
+} from '../loaders/loading';
 
 /**
  * Where a streamed dataset's files come from.

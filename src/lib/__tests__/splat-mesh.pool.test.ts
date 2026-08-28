@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { SplatMesh } from '../splat-mesh';
-import { writeCovariance } from '../splat-data';
+import { SplatMesh } from '../core/splat-mesh';
+import { writeCovariance } from '../core/splat-data';
 
 /**
  * Tests for the dynamic-capacity pool's row allocator: free-list reuse,

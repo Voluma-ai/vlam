@@ -25,7 +25,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   GPU harness shells). The docs-site Cloudflare worker is
   `site/site-worker.js`. TypeDoc configs live in `site/`. Extra Vite configs
   live in `scripts/`. `npm run dev` still serves `/demo/`,
-  `/chunk-harness.html`, and `/unified-harness.html`.
+  `/chunk-harness.html`, and `/unified-harness.html`. Library sources under
+  `src/lib/` follow the published subpaths (`core/`, `loaders/`, `streaming/`,
+  and so on); each folder's `index.ts` is that package entry.
 
 - **Multi-mesh terminology.** Guides and implementation comments call
   secondary splat content an additional mesh (or a member / source in APIs),

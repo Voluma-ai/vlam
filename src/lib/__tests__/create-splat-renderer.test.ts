@@ -4,9 +4,9 @@ import {
   createSplatRenderer,
   type SplatRendererGpu,
   type SplatRendererGpuAdapter,
-} from '../create-splat-renderer';
-import { setVlamLogHandler } from '../logging';
-import { recommendedWebGpuRequiredLimits } from '../webgpu-limits';
+} from '../core/create-splat-renderer';
+import { setVlamLogHandler } from '../core/logging';
+import { recommendedWebGpuRequiredLimits } from '../core/webgpu-limits';
 
 /*
  * The one place in the suite that mocks `three/webgpu`.

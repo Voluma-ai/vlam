@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
-import type { SplatData } from '../../lib';
+import type { SplatData } from '../../lib/core';
 import type { TriangleMeshData } from '../../lib/formats/lcc';
 import { analyticSelectionVolume, estimateSelectionVolume } from '../volume-estimate';
 

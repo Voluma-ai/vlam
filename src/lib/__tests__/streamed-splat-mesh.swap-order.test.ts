@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildSwapGroups, groupPriority } from '../streamed-splat-mesh';
-import type { LodRun } from '../lod-scheduler';
+import { buildSwapGroups, groupPriority } from '../streaming/streamed-splat-mesh';
+import type { LodRun } from '../streaming/lod-scheduler';
 
 /**
  * The wave gate in `reschedule` holds a group that retires coverage until every

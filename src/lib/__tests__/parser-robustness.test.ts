@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { parseLodManifest } from '../lod-manifest';
-import type { SplatDatasetSource } from '../dataset-source';
-import { sliceSplatData } from '../streamed-splat-mesh';
-import { releaseRowSpan } from '../splat-mesh-pool';
-import { parsePlyHeader } from '../ply-header';
-import { packPaletteSh, shCoefficientCount } from '../sh-pack';
+import { parseLodManifest } from '../streaming/lod-manifest';
+import type { SplatDatasetSource } from '../streaming/dataset-source';
+import { sliceSplatData } from '../streaming/streamed-splat-mesh';
+import { releaseRowSpan } from '../core/splat-mesh-pool';
+import { parsePlyHeader } from '../loaders/ply-header';
+import { packPaletteSh, shCoefficientCount } from '../core/sh-pack';
 import { parseSplat } from '../formats/splat/parse-splat';
-import type { SplatData, SplatShData } from '../splat-data';
+import type { SplatData, SplatShData } from '../core/splat-data';
 
 /**
  * Regression tests for robustness against hostile or corrupt scene files

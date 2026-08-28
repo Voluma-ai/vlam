@@ -1,4 +1,4 @@
-import type { SplatData } from './splat-data';
+import type { SplatData } from '../core/splat-data';
 import { ChunkLoader } from './chunk-loader';
 import type { SplatFormat, SplatDataFileLoadOptions, SplatInputOptions } from './loading';
 

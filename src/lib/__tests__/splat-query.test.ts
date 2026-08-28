@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { UniformGrid } from '../splat-query';
+import { UniformGrid } from '../core/splat-query';
 
 /**
  * Tests for the pure uniform grid behind M9's CPU spatial queries. Correctness

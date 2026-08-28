@@ -11,20 +11,20 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
  * Runtime instantiation is limited to what works without a GPU or DOM;
  * everything else is checked at the type/typeof level.
  */
-import * as vlam from '../index';
+import * as vlam from '../core';
 import * as loaders from '../loaders';
-import * as staticLod from '../static-lod-entry';
+import * as staticLod from '../static-lod';
 import * as streaming from '../streaming';
 import * as unified from '../unified';
 import * as selection from '../selection';
 import * as effects from '../effects';
-import * as ply from '../formats/ply/index';
-import * as sog from '../formats/sog/index';
-import * as rad from '../formats/rad/index';
-import * as lcc from '../formats/lcc/index';
-import * as spz from '../formats/spz/index';
-import * as splat from '../formats/splat/index';
-import * as ksplat from '../formats/ksplat/index';
+import * as ply from '../formats/ply';
+import * as sog from '../formats/sog';
+import * as rad from '../formats/rad';
+import * as lcc from '../formats/lcc';
+import * as spz from '../formats/spz';
+import * as splat from '../formats/splat';
+import * as ksplat from '../formats/ksplat';
 
 const movedOffRoot = [
   'loadSplatData',

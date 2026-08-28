@@ -132,7 +132,7 @@ export {
 } from './webgpu-limits';
 export type { SplatData, SplatShData, SplatPackedShData } from './splat-data';
 // `SplatData.format` and `SplatBudgetOptions.format` name these unions.
-export type { SplatDataFormat, StreamedSplatFormat } from './loading';
+export type { SplatDataFormat, StreamedSplatFormat } from '../loaders/loading';
 export type {
   SplatModifier,
   SplatContext,

@@ -1,9 +1,9 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
 
-import { SplatMesh } from '../splat-mesh';
-import { SPLAT_DATA_TEXTURE_WIDTH, SplatPool } from '../splat-mesh-pool';
-import { StreamedSplatMesh, type StreamedSplatMeshOptions } from '../streamed-splat-mesh';
+import { SplatMesh } from '../core/splat-mesh';
+import { SPLAT_DATA_TEXTURE_WIDTH, SplatPool } from '../core/splat-mesh-pool';
+import { StreamedSplatMesh, type StreamedSplatMeshOptions } from '../streaming/streamed-splat-mesh';
 
 beforeAll(() => {
   if (typeof (globalThis as { Worker?: unknown }).Worker === 'undefined') {

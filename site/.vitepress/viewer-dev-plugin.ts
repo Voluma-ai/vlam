@@ -41,13 +41,13 @@ export const EXAMPLE_APPS = [
 export function vlamPackageAliases(fromRoot: string) {
   const lib = (file: string) => path.join(fromRoot, 'src/lib', file);
   return [
-    { find: '@voluma/vlam/static-lod', replacement: lib('static-lod-entry.ts') },
-    { find: '@voluma/vlam/streaming', replacement: lib('streaming.ts') },
-    { find: '@voluma/vlam/selection', replacement: lib('selection.ts') },
-    { find: '@voluma/vlam/loaders', replacement: lib('loaders.ts') },
-    { find: '@voluma/vlam/unified', replacement: lib('unified.ts') },
-    { find: '@voluma/vlam/effects', replacement: lib('effects.ts') },
-    { find: '@voluma/vlam', replacement: lib('index.ts') },
+    { find: '@voluma/vlam/static-lod', replacement: lib('static-lod/index.ts') },
+    { find: '@voluma/vlam/streaming', replacement: lib('streaming/index.ts') },
+    { find: '@voluma/vlam/selection', replacement: lib('selection/index.ts') },
+    { find: '@voluma/vlam/loaders', replacement: lib('loaders/index.ts') },
+    { find: '@voluma/vlam/unified', replacement: lib('unified/index.ts') },
+    { find: '@voluma/vlam/effects', replacement: lib('effects/index.ts') },
+    { find: '@voluma/vlam', replacement: lib('core/index.ts') },
   ];
 }
 

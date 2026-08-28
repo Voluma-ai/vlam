@@ -5,7 +5,7 @@ import {
   searchLimitWithinBudget,
   traverseFrontier,
 } from '../formats/rad/rad-frontier';
-import type { SplatData } from '../splat-data';
+import type { SplatData } from '../core/splat-data';
 
 /** A node for the tree-traversal tests: LOD `size`, position, and child links. */
 interface TreeNode {

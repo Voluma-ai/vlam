@@ -5,7 +5,7 @@ import {
   quantizeDepthKey,
   sortableFloat32Bits,
   stableRadixSortReference,
-} from '../radix-sort';
+} from '../core/radix-sort';
 
 const floatBits = (value: number) => new Uint32Array(new Float32Array([value]).buffer)[0] as number;
 

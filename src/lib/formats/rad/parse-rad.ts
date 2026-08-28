@@ -12,8 +12,8 @@ import {
   type RadShCodebook,
   type SplatData,
   type SplatPackedShData,
-} from '../../splat-data';
-import { neutralShWord, packShCoefficients, shCoefficientCount } from '../../sh-pack';
+} from '../../core/splat-data';
+import { neutralShWord, packShCoefficients, shCoefficientCount } from '../../core/sh-pack';
 
 /**
  * Parser for World Labs' Spark `.rad`/`.radc` format (a precomputed LOD splat

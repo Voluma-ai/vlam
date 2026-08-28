@@ -22,7 +22,7 @@ import {
   type SplatMeshOptions,
   type SplatOrientation,
   type SplatPerformanceProfile,
-} from '../lib';
+} from '../lib/core';
 import { loadSplatData, loadSplatDataFile } from '../lib/loaders';
 import {
   StreamedSplatMesh,

@@ -1,4 +1,4 @@
-import { writeCovariance, type SplatData } from '../../splat-data';
+import { writeCovariance, type SplatData } from '../../core/splat-data';
 
 const BYTES_PER_SPLAT = 32;
 /** Mirrors `parse-sog.ts` MAX_SPLAT_COUNT - the renderer's 2²⁴ splat ceiling. */

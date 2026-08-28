@@ -9,7 +9,7 @@ import {
   type LccChunkParams,
   type LccRange,
 } from '../formats/lcc/parse-lcc';
-import { writeCovariance } from '../splat-data';
+import { writeCovariance } from '../core/splat-data';
 
 /**
  * Ground truth from a real capture: the first records of

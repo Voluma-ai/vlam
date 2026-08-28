@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { SplatMesh } from '../splat-mesh';
-import { packNormalizedDepth, normalizeViewDepth } from '../splat-depth-pack';
-import { writeCovariance } from '../splat-data';
+import { SplatMesh } from '../core/splat-mesh';
+import { packNormalizedDepth, normalizeViewDepth } from '../core/splat-depth-pack';
+import { writeCovariance } from '../core/splat-data';
 
 function makeSplatData(count = 1): {
   count: number;

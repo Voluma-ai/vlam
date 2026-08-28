@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { transformCovariance, writeCovariance } from '../splat-data';
+import { transformCovariance, writeCovariance } from '../core/splat-data';
 
 /** The 9-element column-major linear part a caller feeds {@link transformCovariance}. */
 function linearPart(m: THREE.Matrix4): number[] {

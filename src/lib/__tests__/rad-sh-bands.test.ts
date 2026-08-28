@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildRadScene } from '../formats/rad/rad';
-import { httpDatasetSource } from '../dataset-source';
+import { httpDatasetSource } from '../streaming/dataset-source';
 import { RAD_CHUNK_MAGIC, RAD_MAGIC } from '../formats/rad/parse-rad';
 
 /**

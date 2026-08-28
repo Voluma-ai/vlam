@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { frontierView, traverseFrontier } from '../formats/rad/rad-frontier';
-import type { SplatData } from '../splat-data';
-import { buildStaticLod } from '../static-lod';
+import type { SplatData } from '../core/splat-data';
+import { buildStaticLod } from '../static-lod/static-lod';
 
 const source = (xs: readonly number[]): SplatData => ({
   count: xs.length,

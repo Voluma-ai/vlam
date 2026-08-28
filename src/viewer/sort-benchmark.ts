@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { SplatMesh } from '../lib';
+import { SplatMesh } from '../lib/core';
 import type { StreamedSplatPerformanceEvent } from '../lib/streaming';
 
 type SortDebugMesh = {

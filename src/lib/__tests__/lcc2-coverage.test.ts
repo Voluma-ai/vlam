@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { buildLcc2Scene } from '../formats/lcc/lcc2';
-import type { SplatDatasetSource } from '../dataset-source';
+import type { SplatDatasetSource } from '../streaming/dataset-source';
 
 const OPTIONS = { budget: 1000, lodBaseDistance: 10, lodMultiplier: 2 };
 

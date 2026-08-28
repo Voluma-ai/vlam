@@ -1,4 +1,4 @@
-import type { SplatData } from './splat-data';
+import type { SplatData } from '../core/splat-data';
 import type { StaticLodBuildProgress } from './static-lod';
 
 export interface StaticLodBuildRequest {

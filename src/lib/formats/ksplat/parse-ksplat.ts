@@ -1,6 +1,6 @@
-import { halfToFloat } from '../../half-float';
-import { packShCoefficients } from '../../sh-pack';
-import { writeCovariance, type SplatData } from '../../splat-data';
+import { halfToFloat } from '../../core/half-float';
+import { packShCoefficients } from '../../core/sh-pack';
+import { writeCovariance, type SplatData } from '../../core/splat-data';
 
 const HEADER_BYTES = 4096;
 const SECTION_HEADER_BYTES = 1024;

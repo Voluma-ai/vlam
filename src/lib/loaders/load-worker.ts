@@ -1,9 +1,9 @@
-import { parseSplatPly, parseSplatPlyFile } from './formats/ply/parse-splat-ply';
-import { parseSog, parseSogDirectory } from './formats/sog/parse-sog';
-import { parseRad, parseRadChunkStreaming } from './formats/rad/parse-rad';
-import { parseLccChunk, type LccChunkParams } from './formats/lcc/parse-lcc';
-import { packPaletteSh } from './sh-pack';
-import type { SplatData } from './splat-data';
+import { parseSplatPly, parseSplatPlyFile } from '../formats/ply/parse-splat-ply';
+import { parseSog, parseSogDirectory } from '../formats/sog/parse-sog';
+import { parseRad, parseRadChunkStreaming } from '../formats/rad/parse-rad';
+import { parseLccChunk, type LccChunkParams } from '../formats/lcc/parse-lcc';
+import { packPaletteSh } from '../core/sh-pack';
+import type { SplatData } from '../core/splat-data';
 import { fetchBuffer, fetchRange, stripFragment } from './worker-fetch';
 import { serveLoadRequests } from './worker-host';
 import {

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
-import { createYUpTransform, yUpTransformForFormat, type OrientableFormat } from '../orientation';
+import {
+  createYUpTransform,
+  yUpTransformForFormat,
+  type OrientableFormat,
+} from '../core/orientation';
 
 describe('createYUpTransform', () => {
   it('is a 180° rotation about X: +Y→−Y, +Z→−Z, +X unchanged', () => {

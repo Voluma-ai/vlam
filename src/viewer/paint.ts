@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { abs, float, mix, step, uniformArray, vec4 } from 'three/tsl';
-import type { SplatData, SplatMesh, SplatModifier, SplatRange } from '../lib';
+import type { SplatData, SplatMesh, SplatModifier, SplatRange } from '../lib/core';
 
 /**
  * Interactive paint demo (`?effects=paint`) for per-splat channels (M7.3).

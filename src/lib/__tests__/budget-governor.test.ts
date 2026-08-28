@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { BudgetGovernor, type BudgetGovernedMember } from '../budget-governor';
+import { BudgetGovernor, type BudgetGovernedMember } from '../streaming/budget-governor';
 
 /** A minimal member mirroring StreamedSplatMesh's clamp-and-report contract. */
 class FakeMesh implements BudgetGovernedMember {

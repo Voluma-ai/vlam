@@ -1,5 +1,5 @@
-import { writeCovariance, type SplatData } from '../../splat-data';
-import { packedRangesEqual, requantizeShWord } from '../../sh-pack';
+import { writeCovariance, type SplatData } from '../../core/splat-data';
+import { packedRangesEqual, requantizeShWord } from '../../core/sh-pack';
 
 /**
  * Decoder for XGRIDS' older LCC datasets (`.lcc` / `meta.lcc`; see
