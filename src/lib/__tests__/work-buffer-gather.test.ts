@@ -93,7 +93,13 @@ describe('WorkBufferGather', () => {
     const compute = vi.fn();
     const opacities = [1, 0.75, 0.5, 0.25, 0] as const;
     for (const opacity of opacities) {
-      gather.gather({ compute } as unknown as THREE.WebGPURenderer, 2, 0, new THREE.Matrix4(), opacity);
+      gather.gather(
+        { compute } as unknown as THREE.WebGPURenderer,
+        2,
+        0,
+        new THREE.Matrix4(),
+        opacity,
+      );
       expect((gather as unknown as { opacity: { value: number } }).opacity.value).toBe(opacity);
     }
     expect(compute).toHaveBeenCalledTimes(opacities.length);

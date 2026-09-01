@@ -418,8 +418,22 @@ async function run(): Promise<void> {
   overlapUnified.addSource(overlapLeaf);
   const overlapScene = new THREE.Scene();
   overlapScene.add(overlapUnified);
-  const overlapFromPos = await sampleScene(renderer, overlapScene, camera, target, overlapUnified, 3);
-  const overlapFromNeg = await sampleScene(renderer, overlapScene, camera, target, overlapUnified, -3);
+  const overlapFromPos = await sampleScene(
+    renderer,
+    overlapScene,
+    camera,
+    target,
+    overlapUnified,
+    3,
+  );
+  const overlapFromNeg = await sampleScene(
+    renderer,
+    overlapScene,
+    camera,
+    target,
+    overlapUnified,
+    -3,
+  );
   const overlapCentersW: number[] = [];
   const overlapColorsA: number[] = [];
   const overlapRatios: number[] = [];
@@ -427,7 +441,15 @@ async function run(): Promise<void> {
     overlapUnified.setSourceOpacity(overlapMerged, opacity);
     overlapUnified.setSourceOpacity(overlapLeaf, opacity);
     const centerPx = await sampleScene(renderer, overlapScene, camera, target, overlapUnified, 3);
-    const edgePx = await sampleScene(renderer, overlapScene, camera, target, overlapUnified, 3, edgeX);
+    const edgePx = await sampleScene(
+      renderer,
+      overlapScene,
+      camera,
+      target,
+      overlapUnified,
+      3,
+      edgeX,
+    );
     if (opacity > 0) overlapRatios.push(shapeRatio(centerPx, edgePx));
     const work = overlapUnified as unknown as {
       workBuffer: { centers: THREE.StorageBufferAttribute; colors: THREE.StorageBufferAttribute };
@@ -441,8 +463,10 @@ async function run(): Promise<void> {
     overlapFromPos.some((c) => c > 0) &&
     overlapFromNeg.some((c) => c > 0) &&
     ratiosStable(overlapRatios, 0.12) &&
-    overlapColorsA.filter((alpha) => Math.abs(alpha - 1.6) < 0.08).length === countingFades.length &&
-    overlapColorsA.filter((alpha) => Math.abs(alpha - 0.7) < 0.08).length === countingFades.length &&
+    overlapColorsA.filter((alpha) => Math.abs(alpha - 1.6) < 0.08).length ===
+      countingFades.length &&
+    overlapColorsA.filter((alpha) => Math.abs(alpha - 0.7) < 0.08).length ===
+      countingFades.length &&
     countingFades.every(
       (opacity, index) =>
         Math.abs((overlapCentersW[index * 2] ?? -1) - opacity) < 0.05 &&

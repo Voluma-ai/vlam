@@ -5,9 +5,7 @@ const FOVEATION_LEAF_THRESHOLD = 6_000_000;
 
 /** Mirrors `buildRadScene` foveate selection for unit tests. */
 const resolveRadFoveate = (budget: number, leafCount: number, budgetLifts: boolean): boolean => {
-  const effectiveBudget = budgetLifts
-    ? liftBudgetToFinestLevel(budget, leafCount)
-    : budget;
+  const effectiveBudget = budgetLifts ? liftBudgetToFinestLevel(budget, leafCount) : budget;
   return leafCount > FOVEATION_LEAF_THRESHOLD || leafCount > effectiveBudget;
 };
 
@@ -31,11 +29,16 @@ describe('allowFinestLevelLift strategy selection', () => {
   });
 
   it('enables lift when allowFinestLevelLift is set unless budgetCap vetoes', () => {
-    expect(resolveBudgetLifts({ allowFinestLevelLift: true, budget: 58_000, maxBudget: 3_500_000 })).toBe(
-      true,
-    );
     expect(
-      resolveBudgetLifts({ allowFinestLevelLift: true, budget: 58_000, maxBudget: 3_500_000, budgetCap: 1_000_000 }),
+      resolveBudgetLifts({ allowFinestLevelLift: true, budget: 58_000, maxBudget: 3_500_000 }),
+    ).toBe(true);
+    expect(
+      resolveBudgetLifts({
+        allowFinestLevelLift: true,
+        budget: 58_000,
+        maxBudget: 3_500_000,
+        budgetCap: 1_000_000,
+      }),
     ).toBe(false);
   });
 

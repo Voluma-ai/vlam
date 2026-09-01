@@ -75,9 +75,9 @@ async function run(): Promise<void> {
   camera.lookAt(0, 0, 0);
   camera.updateMatrixWorld();
 
-    const samples: Array<Record<string, unknown>> = [];
-    const intermediate: Array<Record<string, unknown>> = [];
-    for (const budget of BUDGETS) {
+  const samples: Array<Record<string, unknown>> = [];
+  const intermediate: Array<Record<string, unknown>> = [];
+  for (const budget of BUDGETS) {
     print(`Loading ${url} at ${budget}…`);
     const mesh = await StreamedSplatMesh.load(url, {
       budget,
