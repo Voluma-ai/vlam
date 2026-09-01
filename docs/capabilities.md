@@ -19,7 +19,7 @@ and [`architecture.md`](architecture.md).
 | **SPZ** | ✅ |, | ✅ file | ✅ | ✅ packed shN when `shDegree` > 0 (caps at 3 bands) | `parse-spz.test.ts` |, |
 | **LCC** (`.lcc` / `meta.lcc`, v3–v5) |, | ✅ | ✅ manifest + siblings | ✅ | ⚠️ `Quality` profile: packed SH (`shBands`); `Portable` DC | `lcc.test.ts`, `parse-lcc.test.ts` | Quality vs Portable |
 | **LCC2** (XGRIDS tiles) |, | ✅ | ✅ manifest + `.sog` tiles | ✅ | ⚠️ opt-in `shBands` (palette → packed at decode; verified tiles DC-only) | `lcc2-*` tests | octree LOD orbit |
-| **RAD** / **RADC** (Spark) | ✅ whole-file ≤ ~16.7M leaves | ✅ prefix or **page-table** foveation | ✅ `.rad` + `.radc` folder | ✅ | ✅ packed SH when capture has `maxSh` | `parse-rad`, `rad-*`, `frontier-pager` | page-table fly-through |
+| **RAD** (Spark `.rad`) | ✅ whole-file ≤ ~16.7M leaves | ✅ prefix or **page-table** foveation | ✅ `.rad` folder (optional `.radc` chunks) | ✅ | ✅ packed SH when capture has `maxSh` | `parse-rad`, `rad-*`, `frontier-pager` | page-table fly-through |
 
 ### Format notes
 

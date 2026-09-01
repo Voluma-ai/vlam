@@ -18,7 +18,7 @@ core renderer graph.
 Both cover the self-contained formats: `.sog` (bundled), `.ply` (both the
 3DGS "INRIA" and SuperSplat-compressed flavors), `.spz`, `.splat`, `.ksplat`,
 and whole-file `.rad`. Streamed datasets (a `lod-meta.json` directory, `.lcc`,
-`.lcc2`, chunked `.radc`) are not single files, they go through
+`.lcc2`, a `.rad` that names external `.radc` chunks) are not single files, they go through
 [`StreamedSplatMesh`](streaming-and-lod.md).
 
 ## Format detection, automatic and explicit

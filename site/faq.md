@@ -5,7 +5,7 @@
 
 Files: `.sog`, `.ply`, `.spz`, `.rad`, `.splat`, `.ksplat`.
 
-Folders: streamed **SOG**, **LCC** / **LCC2**, **RADC**.
+Folders: streamed **SOG**, **LCC** / **LCC2**, **RAD**.
 
 </details>
 

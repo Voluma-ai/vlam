@@ -6,7 +6,8 @@ budget. It extends `SplatMesh`, so the render loop, picking, queries, and
 modifiers all work unchanged.
 
 Supported streamed formats: Streamed SOG (`lod-meta.json`), XGRIDS `.lcc`
-(manifest v3–v5) and `.lcc2`, and Spark `.rad`/`.radc`, see the
+(manifest v3–v5) and `.lcc2`, and Spark `.rad` (chunked sets still open from
+the `.rad` header; `.radc` files are siblings it references), see the
 [capability matrix](../capabilities.md#formats).
 
 ## Opening a streamed scene

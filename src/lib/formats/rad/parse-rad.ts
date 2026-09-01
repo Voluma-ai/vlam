@@ -16,7 +16,7 @@ import {
 import { neutralShWord, packShCoefficients, shCoefficientCount } from '../../core/sh-pack';
 
 /**
- * Parser for World Labs' Spark `.rad`/`.radc` format (a precomputed LOD splat
+ * Parser for World Labs' Spark `.rad` format (a precomputed LOD splat
  * tree with per-column, gzip/deflate-compressed properties). Ported from the
  * MIT-licensed Rust reference (`sparkjsdev/spark`, `rust/spark-lib/src/rad.rs`
  * and `splat_encode.rs`) since this project's worker has no Rust/WASM

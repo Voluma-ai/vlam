@@ -14,7 +14,7 @@
  *  - `@voluma/vlam/effects` - tree-shakeable modifier presets
  *  - `@voluma/vlam/formats/ply` - 3DGS `.ply`, raw and compressed
  *  - `@voluma/vlam/formats/sog` - PlayCanvas SOG, bundled and unbundled
- *  - `@voluma/vlam/formats/rad` - Spark `.rad`/`.radc`
+ *  - `@voluma/vlam/formats/rad` - Spark `.rad`
  *  - `@voluma/vlam/formats/lcc` - XGRIDS LCC / `.lcc2` + collision helpers
  *  - `@voluma/vlam/formats/spz` - Niantic `.spz`
  *  - `@voluma/vlam/formats/splat` - antimatter15 `.splat`

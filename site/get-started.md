@@ -65,7 +65,8 @@ current frame.
 `loadSplatData` accepts `.sog`, `.ply`, `.spz`, `.splat`, `.ksplat`, and `.rad`.
 
 For large streamed scenes, use `StreamedSplatMesh.load` (Streamed SOG, `.lcc` /
-`.lcc2`, `.rad` / `.radc`).
+`.lcc2`, `.rad`). A `--rad-chunked` capture is still opened via the `.rad` file;
+its `.radc` siblings are chunks that file points at.
 
 ## Next
 

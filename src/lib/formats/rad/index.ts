@@ -1,5 +1,5 @@
 /**
- * `@voluma/vlam/formats/rad` - SparkJS `.rad`/`.radc` parsers and streamed scene builder.
+ * `@voluma/vlam/formats/rad` - SparkJS `.rad` parser and streamed scene builder.
  *
  * Loading through {@link StreamedSplatMesh.load} / {@link loadSplatData} does not
  * require this import; the library pulls the format in on demand. Use this

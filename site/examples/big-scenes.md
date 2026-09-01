@@ -80,7 +80,7 @@ Changing the budget does not reload anything. The mesh just re-decides which chu
 | --- | --- |
 | Streamed SOG | the `lod-meta.json` next to the chunk folders |
 | `.lcc` / `.lcc2` | the `.lcc` file; its `data.bin` is read in ranges |
-| `.rad` / `.radc` | the `.rad` file |
+| `.rad` | the `.rad` file (not a `.radc` chunk) |
 
 All of them need a host that answers HTTP range requests, any normal static host or CDN does. If the capture sits on a different origin than your page, that origin needs CORS headers, or the fetches fail before anything renders.
 
