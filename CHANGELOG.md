@@ -19,7 +19,25 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-01
+
+### Added
+
+- **`StreamedSplatMeshOptions.allowFinestLevelLift`.** Hosts that pin `budget`
+  and/or `maxBudget` can opt in so `.rad` strategy selection and pool sizing
+  still run `liftBudgetToFinestLevel` under that ceiling. Without it, a capture
+  whose leaf count sits between the host ceiling and the foveation threshold
+  incorrectly lands on the page-table path instead of the prefix reader.
+  `budgetCap` still vetoes the lift.
+- **`StreamedSplatMesh.radStrategy`.** Read-only `'prefix' | 'page-table' | null`
+  for hosts that need to tell which `.rad` path loaded.
+
 ### Changed
+
+- **RAD LOD alpha helpers are test-only.** The numeric reference for decoded
+  alpha, merged-node classification, and `centers.w` display opacity lives under
+  `src/lib/__tests__/helpers/rad-lod-alpha.ts`. Production display, pick, and
+  unified gather shaders keep the original encoded alpha for classification.
 
 - **Repo layout.** Viewer HTML lives in `src/viewer/` (`index.html` plus the
   GPU harness shells). The docs-site Cloudflare worker is
@@ -70,6 +88,18 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   composite. `'page-table'` is the only `.rad` foveation spelling; `'pagetable'`
   and `SplatFoveationModeInput` are gone. The demo query is
   `?foveationMode=page-table`.
+
+### Fixed
+
+- **RAD fade preserves LOD shape.** Fractional source opacity and alpha
+  modifiers no longer reclassify merged `.rad` nodes as leaves. Classification,
+  remap, σ-cutoff, and super-Gaussian falloff use the original encoded alpha;
+  visual opacity is a post-falloff multiplier (`centers.w` in unified gather).
+  Unit regression covers merged (decoded ≈ 1.6) and leaf fades; the unified
+  GPU harness samples center and off-center pixels through `1 / 0.75 / 0.5 /
+  0.25` on both the unified draw and the standalone material. Headed
+  construction-timeline comparison is deferred to Voluma's `VLAM_SRC`
+  adoption; this change does not alter host budgets.
 
 ### Added
 

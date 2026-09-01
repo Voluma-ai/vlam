@@ -24,9 +24,11 @@ Git history, not in this queue.
 - **Streamed spherical harmonics** — `[v]` implementation is covered by tests;
   blocked on an SH-bearing streamed capture and headed `?sh=0` versus `?sh=N`.
 - **RAD parity and coverage** — `[v]` page-table traversal keeps a coarse shell,
-  prioritizes touched chunks, and respects the draw budget in tests. Compare a
-  large capture against Spark during a headed WebGPU fly-through. See the
-  [RAD format notes](docs/formats/rad-notes.md).
+  prioritizes touched chunks, and respects the draw budget in tests. Fractional
+  opacity no longer changes merged-vs-leaf classification (unit + unified /
+  standalone GPU harness). Compare a large capture against Spark during a headed
+  WebGPU fly-through, including a marker crossfade on a construction timeline.
+  See the [RAD format notes](docs/formats/rad-notes.md).
 - **Multi-mesh budget** — `[v]` camera-weighted sharing and pool headroom are
   tested; visually validate several RAD meshes sharpening as the camera moves.
   See the [multi-mesh guide](docs/guide/multi-mesh-budgets.md).

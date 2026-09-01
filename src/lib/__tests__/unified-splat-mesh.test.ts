@@ -629,8 +629,9 @@ describe('UnifiedSplatMesh', () => {
    * plateau - visibly lighter and softer than the same capture in Spark.
    *
    * `lodAlpha` is deliberately *per source*, not a compatibility field: the
-   * gather normalizes alpha so one shared draw material serves a scene that
-   * mixes `.rad` and non-`.rad` sources.
+   * gather stores decoded original alpha in `colors.a` and visual opacity in
+   * `centers.w` so one shared draw material serves a scene that mixes `.rad`
+   * and non-`.rad` sources without fade-driven reclassification.
    */
   describe('.rad LOD alpha', () => {
     it('carries lodAlpha on the source view and into that source gather', () => {

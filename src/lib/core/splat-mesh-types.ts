@@ -246,8 +246,11 @@ export interface SplatMeshOptions {
   maxSplatAspect?: number;
   /**
    * Spark's LOD alpha encoding (`.rad`): the stored opacity is `alpha/2` so the
-   * shader recovers `alpha ∈ [0,2]`, and `alpha > 1` marks a merged node rendered
-   * with a grown σ-cutoff + super-Gaussian falloff. Set for foveated `.rad`.
+   * shader recovers `alpha ∈ [0,2]` from the original texture channel, and
+   * `alpha > 1` marks a merged node rendered with a grown σ-cutoff +
+   * super-Gaussian falloff. Visual fades and alpha modifiers scale the completed
+   * fragment after that classification; they must not change node type or shape.
+   * Set for foveated `.rad`.
    *
    * @experimental `.rad` foveation option; may change in a minor release.
    */

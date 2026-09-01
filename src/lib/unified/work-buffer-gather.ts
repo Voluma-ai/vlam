@@ -37,7 +37,7 @@ import { StorageMirrorReleaser } from '../core/storage-attribute-mirror';
  */
 /** Shared GPU storage for every gathered source in one unified frame. */
 export class WorkBuffer {
-  /** World-space center xyz; w is the drawable flag (1 draw, 0 modifier-hidden). */
+  /** World-space center xyz; w is display opacity (`visibility × source opacity ×` RAD modifier ratio). */
   readonly centers: THREE.StorageBufferAttribute;
   /** Resolved color and opacity per work slot. */
   readonly colors: THREE.StorageBufferAttribute;
@@ -134,8 +134,8 @@ export class WorkBufferGather {
     srgbOutput?: boolean;
     /**
      * Source stores Spark LOD alpha (`alpha ÷ 2`, `.rad`). Recover the full
-     * `alpha ∈ [0,2]` here so the shared draw material sees one convention;
-     * `alpha > 1` then marks a merged node (see `createWorkBufferMaterial`).
+     * `alpha ∈ [0,2]` into `colors.a` from the *original* texture channel so the
+     * shared draw material can classify merged vs leaf without seeing fades.
      */
     lodAlpha?: boolean;
     /** Reuse one target across all source gather passes. */
@@ -228,27 +228,33 @@ export class WorkBufferGather {
         });
         const center = stack.offset === null ? localCenter : localCenter.add(stack.offset);
         const visible = stack.visible === null ? bool(true) : stack.visible;
-        // Stable work slots: keep hidden splats in the gather/sort range, but
-        // stamp drawable=0 into center.w so the draw material clips them.
-        // Alpha-zero remains a secondary guard in the color channel.
-        // Compacting hidden splats out instead was evaluated and rejected
-        // (ROADMAP L3): the hidden set exists only on the GPU, so compaction
-        // needs a count readback before the CPU-sized sort dispatch - see the
+        // Stable work slots: keep hidden splats in the gather/sort range.
+        // `centers.w` is display opacity: `visibility × source opacity`, and for
+        // `.rad` sources the modifier-to-original alpha ratio as well. The
+        // draw material treats `w <= 0` as non-drawable. Compacting hidden
+        // splats was rejected (ROADMAP L3): the hidden set exists only on the
+        // GPU, so compaction needs a count readback before the CPU-sized sort.
         const gatheredCenter = this.sourceMatrix.mul(vec4(center, 1.0)).xyz;
-        output.element(target).assign(vec4(gatheredCenter, visible.select(float(1), float(0))));
+        const encodedOriginal = asNode<'float'>(colorAfterSh.a);
+        const encodedResolved = asNode<'float'>(stack.color.a);
+        const visibility = visible.select(float(1), float(0));
         const resolvedColor = options.srgbOutput
           ? stack.color
           : asNode<'vec4'>(colorSpaceToWorking(stack.color, THREE.SRGBColorSpace));
-        // `.rad` stores `alpha ÷ 2`; recover it here rather than in the draw
-        // material, which is shared by every source and must see one alpha
-        // convention. The work buffer is float storage, so `alpha > 1` (a
-        // merged node) survives to the draw unclamped.
-        const sourceAlpha = options.lodAlpha
-          ? asNode<'float'>(resolvedColor.a.mul(2.0))
-          : asNode<'float'>(resolvedColor.a);
-        outputColor
-          .element(target)
-          .assign(vec4(resolvedColor.rgb, visible.select(sourceAlpha.mul(this.opacity), float(0))));
+        if (options.lodAlpha) {
+          // Store decoded RAD alpha in `colors.a` so merged vs leaf is decided
+          // from the unmodified encoding. Visual fades never enter that channel.
+          const modifierOpacity = encodedOriginal
+            .greaterThan(0)
+            .select(encodedResolved.div(encodedOriginal.max(1e-8)), float(1));
+          output
+            .element(target)
+            .assign(vec4(gatheredCenter, visibility.mul(this.opacity).mul(modifierOpacity)));
+          outputColor.element(target).assign(vec4(resolvedColor.rgb, encodedOriginal.mul(2.0)));
+        } else {
+          output.element(target).assign(vec4(gatheredCenter, visibility.mul(this.opacity)));
+          outputColor.element(target).assign(vec4(resolvedColor.rgb, resolvedColor.a));
+        }
         const covariance =
           stack.rotation === null
             ? covarianceBase
