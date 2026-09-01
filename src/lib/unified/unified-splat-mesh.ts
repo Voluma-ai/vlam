@@ -61,7 +61,8 @@ interface LayoutEntry {
 
 /** Registration settings for one source in a {@link UnifiedSplatMesh}. */
 export interface UnifiedSplatSourceOptions {
-  /** Whole-source opacity applied after its modifier stack. Defaults to `1`. */
+  /** Whole-source display opacity applied after gather falloff. Defaults to `1`.
+   * Does not change RAD LOD classification or splat shape. */
   opacity?: number;
   /** Whether this source contributes to the unified draw. Defaults to `true`. */
   visible?: boolean;
@@ -392,7 +393,13 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     return this.overflowedSplatCount;
   }
 
-  /** Updates a source's resolved opacity without rebuilding its gather pipeline. */
+  /**
+   * Sets whole-source display opacity without rebuilding the gather pipeline.
+   *
+   * This scales the completed fragment after RAD merged-vs-leaf classification
+   * and falloff. It must never alter LOD selection or splat shape; hosts such as
+   * marker crossfades rely on that. Values `<= 0` skip drawing the source.
+   */
   setSourceOpacity(source: SplatMesh, opacity: number): void {
     this.assertNotDisposed('setSourceOpacity');
     const record = this.sources.find((entry) => entry.source === source);

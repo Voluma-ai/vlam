@@ -100,7 +100,10 @@ index list, and cuts a chunk when it fills 65536. Key invariants we rely on:
 
 Internal (merged) nodes approximate their subtree with one gaussian; with a
 LOD tree, `alpha` is encoded in `[0,2]` (values >1 encode a size-expansion
-factor in Spark's renderer). `writeSplat` applies it: opacity is `min(alpha,1)`
+factor in Spark's renderer). The display and unified shaders recover that
+encoded value from the original texture channel and apply visual opacity
+(source fades, alpha modifiers) only after merged-vs-leaf classification.
+`writeSplat` applies it: opacity is `min(alpha,1)`
 and the scales are multiplied by `radExpansion(alpha)` (1 for leaves, up to 3.8
 at alpha=2) so coarse nodes render enlarged enough to cover their subtree,
 matching Spark. Without it merged nodes render up to ~3.8× too small and leave

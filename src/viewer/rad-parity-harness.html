@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VLAM! RAD parity harness</title>
+    <style>
+      body { margin: 0; background: #111; color: #ddd; font: 14px/1.5 system-ui, sans-serif; }
+      canvas { display: block; margin: 16px; border: 1px solid #444; }
+      #status { margin: 16px; white-space: pre-wrap; }
+      #shots { display: flex; flex-wrap: wrap; gap: 12px; margin: 16px; }
+      figcaption { color: #aaa; }
+    </style>
+  </head>
+  <body>
+    <div id="status">Starting RAD parity harness…</div>
+    <div id="shots"></div>
+    <script type="module" src="/src/viewer/rad-parity-harness.ts"></script>
+  </body>
+</html>

@@ -82,14 +82,31 @@ describe('WorkBufferGather', () => {
     second.dispose();
   });
 
-  it('builds a gather that stamps drawable into center.w while keeping stable slots', () => {
+  it('builds a RAD gather that keeps original alpha out of the source-opacity uniform', () => {
+    const gather = new WorkBufferGather({
+      capacity: 2,
+      sourceCapacity: 2,
+      sourceIndex: new THREE.StorageBufferAttribute(new Uint32Array(2), 1),
+      ...textures(2),
+      lodAlpha: true,
+    });
+    const compute = vi.fn();
+    const opacities = [1, 0.75, 0.5, 0.25, 0] as const;
+    for (const opacity of opacities) {
+      gather.gather({ compute } as unknown as THREE.WebGPURenderer, 2, 0, new THREE.Matrix4(), opacity);
+      expect((gather as unknown as { opacity: { value: number } }).opacity.value).toBe(opacity);
+    }
+    expect(compute).toHaveBeenCalledTimes(opacities.length);
+    gather.dispose();
+  });
+
+  it('builds a gather that stamps display opacity into center.w while keeping stable slots', () => {
     const gather = new WorkBufferGather({
       capacity: 4,
       sourceCapacity: 4,
       sourceIndex: new THREE.StorageBufferAttribute(new Uint32Array(4), 1),
       ...textures(4),
-      // Modifier-hidden entries still occupy work slots; drawable=0 is written
-      // into center.w and alpha is zeroed as a secondary guard.
+      // Modifier-hidden entries still occupy work slots; centers.w is 0.
       modifiers: [() => ({ visible: bool(false) })],
     });
     const compute = vi.fn();

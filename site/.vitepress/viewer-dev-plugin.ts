@@ -57,6 +57,7 @@ const HTML_PAGES: Readonly<Record<string, string>> = {
   '/demo/index.html': 'src/viewer/index.html',
   '/chunk-harness.html': 'src/viewer/chunk-harness.html',
   '/unified-harness.html': 'src/viewer/unified-harness.html',
+  '/rad-parity-harness.html': 'src/viewer/rad-parity-harness.html',
   ...Object.fromEntries(
     EXAMPLE_APPS.flatMap((slug) => {
       const file = `example-apps/${slug}/index.html`;

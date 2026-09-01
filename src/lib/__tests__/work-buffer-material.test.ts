@@ -81,9 +81,34 @@ describe('createWorkBufferMaterial', () => {
     material.dispose();
   });
 
+  it('builds a graph that draws fractional display opacity from center.w', () => {
+    const material = createWorkBufferMaterial({
+      capacity: 1,
+      centers: new THREE.StorageBufferAttribute(new Float32Array([0, 0, -1, 0.25]), 4),
+      colors: new THREE.StorageBufferAttribute(new Float32Array([1, 0, 0, 1.6]), 4),
+      covarianceA: new THREE.StorageBufferAttribute(new Float32Array(4), 4),
+      covarianceB: new THREE.StorageBufferAttribute(new Float32Array(4), 4),
+      isotropicMix: new THREE.StorageBufferAttribute(new Float32Array(1), 1),
+      isotropicScreenRadius: new THREE.StorageBufferAttribute(new Float32Array(1), 1),
+      order: new THREE.StorageInstancedBufferAttribute(new Float32Array([0]), 1),
+      focal: uniform(new THREE.Vector2(400, 400)),
+      viewport: uniform(new THREE.Vector2(800, 600)),
+      maxStdDev: uniform(3),
+      minSplatSizePx: uniform(0),
+      antialias: uniform(0),
+      projectedLowPassVariance: uniform(0.3),
+      compensateProjectedLowPass: uniform(0),
+      dofFocusDistance: uniform(10),
+      dofAperture: uniform(0),
+      ...relightDefaults(),
+    });
+    expect(material.vertexNode).not.toBeNull();
+    expect(material.fragmentNode).not.toBeNull();
+    material.dispose();
+  });
+
   it('builds a vertex graph that rejects non-drawable work slots', () => {
-    // center.w < 0.5 collapses to the clipped position alongside frustum rejects.
-    // Alpha-zero from gather remains a secondary fragment guard.
+    // center.w <= 0 collapses to the clipped position alongside frustum rejects.
     const material = createWorkBufferMaterial({
       capacity: 2,
       centers: new THREE.StorageBufferAttribute(new Float32Array([0, 0, -1, 0, 0, 0, -1, 1]), 4),

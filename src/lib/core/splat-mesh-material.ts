@@ -633,6 +633,9 @@ export function applySplatMaterialGraph(
     ? varying(float(settings.maxStdDev), 'vAdjustedStdDev')
     : null;
   const vAlpha2 = settings.lodAlpha ? varying(float(1), 'vAlpha2') : null;
+  // Visual fade (modifier alpha / original encoded alpha). Applied after LOD
+  // falloff so a marker crossfade cannot reclassify a merged node as a leaf.
+  const vVisualOpacity = settings.lodAlpha ? varying(float(1), 'vVisualOpacity') : null;
 
   material.vertexNode = Fn(() => {
     const center = stack.offset === null ? localCenter : localCenter.add(stack.offset);
@@ -786,13 +789,15 @@ export function applySplatMaterialGraph(
         }
       }
       const eigenvector1 = vec2(b, lambda1.sub(a)).add(vec2(1e-6, 0.0)).normalize();
-      // Spark's LOD alpha: recover `alpha ∈ [0,2]` (stored ÷2). A merged node
+      // Spark's LOD alpha: recover `alpha ∈ [0,2]` from the *original* texture
+      // channel (stored ÷2), never from modifier-resolved opacity. A merged node
       // (`alpha > 1`) grows the σ-cutoff `maxStdDev + 0.7·(remap−1)` (remap maps
       // 1..2 → 1..5) so it covers its subtree; the covariance is untouched. A leaf
       // keeps the base cutoff. Off (`lodAlpha` false) → the plain constant cutoff.
       let stdDev: THREE.Node<'float'> = float(settings.maxStdDev);
-      if (settings.lodAlpha && vAdjustedStdDev && vAlpha2) {
-        const alpha2 = asNode<'float'>(stack.color.a.mul(2.0));
+      if (settings.lodAlpha && vAdjustedStdDev && vAlpha2 && vVisualOpacity) {
+        const encodedOriginal = asNode<'float'>(colorAfterSh.a);
+        const alpha2 = asNode<'float'>(encodedOriginal.mul(2.0));
         const remap = alpha2.mul(4.0).sub(3.0).min(5.0);
         stdDev = asNode<'float'>(
           alpha2
@@ -804,6 +809,11 @@ export function applySplatMaterialGraph(
         );
         vAdjustedStdDev.assign(stdDev);
         vAlpha2.assign(alpha2);
+        vVisualOpacity.assign(
+          encodedOriginal
+            .greaterThan(0)
+            .select(stack.color.a.div(encodedOriginal.max(1e-8)), float(1)),
+        );
       }
 
       // Optional aspect-ratio clamp (off by default; Spark does not clamp aspect).
@@ -940,12 +950,13 @@ export function applySplatMaterialGraph(
       const squaredDistance = quadPosition.dot(quadPosition);
       Discard(squaredDistance.greaterThan(1.0));
       let opacity: THREE.Node<'float'>;
-      if (settings.lodAlpha && vAdjustedStdDev && vAlpha2) {
+      if (settings.lodAlpha && vAdjustedStdDev && vAlpha2 && vVisualOpacity) {
         // Spark's LOD falloff. `g = exp(-½·adjustedStdDev²·|q|²)` is the Gaussian
         // at this fragment. A leaf composites `g · alpha`. A merged node
         // (`alpha > 1`) uses a super-Gaussian plateau `1 − (1 − g)^a`,
         // `a = exp((remap² − 1)/e)`, so a single coarse splat fills the footprint
         // of the subtree it stands in for - no covariance inflation.
+        // Visual opacity (fade / alpha modifiers) scales the completed falloff.
         const g = squaredDistance.mul(vAdjustedStdDev.mul(vAdjustedStdDev).mul(-0.5)).exp();
         const remap = vAlpha2.mul(4.0).sub(3.0).min(5.0);
         const aExp = remap
@@ -954,7 +965,9 @@ export function applySplatMaterialGraph(
           .mul(1 / Math.E)
           .exp();
         const merged = g.oneMinus().pow(aExp).oneMinus();
-        opacity = asNode<'float'>(vAlpha2.greaterThan(1.0).select(merged, g.mul(vAlpha2)));
+        opacity = asNode<'float'>(
+          vAlpha2.greaterThan(1.0).select(merged, g.mul(vAlpha2)).mul(vVisualOpacity),
+        );
       } else {
         // True Gaussian falloff. |quadPosition| = 1 is `maxStdDev` σ from center.
         opacity = asNode<'float'>(squaredDistance.mul(gaussianExponent).exp().mul(splatColor.a));
@@ -1014,7 +1027,24 @@ export function applySplatMaterialGraph(
     material.fragmentNode = Fn(() => {
       const squaredDistance = quadPosition.dot(quadPosition);
       Discard(squaredDistance.greaterThan(1.0));
-      const gaussian = squaredDistance.mul(gaussianExponent).exp().mul(splatColor.a);
+      let gaussian: THREE.Node<'float'>;
+      if (settings.lodAlpha && vAdjustedStdDev && vAlpha2 && vVisualOpacity) {
+        // Same LOD classification as display (original alpha); modifiers still
+        // scale the hit threshold through the visual-opacity multiplier.
+        const g = squaredDistance.mul(vAdjustedStdDev.mul(vAdjustedStdDev).mul(-0.5)).exp();
+        const remap = vAlpha2.mul(4.0).sub(3.0).min(5.0);
+        const aExp = remap
+          .mul(remap)
+          .sub(1.0)
+          .mul(1 / Math.E)
+          .exp();
+        const merged = g.oneMinus().pow(aExp).oneMinus();
+        gaussian = asNode<'float'>(
+          vAlpha2.greaterThan(1.0).select(merged, g.mul(vAlpha2)).mul(vVisualOpacity),
+        );
+      } else {
+        gaussian = asNode<'float'>(squaredDistance.mul(gaussianExponent).exp().mul(splatColor.a));
+      }
       const alpha = gaussian.mul(opacityCompensation);
       Discard(alpha.lessThan(pick.alphaThreshold));
 

@@ -75,6 +75,7 @@ export function createWorkBufferMaterial(options: {
   const workColor = varying(vec4(1, 1, 1, 1), 'vWorkColor');
   const quadPosition = varying(positionGeometry.xy, 'vWorkQuadPosition');
   const opacityCompensation = varying(float(1), 'vWorkOpacityCompensation');
+  const displayOpacity = varying(float(1), 'vWorkDisplayOpacity');
   // Spark LOD alpha, matching `SplatMesh`'s display graph. The gather has
   // already recovered `alpha ∈ [0,2]` for `.rad` sources, so `alpha > 1`
   // identifies a merged node here without a per-source shader variant: a
@@ -85,8 +86,10 @@ export function createWorkBufferMaterial(options: {
     const workIndex = order.element(instanceIndex).toInt();
     const centerSample = centers.element(workIndex);
     const center = centerSample.xyz;
-    // Gather stamps drawable into center.w (1 = draw, 0 = modifier-hidden).
-    const drawable = centerSample.w.greaterThan(0.5);
+    // Gather stamps display opacity into center.w. `w <= 0` is non-drawable
+    // (hidden, fully faded, or a zero source). Fractional fades still draw.
+    const drawable = centerSample.w.greaterThan(0);
+    displayOpacity.assign(centerSample.w);
     workColor.assign(colors.element(workIndex));
     const viewCenter = modelViewMatrix.mul(vec4(center, 1.0)).toVar();
     const clipCenter = cameraProjectionMatrix.mul(viewCenter).toVar();
@@ -192,8 +195,8 @@ export function createWorkBufferMaterial(options: {
     );
     // Match SplatMesh's conservative center-frustum rejection. Without this,
     // a center behind the camera can produce a mirrored, screen-filling quad.
-    // Modifier-hidden entries (drawable=0) share the clipped destination so
-    // they generate no fragments while keeping a stable sort slot.
+    // Modifier-hidden / zero-opacity entries (displayOpacity=0) share the
+    // clipped destination so they generate no fragments while keeping a stable sort slot.
     const margin = clipCenter.w.mul(1.2);
     const inFrustum = clipCenter.z
       .greaterThan(margin.negate())
@@ -218,7 +221,7 @@ export function createWorkBufferMaterial(options: {
       .exp();
     const merged = g.oneMinus().pow(aExp).oneMinus();
     const opacity = workColor.a.greaterThan(1).select(merged, g.mul(workColor.a));
-    const alpha = opacity.mul(opacityCompensation);
+    const alpha = opacity.mul(opacityCompensation).mul(displayOpacity);
     const litCenter = tslTexture(options.relightMap, screenUV);
     const ox = options.relightSoftness.div(options.viewport.x.max(1));
     const oy = options.relightSoftness.div(options.viewport.y.max(1));

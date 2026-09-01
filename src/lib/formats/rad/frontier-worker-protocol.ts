@@ -189,4 +189,11 @@ export interface FrontierPlanMessage {
    */
   readonly cacheBytes: number;
   readonly cacheLimitBytes: number;
+  readonly pendingFrontierSplats?: number;
+  readonly staleResidentSplats?: number;
+  readonly lastPlanAppends?: number;
+  readonly lastPlanMoves?: number;
+  readonly cameraLocal?: readonly [number, number, number];
+  readonly planBudget?: number;
+  readonly planGeneration?: number;
 }

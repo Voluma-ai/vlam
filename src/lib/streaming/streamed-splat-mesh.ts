@@ -275,6 +275,17 @@ export interface StreamedSplatMeshOptions extends SplatMeshOptions {
    */
   maxBudget?: number;
   /**
+   * Lets a host that pins {@link budget} and/or {@link maxBudget} still take the
+   * finest-level lift for `.rad` strategy selection and pool sizing. Without it,
+   * pinning either option disables the lift and a capture whose leaf count sits
+   * between the host ceiling and {@link FOVEATION_LEAF_THRESHOLD} incorrectly
+   * lands on the foveated page-table path instead of the prefix reader.
+   *
+   * {@link budgetCap} still vetoes the lift when set. Mobile and fill-constrained
+   * desktops remain exempt inside {@link liftBudgetToFinestLevel}.
+   */
+  allowFinestLevelLift?: boolean;
+  /**
    * Multiplier on this mesh's LOD detail, matching Spark's per-mesh `lodScale`:
    * `> 1` refines further (finer cut, more splats drawn), `< 1` coarsens.
    * Default `1`.
@@ -677,6 +688,15 @@ export class StreamedSplatMesh extends SplatMesh {
   /** Last frontier's drawn (non-degenerate) splat count - the true on-screen size
    * in `page-table` mode, where the slab is fully "active" but mostly degenerate. */
   private pageTableDrawn = 0;
+  private frontierConverged = true;
+  private pendingFrontierSplats = 0;
+  private staleResidentSplats = 0;
+  private lastPlanAppends = 0;
+  private lastPlanMoves = 0;
+  private lastPlanGeneration = 0;
+  private lastPlanBudget = 0;
+  private lastPlanCamera: readonly [number, number, number] | null = null;
+  private firstFrontierCamera: readonly [number, number, number] | null = null;
   /** Monotonic reschedule id; a stale plan (superseded by a newer request) is
    * dropped. `pageTableInFlight` coalesces to one outstanding traversal. */
   private pageTableSeq = 0;
@@ -902,9 +922,11 @@ export class StreamedSplatMesh extends SplatMesh {
     // Without this a desktop performance mode would lift straight back over its
     // own cap, to as much as `FINEST_LEVEL_BUDGET_MAX`.
     const budgetLifts =
-      options.budget === undefined &&
-      options.maxBudget === undefined &&
-      options.budgetCap === undefined;
+      options.allowFinestLevelLift === true
+        ? options.budgetCap === undefined
+        : options.budget === undefined &&
+          options.maxBudget === undefined &&
+          options.budgetCap === undefined;
 
     // A `.rad` "manifest" is the file's own binary header, read by range - it
     // must not be fetched whole (it is the multi-hundred-megabyte scene) or
@@ -1598,6 +1620,15 @@ export class StreamedSplatMesh extends SplatMesh {
   }
 
   /**
+   * Which `.rad` streaming strategy this mesh selected at load, or `null` when
+   * the scene is not a Spark `.rad` capture.
+   */
+  get radStrategy(): 'prefix' | 'page-table' | null {
+    if (this.scene.chunkOptions?.[0]?.format !== 'rad-chunk') return null;
+    return this.frontierWorker ? 'page-table' : 'prefix';
+  }
+
+  /**
    * The drawn-splat target currently driving the `.rad` page-table frontier -
    * the governed budget, capped by
    * {@link SplatMeshOptions.foveationDrawBudget}. `0` on a mesh that is not in
@@ -1609,6 +1640,34 @@ export class StreamedSplatMesh extends SplatMesh {
    */
   get drawBudget(): number {
     return this.frontierWorker ? this.pageTableDrawBudget : 0;
+  }
+
+  /**
+   * Page-table frontier coherence for hosts that gate preload/transitions.
+   * `undefined` fields stay 0 when this mesh is not in page-table mode.
+   */
+  get frontierState(): Readonly<{
+    frontierConverged: boolean;
+    pendingFrontierSplats: number;
+    staleResidentSplats: number;
+    lastPlanAppends: number;
+    lastPlanMoves: number;
+    planGeneration: number;
+    planBudget: number;
+    lastPlanCamera: readonly [number, number, number] | null;
+    firstFrontierCamera: readonly [number, number, number] | null;
+  }> {
+    return {
+      frontierConverged: this.frontierWorker ? this.frontierConverged : true,
+      pendingFrontierSplats: this.pendingFrontierSplats,
+      staleResidentSplats: this.staleResidentSplats,
+      lastPlanAppends: this.lastPlanAppends,
+      lastPlanMoves: this.lastPlanMoves,
+      planGeneration: this.lastPlanGeneration,
+      planBudget: this.lastPlanBudget,
+      lastPlanCamera: this.lastPlanCamera,
+      firstFrontierCamera: this.firstFrontierCamera,
+    };
   }
 
   /**
@@ -3357,6 +3416,17 @@ export class StreamedSplatMesh extends SplatMesh {
     if (degenerateCount > 0) this.degenerateSlabSlots(degenerateStart, degenerateCount);
     const residentFinishedAt = performance.now();
     this.pageTableDrawn = resident;
+    this.frontierConverged = plan.converged;
+    this.pendingFrontierSplats = plan.pendingFrontierSplats ?? 0;
+    this.staleResidentSplats = plan.staleResidentSplats ?? 0;
+    this.lastPlanAppends = plan.lastPlanAppends ?? plan.appends.count;
+    this.lastPlanMoves = plan.lastPlanMoves ?? plan.moveSlots.length;
+    this.lastPlanGeneration = plan.planGeneration ?? this.lastPlanGeneration + 1;
+    this.lastPlanBudget = plan.planBudget ?? this.pageTableDrawBudget;
+    if (plan.cameraLocal) {
+      this.lastPlanCamera = plan.cameraLocal;
+      this.firstFrontierCamera ??= plan.cameraLocal;
+    }
     if (plan.gatherMissing > 0) {
       // Splats whose chunk was evicted under them were written as zeros into
       // slots that are still drawn - holes in the coverage. Eviction protects

@@ -84,13 +84,13 @@ validation, docs/changelog updates, and compatibility impact.
 
 ## Dev GPU harnesses
 
-[`src/viewer/chunk-harness.html`](src/viewer/chunk-harness.html) and
-[`src/viewer/unified-harness.html`](src/viewer/unified-harness.html) are
-standalone browser pages for poking at one subsystem in isolation, chunked
-streaming upload and the unified renderer's work buffer respectively. They are
-served by `npm run dev` at `/chunk-harness.html` and `/unified-harness.html`,
-are not part of the docs site chrome, and are not published. Reach for them
-when a change needs a smaller surface than the full viewer.
+[`src/viewer/chunk-harness.html`](src/viewer/chunk-harness.html),
+[`src/viewer/unified-harness.html`](src/viewer/unified-harness.html), and
+[`src/viewer/rad-parity-harness.html`](src/viewer/rad-parity-harness.html)
+are standalone browser pages for poking at one subsystem in isolation. They are
+served by `npm run dev` at `/chunk-harness.html`, `/unified-harness.html`, and
+`/rad-parity-harness.html`. The RAD parity page is opt-in (`?url=` to a
+`.rad`); missing remote assets must not fail CI.
 
 ## Ground rules (the non-negotiables)
 

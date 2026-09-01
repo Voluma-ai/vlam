@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { bool } from 'three/tsl';
+import { bool, uniform, vec4 } from 'three/tsl';
 import { SplatMesh, createSplatRenderer, type SplatData } from '../lib/core';
 import { StreamedSplatMesh } from '../lib/streaming';
 import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '../lib/unified';
@@ -94,6 +94,7 @@ async function sampleScene(
   unified: UnifiedSplatMesh,
   z: number,
   x = SIZE >> 1,
+  y = SIZE >> 1,
 ): Promise<readonly [number, number, number, number]> {
   camera.position.set(0, 0, z);
   camera.lookAt(0, 0, 0);
@@ -103,10 +104,42 @@ async function sampleScene(
   renderer.clear();
   renderer.render(scene, camera);
   renderer.setRenderTarget(null);
-  const pixel = await renderer.readRenderTargetPixelsAsync(target, x, SIZE >> 1, 1, 1);
+  const pixel = await renderer.readRenderTargetPixelsAsync(target, x, y, 1, 1);
   if (pixel.length < 4)
     throw new Error('Unified renderer GPU harness received an incomplete pixel.');
   return [pixel[0] as number, pixel[1] as number, pixel[2] as number, pixel[3] as number];
+}
+
+function makeLodSource(encodedAlpha: number, lodAlpha: boolean): SplatMesh {
+  const data: SplatData = {
+    count: 1,
+    positions: new Float32Array([0, 0, 0]),
+    colors: new Uint8Array([255, 0, 0, Math.round(encodedAlpha * 255)]),
+    covariances: new Float32Array([0.12, 0, 0, 0.12, 0, 0.12]),
+  };
+  return new SplatMesh(data, { lodAlpha });
+}
+
+function shapeRatio(
+  center: readonly [number, number, number, number],
+  edge: readonly [number, number, number, number],
+): number {
+  return center[0] <= 0 ? 0 : edge[0] / center[0];
+}
+
+function ratiosStable(ratios: number[], tolerance = 0.08): boolean {
+  const first = ratios[0];
+  if (first === undefined || first <= 0) return false;
+  return ratios.every((ratio) => Math.abs(ratio - first) <= tolerance);
+}
+
+function monotonicallyDecreasing(values: number[]): boolean {
+  for (let i = 1; i < values.length; i++) {
+    const prev = values[i - 1];
+    const next = values[i];
+    if (prev === undefined || next === undefined || next >= prev) return false;
+  }
+  return true;
 }
 
 async function run(): Promise<void> {
@@ -282,6 +315,143 @@ async function run(): Promise<void> {
   shUnified.dispose();
   shMesh.dispose();
 
+  const fades = [1, 0.75, 0.5, 0.25] as const;
+  const mid = SIZE >> 1;
+  const edgeX = mid + 12;
+  const fadeScene = new THREE.Scene();
+  const mergedMesh = makeLodSource(0.8, true);
+  const mergedUnified = new UnifiedSplatMesh(renderer, 1);
+  mergedUnified.addSource(mergedMesh);
+  fadeScene.add(mergedUnified);
+  const mergedCenters: number[] = [];
+  const mergedRatios: number[] = [];
+  const mergedStoredAlpha: number[] = [];
+  for (const opacity of fades) {
+    mergedUnified.setSourceOpacity(mergedMesh, opacity);
+    const centerPx = await sampleScene(renderer, fadeScene, camera, target, mergedUnified, 3);
+    const edgePx = await sampleScene(renderer, fadeScene, camera, target, mergedUnified, 3, edgeX);
+    mergedCenters.push(centerPx[0]);
+    mergedRatios.push(shapeRatio(centerPx, edgePx));
+    const colors = new Float32Array(
+      await renderer.getArrayBufferAsync(
+        (mergedUnified as unknown as { workBuffer: { colors: THREE.StorageBufferAttribute } })
+          .workBuffer.colors,
+      ),
+    );
+    mergedStoredAlpha.push(colors[3] ?? 0);
+  }
+  const mergedLodStable =
+    ratiosStable(mergedRatios) &&
+    monotonicallyDecreasing(mergedCenters) &&
+    mergedStoredAlpha.every((alpha) => Math.abs(alpha - 1.6) < 0.05);
+  mergedUnified.dispose();
+  mergedMesh.dispose();
+
+  const leafMesh = makeLodSource(0.35, true);
+  const leafUnified = new UnifiedSplatMesh(renderer, 1);
+  leafUnified.addSource(leafMesh);
+  const leafScene = new THREE.Scene();
+  leafScene.add(leafUnified);
+  const leafCenters: number[] = [];
+  const leafRatios: number[] = [];
+  for (const opacity of fades) {
+    leafUnified.setSourceOpacity(leafMesh, opacity);
+    const centerPx = await sampleScene(renderer, leafScene, camera, target, leafUnified, 3);
+    const edgePx = await sampleScene(renderer, leafScene, camera, target, leafUnified, 3, edgeX);
+    leafCenters.push(centerPx[0]);
+    leafRatios.push(shapeRatio(centerPx, edgePx));
+  }
+  const leafLodStable = ratiosStable(leafRatios) && monotonicallyDecreasing(leafCenters);
+  leafUnified.dispose();
+  leafMesh.dispose();
+
+  const standaloneMesh = makeLodSource(0.8, true);
+  const fadeUniform = uniform(1);
+  const fadeValue = fadeUniform as unknown as { value: number };
+  standaloneMesh.modifiers = [
+    (ctx) => ({ color: vec4(ctx.color.rgb, ctx.color.a.mul(fadeUniform)) }),
+  ];
+  const standaloneScene = new THREE.Scene();
+  standaloneScene.add(standaloneMesh);
+  const standaloneCenters: number[] = [];
+  const standaloneRatios: number[] = [];
+  for (const opacity of fades) {
+    fadeValue.value = opacity;
+    camera.position.set(0, 0, 3);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld();
+    standaloneMesh.update(camera, renderer);
+    renderer.setRenderTarget(target);
+    renderer.clear();
+    renderer.render(standaloneScene, camera);
+    renderer.setRenderTarget(null);
+    const centerPixel = await renderer.readRenderTargetPixelsAsync(target, mid, mid, 1, 1);
+    const edgePixel = await renderer.readRenderTargetPixelsAsync(target, edgeX, mid, 1, 1);
+    const centerPx = [
+      centerPixel[0] as number,
+      centerPixel[1] as number,
+      centerPixel[2] as number,
+      centerPixel[3] as number,
+    ] as const;
+    const edgePx = [
+      edgePixel[0] as number,
+      edgePixel[1] as number,
+      edgePixel[2] as number,
+      edgePixel[3] as number,
+    ] as const;
+    standaloneCenters.push(centerPx[0]);
+    standaloneRatios.push(shapeRatio(centerPx, edgePx));
+  }
+  const standaloneLodStable =
+    ratiosStable(standaloneRatios) && monotonicallyDecreasing(standaloneCenters);
+  standaloneMesh.dispose();
+
+  const countingFades = [1, 0.75, 0.5, 0.25, 0] as const;
+  const overlapMerged = makeLodSource(0.8, true);
+  overlapMerged.position.z = 0.12;
+  overlapMerged.updateMatrixWorld();
+  const overlapLeaf = makeLodSource(0.35, true);
+  overlapLeaf.position.z = -0.12;
+  overlapLeaf.updateMatrixWorld();
+  const overlapUnified = new UnifiedSplatMesh(renderer, 2, { sortStrategy: 'counting' });
+  overlapUnified.addSource(overlapMerged);
+  overlapUnified.addSource(overlapLeaf);
+  const overlapScene = new THREE.Scene();
+  overlapScene.add(overlapUnified);
+  const overlapFromPos = await sampleScene(renderer, overlapScene, camera, target, overlapUnified, 3);
+  const overlapFromNeg = await sampleScene(renderer, overlapScene, camera, target, overlapUnified, -3);
+  const overlapCentersW: number[] = [];
+  const overlapColorsA: number[] = [];
+  const overlapRatios: number[] = [];
+  for (const opacity of countingFades) {
+    overlapUnified.setSourceOpacity(overlapMerged, opacity);
+    overlapUnified.setSourceOpacity(overlapLeaf, opacity);
+    const centerPx = await sampleScene(renderer, overlapScene, camera, target, overlapUnified, 3);
+    const edgePx = await sampleScene(renderer, overlapScene, camera, target, overlapUnified, 3, edgeX);
+    if (opacity > 0) overlapRatios.push(shapeRatio(centerPx, edgePx));
+    const work = overlapUnified as unknown as {
+      workBuffer: { centers: THREE.StorageBufferAttribute; colors: THREE.StorageBufferAttribute };
+    };
+    const centers = new Float32Array(await renderer.getArrayBufferAsync(work.workBuffer.centers));
+    const colors = new Float32Array(await renderer.getArrayBufferAsync(work.workBuffer.colors));
+    overlapCentersW.push(centers[3] ?? -1, centers[7] ?? -1);
+    overlapColorsA.push(colors[3] ?? -1, colors[7] ?? -1);
+  }
+  const overlapCountingStable =
+    overlapFromPos.some((c) => c > 0) &&
+    overlapFromNeg.some((c) => c > 0) &&
+    ratiosStable(overlapRatios, 0.12) &&
+    overlapColorsA.filter((alpha) => Math.abs(alpha - 1.6) < 0.08).length === countingFades.length &&
+    overlapColorsA.filter((alpha) => Math.abs(alpha - 0.7) < 0.08).length === countingFades.length &&
+    countingFades.every(
+      (opacity, index) =>
+        Math.abs((overlapCentersW[index * 2] ?? -1) - opacity) < 0.05 &&
+        Math.abs((overlapCentersW[index * 2 + 1] ?? -1) - opacity) < 0.05,
+    );
+  overlapUnified.dispose();
+  overlapMerged.dispose();
+  overlapLeaf.dispose();
+
   const result = {
     fromPositiveZ: [...fromPositiveZ],
     fromNegativeZ: [...fromNegativeZ],
@@ -317,6 +487,17 @@ async function run(): Promise<void> {
     streamedStaticFlipsOrder: streamedFlipsOrder,
     shViewDependent,
     shUnderRotation,
+    mergedLodStable,
+    leafLodStable,
+    standaloneLodStable,
+    overlapCountingStable,
+    directCountingStable: standaloneLodStable,
+    mergedRatios,
+    leafRatios,
+    standaloneRatios,
+    overlapRatios,
+    overlapCentersW,
+    overlapColorsA,
   };
   Object.assign(window, { __unifiedHarness: result });
   if (status) status.textContent = JSON.stringify(result, null, 2);
@@ -333,6 +514,11 @@ async function run(): Promise<void> {
     result.streamedStaticFlipsOrder,
     result.shViewDependent,
     result.shUnderRotation,
+    result.mergedLodStable,
+    result.leafLodStable,
+    result.standaloneLodStable,
+    result.overlapCountingStable,
+    result.directCountingStable,
   ];
   if (required.some((ok) => !ok)) {
     throw new Error(`Unified renderer GPU harness failed: ${JSON.stringify(result)}`);
