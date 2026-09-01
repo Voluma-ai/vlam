@@ -51,7 +51,7 @@ renderer.setAnimationLoop(() => {
 ```
 
 
-Supported formats: `.sog`, `.ply`, `.spz`, `.splat`, `.ksplat`, `.lcc`, `.lcc2`, `.rad`, `.radc`. 
+Supported formats: `.sog`, `.ply`, `.spz`, `.splat`, `.ksplat`, `.lcc`, `.lcc2`, `.rad`. 
 
 
 ## Contributing
