@@ -21,6 +21,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- Demo `?scene=` downloads now show a live percent (and a bar) instead of a
+  stuck "Loading…". The overlay ticker used to start only after the scene
+  finished, so a large `.ply` had no determinate progress for the entire
+  fetch. After the last byte the copy switches to "Decoding…" until the
+  mesh mounts.
 - Classic `.lcc` `initialReveal` now defaults to `'hold-coverage'`: hide the
   mesh until every in-view cell has covering coverage resident, then keep
   that shell while L0 refines. Nearby cells freeze at L1 (finest+1); farther

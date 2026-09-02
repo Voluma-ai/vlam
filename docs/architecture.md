@@ -33,6 +33,7 @@ src/
  viewer/ docs-site / local viewer; never imported by lib/
  index.html SPA shell; Vite entry, served at `/demo/`
  main.ts viewer entry: renderer, camera-controls, scene loading
+ loading-status.ts overlay/pill copy for determinate load progress
  chrome.ts UI presets (`full` / `embed`) for overlays
  drop-zone.ts drag-and-drop file/folder intake
  failure.ts SplatLoadError → friendly failure card

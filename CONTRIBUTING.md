@@ -70,17 +70,16 @@ the sample file first, verify with `npm run docs:samples`, then paste the
 relevant lines into the markdown, a `<!-- full file: … -->` comment under a
 fence marks where boilerplate imports were trimmed.
 
-## Issue & pull-request templates
+## Issue templates
 
-Templates live under [`.github/`](.github/):
+Templates live under [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/):
 
-- Issues: [Bug report](.github/ISSUE_TEMPLATE/bug_report.md), [Feature request](.github/ISSUE_TEMPLATE/feature_request.md)
-- Pull requests: [default template](.github/PULL_REQUEST_TEMPLATE.md)
+- [Bug report](.github/ISSUE_TEMPLATE/bug_report.md)
+- [Feature request](.github/ISSUE_TEMPLATE/feature_request.md)
 
 Bug reports should include browser/OS, GPU/adapter, backend, dataset format and
 approximate splat count, reproduction steps, expected vs actual, and console
-output. Pull requests should name the roadmap item, tests run, manual/device
-validation, docs/changelog updates, and compatibility impact.
+output. Pull requests have no description template; write what the change does.
 
 ## Dev GPU harnesses
 
