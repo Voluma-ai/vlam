@@ -1,6 +1,7 @@
 import type * as THREE from 'three/webgpu';
 import type { SplatSorter } from './sorter';
 import type { SplatSortMetric } from './splat-mesh-types';
+import { intersectSortRange, sceneSortRange, type SplatSortRange } from './splat-sort-bounds';
 import type { SortWorkerRequest, OrderMessage } from './sort-worker-protocol';
 // Inlined worker (blob URL): survives library bundling in any consumer
 // setup, unlike an asset file referenced via `new URL(...)`.
@@ -58,7 +59,12 @@ export class WorkerSorter implements SplatSorter {
     this.pushCenters([{ start: 0, count: Math.ceil(host.capacity / host.rowWidth) }]);
   }
 
-  sort(modelView: THREE.Matrix4, _activeCount: number, _bounds: THREE.Sphere): boolean {
+  sort(
+    modelView: THREE.Matrix4,
+    _activeCount: number,
+    bounds: THREE.Sphere,
+    visibleRange?: SplatSortRange | null,
+  ): boolean {
     if (this.disposed || this.inFlight) return false;
     this.inFlight = true;
     this.submittedCount++;
@@ -73,6 +79,7 @@ export class WorkerSorter implements SplatSorter {
       modelView: new Float32Array(modelView.elements),
       spans,
       matrices: this.host.perSource ? new Float32Array(this.host.perSource.matrices) : undefined,
+      sortRange: intersectSortRange(sceneSortRange(modelView, bounds, this.sortMetric), visibleRange),
     };
     this.worker.postMessage(message);
     return true;

@@ -107,8 +107,10 @@ describe('createWorkBufferMaterial', () => {
     material.dispose();
   });
 
-  it('builds a vertex graph that rejects non-drawable work slots', () => {
-    // center.w <= 0 collapses to the clipped position alongside frustum rejects.
+  it('builds a vertex graph that rejects non-drawable and out-of-frustum work slots', () => {
+    // center.w <= 0 collapses to the clipped position alongside near/far and
+    // lateral frustum rejects. The far reject must match the standalone graph:
+    // unified RAD outliers otherwise become screen-filling spikes.
     const material = createWorkBufferMaterial({
       capacity: 2,
       centers: new THREE.StorageBufferAttribute(new Float32Array([0, 0, -1, 0, 0, 0, -1, 1]), 4),

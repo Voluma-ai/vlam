@@ -530,6 +530,27 @@ describe('UnifiedSplatMesh', () => {
       mesh.dispose();
     });
 
+    it('skips rotation-only sorts in radial mode but sorts after translation', () => {
+      const renderer = mockRenderer();
+      const mesh = source();
+      const unified = new UnifiedSplatMesh(renderer, 1, { sortMetric: 'radial' });
+      unified.addSource(mesh);
+      const sort = sorterSpy(unified);
+      const camera = new THREE.PerspectiveCamera();
+      camera.updateMatrixWorld();
+      unified.update(camera);
+      camera.rotation.y = Math.PI / 2;
+      camera.updateMatrixWorld();
+      unified.update(camera);
+      expect(sort).toHaveBeenCalledTimes(1);
+      camera.position.x = 1;
+      camera.updateMatrixWorld();
+      unified.update(camera);
+      expect(sort).toHaveBeenCalledTimes(2);
+      unified.dispose();
+      mesh.dispose();
+    });
+
     it('re-sorts after a content regather under a stationary camera', () => {
       const renderer = mockRenderer();
       const mesh = source();

@@ -1,4 +1,5 @@
 import type * as THREE from 'three/webgpu';
+import type { SplatSortRange } from './splat-sort-bounds';
 
 /**
  * Depth-sorts splats back-to-front by rewriting the `splatIndex` buffer
@@ -29,7 +30,12 @@ export interface SplatSorter {
    * (e.g. a previous asynchronous sort is still running) and the caller
    * should retry on a later frame.
    */
-  sort(modelView: THREE.Matrix4, activeCount: number, bounds: THREE.Sphere): boolean;
+  sort(
+    modelView: THREE.Matrix4,
+    activeCount: number,
+    bounds: THREE.Sphere,
+    visibleRange?: SplatSortRange | null,
+  ): boolean;
 
   dispose(): void;
 }

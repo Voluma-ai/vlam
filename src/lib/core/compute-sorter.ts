@@ -18,7 +18,11 @@ import {
 import type { SplatSorter } from './sorter';
 import type { SplatSortMetric } from './splat-mesh-types';
 import { sourceWorldTransform } from './splat-mesh-material';
-import { viewDepthRadius, viewRadialRadius } from './splat-sort-bounds';
+import {
+  intersectSortRange,
+  sceneSortRange,
+  type SplatSortRange,
+} from './splat-sort-bounds';
 import { StorageMirrorReleaser } from './storage-attribute-mirror';
 import type { uniformArray } from 'three/tsl';
 
@@ -330,7 +334,12 @@ export class ComputeSorter implements SplatSorter {
     return Math.min(Math.max(rounded, ComputeSorter.MIN_BUCKET_COUNT), ComputeSorter.BUCKET_COUNT);
   }
 
-  sort(modelView: THREE.Matrix4, activeCount: number, bounds: THREE.Sphere): boolean {
+  sort(
+    modelView: THREE.Matrix4,
+    activeCount: number,
+    bounds: THREE.Sphere,
+    visibleRange?: SplatSortRange | null,
+  ): boolean {
     if (activeCount === 0) return true;
 
     const m = modelView.elements;
@@ -340,23 +349,12 @@ export class ComputeSorter implements SplatSorter {
     this.activeCount.value = activeCount;
 
     const buckets = this.effectiveBucketCount(activeCount);
-    this.viewCenter.copy(bounds.center).applyMatrix4(modelView);
-    // `bounds` is in mesh-local space. Depth uses its exact projected z
-    // extent; radial distance uses a conservative maximum linear stretch.
-    const viewRadius =
-      this.sortMetric === 'radial'
-        ? viewRadialRadius(modelView, bounds.radius)
-        : viewDepthRadius(modelView, bounds.radius);
-    const minimum =
-      this.sortMetric === 'radial'
-        ? -(this.viewCenter.length() + viewRadius)
-        : this.viewCenter.z - viewRadius;
-    const maximum =
-      this.sortMetric === 'radial'
-        ? -Math.max(0, this.viewCenter.length() - viewRadius)
-        : this.viewCenter.z + viewRadius;
-    this.depthMin.value = minimum;
-    this.depthScale.value = (buckets - 1) / (maximum - minimum || 1);
+    const range = intersectSortRange(
+      sceneSortRange(modelView, bounds, this.sortMetric, this.viewCenter),
+      visibleRange,
+    );
+    this.depthMin.value = range.min;
+    this.depthScale.value = (buckets - 1) / (range.max - range.min || 1);
     this.bucketMax.value = buckets - 1;
 
     // Keep every stage limited to the buckets and splats in play while batching

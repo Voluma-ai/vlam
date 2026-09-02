@@ -1,4 +1,19 @@
-import type * as THREE from 'three/webgpu';
+import * as THREE from 'three/webgpu';
+import type { SplatSortMetric } from './splat-mesh-types';
+
+/** Inclusive ordering-key range used by the quantized sort implementations. */
+export interface SplatSortRange {
+  min: number;
+  max: number;
+}
+
+/**
+ * Extra NDC extent accepted by the display material's center-frustum test.
+ * Keep camera-derived radial bounds in step with that test so an edge splat
+ * cannot be clamped merely because it lies inside the padded draw frustum.
+ */
+const FRUSTUM_NDC_MARGIN = 1.2;
+const farCornerScratch = new THREE.Vector3();
 
 /**
  * The greatest view-space depth displacement of a local bounding sphere.
@@ -48,6 +63,70 @@ export function viewRadialRadius(modelView: THREE.Matrix4, radius: number): numb
       ),
     )
   );
+}
+
+/** Returns the conservative scene-bound range for a selected ordering key. */
+export function sceneSortRange(
+  modelView: THREE.Matrix4,
+  bounds: THREE.Sphere,
+  sortMetric: SplatSortMetric,
+  viewCenter = new THREE.Vector3(),
+): SplatSortRange {
+  viewCenter.copy(bounds.center).applyMatrix4(modelView);
+  const radius =
+    sortMetric === 'radial'
+      ? viewRadialRadius(modelView, bounds.radius)
+      : viewDepthRadius(modelView, bounds.radius);
+  return sortMetric === 'radial'
+    ? { min: -(viewCenter.length() + radius), max: -Math.max(0, viewCenter.length() - radius) }
+    : { min: viewCenter.z - radius, max: viewCenter.z + radius };
+}
+
+/**
+ * Returns the ordering-key range which can contain a drawn splat center.
+ *
+ * An invalid/infinite far plane deliberately returns `null`: callers retain
+ * their scene-bound range rather than turning an unbounded frustum into a
+ * collapsed quantization range.
+ */
+export function cameraVisibleSortRange(
+  camera: THREE.Camera,
+  sortMetric: SplatSortMetric,
+): SplatSortRange | null {
+  const far = (camera as { far?: unknown }).far;
+  if (typeof far !== 'number' || !Number.isFinite(far) || far <= 0) return null;
+  if (sortMetric === 'depth') return { min: -far, max: 0 };
+
+  // Unproject every padded far-plane corner. This also covers asymmetric XR
+  // projections, unlike deriving the corner from PerspectiveCamera.fov/aspect.
+  const inverse = camera.projectionMatrixInverse;
+  let farCornerDistance = 0;
+  for (const x of [-FRUSTUM_NDC_MARGIN, FRUSTUM_NDC_MARGIN]) {
+    for (const y of [-FRUSTUM_NDC_MARGIN, FRUSTUM_NDC_MARGIN]) {
+      farCornerDistance = Math.max(
+        farCornerDistance,
+        farCornerScratch.set(x, y, 1).applyMatrix4(inverse).length(),
+      );
+    }
+  }
+  return Number.isFinite(farCornerDistance) && farCornerDistance > 0
+    ? { min: -farCornerDistance, max: 0 }
+    : null;
+}
+
+/**
+ * Narrows a scene range to the finite camera draw range. An empty overlap
+ * retains the scene range: that frame has no drawable centers, but the sorter
+ * must still receive an ordered, non-collapsed interval for its live inputs.
+ */
+export function intersectSortRange(
+  scene: SplatSortRange,
+  visible: SplatSortRange | null | undefined,
+): SplatSortRange {
+  if (!visible) return scene;
+  const min = Math.max(scene.min, visible.min);
+  const max = Math.min(scene.max, visible.max);
+  return min <= max ? { min, max } : scene;
 }
 
 /**

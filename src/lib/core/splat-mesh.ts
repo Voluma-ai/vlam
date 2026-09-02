@@ -63,6 +63,7 @@ import {
 } from './sh-pack';
 import { UniformGrid } from './splat-query';
 import { resolveXrView } from './xr-view';
+import { cameraVisibleSortRange } from './splat-sort-bounds';
 import {
   SPLAT_DATA_TEXTURE_WIDTH,
   SplatPool,
@@ -2478,7 +2479,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
     this.sorter ??= this.createSorter(renderer);
     if (!this.sorter) return;
-    if (this.sorter.sort(this.currentModelView, this.activeCount, this.boundingSphereLocal)) {
+    if (
+      this.sorter.sort(
+        this.currentModelView,
+        this.activeCount,
+        this.boundingSphereLocal,
+        cameraVisibleSortRange(camera, this.sortMetric),
+      )
+    ) {
       this.lastSortedState.copy(this.currentSortState);
       this.sortedActiveListVersion = this.activeListVersion;
       this.orderIsForeign = false; // the buffer now holds the primary order again
