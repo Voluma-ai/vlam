@@ -52,7 +52,7 @@ export function loadingOverlayText(title: string, progress: LoadingBytes | null)
 /** Top-right status pill: percent + bytes, or a spinner line. */
 export function loadingPill(progress: LoadingBytes | null): LoadingPill {
   const percent = loadingPercent(progress);
-  if (percent === null) {
+  if (percent === null || !progress) {
     if (progress && progress.loaded > 0) {
       return { text: `Reading ${formatBytes(progress.loaded)}…`, fraction: null };
     }
