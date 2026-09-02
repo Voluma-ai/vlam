@@ -55,6 +55,7 @@ import {
   type RelightingProxy,
 } from '../lib/effects';
 import { showError, hideError, isErrorVisible, describeLoadError } from './failure';
+import { loadingOverlayText, loadingPill } from './loading-status';
 import { createDropZone, filesFromDirectoryInput } from './drop-zone';
 import {
   SINGLE_FILE_EXTENSIONS,
@@ -139,11 +140,6 @@ function resolveSceneUrl(scene: string): string {
 function sceneLabel(scene: string): string {
   const path = scene.includes('://') ? new URL(scene).pathname : scene;
   return path.split('/').filter(Boolean).pop() ?? scene;
-}
-
-/** Bytes as "1.2 GB" / "540 MB" - enough precision for a progress line. */
-function formatBytes(bytes: number): string {
-  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`;
 }
 
 /**
@@ -2048,22 +2044,20 @@ async function main(): Promise<void> {
       return;
     }
     if (loadingTitle !== null) {
-      if (chrome.overlay) overlay.textContent = `Loading ${loadingTitle}…`;
+      if (chrome.overlay) overlay.textContent = loadingOverlayText(loadingTitle, loadingProgress);
       // The pill carries the activity; the overlay line carries the name. A
       // multi-gigabyte drop spends ~15 s here, which needs a real bar rather
       // than a spinner that says only "not frozen".
       if (chrome.status && status && statusText) {
         status.classList.add('visible');
         status.classList.remove('error');
-        const total = loadingProgress?.total ?? 0;
-        if (loadingProgress && total > 0) {
-          const fraction = Math.min(1, loadingProgress.loaded / total);
+        const pill = loadingPill(loadingProgress);
+        statusText.textContent = pill.text;
+        if (pill.fraction !== null) {
           status.classList.add('progress');
-          statusText.textContent = `Reading ${formatBytes(loadingProgress.loaded)} / ${formatBytes(total)}`;
-          if (statusBar) statusBar.style.width = `${Math.round(fraction * 100)}%`;
+          if (statusBar) statusBar.style.width = `${Math.round(pill.fraction * 100)}%`;
         } else {
           status.classList.remove('progress');
-          statusText.textContent = 'Loading…';
         }
       }
       return;
@@ -2122,6 +2116,16 @@ async function main(): Promise<void> {
     // The streaming pill belongs to the streamed path only - a dropped scene
     // replaces a streamed mesh, and would otherwise leave it stuck on screen.
     if (chrome.status) status?.classList.remove('visible', 'error');
+  };
+
+  /**
+   * Bytes from the in-flight `?scene=` / drop. Paints immediately: the 250 ms
+   * overlay ticker used to start only *after* `loadInitialScene` resolved, so a
+   * 650 MB `.ply` sat on "Loading…" for the entire download.
+   */
+  const noteLoadProgress = (loaded: number, total: number): void => {
+    loadingProgress = { loaded, total };
+    if (!renderer.xr.isPresenting) refreshOverlay();
   };
 
   // Pick interaction (M8.3): double-click teleports near the clicked splat;
@@ -2840,7 +2844,7 @@ async function main(): Promise<void> {
     void loadSplatDataFile(file, {
       onProgress: (loaded, total) => {
         // A superseded drop must not drive the bar for the one that replaced it.
-        if (sequence === dropSequence) loadingProgress = { loaded, total };
+        if (sequence === dropSequence) noteLoadProgress(loaded, total);
       },
     })
       .then(async (data) => {
@@ -2972,6 +2976,10 @@ async function main(): Promise<void> {
 
   if (keepWelcomeExpanded) syncWelcomePanel({ forceExpanded: true });
   refreshOverlay();
+  // Tick while the initial fetch is still in flight, not after it finishes.
+  setInterval(() => {
+    if (!renderer.xr.isPresenting) refreshOverlay();
+  }, 250);
   try {
     await loadInitialScene();
   } catch (error) {
@@ -2997,7 +3005,7 @@ async function main(): Promise<void> {
         refreshOverlay();
         const data = await loadSplatData(resolveSceneUrl(DEFAULT_SCENE), {
           onProgress: (loaded, total) => {
-            if (!dropMounted) loadingProgress = { loaded, total };
+            if (!dropMounted) noteLoadProgress(loaded, total);
           },
         });
         if (!dropMounted) {
@@ -3015,9 +3023,6 @@ async function main(): Promise<void> {
       showInitialLoadError(error);
     }
   }
-  setInterval(() => {
-    if (!renderer.xr.isPresenting) refreshOverlay();
-  }, 250);
 
   /** Loads and mounts the `?scene=` scene the page was opened with. */
   async function loadInitialScene(): Promise<void> {
@@ -3026,7 +3031,7 @@ async function main(): Promise<void> {
       // download the same way.
       const data = await loadSplatData(resolveSceneUrl(sceneName), {
         onProgress: (loaded, total) => {
-          if (!dropMounted) loadingProgress = { loaded, total };
+          if (!dropMounted) noteLoadProgress(loaded, total);
         },
       });
       // A still-decoding drop does not block this: it mounts, and the drop
