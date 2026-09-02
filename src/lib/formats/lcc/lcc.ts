@@ -44,7 +44,9 @@ import type { SplatDatasetSource } from '../../streaming/dataset-source';
  * mixes their LOD levels. Some writers preserve spatial locality in record
  * order, for which independently budgeting slices would create rectangular
  * holes as refinement settles.
- * `environment.bin` becomes one extra always-resident chunk.
+ * `environment.bin` is an always-resident sky tile outside the LOD ladder
+ * (`StreamedScene.environment`), same as `.lcc2` `env.sog`: loaded once,
+ * fetched at priority during the coverage hold, and toggled live.
  */
 
 /**
@@ -223,6 +225,7 @@ export async function buildLccScene(
   }
 
   const environmentCount = await environmentSplatCount(source, manifest);
+  let environment: { readonly file: number } | undefined;
   if (environmentCount > 0 && environmentUrl !== null) {
     const stride = environmentStride(manifest);
     const file = addChunk(`${environmentUrl}#env`, {
@@ -250,15 +253,14 @@ export async function buildLccScene(
             }),
       },
     });
-    // Sky/background splats have no LOD ladder - a single always-resident
-    // level, so its run key never churns. It stays pinned (and counts into the
-    // coverage floor): a few thousand splats never worth evicting.
+    // Sky/background splats have no LOD ladder. Pin the file so a fetch in
+    // flight is never cancelled by an LOD reschedule, and expose it as
+    // `scene.environment` so the coverage hold waits for the tile - same path
+    // as `.lcc2` `env.sog`. Do not also schedule it as a leaf or the sky
+    // would draw twice.
     pinnedFiles.add(file);
     minimumCoverageSplats += environmentCount;
-    leaves.push({
-      bounds: sceneBounds(manifest),
-      lods: [{ file, offset: 0, count: environmentCount }],
-    });
+    environment = { file };
   }
 
   const lodManifest: LodManifest = {
@@ -314,6 +316,7 @@ export async function buildLccScene(
     // Optional classic-LCC collision mesh file. One descriptor for the whole
     // `.lci`; `loadCollisionMeshes` expands it into per-cell triangle tiles.
     ...(collisionUrl !== null ? { collision: { meshes: [{ url: collisionUrl }] } } : {}),
+    ...(environment !== undefined ? { environment } : {}),
   };
 }
 

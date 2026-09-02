@@ -201,13 +201,15 @@ fetched at priority, ahead of cell coverage, so first paint includes the sky.
 Refinement continues after reveal. An empty frustum falls back to the nearest
 cell so a skyward start still paints something.
 
-This is not classic `.lcc` `'hold-near-l0'` (one home cell at L0). After
-reveal, those coarsest runs stay in the desired set until the live cut
-actually covers their leaves, so refinement cannot retire them into empty
-squares. Turning onto a near cell that was behind the camera can still
-hole until that coarsest tile lands. `?initialReveal=progressive` restores
-immediate progressive fill. A one-minute watchdog degrades to progressive
-if the frozen set cannot finish.
+Classic `.lcc` uses the same `'hold-coverage'` default, but freezes nearby
+in-view cells at L1 (finest+1) and farther in-view cells at coarsest. `'hold-near-l0'`
+remains an opt-in that waits for one home cell at L0. After reveal, those
+covering runs stay in the desired set until the live cut actually covers
+their leaves, so refinement cannot retire them into empty squares. Turning
+onto a near cell that was behind the camera can still hole until that
+covering tile lands. `?initialReveal=progressive` restores immediate
+progressive fill. A one-minute watchdog degrades to progressive if the
+frozen set cannot finish.
 
 ## Coordinate frame
 

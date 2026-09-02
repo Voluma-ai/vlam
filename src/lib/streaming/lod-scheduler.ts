@@ -355,24 +355,29 @@ export class LodScheduler implements LodSource {
       const d = leaf.bounds.distanceToPoint(cameraLocal);
       this.distance[i] = d;
 
-      // Widen the box by a fraction of its own size for edge stability.
-      this.scratchBox.copy(leaf.bounds);
-      leaf.bounds.getSize(this.scratchSize);
-      this.scratchBox.expandByScalar(this.scratchSize.length() * FRUSTUM_MARGIN);
-      const visible = frustum.intersectsBox(this.scratchBox);
+      const visible = this.leafIntersectsFrustum(frustum, i);
       this.inFrustum[i] = visible ? 1 : 0;
       if (visible) visibleCount++;
 
-      // Broad classic-LCC tiles frequently all intersect the frustum, so the
-      // boolean above cannot tell the centre of the screen from its edges.
-      // This is deliberately fetch metadata only: distance remains the source
-      // of truth for the resolved LOD and the budget cut.
+      // Fetch-only. Distance still chooses LOD. Near-band cells (inside
+      // lodBaseDistance and in front) rank by distance so a 30 m neighbour
+      // 5 m away is not starved by a far cell whose centre sits on the look
+      // axis. Farther cells keep the closest-point angular metric.
       if (cameraForward) {
-        leaf.bounds.getCenter(this.scratchCenter).sub(cameraLocal);
-        const depth = this.scratchCenter.dot(cameraForward);
-        const lateralSquared = Math.max(0, this.scratchCenter.lengthSq() - depth * depth);
-        this.screenImportance[i] =
-          depth > 0 ? Math.sqrt(lateralSquared) / Math.max(depth, 0.25) : Number.POSITIVE_INFINITY;
+        const inFront = d === 0 || this.boxPokesForward(leaf.bounds, cameraLocal, cameraForward);
+        if (!inFront) {
+          this.screenImportance[i] = Number.POSITIVE_INFINITY;
+        } else if (d <= this.lodBaseDistance) {
+          this.screenImportance[i] = -1 + d / (this.lodBaseDistance + 1);
+        } else {
+          leaf.bounds.clampPoint(cameraLocal, this.scratchCenter).sub(cameraLocal);
+          const depth = this.scratchCenter.dot(cameraForward);
+          const lateralSquared = Math.max(0, this.scratchCenter.lengthSq() - depth * depth);
+          this.screenImportance[i] =
+            depth > 0
+              ? Math.sqrt(lateralSquared) / Math.max(depth, 0.25)
+              : Number.POSITIVE_INFINITY;
+        }
       } else {
         this.screenImportance[i] = 0;
       }
@@ -617,6 +622,120 @@ export class LodScheduler implements LodSource {
    */
   coarsestRunsFor(from: number, to: number): LodRun[] {
     return this.buildRuns(from, to, (i) => this.maxLevel[i] as number);
+  }
+
+  /**
+   * Covering runs for physical coverage groups currently in the camera frustum
+   * (or containing the camera). Classic LCC cells that split into sub-leaves
+   * share a group, so one in-view slice holds the whole cell. Leaves without a
+   * coverage group (Streamed SOG, the environment tile) are ignored. An empty
+   * frustum falls back to the nearest group so a skyward start still paints
+   * something.
+   *
+   * Classic cells tile X/Y and span the full scene Z. An AABB frustum test
+   * (especially with {@link FRUSTUM_MARGIN} on that diagonal) then hits the
+   * whole grid from any indoor pose. Unpadded intersection plus an AABB vs
+   * forward half-space test (support vertex along `cameraForward`) keeps the
+   * hold to cells that poke in front of the camera, including a neighbour
+   * whose centre sits behind the look. Cells within `lodBaseDistance` that
+   * poke forward are held even when the unpadded frustum misses — a 30 m
+   * PentHouse column 5 m away can fill the frame while the look is 60° off
+   * its face.
+   *
+   * Nearby groups (`distance ≤ lodBaseDistance · lodMultiplier`) freeze at
+   * finest+1 (L1 when L0 exists). Farther in-view groups freeze at coarsest.
+   * Startup never waits for L0.
+   */
+  coverageRunsFor(
+    cameraLocal: THREE.Vector3,
+    frustum: THREE.Frustum,
+    cameraForward?: THREE.Vector3,
+  ): LodRun[] {
+    const n = this.leaves.length;
+    const picked = new Set<number>();
+    let nearestLeaf = -1;
+    let nearestDist = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < n; i++) {
+      const group = this.coverageGroups[i] as number;
+      if (group < 0) continue;
+      const leaf = this.leaves[i] as LodLeaf;
+      const d = leaf.bounds.distanceToPoint(cameraLocal);
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearestLeaf = i;
+      }
+      // Camera-inside is load-bearing: HiRes tiles often fail the frustum test
+      // when most of the cell sits behind the camera looking out.
+      if (d === 0) {
+        picked.add(group);
+        continue;
+      }
+      // 30 m classic cells: the camera can stand 5 m from a neighbour that
+      // fills the frame while the unpadded frustum misses the AABB (look 60°+
+      // off the face). Still hold that neighbour when it pokes forward.
+      const near = d <= this.lodBaseDistance;
+      if (!near && !frustum.intersectsBox(leaf.bounds)) continue;
+      if (cameraForward && !this.boxPokesForward(leaf.bounds, cameraLocal, cameraForward)) {
+        continue;
+      }
+      picked.add(group);
+    }
+    if (picked.size === 0) {
+      if (nearestLeaf < 0) return [];
+      picked.add(this.coverageGroups[nearestLeaf] as number);
+    }
+    const nearHorizon = this.lodBaseDistance * this.lodMultiplier;
+    const runs: LodRun[] = [];
+    let i = 0;
+    while (i < n) {
+      const group = this.coverageGroups[i] as number;
+      if (group < 0 || !picked.has(group)) {
+        i++;
+        continue;
+      }
+      let end = i + 1;
+      while (end < n && (this.coverageGroups[end] as number) === group) end++;
+      let groupDist = Number.POSITIVE_INFINITY;
+      let groupFinest = this.minLevel[i] as number;
+      for (let j = i; j < end; j++) {
+        const d = (this.leaves[j] as LodLeaf).bounds.distanceToPoint(cameraLocal);
+        if (d < groupDist) groupDist = d;
+        const finest = this.minLevel[j] as number;
+        if (finest < groupFinest) groupFinest = finest;
+      }
+      if (groupDist <= nearHorizon) {
+        runs.push(...this.runsAtLevelFor(i, end, groupFinest + 1));
+      } else {
+        runs.push(...this.coarsestRunsFor(i, end));
+      }
+      i = end;
+    }
+    return runs;
+  }
+
+  /**
+   * True when any point of `box` sits strictly in front of the camera plane
+   * (`origin` + `forward`). Uses the AABB support vertex along `forward`, so a
+   * cell that straddles the camera still counts if it pokes into the view.
+   */
+  private boxPokesForward(box: THREE.Box3, origin: THREE.Vector3, forward: THREE.Vector3): boolean {
+    const x = forward.x >= 0 ? box.max.x : box.min.x;
+    const y = forward.y >= 0 ? box.max.y : box.min.y;
+    const z = forward.z >= 0 ? box.max.z : box.min.z;
+    return (x - origin.x) * forward.x + (y - origin.y) * forward.y + (z - origin.z) * forward.z > 0;
+  }
+
+  /** Leaf AABB expanded by {@link FRUSTUM_MARGIN}, written into scratch. */
+  private expandLeafBox(index: number): THREE.Box3 {
+    const leaf = this.leaves[index] as LodLeaf;
+    this.scratchBox.copy(leaf.bounds);
+    leaf.bounds.getSize(this.scratchSize);
+    this.scratchBox.expandByScalar(this.scratchSize.length() * FRUSTUM_MARGIN);
+    return this.scratchBox;
+  }
+
+  private leafIntersectsFrustum(frustum: THREE.Frustum, index: number): boolean {
+    return frustum.intersectsBox(this.expandLeafBox(index));
   }
 
   /**

@@ -79,9 +79,9 @@ type InlineWorkerCtor = new () => Worker;
 const DATA_TEXTURE_WIDTH = 2048;
 /** Max splats appended per frame (bounds the copy + staging-upload cost). */
 /**
- * A classic-LCC initial reveal normally waits for the complete nearby cut.
- * This is the escape hatch for a pathological or exceptionally slow capture:
- * after one minute it reveals the best staged coverage and continues refining.
+ * A coverage hold waits for in-view covering cells (classic nearby L1 / far
+ * coarsest, or the nearby L0 home set when `'hold-near-l0'` is explicit).
+ * After one minute it reveals the best staged coverage and continues refining.
  */
 const INITIAL_REVEAL_TIMEOUT_MS = 60_000;
 // Keep the attribution event aligned with WebGpuSortScheduler's content
@@ -196,7 +196,8 @@ export function estimateSceneDecodedBytes(scene: StreamedScene): number {
 /**
  * Read-only startup-hold progress for {@link StreamedSplatMeshOptions.initialReveal}.
  * Exported for hosts that gate visibility on the first useful coverage frame
- * (classic `.lcc` nearby L0, or `.lcc2` in-view coarsest cells).
+ * (classic `.lcc` nearby L1 / far coarsest, `.lcc2` in-view coarsest, or an
+ * explicit nearby-L0 hold).
  */
 export type InitialRevealState =
   | { readonly status: 'disabled' }
@@ -346,28 +347,35 @@ export interface StreamedSplatMeshOptions extends SplatMeshOptions {
    * - `'progressive'`: cells become visible as each swap group commits — can
    *   show sparse near-detail (classic `.lcc`) or empty octree squares
    *   (`.lcc2`) while siblings load.
-   * - `'hold-near-l0'` (the default for classic `.lcc` when unset): hide the
-   *   mesh until the camera's home coverage group is resident (L0 when it fits;
-   *   otherwise coarsen via the leaf ladder L1→L2). Neighbours are not part of
-   *   the hold - they compete via screenImportance and would steal the first
-   *   fetch slots. Home selection uses distance within `lodBaseDistance` and
-   *   does not require frustum intersection (HiRes tiles often fail `inView`
-   *   when the camera stands inside looking out). Coarser rungs come from
-   *   `LodSource.runsAtLevelFor`. Only home files are fetched during the hold.
-   *   A one-minute watchdog also degrades if the cut cannot finish.
-   * - `'hold-coverage'` (the default for `.lcc2` when unset): hide the mesh
-   *   until every in-view finest cell has a coarsest covering node resident
-   *   (any LOD), and until the always-resident environment tile is in the pool
-   *   when the scene ships one and it starts enabled. Does not wait for finest
-   *   tiles or the rest of the stream. An empty frustum falls back to the
-   *   nearest cell. Requires `LodSource.coverageRunsFor`; other formats treat
-   *   this as disabled.
+   * - `'hold-near-l0'` (opt-in): hide the mesh until the camera's home coverage
+   *   group is resident (L0 when it fits; otherwise coarsen via the leaf ladder
+   *   L1→L2). Neighbours are not part of the hold - they compete via
+   *   screenImportance and would steal the first fetch slots. Home selection
+   *   uses distance within `lodBaseDistance` and does not require frustum
+   *   intersection (HiRes tiles often fail `inView` when the camera stands
+   *   inside looking out). Coarser rungs come from `LodSource.runsAtLevelFor`.
+   *   Only home files are fetched during the hold. A one-minute watchdog also
+   *   degrades if the cut cannot finish. Classic `.lcc` uses the **resolved**
+   *   cut from the first schedule (after camera + format transform), not
+   *   distance ambition alone.
+   * - `'hold-coverage'` (the default for classic `.lcc` and `.lcc2` when
+   *   unset): hide the mesh until every in-view finest cell has covering
+   *   coverage resident, and until the always-resident environment tile is in
+   *   the pool when the scene ships one and it starts enabled. Classic `.lcc`
+   *   freezes nearby cells (within `lodBaseDistance · lodMultiplier`) at
+   *   finest+1 (L1, never L0) and farther in-view cells at coarsest. A cell
+   *   counts as in-view when the camera stands inside it, or when the unpadded
+   *   AABB hits the frustum and pokes in front of the camera plane (support
+   *   vertex — centres behind the look still count), **or** the cell is within
+   *   `lodBaseDistance` and pokes forward (30 m neighbours that fill the
+   *   frame while the look is off-axis). `.lcc2` still waits on
+   *   coarsest root-children. Does not wait for finest tiles or the rest of
+   *   the stream. An empty frustum falls back to the nearest cell. Requires
+   *   `LodSource.coverageRunsFor`; other formats treat this as disabled.
    *
    * A one-minute watchdog degrades to progressive if the frozen set cannot
-   * finish. Does not make detail downloads instantaneous. Classic `.lcc` uses
-   * the **resolved** cut from the first schedule (after camera + format
-   * transform), not distance ambition alone. Other streamed formats default
-   * to `'progressive'`.
+   * finish. Does not make detail downloads instantaneous. Other streamed
+   * formats default to `'progressive'`.
    */
   initialReveal?: 'progressive' | 'hold-near-l0' | 'hold-coverage';
   /** Receives lightweight LOD mutation events for performance attribution. */
@@ -1059,14 +1067,11 @@ export class StreamedSplatMesh extends SplatMesh {
       capacityRows * DATA_TEXTURE_WIDTH,
       {
         ...options,
-        // Classic LCC's useful first frame is the bounded nearby-detail set,
-        // not its coarse shell. `.lcc2` waits for in-view coarsest coverage
-        // so empty octree squares do not flash. Keep every other format
-        // progressive, and let a caller explicitly request progressive for A/B.
-        ...(format === 'lcc' && options.initialReveal === undefined
-          ? { initialReveal: 'hold-near-l0' as const }
-          : {}),
-        ...(format === 'lcc2' && options.initialReveal === undefined
+        // Classic `.lcc` and `.lcc2` wait for in-view coverage so first paint
+        // has no empty cells (classic nearby cells at L1, farther at coarsest).
+        // Keep every other format progressive, and let a caller explicitly
+        // request progressive or hold-near-l0.
+        ...((format === 'lcc' || format === 'lcc2') && options.initialReveal === undefined
           ? { initialReveal: 'hold-coverage' as const }
           : {}),
         // The resolved ceiling, not the caller's raw option: it may have been
@@ -2253,6 +2258,7 @@ export class StreamedSplatMesh extends SplatMesh {
       now,
       _cameraLocal,
       _frustum,
+      _cameraForward,
     );
     const holding = holdingRuns !== null;
     // During the startup hold, ignore later camera cuts: only the frozen
@@ -2661,16 +2667,20 @@ export class StreamedSplatMesh extends SplatMesh {
   }
 
   /**
-   * `.lcc2` coverage hold: freeze coarsest covering runs for in-view cells.
+   * Coverage hold: freeze covering runs for in-view cells (classic `.lcc`
+   * physical cells at L1 near / coarsest far, `.lcc2` octree root-children).
    * Missing `coverageRunsFor` (or an empty result after fallback) releases
    * immediately so the mesh does not stay hidden with nothing to fetch.
+   * If the mixed set overflows the pool, coarsen only the near (non-coarsest)
+   * groups one more rung before degrading to progressive.
    */
   private captureCoverageHold(
     cameraLocal: THREE.Vector3,
     frustum: THREE.Frustum,
     now: number,
+    cameraForward: THREE.Vector3,
   ): void {
-    const coverage = this.scene.source.coverageRunsFor?.(cameraLocal, frustum) ?? [];
+    let coverage = this.scene.source.coverageRunsFor?.(cameraLocal, frustum, cameraForward) ?? [];
     if (coverage.length === 0) {
       if (this.environmentPendingForReveal()) {
         this.frozenCriticalRuns = [];
@@ -2684,9 +2694,14 @@ export class StreamedSplatMesh extends SplatMesh {
       return;
     }
     if (!this.criticalRunsFitCapacity(coverage)) {
-      this.frozenCriticalRuns = coverage;
-      this.releaseInitialReveal('degraded', 'capacity');
-      return;
+      const coarsened = this.coarsenCoverageNearRuns(coverage);
+      if (this.criticalRunsFitCapacity(coarsened)) {
+        coverage = coarsened;
+      } else {
+        this.frozenCriticalRuns = coverage;
+        this.releaseInitialReveal('degraded', 'capacity');
+        return;
+      }
     }
     this.frozenCriticalRuns = coverage;
     this.initialRevealStartedAt = now;
@@ -2694,17 +2709,44 @@ export class StreamedSplatMesh extends SplatMesh {
     this.publishInitialRevealProgress(coverage);
   }
 
+  /**
+   * Bump each coverage run one coarser rung when the source has one. Already-
+   * coarsest (far) runs stay put so a tight pool only drops near L1 → L2.
+   */
+  private coarsenCoverageNearRuns(runs: readonly LodRun[]): LodRun[] {
+    const out: LodRun[] = [];
+    const source = this.scene.source;
+    for (const run of runs) {
+      const alt = source.runsAtLevelFor?.(run.leafStart, run.leafEnd, run.level + 1) ?? [];
+      if (alt.length === 0 || alt.every((next) => next.level <= run.level)) {
+        out.push(run);
+        continue;
+      }
+      for (const next of alt) {
+        out.push({
+          ...next,
+          distance: run.distance,
+          inView: run.inView,
+          ...(run.coverageGroup === undefined ? {} : { coverageGroup: run.coverageGroup }),
+          ...(run.screenImportance === undefined ? {} : { screenImportance: run.screenImportance }),
+        });
+      }
+    }
+    return out;
+  }
+
   private captureOrContinueInitialReveal(
     scheduledRuns: LodRun[],
     now: number,
     cameraLocal: THREE.Vector3,
     frustum: THREE.Frustum,
+    cameraForward: THREE.Vector3,
   ): LodRun[] | null {
     if (this.initialRevealPhase === 'off' || this.initialRevealPhase === 'released') return null;
 
     if (this.initialRevealPhase === 'capture') {
       if (this.initialRevealHold === 'hold-coverage') {
-        this.captureCoverageHold(cameraLocal, frustum, now);
+        this.captureCoverageHold(cameraLocal, frustum, now, cameraForward);
       } else {
         // Prefer a full nearby L0 hold of the camera cell only. Tight pools
         // coarsen via the leaf ladder (L1, then L2) before degrading. Neighbours
