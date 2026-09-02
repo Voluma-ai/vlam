@@ -39,12 +39,21 @@ export interface LodSource {
    */
   runsAtLevelFor?(from: number, to: number, level: number): LodRun[];
   /**
-   * Coarsest covering runs for finest cells currently in the camera frustum.
-   * Used by `.lcc2` startup `initialReveal: 'hold-coverage'` so the first
-   * painted frame has no empty cells. Optional: sources without a nested
-   * octree cover leave it undefined (the hold then stays disabled).
+   * Covering runs for finest cells currently in the camera frustum (or
+   * containing the camera). Used by `.lcc` / `.lcc2` startup
+   * `initialReveal: 'hold-coverage'` so the first painted frame has no empty
+   * cells. Classic LCC freezes nearby groups at finest+1 and farther in-view
+   * groups at coarsest; `.lcc2` still returns coarsest root-children.
+   * `cameraForward` (mesh-local) lets classic LCC ignore full-Z cells that
+   * sit entirely behind the camera plane — their AABBs otherwise hit the
+   * frustum from every indoor pose. Optional: sources without coverage groups
+   * or a nested octree cover leave it undefined (the hold then stays disabled).
    */
-  coverageRunsFor?(cameraLocal: THREE.Vector3, frustum: THREE.Frustum): LodRun[];
+  coverageRunsFor?(
+    cameraLocal: THREE.Vector3,
+    frustum: THREE.Frustum,
+    cameraForward?: THREE.Vector3,
+  ): LodRun[];
   /**
    * Notified when a chunk finishes decoding, so a source that discovers its
    * structure from chunk payloads (a `.rad` LOD tree lives in the chunks, not
@@ -82,10 +91,11 @@ export interface StreamedChunkOptions {
 
 /**
  * A single always-resident environment/background tile a format ships outside
- * its LOD structure - the `.lcc2` `env.sog` sky, loaded once and toggled with
- * {@link StreamedSplatMesh.setEnvironmentEnabled} rather than scheduled by
- * camera distance. Its splat count is absent from the manifest and measured
- * when the tile decodes (see `docs/formats/lcc2-notes.md`).
+ * its LOD structure - classic `.lcc` `environment.bin` and `.lcc2` `env.sog`,
+ * loaded once and toggled with {@link StreamedSplatMesh.setEnvironmentEnabled}
+ * rather than scheduled by camera distance. `.lcc2` measures the splat count
+ * at decode (see `docs/formats/lcc2-notes.md`); classic `.lcc` sizes it from
+ * the file length.
  */
 export interface EnvironmentTile {
   /** Chunk-file index (into {@link StreamedScene.chunkUrls}) of the tile. */

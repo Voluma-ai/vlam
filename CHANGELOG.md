@@ -19,6 +19,20 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Fixed
+
+- Classic `.lcc` `initialReveal` now defaults to `'hold-coverage'`: hide the
+  mesh until every in-view cell has covering coverage resident, then keep
+  that shell while L0 refines. Nearby cells freeze at L1 (finest+1); farther
+  in-view cells freeze at coarsest. The pick uses unpadded frustum hits plus
+  an AABB-vs-forward-half-space test, and always includes neighbours within
+  `lodBaseDistance` that poke in front (30 m PentHouse columns 5 m away).
+  Nearby in-view fetches rank by distance so a far cell on the look axis
+  cannot starve that neighbour. The old one-home-cell `'hold-near-l0'` hold
+  remains an explicit opt-in. `?initialReveal=progressive` still opts out. Classic
+  `environment.bin` is now the scene environment tile (same path as `.lcc2`
+  `env.sog`), so first paint waits for the sky as well.
+
 ## [0.3.2] - 2026-09-01
 
 ### Added

@@ -48,7 +48,7 @@ function makeManifest(leafCount: number, levelCounts: number[], spacing = 4): Lo
 function viewFrom(
   position: THREE.Vector3,
   target: THREE.Vector3,
-): { position: THREE.Vector3; frustum: THREE.Frustum } {
+): { position: THREE.Vector3; frustum: THREE.Frustum; forward: THREE.Vector3 } {
   const camera = new THREE.PerspectiveCamera(60, 1.5, 0.1, 100_000);
   camera.position.copy(position);
   camera.lookAt(target);
@@ -56,7 +56,11 @@ function viewFrom(
   const frustum = new THREE.Frustum().setFromProjectionMatrix(
     new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse),
   );
-  return { position: position.clone(), frustum };
+  return {
+    position: position.clone(),
+    frustum,
+    forward: new THREE.Vector3().subVectors(target, position).normalize(),
+  };
 }
 
 /**
@@ -687,5 +691,282 @@ describe('LodScheduler', () => {
     );
     expect(scheduler.computeDesiredRuns(position, frustum, 1)[0]!.level).toBe(1);
     expect(scheduler.computeDesiredRuns(position, frustum, 2)[0]!.level).toBe(1);
+  });
+
+  describe('coverageRunsFor', () => {
+    function cell(
+      group: number,
+      bounds: THREE.Box3,
+      finestFile: number,
+      coarseFile: number,
+    ): LodLeaf {
+      return {
+        bounds,
+        lods: [
+          { file: finestFile, offset: 0, count: 100 },
+          { file: coarseFile, offset: 0, count: 10 },
+        ],
+        budgetGroup: group,
+      };
+    }
+
+    function schedulerOf(leaves: LodLeaf[]): LodScheduler {
+      const bounds = new THREE.Box3();
+      for (const leaf of leaves) bounds.union(leaf.bounds);
+      const lodLevels = Math.max(1, ...leaves.map((leaf) => leaf.lods.length));
+      const counts = Array.from({ length: lodLevels }, (_, level) =>
+        leaves.reduce((sum, leaf) => sum + (leaf.lods[level]?.count ?? 0), 0),
+      );
+      return new LodScheduler(
+        {
+          leaves,
+          chunkUrls: leaves.map((_, i) => `https://example.test/${i}`),
+          counts,
+          lodLevels,
+          bounds,
+        },
+        {
+          budget: 10_000,
+          lodBaseDistance: 10,
+          lodMultiplier: 2,
+          frustumAware: false,
+          fillPastDistance: false,
+          forceFinestWhenFits: false,
+        },
+      );
+    }
+
+    function runsFor(source: LodScheduler, view: ReturnType<typeof viewFrom>): LodRun[] {
+      return source.coverageRunsFor(view.position, view.frustum, view.forward);
+    }
+
+    it('returns covering runs for in-view coverage groups, not behind-camera cells', () => {
+      const source = schedulerOf([
+        cell(0, new THREE.Box3(new THREE.Vector3(-1, -1, -6), new THREE.Vector3(1, 1, -1)), 10, 0),
+        cell(1, new THREE.Box3(new THREE.Vector3(2, -1, -6), new THREE.Vector3(4, 1, -1)), 11, 1),
+        cell(2, new THREE.Box3(new THREE.Vector3(-1, -1, 4), new THREE.Vector3(1, 1, 8)), 12, 2),
+      ]);
+      const runs = runsFor(
+        source,
+        viewFrom(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)),
+      );
+      expect(runs.map((r) => r.file).sort((a, b) => a - b)).toEqual([0, 1]);
+      expect(runs.every((r) => r.level === 1)).toBe(true);
+      expect(new Set(runs.map((r) => r.coverageGroup))).toEqual(new Set([0, 1]));
+    });
+
+    it('picks a camera-inside cell even when most of the tile is behind the look', () => {
+      // Large XY tile containing the camera; looking +Z leaves almost all of
+      // it behind, which is the HiRes indoor case that used to miss home.
+      const source = schedulerOf([
+        cell(
+          0,
+          new THREE.Box3(new THREE.Vector3(-20, -20, -20), new THREE.Vector3(20, 20, 20)),
+          10,
+          0,
+        ),
+        cell(1, new THREE.Box3(new THREE.Vector3(40, -1, -6), new THREE.Vector3(42, 1, -1)), 11, 1),
+      ]);
+      const runs = runsFor(
+        source,
+        viewFrom(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 1)),
+      );
+      expect(runs.some((r) => r.coverageGroup === 0 && r.file === 0)).toBe(true);
+    });
+
+    it('falls back to the nearest coverage group when the frustum is empty', () => {
+      const source = schedulerOf([
+        cell(0, new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 1, 1)), 10, 0),
+        cell(1, new THREE.Box3(new THREE.Vector3(40, 0, 0), new THREE.Vector3(41, 1, 1)), 11, 1),
+      ]);
+      const runs = runsFor(
+        source,
+        viewFrom(new THREE.Vector3(100, 0.5, 0.5), new THREE.Vector3(200, 0.5, 0.5)),
+      );
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({ file: 1, coverageGroup: 1, level: 1 });
+    });
+
+    it('ignores the environment leaf (no coverage group) even when its bounds fill the view', () => {
+      const env: LodLeaf = {
+        bounds: new THREE.Box3(
+          new THREE.Vector3(-100, -100, -100),
+          new THREE.Vector3(100, 100, 100),
+        ),
+        lods: [{ file: 99, offset: 0, count: 50 }],
+      };
+      const source = schedulerOf([
+        cell(0, new THREE.Box3(new THREE.Vector3(-1, -1, -6), new THREE.Vector3(1, 1, -1)), 10, 0),
+        env,
+      ]);
+      const runs = runsFor(
+        source,
+        viewFrom(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)),
+      );
+      expect(runs.map((r) => r.file)).toEqual([0]);
+      expect(runs.some((r) => r.file === 99)).toBe(false);
+    });
+
+    it('holds every sub-leaf of an in-view coverage group', () => {
+      const bounds = new THREE.Box3(new THREE.Vector3(-1, -1, -6), new THREE.Vector3(1, 1, -1));
+      const source = schedulerOf([
+        cell(0, bounds, 10, 0),
+        cell(0, bounds, 11, 1),
+        cell(2, new THREE.Box3(new THREE.Vector3(-1, -1, 4), new THREE.Vector3(1, 1, 8)), 12, 2),
+      ]);
+      const runs = runsFor(
+        source,
+        viewFrom(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)),
+      );
+      expect(runs.map((r) => r.file).sort((a, b) => a - b)).toEqual([0, 1]);
+      expect(runs.every((r) => r.coverageGroup === 0)).toBe(true);
+    });
+
+    it('returns nothing when no leaf has a coverage group', () => {
+      const leaf: LodLeaf = {
+        bounds: new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 1, 1)),
+        lods: [
+          { file: 0, offset: 0, count: 10 },
+          { file: 0, offset: 10, count: 4 },
+        ],
+      };
+      const source = schedulerOf([leaf]);
+      expect(
+        runsFor(source, viewFrom(new THREE.Vector3(0.5, 0.5, 5), new THREE.Vector3(0.5, 0.5, 0))),
+      ).toEqual([]);
+    });
+
+    it('does not hold the whole tall-column grid when looking off the sparse edge', () => {
+      // Classic LCC: X/Y tiles that span the full scene Z. Padded AABB tests
+      // hit every column from an indoor camera; the hold must follow look.
+      const columns = [0, 1, 2, 3, 4].map((i) =>
+        cell(
+          i,
+          new THREE.Box3(new THREE.Vector3(i * 4, 0, -80), new THREE.Vector3(i * 4 + 4, 1, 80)),
+          10 + i,
+          i,
+        ),
+      );
+      const source = schedulerOf(columns);
+      const outward = viewFrom(new THREE.Vector3(2, 0.5, 0), new THREE.Vector3(-20, 0.5, 0));
+      const inward = viewFrom(new THREE.Vector3(2, 0.5, 0), new THREE.Vector3(40, 0.5, 0));
+      const outGroups = new Set(runsFor(source, outward).map((r) => r.coverageGroup));
+      const inGroups = new Set(runsFor(source, inward).map((r) => r.coverageGroup));
+      expect(outGroups).toEqual(new Set([0]));
+      expect(inGroups.size).toBeGreaterThan(outGroups.size);
+      expect(inGroups.has(0)).toBe(true);
+      expect(inGroups.has(4)).toBe(true);
+    });
+
+    it('picks a neighbour whose centre is beside the look when the column pokes forward', () => {
+      // Shared-face columns: looking along +Z, the neighbour's centre is
+      // lateral (dot ≈ 0) so a centre-in-front test dropped it, leaving a hole.
+      const columns = [0, 1].map((i) =>
+        cell(
+          i,
+          new THREE.Box3(new THREE.Vector3(i * 4, 0, -80), new THREE.Vector3(i * 4 + 4, 1, 80)),
+          10 + i,
+          i,
+        ),
+      );
+      const source = schedulerOf(columns);
+      const alongFace = viewFrom(new THREE.Vector3(3.9, 0.5, 0), new THREE.Vector3(3.9, 0.5, 20));
+      expect(new Set(runsFor(source, alongFace).map((r) => r.coverageGroup))).toEqual(
+        new Set([0, 1]),
+      );
+    });
+
+    it('holds a 30 m neighbour within lodBaseDistance even when the look is off its face', () => {
+      // PentHouse: 30×30×tall cells. Camera just inside home, 5 m from the
+      // neighbour, looking mostly along +X rather than into the hole.
+      const source = schedulerOf([
+        cell(
+          0,
+          new THREE.Box3(new THREE.Vector3(-23, -1, -100), new THREE.Vector3(7, 29, 70)),
+          10,
+          0,
+        ),
+        cell(
+          1,
+          new THREE.Box3(new THREE.Vector3(-23, -31, -100), new THREE.Vector3(7, -1, 70)),
+          11,
+          1,
+        ),
+        cell(
+          2,
+          new THREE.Box3(new THREE.Vector3(-23, -61, -100), new THREE.Vector3(7, -31, 70)),
+          12,
+          2,
+        ),
+      ]);
+      const view = viewFrom(
+        new THREE.Vector3(1.75, 3.77, 1.45),
+        new THREE.Vector3(3.58, 2.98, 1.24),
+      );
+      const groups = new Set(runsFor(source, view).map((r) => r.coverageGroup));
+      expect(groups.has(0)).toBe(true);
+      expect(groups.has(1)).toBe(true);
+
+      const ranked = source.computeDesiredRuns(view.position, view.frustum, 0, view.forward);
+      const home = ranked.find((r) => r.coverageGroup === 0);
+      const neighbour = ranked.find((r) => r.coverageGroup === 1);
+      const far = ranked.find((r) => r.coverageGroup === 2);
+      expect(home?.screenImportance).toBeLessThan(0);
+      expect(neighbour?.screenImportance).toBeLessThan(0);
+      expect(far?.screenImportance ?? Number.POSITIVE_INFINITY).toBeGreaterThan(
+        neighbour?.screenImportance ?? 0,
+      );
+    });
+
+    it('freezes nearby in-view groups at L1 and farther in-view groups at coarsest', () => {
+      function cell3(
+        group: number,
+        bounds: THREE.Box3,
+        finestFile: number,
+        midFile: number,
+        coarseFile: number,
+      ): LodLeaf {
+        return {
+          bounds,
+          lods: [
+            { file: finestFile, offset: 0, count: 100 },
+            { file: midFile, offset: 0, count: 40 },
+            { file: coarseFile, offset: 0, count: 10 },
+          ],
+          budgetGroup: group,
+        };
+      }
+      const source = schedulerOf([
+        cell3(
+          0,
+          new THREE.Box3(new THREE.Vector3(-1, -1, -8), new THREE.Vector3(1, 1, -1)),
+          10,
+          5,
+          0,
+        ),
+        cell3(
+          1,
+          new THREE.Box3(new THREE.Vector3(-1, -1, -50), new THREE.Vector3(1, 1, -30)),
+          11,
+          6,
+          1,
+        ),
+        cell3(
+          2,
+          new THREE.Box3(new THREE.Vector3(-1, -1, 4), new THREE.Vector3(1, 1, 10)),
+          12,
+          7,
+          2,
+        ),
+      ]);
+      const runs = runsFor(
+        source,
+        viewFrom(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)),
+      );
+      const byGroup = new Map(runs.map((r) => [r.coverageGroup, r]));
+      expect(byGroup.get(0)).toMatchObject({ file: 5, level: 1 });
+      expect(byGroup.get(1)).toMatchObject({ file: 1, level: 2 });
+      expect(byGroup.has(2)).toBe(false);
+    });
   });
 });

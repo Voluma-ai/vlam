@@ -169,39 +169,48 @@ of unrelated coarse shells, while the generic global coverage wave remains for
 the hierarchical RAD path that needs it. Visible work maps to cross-mesh
 `priority`, other work to `base`.
 
-### Nearby-detail startup hold (`initialReveal: 'hold-near-l0'`)
+### In-view coverage startup hold (`initialReveal: 'hold-coverage'`)
 
 Per-cell L0 commits are atomic, but many nearby cells finishing one after
-another still looks like a low-detail buildup.
-`StreamedSplatMeshOptions.initialReveal: 'hold-near-l0'` is the library default
-for classic `.lcc` (`.lcc2` uses `'hold-coverage'` instead; other streamed
-formats remain `'progressive'`) and freezes the first
-schedule's **camera home coverage group** (nearest within `lodBaseDistance`, by
-distance - not frustum). Prefers L0; when that set does not fit the pool
-(typical on mobile / integrated-desktop budgets against HiRes captures), the
-hold coarsens via the leaf ladder (`runsAtLevelFor`: L1, then L2) before
-degrading to progressive. Neighbours are **not** included in the hold: they
-often win `screenImportance` ranking and would steal the first fetch slots from
-the cell the camera stands in. HiRes tiles also often fail `inView` when most
-of the home cell sits behind the camera; requiring frustum intersection seeded
-the facade instead. The mesh stays invisible until that bounded home set is
-staged and committed.
+another still looks like empty tiles filling in. The library default
+`StreamedSplatMeshOptions.initialReveal: 'hold-coverage'` (same as `.lcc2`;
+other streamed formats remain `'progressive'`) hides the mesh until every
+**in-view** physical cell has covering coverage resident. Nearby cells
+(AABB distance ≤ `lodBaseDistance · lodMultiplier`, the L0+L1 bands) freeze
+at finest+1 (L1 when L0 exists — startup never waits for L0). Farther in-view
+cells freeze at coarsest. Classic LCC cells tile X/Y and span the full scene
+Z, so an AABB frustum test (and the LOD edge pad on that diagonal) hits the
+whole grid from any indoor pose. `LodScheduler.coverageRunsFor` therefore
+picks a cell only if the camera stands inside it, or if it pokes in front of
+the camera plane (AABB support vertex along look) **and** either the unpadded
+AABB hits the frustum **or** the camera is within `lodBaseDistance` of the
+cell. The near-band clause is what holds a 30 m PentHouse neighbour 5 m away
+when the look is ~60° off its face. An empty frustum falls back to the
+nearest cell. After reveal, L0 gaps keep that covering
+stand-in so refinement sharpens a complete shell instead of flashing holes.
+If the mixed L1/coarsest set overflows the pool, near groups coarsen one more
+rung (L2) before startup degrades to progressive.
 
-During the hold, only those nearby target files use classic fetch slots. Their
-coarse substitutes and far cuts wait. The always-resident environment tile
-(LCC2 `env.sog`, not classic `environment.bin`) is fetched at priority and
-the hold waits for it when present. Chunks stage into
-inactive GPU ranges as they arrive (siblings need not coexist in the CPU cache).
-Fully staged decoded arrays may leave the CPU cache without a refetch.
+`initialReveal: 'hold-near-l0'` is the older opt-in: freeze only the camera's
+**home coverage group** (nearest within `lodBaseDistance`, by distance - not
+frustum) at L0 when it fits, else coarsen via the leaf ladder (`runsAtLevelFor`:
+L1, then L2). Neighbours are not part of that hold.
 
-This improves time-to-useful-frame by avoiding wasted lower-LOD downloads; it
-does **not** make the target detail instantaneous. If the bounded set cannot
-fit the pool, startup degrades immediately to progressive streaming.
-`?initialReveal=progressive` restores the old viewer behavior.
+During either hold, only the frozen files use classic fetch slots. Far cuts
+wait. The always-resident environment tile (classic `environment.bin` and
+`.lcc2` `env.sog`) is fetched at priority and the hold waits for it when
+present. Chunks stage into inactive GPU ranges as they arrive (siblings need
+not coexist in the CPU cache). Fully staged decoded arrays may leave the CPU
+cache without a refetch.
 
-`.lcc2` does **not** use this home-L0 hold. See
-[`lcc2-notes.md`](lcc2-notes.md#in-view-coverage-startup-hold)
-for its in-view coarsest coverage hold.
+This does **not** make the target detail instantaneous. If the mixed near-L1
+set cannot fit the pool, near groups coarsen one more rung; if that still
+overflows, startup degrades immediately to progressive streaming.
+`?initialReveal=progressive` restores immediate progressive fill. A one-minute
+watchdog also degrades if the frozen set cannot finish.
+
+See [`lcc2-notes.md`](lcc2-notes.md#in-view-coverage-startup-hold)
+for the octree variant of the same hold.
 
 XGRIDS LCCViewer budget division is not documented in this tree; VLAM keeps
 distance → enforceBudget → ~5% fill headroom (`budgetFillFraction` /
@@ -282,8 +291,10 @@ the coefficients are consumed as-is with no re-rotation.
 
 ## `environment.bin`
 
-Background/sky splats: no LOD, no index, always resident. The record stride
-depends on `fileType`:
+Background/sky splats: no LOD, no index, always resident. `buildLccScene`
+exposes the file as `StreamedScene.environment` (not a scheduler leaf), so
+the startup coverage hold waits for it and `setEnvironmentEnabled` can hide
+it. The record stride depends on `fileType`:
 
 | `fileType` | Stride | Layout |
 | --- | --- | --- |

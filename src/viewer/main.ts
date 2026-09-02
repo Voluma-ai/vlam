@@ -1556,10 +1556,10 @@ async function main(): Promise<void> {
    */
   let loadingProgress: { loaded: number; total: number } | null = null;
   /**
-   * Streamed startup hold (classic `.lcc` nearby L0, `.lcc2` in-view coarsest
-   * coverage). Library default, unless `?initialReveal=progressive`. While
-   * pending, the mesh stays invisible and camera controls are locked so the
-   * frozen set matches the URL pose.
+   * Streamed startup hold (classic `.lcc` in-view L1-near / coarsest-far,
+   * `.lcc2` in-view coarsest). Library default, unless
+   * `?initialReveal=progressive`. While pending, the mesh stays invisible and
+   * camera controls are locked so the frozen set matches the URL pose.
    */
   const preferStartupHold = params.get('initialReveal') !== 'progressive';
   let nearL0HoldActive = false;
@@ -2876,7 +2876,7 @@ async function main(): Promise<void> {
       environmentEnabled: params.get('env') !== '0',
       // Keep the explicit query opt-out effective now that streamed formats
       // default to a first-paint hold in the library. Unset lets `.lcc` keep
-      // nearby L0 and `.lcc2` keep in-view coarsest coverage.
+      // in-view L1-near / coarsest-far coverage, and `.lcc2` keep coarsest.
       ...(preferStartupHold ? {} : { initialReveal: 'progressive' as const }),
       ...(pinnedBudget === undefined ? {} : { budget: pinnedBudget }),
       ...(perfMode.enabled && pinnedBudget === undefined ? { budgetCap: PERF_MODE_BUDGET } : {}),
@@ -3058,7 +3058,7 @@ async function main(): Promise<void> {
       experimentalStagedSwaps,
       // Keep the explicit query opt-out effective now that streamed formats
       // default to a first-paint hold in the library. Unset lets `.lcc` keep
-      // nearby L0 and `.lcc2` keep in-view coarsest coverage.
+      // in-view L1-near / coarsest-far coverage, and `.lcc2` keep coarsest.
       ...(preferStartupHold ? {} : { initialReveal: 'progressive' as const }),
       // `.lcc2` ships an always-on sky; ?env=0 starts it hidden, and 'v' toggles
       // it live (see the keydown handler). Other formats have none - no effect.

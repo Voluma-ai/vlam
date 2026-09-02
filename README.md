@@ -62,4 +62,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/architecture.md](docs/architect
 
 [MIT](LICENSE). Third-party notices: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-Made in the EU by [Voluma](https://voluma.ai).
+Made by [Voluma](https://voluma.ai).

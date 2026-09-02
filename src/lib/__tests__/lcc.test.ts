@@ -225,6 +225,7 @@ describe('buildLccScene', () => {
     expect(env.scale.max).toEqual([50, 50, 50]);
     // Pinned, and counted into the pool + coverage floor (100 coarse + 96 sky).
     expect(scene.pinnedFiles.has(envFile)).toBe(true);
+    expect(scene.environment).toEqual({ file: envFile });
     expect(scene.maxResidentSplats).toBe(400 + 96);
     expect(scene.minimumCoverageSplats).toBe(100 + 96);
   });
@@ -286,6 +287,7 @@ describe('buildLccScene', () => {
     stubFetch({ environmentBytes: null });
     const scene = await buildLccScene(manifest(), BASE, OPTIONS);
     expect(scene.chunkUrls).toHaveLength(CELLS * LEVELS);
+    expect(scene.environment).toBeUndefined();
   });
 
   it('streams every band a Quality capture carries by default', async () => {

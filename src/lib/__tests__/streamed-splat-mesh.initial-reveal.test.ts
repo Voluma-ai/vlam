@@ -2,13 +2,15 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { StreamedSplatMesh } from '../streaming/streamed-splat-mesh';
 import { writeCovariance, type SplatData } from '../core/splat-data';
-import { runKey, type LodRun } from '../streaming/lod-scheduler';
+import { LodScheduler, runKey, type LodRun } from '../streaming/lod-scheduler';
+import type { LodLeaf } from '../streaming/lod-manifest';
 
 /**
- * Classic `.lcc` startup hold: `initialReveal: 'hold-near-l0'` with
- * `neverRetireCoverageEarly` freezes the camera's home coverage group (L0 when
- * it fits, else coarsened), fetches only those files, commits per-slice while
- * the mesh is hidden, and releases once that set is resident.
+ * Streamed startup hold. `'hold-near-l0'` (explicit) freezes the camera's home
+ * coverage group at L0/coarsened. `'hold-coverage'` (classic `.lcc` / `.lcc2`
+ * default) freezes in-view covering runs (classic nearby L1 / far coarsest).
+ * Both fetch only those files while the mesh is hidden, and release once the
+ * frozen set is resident.
  */
 
 const WIDTH = 2048;
@@ -89,7 +91,7 @@ interface MeshConfig {
   /** Full LOD ladder for {@link LodSource.runsAtLevelFor}; defaults to `desired`. */
   levelRuns?: LodRun[];
   coarsest?: LodRun[];
-  /** In-view coarsest cover for `'hold-coverage'`; omit to leave the hook unset. */
+  /** In-view covering runs for `'hold-coverage'`; omit to leave the hook unset. */
   coverage?: LodRun[];
   capacity?: number;
   reveal?: 'hold-near-l0' | 'hold-coverage' | 'progressive';
@@ -1051,5 +1053,233 @@ describe('StreamedSplatMesh initial reveal (hold-coverage)', () => {
 
     expect(failed.mesh.initialRevealState.status).toBe('ready');
     expect(failed.mesh.environmentSplatCount).toBe(0);
+  });
+
+  it('with a classic multi-cell scheduler freezes in-view coarsest groups, not one home L0', () => {
+    const cell = (
+      group: number,
+      box: THREE.Box3,
+      finestFile: number,
+      coarseFile: number,
+    ): LodLeaf => ({
+      bounds: box,
+      lods: [
+        { file: finestFile, offset: 0, count: 100 },
+        { file: coarseFile, offset: 0, count: 20 },
+      ],
+      budgetGroup: group,
+    });
+    const leaves: LodLeaf[] = [
+      cell(0, new THREE.Box3(new THREE.Vector3(-2, -2, -8), new THREE.Vector3(2, 2, -1)), 10, 0),
+      cell(1, new THREE.Box3(new THREE.Vector3(2.5, -2, -8), new THREE.Vector3(6, 2, -1)), 11, 1),
+      cell(2, new THREE.Box3(new THREE.Vector3(-2, -2, 4), new THREE.Vector3(2, 2, 10)), 12, 2),
+    ];
+    const bounds = new THREE.Box3();
+    for (const leaf of leaves) bounds.union(leaf.bounds);
+    const maxFile = 12;
+    const source = new LodScheduler(
+      {
+        leaves,
+        chunkUrls: Array.from({ length: maxFile + 1 }, (_, f) => `https://host/data.bin#${f}`),
+        counts: [300, 60],
+        lodLevels: 2,
+        bounds,
+      },
+      {
+        budget: 4 * WIDTH,
+        lodBaseDistance: 10,
+        lodMultiplier: 2,
+        frustumAware: false,
+        fillPastDistance: false,
+        forceFinestWhenFits: false,
+      },
+    );
+    const scene = {
+      source,
+      chunkKind: 'file' as const,
+      bounds,
+      pinnedFiles: new Set([0, 1, 2]),
+      maxResidentSplats: 4 * WIDTH,
+      chunkUrls: Array.from({ length: maxFile + 1 }, (_, f) => `https://host/data.bin#${f}`),
+    };
+    const Ctor = StreamedSplatMesh as unknown as new (
+      scene: unknown,
+      budget: number,
+      capacity: number,
+      options: unknown,
+      worker: unknown,
+      neverRetireCoverageEarly: boolean,
+    ) => StreamedSplatMesh;
+    const mesh = new Ctor(
+      scene,
+      4 * WIDTH,
+      4 * WIDTH,
+      { initialReveal: 'hold-coverage', experimentalStagedSwaps: true },
+      undefined,
+      false,
+    );
+    meshes.push(mesh);
+    const inner = internals(mesh);
+    const requested: { file: number; kind: string }[] = [];
+    inner.requestChunk = (file, kind) => {
+      requested.push({ file, kind });
+    };
+
+    inner.reschedule(camera, 0);
+
+    expect(inner.initialRevealPhase).toBe('holding');
+    const frozenFiles = [...new Set(inner.frozenCriticalRuns?.map((r) => r.file) ?? [])].sort(
+      (a, b) => a - b,
+    );
+    expect(frozenFiles).toEqual([0, 1]);
+    expect(mesh.initialRevealState).toMatchObject({
+      status: 'pending',
+      totalGroups: 2,
+    });
+    expect(requested.every((r) => r.file === 0 || r.file === 1)).toBe(true);
+    expect(
+      requested.some((r) => r.file === 10 || r.file === 11 || r.file === 12 || r.file === 2),
+    ).toBe(false);
+  });
+
+  it('with a 3-rung scheduler freezes nearby in-view L1 and far coarsest, not L0', () => {
+    const cell3 = (
+      group: number,
+      box: THREE.Box3,
+      finestFile: number,
+      midFile: number,
+      coarseFile: number,
+    ): LodLeaf => ({
+      bounds: box,
+      lods: [
+        { file: finestFile, offset: 0, count: 100 },
+        { file: midFile, offset: 0, count: 40 },
+        { file: coarseFile, offset: 0, count: 10 },
+      ],
+      budgetGroup: group,
+    });
+    const leaves: LodLeaf[] = [
+      cell3(
+        0,
+        new THREE.Box3(new THREE.Vector3(-2, -2, -8), new THREE.Vector3(2, 2, -1)),
+        10,
+        5,
+        0,
+      ),
+      cell3(
+        1,
+        new THREE.Box3(new THREE.Vector3(-2, -2, -50), new THREE.Vector3(2, 2, -30)),
+        11,
+        6,
+        1,
+      ),
+      cell3(2, new THREE.Box3(new THREE.Vector3(-2, -2, 4), new THREE.Vector3(2, 2, 10)), 12, 7, 2),
+    ];
+    const bounds = new THREE.Box3();
+    for (const leaf of leaves) bounds.union(leaf.bounds);
+    const maxFile = 12;
+    const source = new LodScheduler(
+      {
+        leaves,
+        chunkUrls: Array.from({ length: maxFile + 1 }, (_, f) => `https://host/data.bin#${f}`),
+        counts: [300, 120, 30],
+        lodLevels: 3,
+        bounds,
+      },
+      {
+        budget: 4 * WIDTH,
+        lodBaseDistance: 10,
+        lodMultiplier: 2,
+        frustumAware: false,
+        fillPastDistance: false,
+        forceFinestWhenFits: false,
+      },
+    );
+    const scene = {
+      source,
+      chunkKind: 'file' as const,
+      bounds,
+      pinnedFiles: new Set([0, 1, 2]),
+      maxResidentSplats: 4 * WIDTH,
+      chunkUrls: Array.from({ length: maxFile + 1 }, (_, f) => `https://host/data.bin#${f}`),
+    };
+    const Ctor = StreamedSplatMesh as unknown as new (
+      scene: unknown,
+      budget: number,
+      capacity: number,
+      options: unknown,
+      worker: unknown,
+      neverRetireCoverageEarly: boolean,
+    ) => StreamedSplatMesh;
+    const mesh = new Ctor(
+      scene,
+      4 * WIDTH,
+      4 * WIDTH,
+      { initialReveal: 'hold-coverage', experimentalStagedSwaps: true },
+      undefined,
+      false,
+    );
+    meshes.push(mesh);
+    const inner = internals(mesh);
+    const requested: { file: number; kind: string }[] = [];
+    inner.requestChunk = (file, kind) => {
+      requested.push({ file, kind });
+    };
+
+    inner.reschedule(camera, 0);
+
+    expect(inner.initialRevealPhase).toBe('holding');
+    const frozen = inner.frozenCriticalRuns ?? [];
+    const byGroup = new Map(frozen.map((r) => [r.coverageGroup, r]));
+    expect(byGroup.get(0)).toMatchObject({ file: 5, level: 1 });
+    expect(byGroup.get(1)).toMatchObject({ file: 1, level: 2 });
+    expect(byGroup.has(2)).toBe(false);
+    expect(requested.every((r) => r.file === 5 || r.file === 1)).toBe(true);
+    expect(requested.some((r) => r.file === 10 || r.file === 11 || r.file === 0)).toBe(false);
+    expect(mesh.initialRevealState).toMatchObject({
+      status: 'pending',
+      totalGroups: 2,
+    });
+  });
+
+  it('coarsens near L1 to L2 when the mixed coverage set overflows the pool', () => {
+    const nearL1 = run({
+      file: 10,
+      level: 1,
+      leafStart: 0,
+      leafEnd: 4,
+      coverageGroup: 0,
+      count: 3000,
+    });
+    const nearL2 = run({
+      file: 1,
+      level: 2,
+      leafStart: 0,
+      leafEnd: 4,
+      coverageGroup: 0,
+      count: 100,
+    });
+    const farCoarse = run({
+      file: 2,
+      level: 5,
+      leafStart: 4,
+      leafEnd: 8,
+      coverageGroup: 1,
+      count: 100,
+    });
+    // L1 is two rows (4096); L1+far is 6144. Two L2/coarse rows fit 4096.
+    const { inner, requested } = setup({
+      desired: [nearL1, farCoarse],
+      coverage: [nearL1, farCoarse],
+      levelRuns: [nearL1, nearL2, farCoarse],
+      capacity: 2 * WIDTH,
+    });
+
+    inner.reschedule(camera, 0);
+
+    expect(inner.initialRevealPhase).toBe('holding');
+    expect(inner.frozenCriticalRuns?.map((r) => r.file).sort((a, b) => a - b)).toEqual([1, 2]);
+    expect(requested.every((r) => r.file === 1 || r.file === 2)).toBe(true);
+    expect(requested.some((r) => r.file === 10)).toBe(false);
   });
 });
