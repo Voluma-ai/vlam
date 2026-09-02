@@ -22,6 +22,7 @@ import {
   type SplatMeshOptions,
   type SplatOrientation,
   type SplatPerformanceProfile,
+  type SplatSortMetric,
 } from '../lib/core';
 import { loadSplatData, loadSplatDataFile } from '../lib/loaders';
 import {
@@ -638,7 +639,7 @@ async function main(): Promise<void> {
     60,
     window.innerWidth / window.innerHeight,
     0.01,
-    10000,
+    1000,
   );
   const controls = new CameraControls(camera, renderer.domElement);
   controls.mouseButtons.left = CameraControls.ACTION.NONE;
@@ -646,6 +647,7 @@ async function main(): Promise<void> {
   // Wheel/dolly and enableTransition=true moves coast longer than the library default (0.25).
   controls.smoothTime = 0.45;
   controls.draggingSmoothTime = 0.15;
+  controls.dollySpeed = 0.65;
   renderer.domElement.tabIndex = 0;
 
   // WebXR (?xr=0 disables, ?foveation=0..1 overrides). Splats handle stereo
@@ -986,6 +988,7 @@ async function main(): Promise<void> {
   const movementUp = new THREE.Vector3();
   const movementTarget = new THREE.Vector3();
   const MOVEMENT_SPEED_SCENE_RADII_PER_SECOND = 0.05;
+  const FOCUSED_MOVEMENT_SPEED_SCENE_RADII_PER_SECOND = 0.15;
   const MOVEMENT_SPEED_BOOST = 3;
   const MOVEMENT_ORBIT_DISTANCE = 2;
   const TELEPORT_DISTANCE = 3;
@@ -1342,7 +1345,15 @@ async function main(): Promise<void> {
     worstUpdate.activeListMs = Math.max(worstUpdate.activeListMs, event.activeListMs);
   };
 
-  const sortStrategy: 'radix' | 'counting' = params.get('sort') === 'radix' ? 'radix' : 'counting';
+  const sortParam = params.get('sort');
+  const sortStrategy: 'radix' | 'counting' | 'exact' | 'worker' =
+    sortParam === 'radix' || sortParam === 'counting' || sortParam === 'exact'
+      ? sortParam
+      : 'worker';
+  // The stable asynchronous worker mirrors Spark's lower-frequency sort
+  // behavior while WebGPU continues to render. Keep view-axis depth as the
+  // fidelity default; ?sortMetric=radial opts into Spark's rotation-stable key.
+  const sortMetric: SplatSortMetric = params.get('sortMetric') === 'radial' ? 'radial' : 'depth';
   // ?budget pins the budget for A/B; otherwise performance mode picks the low
   // one and the library resolves the device default.
   const pinnedBudget = Number(params.get('budget')) || undefined;
@@ -1424,6 +1435,7 @@ async function main(): Promise<void> {
     const cutoff = resolvedMaxStdDev();
     return {
       sortStrategy,
+      sortMetric,
       orientation,
       ...(performanceProfile === undefined ? {} : { performanceProfile }),
       ...(sortIntervalMs === undefined ? {} : { sortIntervalMs }),
@@ -2586,12 +2598,23 @@ async function main(): Promise<void> {
       cinematicOrbitWasMoving = false;
       syncCameraControlsEnabled();
     }
-    const sceneRadius = bounds.getBoundingSphere(new THREE.Sphere()).radius || 1;
-    movementSpeed = sceneRadius * MOVEMENT_SPEED_SCENE_RADII_PER_SECOND;
-    brushRadius = sceneRadius * 0.005;
+    // A sparse outlier envelope can be kilometres wider than the useful
+    // capture. Use the same detail bounds that chose the initial view for all
+    // navigation scales, otherwise a single wheel/key gesture jumps away from
+    // the reconstructed subject even though framing correctly found it.
+    const interactionBounds = framing?.focusBounds ?? bounds;
+    const interactionRadius = interactionBounds.getBoundingSphere(new THREE.Sphere()).radius || 1;
+    controls.minDistance = Math.max(interactionRadius * 0.001, 1e-4);
+    controls.maxDistance = Math.max(interactionRadius * 8, controls.minDistance * 2);
+    movementSpeed =
+      interactionRadius *
+      (framing?.focusBounds
+        ? FOCUSED_MOVEMENT_SPEED_SCENE_RADII_PER_SECOND
+        : MOVEMENT_SPEED_SCENE_RADII_PER_SECOND);
+    brushRadius = interactionRadius * 0.005;
     // Roughly a shoulder's width on a room-sized capture, and clamped so a
     // huge or tiny scene still gets a sane body rather than one scaled to it.
-    collisionRadius = THREE.MathUtils.clamp(sceneRadius * 0.005, 0.1, 0.4);
+    collisionRadius = THREE.MathUtils.clamp(interactionRadius * 0.005, 0.1, 0.4);
     attachCollision(next.mesh);
     // A framed mount is a scene change (URL load or drop). `sideView` is only
     // set for the initial built-in goose; effect rebuilds pass `frame: false`

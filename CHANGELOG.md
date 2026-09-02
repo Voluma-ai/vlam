@@ -21,6 +21,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- The demo camera now clips at 1,000 world units instead of 10,000, keeping
+  extreme capture outliers out of the render. Library users remain in control:
+  splat clipping follows the host Three.js camera's live `near` and `far`
+  projection settings.
+- Demo auto-framing now finds a dense detailed region before framing a scene,
+  so sparse distant splats cannot open the viewer on an empty view. Wheel and
+  free-flight navigation use that same region's scale, preventing outlier
+  bounds from causing large camera jumps.
 - Demo `?scene=` downloads now show a live percent (and a bar) instead of a
   stuck "Loading…". The overlay ticker used to start only after the scene
   finished, so a large `.ply` had no determinate progress for the entire

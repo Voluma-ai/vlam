@@ -6,10 +6,10 @@ import type * as THREE from 'three/webgpu';
  *
  *  - `ComputeSorter`: GPU counting sort in TSL compute (WebGPU backend);
  *    supports dynamic-capacity meshes via source-index indirection.
- *  - `WorkerSorter`: CPU counting sort in a Web Worker (WebGL2 fallback,
- *    which has no compute shaders); handles static and dynamic-capacity
- *    (streamed) meshes alike by mirroring the pool's centers and sorting
- *    the active spans.
+ *  - `WorkerSorter`: stable CPU radix sort in a Web Worker (the WebGL2
+ *    fallback and an explicit WebGPU stability option); handles static and
+ *    dynamic-capacity meshes alike by mirroring the pool's centers and
+ *    sorting the active spans.
  *  - `RadixSorter`: experimental GPU radix (opt-in via `sortStrategy: 'radix'`).
  */
 export type SplatSorterKind = 'counting' | 'radix' | 'worker';

@@ -1,5 +1,6 @@
 import type * as THREE from 'three/webgpu';
 import type { SplatSorter } from './sorter';
+import type { SplatSortMetric } from './splat-mesh-types';
 import type { SortWorkerRequest, OrderMessage } from './sort-worker-protocol';
 // Inlined worker (blob URL): survives library bundling in any consumer
 // setup, unlike an asset file referenced via `new URL(...)`.
@@ -7,10 +8,10 @@ import SortWorker from './sort-worker?worker&inline';
 import { logError } from './logging';
 
 /**
- * CPU depth sorter: counting sort in a Web Worker. Used on the WebGL2
- * fallback backend, which has no compute shaders. Works for static and
- * dynamic-capacity (streamed) meshes alike: the worker keeps a mirror of
- * the pool's centers, and each sort covers only the active pool spans.
+ * Stable CPU radix sorter in a Web Worker. Used by the WebGL2 fallback and,
+ * when explicitly selected, alongside WebGPU rendering for Spark-like sort
+ * cadence. Works for static and dynamic-capacity meshes alike: the worker
+ * keeps a mirror of the pool's centers and sorts only the active spans.
  *
  * One sort runs at a time; requests that arrive while the worker is busy
  * are declined so the caller retries with the then-current camera on a
@@ -21,6 +22,7 @@ export class WorkerSorter implements SplatSorter {
   private readonly worker: Worker;
   private readonly splatIndexAttribute: THREE.InstancedBufferAttribute;
   private readonly host: WorkerSorterHost;
+  private readonly sortMetric: SplatSortMetric;
   private inFlight = false;
   /** Set by {@link dispose}; drops any already-delivered order message. */
   private disposed = false;
@@ -32,8 +34,9 @@ export class WorkerSorter implements SplatSorter {
   private lastCompletedAt = -Infinity;
   private lastLatencyMs = Number.NaN;
 
-  constructor(host: WorkerSorterHost) {
+  constructor(host: WorkerSorterHost, sortMetric: SplatSortMetric = 'depth') {
     this.host = host;
+    this.sortMetric = sortMetric;
     this.splatIndexAttribute = host.splatIndexAttribute;
     this.worker = new SortWorker();
     this.worker.onmessage = (event: MessageEvent<OrderMessage>) => {
@@ -66,6 +69,7 @@ export class WorkerSorter implements SplatSorter {
     this.sentSpans = spans;
     const message: SortWorkerRequest = {
       type: 'sort',
+      sortMetric: this.sortMetric,
       modelView: new Float32Array(modelView.elements),
       spans,
       matrices: this.host.perSource ? new Float32Array(this.host.perSource.matrices) : undefined,

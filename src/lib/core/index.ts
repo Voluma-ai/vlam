@@ -35,6 +35,7 @@ export {
   type SplatMeshOptions,
   type SplatUpdateOptions,
   type SplatSortStrategy,
+  type SplatSortMetric,
   type SplatPerformanceProfile,
   type SplatFoveationMode,
   type SplatRange,

@@ -16,8 +16,9 @@ import {
   uniform,
 } from 'three/tsl';
 import type { SplatSorter } from './sorter';
+import type { SplatSortMetric } from './splat-mesh-types';
 import { sourceWorldTransform } from './splat-mesh-material';
-import { viewDepthRadius } from './splat-sort-bounds';
+import { viewDepthRadius, viewRadialRadius } from './splat-sort-bounds';
 import { StorageMirrorReleaser } from './storage-attribute-mirror';
 import type { uniformArray } from 'three/tsl';
 
@@ -102,7 +103,9 @@ export class ComputeSorter implements SplatSorter {
   /** Set by {@link dispose}; makes a second dispose a no-op. */
   private disposed = false;
 
-  /** Row 2 of the model-view matrix; view-space z = row2 · (position, 1). */
+  /** Rows of the model-view matrix used by the selected sort metric. */
+  private readonly viewRow0 = uniform(new THREE.Vector4());
+  private readonly viewRow1 = uniform(new THREE.Vector4());
   private readonly viewRow2 = uniform(new THREE.Vector4());
   private readonly depthMin = uniform(0);
   private readonly depthScale = uniform(0);
@@ -112,6 +115,7 @@ export class ComputeSorter implements SplatSorter {
   private readonly bucketMax = uniform(0);
 
   private readonly viewCenter = new THREE.Vector3();
+  private readonly sortMetric: SplatSortMetric;
 
   constructor(options: {
     renderer: THREE.WebGPURenderer;
@@ -129,6 +133,8 @@ export class ComputeSorter implements SplatSorter {
     sourceIndexAttribute: THREE.StorageBufferAttribute;
     /** Per-source world transform for a unified pool; omit for a single mesh. */
     perSource?: PerSourceSortTransform;
+    /** Camera-space ordering key. Default `'depth'`. */
+    sortMetric?: SplatSortMetric;
   }) {
     const { renderer, capacity, centersTexture, dataTextureWidth, centersBuffer, perSource } =
       options;
@@ -144,6 +150,7 @@ export class ComputeSorter implements SplatSorter {
     }
 
     this.renderer = renderer;
+    this.sortMetric = options.sortMetric ?? 'depth';
 
     // GPU-only working buffers. The histogram is accessed atomically in
     // every pass so all pipelines see one consistent buffer declaration;
@@ -207,8 +214,19 @@ export class ComputeSorter implements SplatSorter {
               center,
             ).worldCenter
           : center;
-        const depth = this.viewRow2.xyz.dot(depthPoint).add(this.viewRow2.w);
-        const bucket = depth
+        const viewZ = this.viewRow2.xyz.dot(depthPoint).add(this.viewRow2.w);
+        const sortValue =
+          this.sortMetric === 'radial'
+            ? this.viewRow0.xyz
+                .dot(depthPoint)
+                .add(this.viewRow0.w)
+                .pow2()
+                .add(this.viewRow1.xyz.dot(depthPoint).add(this.viewRow1.w).pow2())
+                .add(viewZ.pow2())
+                .sqrt()
+                .negate()
+            : viewZ;
+        const bucket = sortValue
           .sub(this.depthMin)
           .mul(this.depthScale)
           .clamp(0, this.bucketMax)
@@ -316,20 +334,29 @@ export class ComputeSorter implements SplatSorter {
     if (activeCount === 0) return true;
 
     const m = modelView.elements;
+    this.viewRow0.value.set(m[0], m[4], m[8], m[12]);
+    this.viewRow1.value.set(m[1], m[5], m[9], m[13]);
     this.viewRow2.value.set(m[2], m[6], m[10], m[14]);
     this.activeCount.value = activeCount;
 
     const buckets = this.effectiveBucketCount(activeCount);
     this.viewCenter.copy(bounds.center).applyMatrix4(modelView);
-    // `bounds` is in mesh-local space, but the keys are view-space z. Its
-    // exact z extent is the radius times the norm of modelView's depth row;
-    // that remains correct for any linear transform, including hierarchy-
-    // induced shear from a rotated child under a non-uniformly scaled parent.
-    const viewRadius = viewDepthRadius(modelView, bounds.radius);
-    const near = this.viewCenter.z - viewRadius;
-    const far = this.viewCenter.z + viewRadius;
-    this.depthMin.value = near;
-    this.depthScale.value = (buckets - 1) / (far - near || 1);
+    // `bounds` is in mesh-local space. Depth uses its exact projected z
+    // extent; radial distance uses a conservative maximum linear stretch.
+    const viewRadius =
+      this.sortMetric === 'radial'
+        ? viewRadialRadius(modelView, bounds.radius)
+        : viewDepthRadius(modelView, bounds.radius);
+    const minimum =
+      this.sortMetric === 'radial'
+        ? -(this.viewCenter.length() + viewRadius)
+        : this.viewCenter.z - viewRadius;
+    const maximum =
+      this.sortMetric === 'radial'
+        ? -Math.max(0, this.viewCenter.length() - viewRadius)
+        : this.viewCenter.z + viewRadius;
+    this.depthMin.value = minimum;
+    this.depthScale.value = (buckets - 1) / (maximum - minimum || 1);
     this.bucketMax.value = buckets - 1;
 
     // Keep every stage limited to the buckets and splats in play while batching

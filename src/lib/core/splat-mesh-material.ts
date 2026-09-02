@@ -51,7 +51,7 @@ import { MAX_DOF_VARIANCE } from './depth-of-field';
  * the near plane projects to an unbounded size; clamping keeps one degenerate
  * splat from covering the screen and stalling the rasterizer.
  */
-const MAX_SPLAT_RADIUS_PX = 1024;
+const MAX_SPLAT_RADIUS_PX = 512;
 
 /**
  * Stand-in for an infinite `parent_size` (a root LOD node, or a splat whose
@@ -655,6 +655,10 @@ export function applySplatMaterialGraph(
     const margin = clipCenter.w.mul(frustumNdc);
     const inFrustum = clipCenter.z
       .greaterThan(margin.negate())
+      // Match Spark's explicit far-plane rejection. Without this upper bound,
+      // extreme capture outliers beyond `camera.far` still projected giant
+      // translucent quads and polluted both the image and motion stability.
+      .and(clipCenter.z.lessThan(clipCenter.w))
       .and(clipCenter.x.abs().lessThan(margin))
       .and(clipCenter.y.abs().lessThan(margin));
     const isVisible = stack.visible === null ? inFrustum : inFrustum.and(stack.visible);

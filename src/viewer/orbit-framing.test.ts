@@ -150,6 +150,22 @@ describe('classifyOrbitFraming', () => {
     expect(result.focusBounds).toBeNull();
   });
 
+  it('focuses the dense mass when sparse floaters inflate the scene bounds', () => {
+    const detail = fillEllipsoid(3200, 8, 3, 6, 12, 2, -8);
+    const floaters = new Float32Array(40 * 3);
+    for (let i = 0; i < 40; i++) {
+      floaters[i * 3] = i % 2 === 0 ? -240 : 260;
+      floaters[i * 3 + 1] = -90 + (i % 18) * 10;
+      floaters[i * 3 + 2] = i % 3 === 0 ? -230 : 250;
+    }
+    const positions = concat([detail, floaters]);
+    const result = classifyOrbitFraming(boundsFromPoints(positions), { positions });
+
+    expect(result.framing).toBe('object');
+    expect(result.focusBounds).not.toBeNull();
+    expect(result.center.distanceTo(new THREE.Vector3(12, 2, -8))).toBeLessThan(12);
+  });
+
   it('transforms sampled centers through worldMatrix', () => {
     const local = fillDisk(600, 20, 0, 0.05);
     const worldMatrix = new THREE.Matrix4().makeTranslation(100, 5, -40);

@@ -387,7 +387,7 @@ function send(message: SortWorkerRequest): void {
 
 function sortAndReceive(modelView: Float32Array, spans: Uint32Array): Uint32Array {
   replies.length = 0;
-  send({ type: 'sort', modelView, spans });
+  send({ type: 'sort', sortMetric: 'depth', modelView, spans });
   expect(replies).toHaveLength(1);
   return replies[0]!.order;
 }

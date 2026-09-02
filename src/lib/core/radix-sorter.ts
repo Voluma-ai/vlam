@@ -28,6 +28,7 @@ import {
   workgroupId,
 } from 'three/tsl';
 import type { SplatSorter } from './sorter';
+import type { SplatSortMetric } from './splat-mesh-types';
 import { releaseRendererAttributes } from './compute-sorter';
 import {
   RADIX_BITS_PER_PASS,
@@ -36,7 +37,7 @@ import {
   RADIX_KEY_MAX,
   radixPassCount,
 } from './radix-sort';
-import { viewDepthRadius } from './splat-sort-bounds';
+import { viewDepthRadius, viewRadialRadius } from './splat-sort-bounds';
 import { StorageMirrorReleaser } from './storage-attribute-mirror';
 
 const WORKGROUP_SIZE = 256;
@@ -74,6 +75,8 @@ export class RadixSorter implements SplatSorter {
   private readonly mirrors: StorageMirrorReleaser;
   /** Set by {@link dispose}; makes a second dispose a no-op. */
   private disposed = false;
+  private readonly viewRow0 = uniform(new THREE.Vector4());
+  private readonly viewRow1 = uniform(new THREE.Vector4());
   private readonly viewRow2 = uniform(new THREE.Vector4());
   private readonly depthMin = uniform(0);
   private readonly depthScale = uniform(0);
@@ -81,6 +84,7 @@ export class RadixSorter implements SplatSorter {
   private readonly viewCenter = new THREE.Vector3();
   /** Exact mode avoids scene-bounds quantization entirely. */
   private readonly exactDepth: boolean;
+  private readonly sortMetric: SplatSortMetric;
 
   constructor(options: {
     renderer: THREE.WebGPURenderer;
@@ -93,6 +97,8 @@ export class RadixSorter implements SplatSorter {
     sourceIndexAttribute: THREE.StorageBufferAttribute;
     /** Keep every Float32 depth bit instead of quantizing to 24 bits. */
     exactDepth?: boolean;
+    /** Camera-space ordering key. Default `'depth'`. */
+    sortMetric?: SplatSortMetric;
   }) {
     const { capacity, centersTexture, dataTextureWidth, centersBuffer } = options;
     if (!centersTexture && !centersBuffer) {
@@ -102,6 +108,7 @@ export class RadixSorter implements SplatSorter {
       throw new Error('RadixSorter: dataTextureWidth is required with centersTexture.');
     }
     this.renderer = options.renderer;
+    this.sortMetric = options.sortMetric ?? 'depth';
     const exactDepth = options.exactDepth === true;
     this.exactDepth = exactDepth;
     const passCount = radixPassCount(exactDepth ? RADIX_EXACT_KEY_BITS : RADIX_KEY_BITS);
@@ -156,7 +163,18 @@ export class RadixSorter implements SplatSorter {
         const center = workCenters
           ? workCenters.element(poolIndex).xyz
           : textureLoad(centersTexture, texel as THREE.Node<'ivec2'>).xyz;
-        const depth = this.viewRow2.xyz.dot(center).add(this.viewRow2.w);
+        const viewZ = this.viewRow2.xyz.dot(center).add(this.viewRow2.w);
+        const depth =
+          this.sortMetric === 'radial'
+            ? this.viewRow0.xyz
+                .dot(center)
+                .add(this.viewRow0.w)
+                .pow2()
+                .add(this.viewRow1.xyz.dot(center).add(this.viewRow1.w).pow2())
+                .add(viewZ.pow2())
+                .sqrt()
+                .negate()
+            : viewZ;
         if (exactDepth) {
           // IEEE-754 bits are monotonic only for positive values. Flip the
           // sign partition so ascending unsigned keys remain ascending numeric
@@ -333,13 +351,24 @@ export class RadixSorter implements SplatSorter {
   sort(modelView: THREE.Matrix4, activeCount: number, bounds: THREE.Sphere): boolean {
     if (activeCount === 0) return true;
     const m = modelView.elements;
+    this.viewRow0.value.set(m[0], m[4], m[8], m[12]);
+    this.viewRow1.value.set(m[1], m[5], m[9], m[13]);
     this.viewRow2.value.set(m[2], m[6], m[10], m[14]);
     this.activeCount.value = activeCount;
     if (!this.exactDepth) {
       this.viewCenter.copy(bounds.center).applyMatrix4(modelView);
-      const viewRadius = viewDepthRadius(modelView, bounds.radius);
-      const minimum = this.viewCenter.z - viewRadius;
-      const maximum = this.viewCenter.z + viewRadius;
+      const viewRadius =
+        this.sortMetric === 'radial'
+          ? viewRadialRadius(modelView, bounds.radius)
+          : viewDepthRadius(modelView, bounds.radius);
+      const minimum =
+        this.sortMetric === 'radial'
+          ? -(this.viewCenter.length() + viewRadius)
+          : this.viewCenter.z - viewRadius;
+      const maximum =
+        this.sortMetric === 'radial'
+          ? -Math.max(0, this.viewCenter.length() - viewRadius)
+          : this.viewCenter.z + viewRadius;
       this.depthMin.value = minimum;
       this.depthScale.value = RADIX_KEY_MAX / (maximum - minimum || 1);
     }

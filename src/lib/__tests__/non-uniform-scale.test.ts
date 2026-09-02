@@ -6,7 +6,7 @@ import { writeCovariance, transformCovariance, type SplatData } from '../core/sp
 import { ComputeSorter } from '../core/compute-sorter';
 import { RadixSorter } from '../core/radix-sorter';
 import { worldBoundsOf } from '../core/source-transform';
-import { viewDepthRadius } from '../core/splat-sort-bounds';
+import { radialSortState, viewDepthRadius, viewRadialRadius } from '../core/splat-sort-bounds';
 import { unprojectViewDepth } from '../core/splat-depth-pack';
 import { UnifiedSplatMesh } from '../unified/unified-splat-mesh';
 
@@ -268,6 +268,49 @@ describe('non-uniform scale: sort ordering and bounds', () => {
     } finally {
       sorter.dispose();
     }
+  });
+
+  it('radial sort bounds conservatively cover a sheared local sphere', () => {
+    const modelView = hierarchyShearModelView();
+    const radius = 3;
+    const radialRadius = viewRadialRadius(modelView, radius);
+    expect(radialRadius).toBeGreaterThanOrEqual(viewDepthRadius(modelView, radius));
+
+    const renderer = { compute: vi.fn() } as unknown as THREE.WebGPURenderer;
+    const sorter = new ComputeSorter({
+      renderer,
+      ...sorterInputs(256),
+      sortMetric: 'radial',
+    });
+    try {
+      const bounds = new THREE.Sphere(new THREE.Vector3(0.5, -1, 0.25), radius);
+      sorter.sort(modelView, 32, bounds);
+      const internals = sorter as unknown as {
+        depthMin: { value: number };
+        depthScale: { value: number };
+      };
+      const distance = bounds.center.clone().applyMatrix4(modelView).length();
+      const minimum = -(distance + radialRadius);
+      const maximum = -Math.max(0, distance - radialRadius);
+      expect(internals.depthMin.value).toBeCloseTo(minimum, 5);
+      expect(internals.depthScale.value).toBeCloseTo(((1 << 16) - 1) / (maximum - minimum), 4);
+    } finally {
+      sorter.dispose();
+    }
+  });
+
+  it('radial sort state ignores camera rotation but retains camera translation', () => {
+    const meshWorld = nonUniformModel();
+    const cameraA = new THREE.Matrix4().makeTranslation(1, 2, 3);
+    const cameraB = new THREE.Matrix4().makeRotationY(1.2);
+    cameraB.setPosition(1, 2, 3);
+    const cameraMoved = cameraB.clone().setPosition(1.01, 2, 3);
+
+    const stateA = radialSortState(meshWorld, cameraA, new THREE.Matrix4());
+    const stateB = radialSortState(meshWorld, cameraB, new THREE.Matrix4());
+    const movedState = radialSortState(meshWorld, cameraMoved, new THREE.Matrix4());
+    expect(stateA.equals(stateB)).toBe(true);
+    expect(stateA.equals(movedState)).toBe(false);
   });
 });
 

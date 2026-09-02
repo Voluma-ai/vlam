@@ -24,6 +24,8 @@ export interface WriteMessage {
 
 export interface SortMessage {
   type: 'sort';
+  /** Camera-space ordering key. */
+  sortMetric: 'depth' | 'radial';
   /** Column-major 4×4 model-view matrix elements. */
   modelView: Float32Array;
   /** Active ranges as (start, count) pairs of pool splat indices, in

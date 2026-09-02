@@ -7,8 +7,6 @@ Git history, not in this queue.
 
 ## Later
 
-- **SuperSplat antialias comparison** — `[v]` implementation and tests pass;
-  blocked on a representative AA-flagged SOG and headed comparison.
 - **Mobile device gate** — `[~]` iPhone 15 Pro/WebGPU core passed. Galaxy S24 Ultra
   Chrome 151 WebGPU: goose SD locked 60, HD ~58 rAF; streamed Dehaar /
   sandwijck SD vs HD on 2026-08-25; keep the phone SD default (see
@@ -49,7 +47,6 @@ Git history, not in this queue.
 
 | Work                        | Blocker                                  |
 | --------------------------- | ---------------------------------------- |
-| SuperSplat AA comparison    | Representative AA-flagged SOG            |
 | Mobile matrix               | Physical iPhone 15 (non-Pro)             |
 | Streamed SH comparison      | SH-bearing streamed capture              |
 | Reference pixel comparisons | External datasets and viewers            |

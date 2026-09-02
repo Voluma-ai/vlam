@@ -49,9 +49,13 @@ function initPool(centers: Float32Array): void {
   send({ type: 'write', start: half, centers: centers.subarray(half * 4) });
 }
 
-function sortAndReceive(modelView: Float32Array, spans: Uint32Array): Uint32Array {
+function sortAndReceive(
+  modelView: Float32Array,
+  spans: Uint32Array,
+  sortMetric: 'depth' | 'radial' = 'depth',
+): Uint32Array {
   replies.length = 0;
-  send({ type: 'sort', modelView, spans });
+  send({ type: 'sort', modelView, spans, sortMetric });
   expect(replies).toHaveLength(1);
   expect(replies[0]!.type).toBe('order');
   return replies[0]!.order;
@@ -204,6 +208,26 @@ describe('sort-worker 2-pass 24-bit radix depth sort', () => {
     expect(Array.from(order)).toEqual([1, 2, 0]);
   });
 
+  it('orders radial distance farthest-first and is invariant under camera rotation', () => {
+    const centers = new Float32Array(4 * 4);
+    centers.set([1, 0, 0, 0], 0);
+    centers.set([0, 0, -5, 0], 4);
+    centers.set([0, 3, 0, 0], 8);
+    initPool(centers);
+
+    const identity = new Float32Array(16);
+    identity[0] = identity[5] = identity[10] = identity[15] = 1;
+    const rotated = new Float32Array(identity);
+    rotated[0] = 0;
+    rotated[2] = -1;
+    rotated[8] = 1;
+    rotated[10] = 0;
+
+    const spans = new Uint32Array([0, 3]);
+    expect(Array.from(sortAndReceive(identity, spans, 'radial'))).toEqual([1, 2, 0]);
+    expect(Array.from(sortAndReceive(rotated, spans, 'radial'))).toEqual([1, 2, 0]);
+  });
+
   it('sorts unified-pool centers after their per-source world transforms', () => {
     // Both local centers are identical. Source 1 is placed farther away, so
     // it must sort first; without the fallback transform this would tie.
@@ -216,7 +240,13 @@ describe('sort-worker 2-pass 24-bit radix depth sort', () => {
     const modelView = new Float32Array(16);
     modelView[10] = 1;
     replies.length = 0;
-    send({ type: 'sort', modelView, spans: new Uint32Array([0, 2]), matrices });
+    send({
+      type: 'sort',
+      sortMetric: 'depth',
+      modelView,
+      spans: new Uint32Array([0, 2]),
+      matrices,
+    });
     expect(Array.from(replies[0]!.order)).toEqual([1, 0]);
   });
 
