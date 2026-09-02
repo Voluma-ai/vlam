@@ -23,6 +23,7 @@ export type {
   SortWorkerRequest,
 } from './sort-worker-protocol';
 import type { OrderMessage, SortWorkerRequest } from './sort-worker-protocol';
+import type { SplatSortRange } from './splat-sort-bounds';
 
 const RADIX = 65536; // 16-bit digit
 /** Key precision: 24 bits sorted across two 16-bit radix passes, matching
@@ -60,6 +61,7 @@ function sortByDepth(
   spans: Uint32Array,
   matrices: Float32Array | undefined,
   sortMetric: 'depth' | 'radial',
+  sortRange: SplatSortRange | undefined,
 ): Uint32Array {
   // Depth needs row 2; radial distance uses all three camera-space rows.
   const m0 = modelView[0] as number;
@@ -122,8 +124,10 @@ function sortByDepth(
       poolIndexes[cursor] = i;
       depths[cursor] = depth;
       cursor++;
-      if (depth < minDepth) minDepth = depth;
-      if (depth > maxDepth) maxDepth = depth;
+      if (!sortRange) {
+        if (depth < minDepth) minDepth = depth;
+        if (depth > maxDepth) maxDepth = depth;
+      }
     }
   }
 
@@ -133,10 +137,16 @@ function sortByDepth(
   // together, which popped as the camera moved. `keys` and `poolIndexes`
   // are parallel arrays indexed by active position; we radix-sort the
   // active positions, then emit their pool indices.
-  const depthScale = KEY_MAX / (maxDepth - minDepth || 1);
+  const rangeMin = sortRange?.min ?? minDepth;
+  const rangeMax = sortRange?.max ?? maxDepth;
+  const depthScale = KEY_MAX / (rangeMax - rangeMin || 1);
   let src = srcScratch;
   for (let i = 0; i < activeCount; i++) {
-    keys[i] = ((depths[i] as number) - minDepth) * depthScale;
+    // Clamp before uint conversion: distant RAD outliers used to overflow and
+    // wrap their 24-bit key back into visible depth buckets.
+    keys[i] = Math.floor(
+      Math.min(Math.max(((depths[i] as number) - rangeMin) * depthScale, 0), KEY_MAX),
+    );
     src[i] = i;
   }
 
@@ -184,7 +194,13 @@ self.onmessage = (event: MessageEvent<SortWorkerRequest>) => {
     if (message.sourceIds) sourceIds.set(message.sourceIds, message.start);
     return;
   }
-  const order = sortByDepth(message.modelView, message.spans, message.matrices, message.sortMetric);
+  const order = sortByDepth(
+    message.modelView,
+    message.spans,
+    message.matrices,
+    message.sortMetric,
+    message.sortRange,
+  );
   const reply: OrderMessage = { type: 'order', order };
   (self as unknown as Worker).postMessage(reply, [order.buffer]);
 };

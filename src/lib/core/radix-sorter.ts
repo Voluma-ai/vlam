@@ -37,7 +37,7 @@ import {
   RADIX_KEY_MAX,
   radixPassCount,
 } from './radix-sort';
-import { viewDepthRadius, viewRadialRadius } from './splat-sort-bounds';
+import { intersectSortRange, sceneSortRange, type SplatSortRange } from './splat-sort-bounds';
 import { StorageMirrorReleaser } from './storage-attribute-mirror';
 
 const WORKGROUP_SIZE = 256;
@@ -348,7 +348,12 @@ export class RadixSorter implements SplatSorter {
     this.stages.push(writeOrder);
   }
 
-  sort(modelView: THREE.Matrix4, activeCount: number, bounds: THREE.Sphere): boolean {
+  sort(
+    modelView: THREE.Matrix4,
+    activeCount: number,
+    bounds: THREE.Sphere,
+    visibleRange?: SplatSortRange | null,
+  ): boolean {
     if (activeCount === 0) return true;
     const m = modelView.elements;
     this.viewRow0.value.set(m[0], m[4], m[8], m[12]);
@@ -356,21 +361,12 @@ export class RadixSorter implements SplatSorter {
     this.viewRow2.value.set(m[2], m[6], m[10], m[14]);
     this.activeCount.value = activeCount;
     if (!this.exactDepth) {
-      this.viewCenter.copy(bounds.center).applyMatrix4(modelView);
-      const viewRadius =
-        this.sortMetric === 'radial'
-          ? viewRadialRadius(modelView, bounds.radius)
-          : viewDepthRadius(modelView, bounds.radius);
-      const minimum =
-        this.sortMetric === 'radial'
-          ? -(this.viewCenter.length() + viewRadius)
-          : this.viewCenter.z - viewRadius;
-      const maximum =
-        this.sortMetric === 'radial'
-          ? -Math.max(0, this.viewCenter.length() - viewRadius)
-          : this.viewCenter.z + viewRadius;
-      this.depthMin.value = minimum;
-      this.depthScale.value = RADIX_KEY_MAX / (maximum - minimum || 1);
+      const range = intersectSortRange(
+        sceneSortRange(modelView, bounds, this.sortMetric, this.viewCenter),
+        visibleRange,
+      );
+      this.depthMin.value = range.min;
+      this.depthScale.value = RADIX_KEY_MAX / (range.max - range.min || 1);
     }
     this.stages[0]!.count = activeCount;
     this.stages[this.stages.length - 1]!.count = activeCount;

@@ -53,9 +53,10 @@ function sortAndReceive(
   modelView: Float32Array,
   spans: Uint32Array,
   sortMetric: 'depth' | 'radial' = 'depth',
+  sortRange?: { min: number; max: number },
 ): Uint32Array {
   replies.length = 0;
-  send({ type: 'sort', modelView, spans, sortMetric });
+  send({ type: 'sort', modelView, spans, sortMetric, sortRange });
   expect(replies).toHaveLength(1);
   expect(replies[0]!.type).toBe('order');
   return replies[0]!.order;
@@ -206,6 +207,24 @@ describe('sort-worker 2-pass 24-bit radix depth sort', () => {
     modelView[10] = 1;
     const order = sortAndReceive(modelView, new Uint32Array([0, 3]));
     expect(Array.from(order)).toEqual([1, 2, 0]);
+  });
+
+  it('clamps million-unit outliers without sacrificing visible depth resolution', () => {
+    const centers = new Float32Array(5 * 4);
+    centers.set([0, 0, -1_000_000, 0], 0); // distant outlier → first bucket
+    centers.set([0, 0, -10, 0], 4);
+    centers.set([0, 0, -10.001, 0], 8);
+    centers.set([0, 0, -10.002, 0], 12);
+    centers.set([0, 0, 1_000_000, 0], 16); // behind-camera outlier → last bucket
+    initPool(centers);
+
+    const modelView = new Float32Array(16);
+    modelView[10] = 1;
+    const order = sortAndReceive(modelView, new Uint32Array([0, 5]), 'depth', {
+      min: -100,
+      max: 0,
+    });
+    expect(Array.from(order)).toEqual([0, 3, 2, 1, 4]);
   });
 
   it('orders radial distance farthest-first and is invariant under camera rotation', () => {

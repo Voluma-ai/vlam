@@ -24,6 +24,8 @@ import { estimateLargestStorageBufferBytes } from './unified-work-buffer';
 import { resolveXrView } from '../core/xr-view';
 import { StorageMirrorReleaser } from '../core/storage-attribute-mirror';
 import type { SplatSorter } from '../core/sorter';
+import type { SplatSortMetric } from '../core/splat-mesh-types';
+import { cameraVisibleSortRange, radialSortState } from '../core/splat-sort-bounds';
 
 interface SourceRecord {
   source: SplatMesh;
@@ -106,6 +108,11 @@ export interface UnifiedSplatMeshOptions {
    * ordering in large scenes with dense foliage or overlapping surfaces.
    */
   sortStrategy?: 'counting' | 'exact';
+  /**
+   * Camera-space key used for global ordering. Defaults to `'depth'` for
+   * compatibility; `'radial'` matches Spark's rotation-invariant ordering.
+   */
+  sortMetric?: SplatSortMetric;
 }
 
 /**
@@ -164,8 +171,9 @@ export class UnifiedSplatMesh extends THREE.Mesh {
    * (regather, layout change) force the next sort through the scheduler.
    */
   private readonly sortScheduler: WebGpuSortScheduler;
-  /** Model-view of the last accepted sort; starts unmatchable (zero scale). */
-  private readonly lastSortedModelView = new THREE.Matrix4().makeScale(0, 0, 0);
+  /** Pose signature of the last accepted sort; starts unmatchable (zero scale). */
+  private readonly lastSortedState = new THREE.Matrix4().makeScale(0, 0, 0);
+  private readonly currentSortState = new THREE.Matrix4();
   /**
    * Total admitted splats in the last prepared frame. `removeSource` filters
    * {@link previousLayout} directly, so a tail source's removal can leave the
@@ -190,6 +198,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   private readonly relightBackground: FloatUniform;
   private readonly relightSoftness: FloatUniform;
   private readonly srgbOutput: boolean;
+  private readonly sortMetric: SplatSortMetric;
   private sourceMaxStdDev: number | null = null;
   private sourceAntialias: boolean | null = null;
   private sourceProjectedFilterProfile: 'default' | 'lcc' | null = null;
@@ -280,6 +289,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.relightBackground = relightBackground;
     this.relightSoftness = relightSoftness;
     this.srgbOutput = options.srgbOutput ?? false;
+    this.sortMetric = options.sortMetric ?? 'depth';
     this.sortScheduler = new WebGpuSortScheduler(undefined, isFillConstrainedSplatDevice());
     this.orderAttribute = order;
     this.workSourceIndex = new THREE.StorageBufferAttribute(indices, 1);
@@ -294,8 +304,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     };
     this.sorter =
       options.sortStrategy === 'exact'
-        ? new RadixSorter({ ...sortInputs, exactDepth: true })
-        : new ComputeSorter(sortInputs);
+        ? new RadixSorter({ ...sortInputs, exactDepth: true, sortMetric: this.sortMetric })
+        : new ComputeSorter({ ...sortInputs, sortMetric: this.sortMetric });
     this.frustumCulled = false;
     this.matrixAutoUpdate = false;
     this.matrix.identity();
@@ -773,12 +783,23 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     if (offset > 0) {
       const now = performance.now();
       const viewInverse = viewCamera.matrixWorldInverse;
+      const sortState =
+        this.sortMetric === 'radial'
+          ? radialSortState(this.matrixWorld, viewCamera.matrixWorld, this.currentSortState)
+          : viewInverse;
       if (
         forceSort ||
-        this.sortScheduler.shouldSubmit(viewInverse, this.lastSortedModelView, offset, now)
+        this.sortScheduler.shouldSubmit(sortState, this.lastSortedState, offset, now)
       ) {
-        if (this.sorter.sort(viewInverse, offset, this.bounds)) {
-          this.lastSortedModelView.copy(viewInverse);
+        if (
+          this.sorter.sort(
+            viewInverse,
+            offset,
+            this.bounds,
+            cameraVisibleSortRange(projectionCamera, this.sortMetric),
+          )
+        ) {
+          this.lastSortedState.copy(sortState);
           this.sortScheduler.markAccepted(now);
         }
       }

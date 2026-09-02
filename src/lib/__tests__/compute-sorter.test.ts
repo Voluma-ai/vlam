@@ -12,6 +12,7 @@ interface ComputeSorterInternals {
   scatterPass: THREE.ComputeNode;
   sortPasses: THREE.ComputeNode[];
   bucketMax: { value: number };
+  depthMin: { value: number };
   depthScale: { value: number };
 }
 
@@ -124,6 +125,21 @@ describe('ComputeSorter', () => {
       true,
     );
     expect(compute).not.toHaveBeenCalled();
+  });
+
+  it('quantizes only the camera-visible interval when scene bounds contain RAD outliers', () => {
+    sorter = makeSorter();
+    const internals = internalsOf(sorter);
+    // The million-unit sphere represents a corrupt/distant RAD center; it must
+    // not turn centimeter-spaced visible depths into one counting bucket.
+    sorter.sort(
+      new THREE.Matrix4(),
+      32,
+      new THREE.Sphere(new THREE.Vector3(0, 0, -500_000), 500_000),
+      { min: -100, max: 0 },
+    );
+    expect(internals.depthMin.value).toBe(-100);
+    expect(internals.depthScale.value).toBe((MIN_BUCKETS - 1) / 100);
   });
 
   it('accepts world-space centers from a storage work buffer', () => {

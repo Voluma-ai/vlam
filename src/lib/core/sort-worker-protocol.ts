@@ -5,6 +5,7 @@
  * pulling worker source into the published declarations - the worker is
  * bundled into a blob URL and is not a public entry point.
  */
+import type { SplatSortRange } from './splat-sort-bounds';
 
 export interface InitMessage {
   type: 'init';
@@ -33,6 +34,8 @@ export interface SortMessage {
   spans: Uint32Array;
   /** Optional column-major source matrices, four columns per source. */
   matrices?: Float32Array;
+  /** Pre-intersected scene/camera key range; clamps invisible outliers. */
+  sortRange?: SplatSortRange;
 }
 
 export interface OrderMessage {
