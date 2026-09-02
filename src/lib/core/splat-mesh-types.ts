@@ -93,18 +93,33 @@ export interface SplatMeshOptions {
   /**
    * Minimum interval between WebGPU sorts while the camera moves. When
    * omitted, the interval adapts to the active splat count. Use `0` to sort
-   * every changed frame. WebGL worker sorting is unaffected.
+   * every changed frame. WebGL worker sorting is unaffected; a worker selected
+   * explicitly on WebGPU still observes this submission cadence.
    */
   sortIntervalMs?: number;
   /**
    * WebGPU sorter used for A/B validation. Defaults to the proven counting
-   * sorter. `'radix'` keeps the fast 24-bit key path; `'exact'` lazy-loads a
-   * stable 32-bit Float32-depth radix path that avoids scene-range
-   * quantization. The first frames may skip sorting until the module resolves.
+   * sorter. `'worker'` keeps rendering on WebGPU but sorts asynchronously in
+   * the stable CPU worker also used by the WebGL fallback; this is useful for
+   * Spark-like temporal stability on captures with extreme position outliers.
+   * `'radix'` keeps the fast 24-bit GPU key path; `'exact'` lazy-loads a 32-bit
+   * Float32-depth GPU radix path. The first frames may skip GPU radix sorting
+   * until the module resolves.
    *
    * @experimental Radix strategies may change in a minor release.
    */
   sortStrategy?: SplatSortStrategy;
+  /**
+   * Geometric key used to order transparent splats back-to-front.
+   *
+   * `'depth'` (default) sorts along the camera's view axis and gives the most
+   * accurate alpha order for a fixed view. `'radial'` sorts by distance from
+   * the camera, matching Spark's stable default: camera rotation alone leaves
+   * the order unchanged, which greatly reduces whole-scene shimmer while
+   * orbiting dense captures. Pair it with `sortStrategy: 'exact'` when extreme
+   * position outliers would make quantized buckets too coarse.
+   */
+  sortMetric?: SplatSortMetric;
   /**
    * Render-quality policy. `smooth` rejects negligible projected contributions.
    *
@@ -308,7 +323,10 @@ export interface SplatMeshOptions {
 }
 
 /** Available WebGPU depth-sort implementations. */
-export type SplatSortStrategy = 'counting' | 'radix' | 'exact';
+export type SplatSortStrategy = 'counting' | 'worker' | 'radix' | 'exact';
+
+/** Camera-space key used for back-to-front splat ordering. */
+export type SplatSortMetric = 'depth' | 'radial';
 
 /** Controls optional work during a per-frame source update. */
 export interface SplatUpdateOptions {

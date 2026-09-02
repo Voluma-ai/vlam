@@ -59,8 +59,17 @@ function sortByDepth(
   modelView: Float32Array,
   spans: Uint32Array,
   matrices: Float32Array | undefined,
+  sortMetric: 'depth' | 'radial',
 ): Uint32Array {
-  // View-space z is what we sort on; only row 2 of the matrix is needed.
+  // Depth needs row 2; radial distance uses all three camera-space rows.
+  const m0 = modelView[0] as number;
+  const m4 = modelView[4] as number;
+  const m8 = modelView[8] as number;
+  const m12 = modelView[12] as number;
+  const m1 = modelView[1] as number;
+  const m5 = modelView[5] as number;
+  const m9 = modelView[9] as number;
+  const m13 = modelView[13] as number;
   const m2 = modelView[2] as number;
   const m6 = modelView[6] as number;
   const m10 = modelView[10] as number;
@@ -101,7 +110,15 @@ function sortByDepth(
           (matrices[matrix + 10] as number) * z +
           (matrices[matrix + 14] as number)
         : z;
-      const depth = m2 * worldX + m6 * worldY + m10 * worldZ + m14;
+      const viewZ = m2 * worldX + m6 * worldY + m10 * worldZ + m14;
+      const depth =
+        sortMetric === 'radial'
+          ? -Math.hypot(
+              m0 * worldX + m4 * worldY + m8 * worldZ + m12,
+              m1 * worldX + m5 * worldY + m9 * worldZ + m13,
+              viewZ,
+            )
+          : viewZ;
       poolIndexes[cursor] = i;
       depths[cursor] = depth;
       cursor++;
@@ -167,7 +184,7 @@ self.onmessage = (event: MessageEvent<SortWorkerRequest>) => {
     if (message.sourceIds) sourceIds.set(message.sourceIds, message.start);
     return;
   }
-  const order = sortByDepth(message.modelView, message.spans, message.matrices);
+  const order = sortByDepth(message.modelView, message.spans, message.matrices, message.sortMetric);
   const reply: OrderMessage = { type: 'order', order };
   (self as unknown as Worker).postMessage(reply, [order.buffer]);
 };

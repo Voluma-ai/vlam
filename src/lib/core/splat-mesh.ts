@@ -13,6 +13,7 @@ import {
   type SplatRayResult,
   type SplatRange,
   type SplatSortStrategy,
+  type SplatSortMetric,
   type SplatUpdateOptions,
   type UnifiedSourceView,
   resolveSplatFoveationMode,
@@ -75,6 +76,7 @@ import {
   type SplatPoolTenant,
 } from './splat-mesh-pool';
 import { warn } from './logging';
+import { radialSortState } from './splat-sort-bounds';
 
 interface ChannelRecord {
   readonly type: SplatChannelType;
@@ -358,8 +360,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private lastRenderer: THREE.WebGPURenderer | null = null;
 
   private readonly currentModelView = new THREE.Matrix4();
+  /** Pose components that can actually change the selected sort key. */
+  private readonly currentSortState = new THREE.Matrix4();
   /** Initialized to an impossible matrix so the first frame always sorts. */
-  private readonly lastSortedModelView = new THREE.Matrix4().makeScale(0, 0, 0);
+  private readonly lastSortedState = new THREE.Matrix4().makeScale(0, 0, 0);
   private readonly sortScheduler: WebGpuSortScheduler;
   /** One-frame queue-headroom hint used before a staged atomic commit. */
   private deferSortRequestOnce = false;
@@ -368,6 +372,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   /** The active list the current depth order was built from. */
   private sortedActiveListVersion = -1;
   private readonly sortStrategy: SplatSortStrategy;
+  private readonly sortMetric: SplatSortMetric;
   /** Resolved only when `sortStrategy === 'radix'`; see {@link ensureRadixSorter}. */
   private RadixSorterCtor: (typeof import('./radix-sorter'))['RadixSorter'] | null = null;
   private radixSorterLoad: Promise<void> | null = null;
@@ -547,7 +552,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     pool.register(this);
     this.sortScheduler = new WebGpuSortScheduler(sortIntervalMs, isMobile);
     this.sortStrategy = options.sortStrategy ?? 'counting';
-    if (this.sortStrategy === 'radix') this.ensureRadixSorter();
+    this.sortMetric = options.sortMetric ?? 'depth';
+    if (this.sortStrategy === 'radix' || this.sortStrategy === 'exact') this.ensureRadixSorter();
     this.performanceProfileValue = resolveSplatPerformanceProfile(options.performanceProfile);
     this.maxStdDevValue = maxStdDev;
     this.minSplatSizePx = minSplatSizePx;
@@ -1784,7 +1790,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /**
    * Sorts the shared order buffer for a secondary view's camera, bypassing the
-   * primary view's sort scheduler and its `lastSortedModelView` record (that
+   * primary view's sort scheduler and its last-sorted pose record (that
    * state belongs to `update()`'s camera). WebGPU dispatches synchronously into
    * the render queue, so the following draw reads this order.
    */
@@ -2438,6 +2444,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     }
     if (this.activeCount === 0) return;
     this.currentModelView.multiplyMatrices(camera.matrixWorldInverse, this.matrixWorld);
+    this.writeSortState(camera);
 
     const isWebGPU = (renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true;
     const now = isWebGPU ? performance.now() : 0;
@@ -2447,8 +2454,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       if (isWebGPU) {
         if (
           !this.sortScheduler.shouldSubmit(
-            this.currentModelView,
-            this.lastSortedModelView,
+            this.currentSortState,
+            this.lastSortedState,
             this.activeCount,
             now,
           )
@@ -2461,7 +2468,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         // active order) - skipping here would leave the scene blend-order
         // broken until the camera next moved.
         !this.sortScheduler.hasPendingForce() &&
-        this.currentModelView.equals(this.lastSortedModelView)
+        this.currentSortState.equals(this.lastSortedState)
       ) {
         return;
       }
@@ -2472,7 +2479,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.sorter ??= this.createSorter(renderer);
     if (!this.sorter) return;
     if (this.sorter.sort(this.currentModelView, this.activeCount, this.boundingSphereLocal)) {
-      this.lastSortedModelView.copy(this.currentModelView);
+      this.lastSortedState.copy(this.currentSortState);
       this.sortedActiveListVersion = this.activeListVersion;
       this.orderIsForeign = false; // the buffer now holds the primary order again
       // On WebGL2 `now` is 0 - harmless, cadence timing is WebGPU-only; the
@@ -2517,44 +2524,60 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.boundsDirty = true;
   }
 
+  /**
+   * Writes the camera/mesh state that can change the selected ordering key.
+   * Radial distance is invariant under camera rotation, so its state contains
+   * the mesh's world linear transform and camera-relative translation only.
+   */
+  private writeSortState(camera: THREE.Camera): void {
+    if (this.sortMetric === 'depth') {
+      this.currentSortState.copy(this.currentModelView);
+      return;
+    }
+    radialSortState(this.matrixWorld, camera.matrixWorld, this.currentSortState);
+  }
+
   private createSorter(renderer: THREE.WebGPURenderer): SplatSorter | null {
     const isWebGPU = (renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true;
-    if (!isWebGPU) {
-      return new WorkerSorter({
-        capacity: this.capacity,
-        rowWidth: SplatMesh.DATA_TEXTURE_WIDTH,
-        centers: this.backing.centers,
-        perSource: this.perSourceSort
-          ? {
-              sourceIds: this.perSourceSort.sourceIds,
-              matrices: this.perSourceSort.matrices,
+    if (!isWebGPU || this.sortStrategy === 'worker') {
+      return new WorkerSorter(
+        {
+          capacity: this.capacity,
+          rowWidth: SplatMesh.DATA_TEXTURE_WIDTH,
+          centers: this.backing.centers,
+          perSource: this.perSourceSort
+            ? {
+                sourceIds: this.perSourceSort.sourceIds,
+                matrices: this.perSourceSort.matrices,
+              }
+            : undefined,
+          splatIndexAttribute: this.splatIndexAttribute,
+          takeDirtyRows: () => {
+            const rows = this.workerDirtyRows;
+            this.workerDirtyRows = [];
+            return rows;
+          },
+          getActiveSpans: () => {
+            const spans = new Uint32Array(this.ranges.size * 2);
+            let cursor = 0;
+            for (const record of this.ranges.values()) {
+              if (!record.active) continue;
+              // The used prefix only (matching the active list): the full slab
+              // count would make the worker sort - and the draw list render -
+              // the inactive page-table tail in place of live splats.
+              const count = record.activePrefix ?? record.count;
+              if (count === 0) continue;
+              spans[cursor++] = record.start;
+              spans[cursor++] = count;
             }
-          : undefined,
-        splatIndexAttribute: this.splatIndexAttribute,
-        takeDirtyRows: () => {
-          const rows = this.workerDirtyRows;
-          this.workerDirtyRows = [];
-          return rows;
+            return spans.subarray(0, cursor);
+          },
+          onOrderApplied: () => {
+            this.drawListSorted = true;
+          },
         },
-        getActiveSpans: () => {
-          const spans = new Uint32Array(this.ranges.size * 2);
-          let cursor = 0;
-          for (const record of this.ranges.values()) {
-            if (!record.active) continue;
-            // The used prefix only (matching the active list): the full slab
-            // count would make the worker sort - and the draw list render -
-            // the inactive page-table tail in place of live splats.
-            const count = record.activePrefix ?? record.count;
-            if (count === 0) continue;
-            spans[cursor++] = record.start;
-            spans[cursor++] = count;
-          }
-          return spans.subarray(0, cursor);
-        },
-        onOrderApplied: () => {
-          this.drawListSorted = true;
-        },
-      });
+        this.sortMetric,
+      );
     }
     const options = {
       renderer,
@@ -2567,14 +2590,22 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // A per-source world transform (unified pool) needs the counting sorter's
     // world-depth path; radix has no equivalent, so it is not offered there.
     if (this.perSourceSort) {
-      return new ComputeSorter({ ...options, perSource: this.perSourceSort });
+      return new ComputeSorter({
+        ...options,
+        perSource: this.perSourceSort,
+        sortMetric: this.sortMetric,
+      });
     }
     if (this.sortStrategy === 'radix' || this.sortStrategy === 'exact') {
       this.ensureRadixSorter();
       if (!this.RadixSorterCtor) return null; // skip until the module resolves
-      return new this.RadixSorterCtor({ ...options, exactDepth: this.sortStrategy === 'exact' });
+      return new this.RadixSorterCtor({
+        ...options,
+        exactDepth: this.sortStrategy === 'exact',
+        sortMetric: this.sortMetric,
+      });
     }
-    return new ComputeSorter(options);
+    return new ComputeSorter({ ...options, sortMetric: this.sortMetric });
   }
 
   /** Prefetches the experimental radix sorter; safe to call repeatedly. */

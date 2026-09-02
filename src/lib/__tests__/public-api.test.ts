@@ -151,6 +151,7 @@ describe('public API surface (vlam)', () => {
 
   it('keeps the public option/result types nameable', () => {
     expectTypeOf<vlam.SplatMeshOptions>().toBeObject();
+    expectTypeOf<vlam.SplatSortMetric>().toEqualTypeOf<'depth' | 'radial'>();
     expectTypeOf<vlam.SplatUpdateOptions>().toBeObject();
     expectTypeOf<vlam.DepthOfFieldSettings>().toBeObject();
     expectTypeOf<vlam.RelightingSettings>().toBeObject();
@@ -180,7 +181,9 @@ describe('public API surface (vlam)', () => {
     expectTypeOf<vlam.SplatShInputs>().not.toBeNever();
 
     expectTypeOf<vlam.SplatOrientation>().toEqualTypeOf<'y-up' | 'source'>();
-    expectTypeOf<vlam.SplatSortStrategy>().toEqualTypeOf<'counting' | 'radix' | 'exact'>();
+    expectTypeOf<vlam.SplatSortStrategy>().toEqualTypeOf<
+      'counting' | 'worker' | 'radix' | 'exact'
+    >();
     expectTypeOf<vlam.SplatPerformanceProfile>().toEqualTypeOf<'quality' | 'smooth'>();
     expectTypeOf<vlam.SplatFoveationMode>().toEqualTypeOf<'band' | 'frontier' | 'page-table'>();
     expectTypeOf<vlam.SplatDataFormat>().toEqualTypeOf<

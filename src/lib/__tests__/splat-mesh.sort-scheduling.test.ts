@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SplatMesh } from '../core/splat-mesh';
+import { SplatMesh, type SplatMeshOptions } from '../core/splat-mesh';
 import { writeCovariance } from '../core/splat-data';
 import type { SplatSorter } from '../core/sorter';
 
@@ -77,7 +77,7 @@ describe('SplatMesh sort scheduling', () => {
   });
 
   function meshWithSorter(
-    options: { sortIntervalMs?: number } = {},
+    options: SplatMeshOptions = {},
     accepted = true,
   ): { mesh: SplatMesh; sort: ReturnType<typeof vi.fn> } {
     const mesh = new SplatMesh({ capacity: 4096 }, options);
@@ -156,6 +156,19 @@ describe('SplatMesh sort scheduling', () => {
     expect(sort).toHaveBeenCalledTimes(3);
   });
 
+  it('does not re-sort radial distance when only the camera rotates', () => {
+    const { mesh, sort } = meshWithSorter({ sortIntervalMs: 0, sortMetric: 'radial' });
+    vi.spyOn(performance, 'now').mockReturnValue(0);
+    const camera = cameraAt(3);
+
+    internals(mesh).requestSortIfNeeded(camera, renderer(true));
+    camera.rotation.y = 0.5;
+    camera.updateMatrixWorld(true);
+    internals(mesh).requestSortIfNeeded(camera, renderer(true));
+
+    expect(sort).toHaveBeenCalledTimes(1);
+  });
+
   it('can leave one queue-drain frame before a staged commit sort', () => {
     const mesh = new StagingTestMesh({ capacity: 4096 }, { sortIntervalMs: 0 });
     mesh.appendRange(makeSplatData(1));
@@ -223,13 +236,15 @@ describe('SplatMesh sort scheduling', () => {
     }
   });
 
-  it('accepts both WebGPU sort strategies and performance profiles', () => {
+  it('accepts all sort strategies and performance profiles', () => {
     const counting = new SplatMesh({ capacity: 1 }, { sortStrategy: 'counting' });
+    const worker = new SplatMesh({ capacity: 1 }, { sortStrategy: 'worker' });
     const radix = new SplatMesh(
       { capacity: 1 },
       { sortStrategy: 'radix', performanceProfile: 'smooth' },
     );
-    meshes.push(counting, radix);
+    const exact = new SplatMesh({ capacity: 1 }, { sortStrategy: 'exact' });
+    meshes.push(counting, worker, radix, exact);
     expect(() => radix.setPerformanceProfile('quality')).not.toThrow();
   });
 

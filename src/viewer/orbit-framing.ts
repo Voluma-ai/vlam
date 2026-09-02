@@ -45,6 +45,8 @@ const MAX_SAMPLES = 8192;
 const MIN_SAMPLES = 24;
 const ALPHA_FLOOR = 24;
 const HEIGHT_BINS = 24;
+const DETAIL_GRID_SIZE = 16;
+const DETAIL_DENSITY_RATIO = 4;
 
 export interface OrbitFramingInput {
   /** Splat centers in the mesh-local frame. Streamed loads omit these. */
@@ -167,22 +169,30 @@ export function classifyOrbitFraming(
 }
 
 /**
- * Finds a compact, finely reconstructed subject inside a coarse capture shell.
- * Scaniverse-style object scans often contain many small Gaussians on the
- * subject and a sparse sphere of Gaussians whose covariance is orders of
- * magnitude larger. The full AABB describes that sphere, not useful content.
+ * Finds the detailed mass inside a coarse capture envelope. Some object scans
+ * contain a compact small-covariance subject inside a sparse sphere; others
+ * have the same covariance scale throughout but a dense reconstructed core
+ * and a few far-away floaters. Both must frame the useful detail rather than
+ * the full AABB, whose center can be empty space.
  */
 function detailedSubjectBounds(bounds: THREE.Box3, input: OrbitFramingInput): THREE.Box3 | null {
   const positions = input.positions;
   const covariances = input.covariances;
-  if (!positions || !covariances) return null;
-  const count = Math.min(Math.floor(positions.length / 3), Math.floor(covariances.length / 6));
+  if (!positions) return null;
+  const count = Math.floor(positions.length / 3);
   if (count < MIN_SAMPLES) return null;
 
-  const target = Math.min(MAX_SAMPLES, count);
-  const stride = Math.max(1, Math.floor(count / target));
+  const densityBounds = denseDetailBounds(bounds, positions, input.colors, input.worldMatrix);
+  if (densityBounds) return densityBounds;
+  const massBounds = concentratedMassBounds(bounds, positions, input.colors, input.worldMatrix);
+  if (!covariances) return massBounds;
+
+  const covarianceCount = Math.min(count, Math.floor(covariances.length / 6));
+
+  const target = Math.min(MAX_SAMPLES, covarianceCount);
+  const stride = Math.max(1, Math.floor(covarianceCount / target));
   const samples: { index: number; trace: number }[] = [];
-  for (let i = 0; i < count; i += stride) {
+  for (let i = 0; i < covarianceCount; i += stride) {
     if (input.colors && (input.colors[i * 4 + 3] as number) < ALPHA_FLOOR) continue;
     const trace =
       (covariances[i * 6] as number) +
@@ -190,13 +200,13 @@ function detailedSubjectBounds(bounds: THREE.Box3, input: OrbitFramingInput): TH
       (covariances[i * 6 + 5] as number);
     if (Number.isFinite(trace) && trace > 0) samples.push({ index: i, trace });
   }
-  if (samples.length < MIN_SAMPLES) return null;
+  if (samples.length < MIN_SAMPLES) return massBounds;
   samples.sort((a, b) => a.trace - b.trace);
   const q25 = samples[Math.floor(samples.length * 0.25)]?.trace ?? 0;
   const q90 = samples[Math.floor(samples.length * 0.9)]?.trace ?? 0;
   // A genuine two-scale capture has a decisive covariance gap. Avoid changing
   // ordinary scenes whose foreground and background merely vary naturally.
-  if (!(q25 > 0) || q90 / q25 < 16) return null;
+  if (!(q25 > 0) || q90 / q25 < 16) return massBounds;
 
   const detailLimit = samples[Math.floor(samples.length * 0.4)]?.trace ?? q25;
   const local = new THREE.Box3();
@@ -210,14 +220,163 @@ function detailedSubjectBounds(bounds: THREE.Box3, input: OrbitFramingInput): TH
     local.expandByPoint(point);
     detailed++;
   }
-  if (detailed < MIN_SAMPLES || local.isEmpty()) return null;
+  if (detailed < MIN_SAMPLES || local.isEmpty()) return massBounds;
 
   const world = input.worldMatrix ? local.applyMatrix4(input.worldMatrix) : local;
   const fullDiagonal = bounds.getSize(new THREE.Vector3()).length();
   const focusDiagonal = world.getSize(new THREE.Vector3()).length();
-  if (!(fullDiagonal > 0) || focusDiagonal >= fullDiagonal * 0.55) return null;
+  if (!(fullDiagonal > 0) || focusDiagonal >= fullDiagonal * 0.55) return massBounds;
 
   // Give the cinematic path breathing room around the fine-center envelope.
+  world.expandByScalar(Math.max(focusDiagonal * 0.04, 1e-6));
+  return world;
+}
+
+interface DetailSample {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+}
+
+/**
+ * Finds a compact cluster whose sampled density decisively exceeds the rest of
+ * the scene. This catches captures with a detailed reconstruction near the
+ * origin and a large low-density cloud of bad or distant splats around it.
+ */
+function denseDetailBounds(
+  bounds: THREE.Box3,
+  positions: Float32Array,
+  colors: Uint8Array | null | undefined,
+  worldMatrix: THREE.Matrix4 | null | undefined,
+): THREE.Box3 | null {
+  const count = Math.floor(positions.length / 3);
+  const target = Math.min(MAX_SAMPLES, count);
+  const stride = Math.max(1, Math.floor(count / target));
+  const samples: DetailSample[] = [];
+  for (let i = 0; i < count; i += stride) {
+    if (colors && (colors[i * 4 + 3] as number) < ALPHA_FLOOR) continue;
+    const x = positions[i * 3] as number;
+    const y = positions[i * 3 + 1] as number;
+    const z = positions[i * 3 + 2] as number;
+    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) samples.push({ x, y, z });
+  }
+  if (samples.length < MIN_SAMPLES) return null;
+
+  let selected = samples;
+  let clustered = false;
+  for (let level = 0; level < 3; level++) {
+    const local = boundsFromDetailSamples(selected);
+    const size = local.getSize(new THREE.Vector3());
+    if (!(size.x > 1e-8) || !(size.y > 1e-8) || !(size.z > 1e-8)) break;
+    const cells = new Map<number, DetailSample[]>();
+    for (const sample of selected) {
+      const x = detailCellIndex(sample.x, local.min.x, size.x);
+      const y = detailCellIndex(sample.y, local.min.y, size.y);
+      const z = detailCellIndex(sample.z, local.min.z, size.z);
+      const key = x + DETAIL_GRID_SIZE * (y + DETAIL_GRID_SIZE * z);
+      const cell = cells.get(key);
+      if (cell) cell.push(sample);
+      else cells.set(key, [sample]);
+    }
+    let densest: DetailSample[] | null = null;
+    for (const cell of cells.values()) {
+      if (!densest || cell.length > densest.length) densest = cell;
+    }
+    if (
+      !densest ||
+      densest.length < MIN_SAMPLES ||
+      densest.length < (selected.length / cells.size) * DETAIL_DENSITY_RATIO
+    ) {
+      break;
+    }
+    selected = densest;
+    clustered = true;
+  }
+  if (!clustered) return null;
+
+  const local = boundsFromDetailSamples(selected);
+  const world = worldMatrix ? local.applyMatrix4(worldMatrix) : local;
+  const fullDiagonal = bounds.getSize(new THREE.Vector3()).length();
+  const focusDiagonal = world.getSize(new THREE.Vector3()).length();
+  if (!(focusDiagonal > 1e-4) || !(fullDiagonal > 0) || focusDiagonal >= fullDiagonal * 0.55)
+    return null;
+  world.expandByScalar(Math.max(focusDiagonal * 0.08, 1e-6));
+  return world;
+}
+
+function detailCellIndex(value: number, min: number, span: number): number {
+  return Math.min(
+    DETAIL_GRID_SIZE - 1,
+    Math.max(0, Math.floor(((value - min) / span) * DETAIL_GRID_SIZE)),
+  );
+}
+
+function boundsFromDetailSamples(samples: readonly DetailSample[]): THREE.Box3 {
+  const bounds = new THREE.Box3();
+  for (const sample of samples)
+    bounds.expandByPoint(new THREE.Vector3(sample.x, sample.y, sample.z));
+  return bounds;
+}
+
+/**
+ * Trims the sparse outer tail of each axis. This is deliberately a very small
+ * trim: it ignores accidental floaters and thin sky/background shells without
+ * cropping an ordinary subject whose splats fill its bounds.
+ */
+function concentratedMassBounds(
+  bounds: THREE.Box3,
+  positions: Float32Array,
+  colors: Uint8Array | null | undefined,
+  worldMatrix: THREE.Matrix4 | null | undefined,
+): THREE.Box3 | null {
+  const count = Math.floor(positions.length / 3);
+  const target = Math.min(MAX_SAMPLES, count);
+  const stride = Math.max(1, Math.floor(count / target));
+  const xs: number[] = [];
+  const ys: number[] = [];
+  const zs: number[] = [];
+  for (let i = 0; i < count; i += stride) {
+    if (colors && (colors[i * 4 + 3] as number) < ALPHA_FLOOR) continue;
+    const x = positions[i * 3] as number;
+    const y = positions[i * 3 + 1] as number;
+    const z = positions[i * 3 + 2] as number;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+    xs.push(x);
+    ys.push(y);
+    zs.push(z);
+  }
+  if (xs.length < MIN_SAMPLES) return null;
+
+  xs.sort((a, b) => a - b);
+  ys.sort((a, b) => a - b);
+  zs.sort((a, b) => a - b);
+  const trim = Math.max(1, Math.floor(xs.length * 0.02));
+  const end = xs.length - trim - 1;
+  if (end <= trim) return null;
+  const minX = xs[trim];
+  const minY = ys[trim];
+  const minZ = zs[trim];
+  const maxX = xs[end];
+  const maxY = ys[end];
+  const maxZ = zs[end];
+  if (
+    minX === undefined ||
+    minY === undefined ||
+    minZ === undefined ||
+    maxX === undefined ||
+    maxY === undefined ||
+    maxZ === undefined
+  ) {
+    return null;
+  }
+  const local = new THREE.Box3(
+    new THREE.Vector3(minX, minY, minZ),
+    new THREE.Vector3(maxX, maxY, maxZ),
+  );
+  const world = worldMatrix ? local.applyMatrix4(worldMatrix) : local;
+  const fullDiagonal = bounds.getSize(new THREE.Vector3()).length();
+  const focusDiagonal = world.getSize(new THREE.Vector3()).length();
+  if (!(fullDiagonal > 0) || focusDiagonal >= fullDiagonal * 0.55) return null;
   world.expandByScalar(Math.max(focusDiagonal * 0.04, 1e-6));
   return world;
 }
