@@ -79,7 +79,10 @@ export class WorkerSorter implements SplatSorter {
       modelView: new Float32Array(modelView.elements),
       spans,
       matrices: this.host.perSource ? new Float32Array(this.host.perSource.matrices) : undefined,
-      sortRange: intersectSortRange(sceneSortRange(modelView, bounds, this.sortMetric), visibleRange),
+      sortRange: intersectSortRange(
+        sceneSortRange(modelView, bounds, this.sortMetric),
+        visibleRange,
+      ),
     };
     this.worker.postMessage(message);
     return true;

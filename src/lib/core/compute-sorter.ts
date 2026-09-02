@@ -18,11 +18,7 @@ import {
 import type { SplatSorter } from './sorter';
 import type { SplatSortMetric } from './splat-mesh-types';
 import { sourceWorldTransform } from './splat-mesh-material';
-import {
-  intersectSortRange,
-  sceneSortRange,
-  type SplatSortRange,
-} from './splat-sort-bounds';
+import { intersectSortRange, sceneSortRange, type SplatSortRange } from './splat-sort-bounds';
 import { StorageMirrorReleaser } from './storage-attribute-mirror';
 import type { uniformArray } from 'three/tsl';
 

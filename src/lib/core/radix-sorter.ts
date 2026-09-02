@@ -37,11 +37,7 @@ import {
   RADIX_KEY_MAX,
   radixPassCount,
 } from './radix-sort';
-import {
-  intersectSortRange,
-  sceneSortRange,
-  type SplatSortRange,
-} from './splat-sort-bounds';
+import { intersectSortRange, sceneSortRange, type SplatSortRange } from './splat-sort-bounds';
 import { StorageMirrorReleaser } from './storage-attribute-mirror';
 
 const WORKGROUP_SIZE = 256;

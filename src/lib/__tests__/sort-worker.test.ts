@@ -220,12 +220,10 @@ describe('sort-worker 2-pass 24-bit radix depth sort', () => {
 
     const modelView = new Float32Array(16);
     modelView[10] = 1;
-    const order = sortAndReceive(
-      modelView,
-      new Uint32Array([0, 5]),
-      'depth',
-      { min: -100, max: 0 },
-    );
+    const order = sortAndReceive(modelView, new Uint32Array([0, 5]), 'depth', {
+      min: -100,
+      max: 0,
+    });
     expect(Array.from(order)).toEqual([0, 3, 2, 1, 4]);
   });
 
