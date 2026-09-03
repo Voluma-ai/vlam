@@ -360,6 +360,15 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * storage-attribute GPU buffers that never sat in a geometry. */
   private lastRenderer: THREE.WebGPURenderer | null = null;
 
+  /**
+   * Records the renderer before a streamed reschedule mutates the active list,
+   * so WebGPU counting/radix paths do not write an unsorted CPU draw list
+   * while {@link sorter} is still null.
+   */
+  protected noteRenderer(renderer: THREE.WebGPURenderer): void {
+    this.lastRenderer = renderer;
+  }
+
   private readonly currentModelView = new THREE.Matrix4();
   /** Pose components that can actually change the selected sort key. */
   private readonly currentSortState = new THREE.Matrix4();
@@ -2102,8 +2111,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
     // Until the asynchronous WebGL worker returns, keep its draw list on a
     // valid unsorted active permutation. WebGPU compute sorters overwrite
-    // the draw storage themselves and do not need this CPU mirror.
-    if (this.sorter?.kind === 'worker' || this.sorter === null) {
+    // the draw storage themselves and do not need this CPU mirror — including
+    // the first commit, before {@link sorter} exists, otherwise the following
+    // `needsUpdate` upload clobbers the GPU sort and the first frames draw
+    // pool order (the noisy "unsorted" picture).
+    if (this.usesCpuDrawList()) {
       const source = this.sourceIndexAttribute.array as Uint32Array;
       const draw = this.splatIndexAttribute.array as Float32Array;
       if (this.drawListSorted) {
@@ -2130,6 +2142,20 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.sortScheduler.invalidateContent();
   }
 
+  /**
+   * WebGL / explicit `sortStrategy: 'worker'` draw through a CPU permutation
+   * that must stay a valid active-list identity until the worker returns.
+   * WebGPU counting/radix scatter into `splatIndex` themselves — even on the
+   * first commit, before {@link sorter} is constructed.
+   */
+  private usesCpuDrawList(): boolean {
+    if (this.sorter?.kind === 'worker') return true;
+    if (this.sorter !== null) return false;
+    if (this.sortStrategy === 'worker') return true;
+    const backend = this.lastRenderer?.backend as { isWebGPUBackend?: boolean } | undefined;
+    return backend?.isWebGPUBackend !== true;
+  }
+
   /** Rewrites the active-splat list (pool indices, range by range). */
   private rebuildActiveList(): void {
     const source = this.sourceIndexAttribute.array as Uint32Array;
@@ -2153,7 +2179,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // itself, or the first instances would render pool slots 0..n-1
     // regardless of where the active ranges live. The CPU sorter then
     // replaces this identity order asynchronously.
-    if (this.sorter?.kind === 'worker' || this.sorter === null) {
+    if (this.usesCpuDrawList()) {
       const draw = this.splatIndexAttribute.array as Float32Array;
       draw.set(source.subarray(0, cursor));
       this.splatIndexAttribute.clearUpdateRanges();

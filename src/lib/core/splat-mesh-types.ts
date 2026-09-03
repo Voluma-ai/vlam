@@ -98,13 +98,13 @@ export interface SplatMeshOptions {
    */
   sortIntervalMs?: number;
   /**
-   * WebGPU sorter used for A/B validation. Defaults to the proven counting
-   * sorter. `'worker'` keeps rendering on WebGPU but sorts asynchronously in
-   * the stable CPU worker also used by the WebGL fallback; this is useful for
-   * Spark-like temporal stability on captures with extreme position outliers.
-   * `'radix'` keeps the fast 24-bit GPU key path; `'exact'` lazy-loads a 32-bit
-   * Float32-depth GPU radix path. The first frames may skip GPU radix sorting
-   * until the module resolves.
+   * Sorter used on WebGPU. Defaults to the per-frame counting sorter.
+   * WebGL2 always uses the CPU worker. On WebGPU the worker is never
+   * selected unless the host passes `'worker'` explicitly (A/B only);
+   * Spark comparison is load speed and LOD quality, not Spark's async
+   * sort cadence. `'radix'` is the 24-bit GPU key path; `'exact'`
+   * lazy-loads a 32-bit Float32-depth GPU radix path. The first frames
+   * may skip GPU radix sorting until the module resolves.
    *
    * @experimental Radix strategies may change in a minor release.
    */

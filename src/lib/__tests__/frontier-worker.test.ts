@@ -28,7 +28,7 @@ const workerSelf = {
 vi.stubGlobal('self', workerSelf);
 
 // Imported after the stub: the module installs `self.onmessage` at load.
-await import('../formats/rad/frontier-worker');
+const frontierWorker = await import('../formats/rad/frontier-worker');
 
 function send(msg: FrontierRequest, transfer: Transferable[] = []): void {
   workerSelf.onmessage?.({ data: msg } as MessageEvent<FrontierRequest>);
@@ -116,6 +116,13 @@ function reschedule(seq: number, camZ = 0): void {
 }
 
 describe('frontier worker delivery', () => {
+  it('uses cache saturation only to publish the first usable cut', () => {
+    expect(frontierWorker.shouldPublishFrontier(false, 8, true, false)).toBe(true);
+    expect(frontierWorker.shouldPublishFrontier(false, 8, true, true)).toBe(false);
+    expect(frontierWorker.shouldPublishFrontier(false, 0, true, true)).toBe(true);
+    expect(frontierWorker.shouldPublishFrontier(true, 8, true, true)).toBe(true);
+  });
+
   beforeEach(() => {
     plans.length = 0;
     traverseSpy.mockClear();
@@ -138,6 +145,8 @@ describe('frontier worker delivery', () => {
     const first = plans.at(-1)!;
     // The whole point: this frontier cannot be delivered in one capped plan.
     expect(first.converged).toBe(false);
+    expect(first.staleResidentSplats).toBe(0);
+    expect(first.pendingFrontierSplats).toBeGreaterThan(0);
 
     // Every remaining plan must come from the drain queue, so the traversal
     // count stays exactly where the first reschedule left it.

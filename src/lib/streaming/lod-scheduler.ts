@@ -42,6 +42,13 @@ export interface LodRun {
    * are nearer the screen centre. It never affects LOD selection or budget.
    */
   readonly screenImportance?: number;
+  /**
+   * True when this run only exists to keep a not-yet-decoded chunk in the
+   * fetch pipe. Prefix-reader `.rad` appends these ahead of the resident
+   * frontier; they are not part of the drawable cut. They keep the mesh from
+   * presenting until every prefetch file is cached.
+   */
+  readonly fetchIntent?: boolean;
 }
 
 /** Stable identity of a run, for diffing desired vs. resident sets. */

@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { StreamedSplatMesh, type StreamedSplatMeshOptions } from '../streaming/streamed-splat-mesh';
 import { ChunkCacheBudget } from '../streaming/chunk-cache-budget';
@@ -128,6 +128,10 @@ function makeClassicMesh(options: StreamedSplatMeshOptions = {}): StreamedSplatM
 /** The private surface these tests drive. */
 interface Internals {
   applyFrontierPlan: (plan: Record<string, unknown>) => void;
+  invalidateSort: () => void;
+  pagerSlots: number;
+  boundingSphereLocal: THREE.Sphere;
+  refreshSortBounds: () => void;
   pageTableCacheAtLimit: boolean;
   cacheLimitBytes: number;
   cpuCacheBytes: number;
@@ -182,6 +186,14 @@ describe('StreamedSplatMesh chunk cache budget', () => {
     track(makeMesh());
     const init = RecordingWorker.last?.of('init')[0];
     expect(init?.['cpuCacheBytes']).toBeGreaterThan(0);
+  });
+
+  it('uses stable scene bounds for streamed counting-sort quantization', () => {
+    const mesh = track(makeMesh());
+    const state = inner(mesh);
+    state.refreshSortBounds();
+    expect(state.boundingSphereLocal.center).toEqual(new THREE.Vector3(50, 50, 50));
+    expect(state.boundingSphereLocal.radius).toBeCloseTo(Math.sqrt(3 * 50 ** 2));
   });
 
   it('caps the worker at the scene allowance instead, when one is shared', () => {
@@ -306,6 +318,27 @@ describe('StreamedSplatMesh chunk cache budget', () => {
     inner(mesh).applyFrontierPlan(plan(100 * MIB, 200 * MIB));
     expect(inner(mesh).pageTableCacheAtLimit).toBe(false);
     expect(inner(mesh).sweepAllowed()).toBe(true);
+  });
+
+  it('invalidates sort when a published mapping changes at the same count', () => {
+    const mesh = track(makeMesh());
+    const state = inner(mesh);
+    const invalidate = vi.spyOn(state, 'invalidateSort');
+    const base = {
+      ...plan(0, state.cacheLimitBytes),
+      capacity: state.pagerSlots,
+      displayCount: 0,
+      residentCount: 0,
+      displayGeneration: 1,
+    };
+
+    state.applyFrontierPlan(base);
+    invalidate.mockClear();
+    state.applyFrontierPlan(base);
+    expect(invalidate).not.toHaveBeenCalled();
+
+    state.applyFrontierPlan({ ...base, displayGeneration: 2 });
+    expect(invalidate).toHaveBeenCalledOnce();
   });
 
   it('re-arms the sweep as soon as a raised allowance arrives, not at the next plan', () => {

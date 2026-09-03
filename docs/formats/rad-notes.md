@@ -320,6 +320,27 @@ frontier cut, `FrontierPager` diffs updates, and the main thread applies a
 minimal plan to the pool slab. Tuning: `?foveationDraw=`, `?foveationPx=`,
 `?coneFov0=`, `?coneFov=`, `?coneFoveate=`, `?behindFoveate=`.
 
+**Display hold.** After the first complete cover fills in, `FrontierPager`
+freezes `displayCount` at that prefix. Later cuts append replacements onto
+the undrawn tail and only swap the drawn prefix when the worker *publishes*:
+the traversal has every chunk it asked for (`touched` empty), the chunk
+cache is full, the slab is at capacity, or the camera moved. Publishing
+every drained intermediate cut was the remaining "LOD goes up and then
+back down" loop: each newly cached chunk produced a different complete
+frontier (budget redistributes) and the shader drew it immediately.
+`solvedLimit` still refines while budget remains and does not coarsen
+after a clamp.
+
+The prefix reader (`RadLodSource`, moderate captures under the 6M lift
+ceiling) uses the same publish policy without a pager: every depth, including
+chunk 0's overview, uploads into inactive ranges and the mesh presents only
+when every `fetchIntent` prefetch file is cached, the CPU cache is full, or
+the pool cannot hold both sides. After that first presented cut, a later
+swap is refused if it is coarser or only a partial replacement — cache-full
+eviction was still flipping the picture between a sharp prefix and a noisy
+one. Prefix meshes also share the page-table capture-sized cache ceiling
+(`min(2 GiB, decoded size)`), so a lone scene is not thrashed at 256 MiB.
+
 **Per-mesh `lodScale`.** `StreamedSplatMeshOptions.lodScale` (mutable via the
 accessor) is Spark's own knob: its cut is `pixel_scale × lodScale ≤ limit`, and
 the traversal only ever sees one side of that comparison, so the mesh posts

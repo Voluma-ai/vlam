@@ -238,6 +238,100 @@ describe('FrontierPager', () => {
   describe('maxAppends (bounded per-plan cost)', () => {
     const CAP = 50;
 
+    it('holds the previous prefix until replacements are fully staged', () => {
+      // Spark display-hold: append replacements onto the tail, leave every
+      // previous-cut splat in place, then retire leavers on the commit plan.
+      // Intermediate prefixes must still equal the old set so the host can
+      // keep drawing it.
+      const p = new FrontierPager(600);
+      const slab = new SlabModel(600);
+      const before = Array.from({ length: 400 }, (_v, i) => i);
+      slab.apply(p.update(before));
+      const next = [...before.slice(200), ...Array.from({ length: 200 }, (_v, i) => 5000 + i)];
+      let plan = p.update(next, { maxAppends: CAP });
+      let rounds = 0;
+      while (plan.truncated) {
+        expect(plan.moves).toEqual([]);
+        slab.apply(plan);
+        expect(slab.count).toBeGreaterThanOrEqual(before.length);
+        for (let s = 0; s < before.length; s++) expect(slab.slots[s]).toBe(before[s]);
+        expect(p.pendingStaleCount).toBeGreaterThan(0);
+        expect(++rounds).toBeLessThan(50);
+        plan = p.drain(CAP);
+      }
+      slab.apply(plan);
+      expect(plan.truncated).toBe(false);
+      expect(p.pendingStaleCount).toBe(0);
+      expect(slab.residentSet()).toEqual(new Set(next));
+    });
+
+    it('does not advance displayCount until publish, even after newcomers land', () => {
+      const p = new FrontierPager(600);
+      const slab = new SlabModel(600);
+      const before = Array.from({ length: 400 }, (_v, i) => i);
+      slab.apply(p.update(before));
+      expect(p.displayCount).toBe(400);
+      const next = [...before.slice(200), ...Array.from({ length: 200 }, (_v, i) => 5000 + i)];
+      let plan = p.update(next, { maxAppends: CAP, publish: false });
+      while (plan.truncated) {
+        slab.apply(plan);
+        for (let s = 0; s < before.length; s++) expect(slab.slots[s]).toBe(before[s]);
+        expect(p.displayCount).toBe(400);
+        plan = p.drain(CAP);
+      }
+      slab.apply(plan);
+      expect(p.displayCount).toBe(400);
+      expect(p.residentCount).toBeGreaterThan(400);
+      for (let s = 0; s < before.length; s++) expect(slab.slots[s]).toBe(before[s]);
+
+      plan = p.update(next, { maxAppends: CAP, publish: true });
+      while (plan.truncated) {
+        slab.apply(plan);
+        plan = p.drain(CAP);
+      }
+      slab.apply(plan);
+      expect(p.displayCount).toBe(p.residentCount);
+      expect(slab.residentSet()).toEqual(new Set(next));
+    });
+
+    it('holds a small replacement that fits in one append plan', () => {
+      const p = new FrontierPager(600);
+      const slab = new SlabModel(600);
+      const before = Array.from({ length: 400 }, (_v, i) => i);
+      slab.apply(p.update(before));
+      const next = [...before.slice(25), ...Array.from({ length: 25 }, (_v, i) => 5000 + i)];
+
+      const staged = p.update(next, { maxAppends: CAP, publish: false });
+      slab.apply(staged);
+      expect(staged.truncated).toBe(false);
+      expect(staged.moves).toEqual([]);
+      expect(staged.displayCount).toBe(400);
+      for (let s = 0; s < before.length; s++) expect(slab.slots[s]).toBe(before[s]);
+
+      const published = p.update(next, { maxAppends: CAP, publish: true });
+      slab.apply(published);
+      expect(slab.residentSet()).toEqual(new Set(next));
+    });
+
+    it('versions a staged first cut and an equal-count replacement', () => {
+      const p = new FrontierPager(600);
+      const first = Array.from({ length: 400 }, (_v, i) => i);
+      let plan = p.update(first, { maxAppends: CAP, publish: false });
+      while (plan.truncated && p.hasPendingDrain) plan = p.drain(CAP);
+      expect(plan.displayCount).toBe(0);
+      expect(plan.displayGeneration).toBe(0);
+
+      plan = p.update(first, { maxAppends: CAP, publish: true });
+      expect(plan.displayCount).toBe(400);
+      expect(plan.displayGeneration).toBe(1);
+
+      const replacement = Array.from({ length: 400 }, (_v, i) => 10_000 + i);
+      plan = p.update(replacement, { maxAppends: CAP, publish: true });
+      while (plan.truncated) plan = p.drain(CAP);
+      expect(plan.displayCount).toBe(400);
+      expect(plan.displayGeneration).toBeGreaterThan(1);
+    });
+
     it('bounds appends and moves, and reaches the uncapped frontier by repeating', () => {
       // The whole point of the cap: a hard camera cut must not arrive as one
       // huge plan, but must still converge to exactly the frontier an uncapped
@@ -253,7 +347,7 @@ describe('FrontierPager', () => {
       let plan = p.update(next, { maxAppends: CAP });
       for (;;) {
         expect(plan.appends.length).toBeLessThanOrEqual(CAP);
-        expect(plan.moves.length).toBeLessThanOrEqual(CAP);
+        if (plan.truncated) expect(plan.moves.length).toBeLessThanOrEqual(CAP);
         expect(plan.dropped).toBe(0);
         slab.apply(plan);
         expect(slab.residentSet().size).toBe(plan.count); // no holes, no dupes
@@ -296,7 +390,7 @@ describe('FrontierPager', () => {
       for (let round = 0; round < 100; round++) {
         const plan = p.update(next, { maxAppends: CAP });
         expect(plan.appends.length).toBeLessThanOrEqual(CAP);
-        expect(plan.moves.length).toBeLessThanOrEqual(CAP);
+        if (plan.truncated) expect(plan.moves.length).toBeLessThanOrEqual(CAP);
         slab.apply(plan);
         expect(slab.residentSet().size).toBe(plan.count);
         if (!plan.truncated) break;
@@ -333,7 +427,7 @@ describe('FrontierPager', () => {
         expect(viaDrain.hasPendingDrain).toBe(true);
         plan = viaDrain.drain(CAP);
         expect(plan.appends.length).toBeLessThanOrEqual(CAP);
-        expect(plan.moves.length).toBeLessThanOrEqual(CAP);
+        if (plan.truncated) expect(plan.moves.length).toBeLessThanOrEqual(CAP);
         drainSlab.apply(plan);
         expect(drainSlab.residentSet().size).toBe(plan.count); // no holes, no dupes
         expect(++rounds).toBeLessThan(100);
@@ -468,7 +562,9 @@ describe('FrontierPager', () => {
         let guard = 0;
         while (plan.truncated) {
           plan = p.drain(CAP);
-          expect(plan.moves.length + plan.appends.length).toBeLessThanOrEqual(2 * CAP);
+          if (plan.truncated) {
+            expect(plan.moves.length + plan.appends.length).toBeLessThanOrEqual(2 * CAP);
+          }
           slab.apply(plan);
           expect(slab.residentSet().size).toBe(plan.count);
           expect(++guard).toBeLessThan(100);

@@ -9,6 +9,7 @@ interface SplatMeshInternals {
   sorter: SplatSorter;
   rebuildActiveList(): void;
   requestSortIfNeeded(camera: THREE.Camera, renderer: THREE.WebGPURenderer): void;
+  noteRenderer(renderer: THREE.WebGPURenderer): void;
 }
 
 class StagingTestMesh extends SplatMesh {
@@ -143,6 +144,26 @@ describe('SplatMesh sort scheduling', () => {
     internals(mesh).requestSortIfNeeded(cameraAt(0), renderer(true));
 
     expect(sort).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not schedule a CPU splatIndex upload after an accepted GPU sort', () => {
+    const { mesh, sort } = meshWithSorter();
+    const attr = mesh.geometry.getAttribute('splatIndex') as THREE.BufferAttribute;
+    const version = attr.version;
+    internals(mesh).requestSortIfNeeded(cameraAt(0), renderer(true));
+    expect(sort).toHaveBeenCalledTimes(1);
+    expect(attr.version).toBe(version);
+  });
+
+  it('does not write an unsorted CPU draw list on WebGPU before the sorter exists', () => {
+    const mesh = new StagingTestMesh({ capacity: 4096 });
+    meshes.push(mesh);
+    internals(mesh).noteRenderer(renderer(true));
+    const attr = mesh.geometry.getAttribute('splatIndex') as THREE.BufferAttribute;
+    const version = attr.version;
+    mesh.appendRange(makeSplatData(8));
+    internals(mesh).rebuildActiveList();
+    expect(attr.version).toBe(version);
   });
 
   it('sortIntervalMs zero restores every changed WebGPU frame', () => {

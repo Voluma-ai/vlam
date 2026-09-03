@@ -56,10 +56,11 @@ let neededFiles = new Set<number>();
  * spends `maxSplats` instead of refining to a fixed pixel size.
  *
  * So this refines *below* the host limit while budget remains and the frontier
- * still has cached children, and coarsens back when the budget clamps. One
- * traversal per reschedule (plus at most one extra when badly under), converging
- * over a few frames - the earlier bisection ran the full O(frontier) walk up to
- * five times per reschedule and stalled camera moves for seconds.
+ * still has cached children. It does **not** coarsen `solvedLimit` when the
+ * budget clamps: the traversal already stays in-budget by stopping descent, and
+ * growing the limit would emit a coarser cut than the one just shown. That
+ * reverse is what made a still camera fall back to a blurry LOD after a refine.
+ * One traversal per reschedule (plus at most one extra when badly under).
  */
 let solvedLimit = Number.POSITIVE_INFINITY;
 
@@ -114,11 +115,18 @@ const MAX_PLAN_APPEND_SPLATS = 60_000;
  * data a drain gathers is always still there.
  */
 let lastPlanKey: string | null = null;
+let lastCameraKey: string | null = null;
 
 function planKey(msg: FrontierRescheduleMessage): string {
   const c = msg.cameraLocal;
   const f = msg.cameraForward;
   return `${c[0]},${c[1]},${c[2]}|${f[0]},${f[1]},${f[2]}|${msg.limit}|${msg.budget}`;
+}
+
+function cameraKey(msg: FrontierRescheduleMessage): string {
+  const c = msg.cameraLocal;
+  const f = msg.cameraForward;
+  return `${c[0]},${c[1]},${c[2]}|${f[0]},${f[1]},${f[2]}`;
 }
 
 /** Buffers to transfer with a message (their `.buffer`s). */
@@ -217,12 +225,16 @@ function postPlan(
     degenerateCount: plan.degenerateCount,
     touched: touchedFiles,
     residentCount: plan.count,
+    displayCount: pager!.displayCount,
+    displayGeneration: pager!.displayGeneration,
     gatherMissing: gatherStats.missing,
     dropped: plan.dropped,
     evicted: evictedFiles,
     solvedLimit: limit,
     capacity: pager!.capacity,
     converged: !plan.truncated,
+    pendingFrontierSplats: pager!.pendingNewcomerCount,
+    staleResidentSplats: pager!.pendingStaleCount,
     cacheBytes: totalBytes,
     cacheLimitBytes: cpuCacheBytes,
   };
@@ -239,6 +251,20 @@ function postPlan(
  * by drain plans, which deliver that same frontier. */
 let lastTouched = new Uint32Array(0);
 let lastLimit = 0;
+
+/**
+ * A full cache is an escape hatch for the first usable picture, not permission
+ * to expose every later partial replacement. Reusing it after first paint made
+ * a stationary scene alternate between complete and half-staged LOD cuts.
+ */
+export function shouldPublishFrontier(
+  cameraMoved: boolean,
+  uncachedTouchedCount: number,
+  cacheFull: boolean,
+  hasPublishedDisplay: boolean,
+): boolean {
+  return cameraMoved || uncachedTouchedCount === 0 || (!hasPublishedDisplay && cacheFull);
+}
 
 /**
  * Records the chunks a truncated plan still intends to append, so {@link evict}
@@ -288,13 +314,7 @@ function reschedule(msg: FrontierRescheduleMessage): void {
   let limit = Math.min(msg.limit, Math.max(floor, solvedLimit));
   let result = traverseFrontier(cache, rootList, chunkSize, view, limit, msg.budget);
 
-  if (result.budgetClamped && limit < msg.limit) {
-    // Over budget at this cut: coarsen. Re-running once here (rather than next
-    // frame) matters because an over-budget plan is the one case the pager has
-    // to truncate, which shows up as missing geometry.
-    limit = Math.min(msg.limit, limit * LIMIT_STEP);
-    result = traverseFrontier(cache, rootList, chunkSize, view, limit, msg.budget);
-  } else if (
+  if (
     !result.budgetClamped &&
     result.refinable &&
     limit > floor &&
@@ -311,12 +331,14 @@ function reschedule(msg: FrontierRescheduleMessage): void {
     }
   }
 
-  // Converge over subsequent reschedules: nudge the remembered cut one step in
-  // whichever direction the budget says, so a settled camera walks to the right
-  // cut without ever paying for more than one extra traversal per frame.
-  if (result.budgetClamped) {
-    solvedLimit = Math.min(msg.limit, limit * LIMIT_STEP);
-  } else if (result.refinable && result.count < msg.budget * BUDGET_SPEND_TARGET) {
+  // Converge over subsequent reschedules. Refine while budget remains; do not
+  // coarsen - `traverseFrontier` already stopped descent at `maxSplats`, and
+  // growing the limit would publish a blurrier cut than the one on screen.
+  if (
+    !result.budgetClamped &&
+    result.refinable &&
+    result.count < msg.budget * BUDGET_SPEND_TARGET
+  ) {
     solvedLimit = Math.max(floor, limit / LIMIT_STEP);
   } else {
     solvedLimit = limit;
@@ -331,7 +353,18 @@ function reschedule(msg: FrontierRescheduleMessage): void {
     for (let k = 0; k < locals.length; k++) desiredGlobals.push(base + (locals[k] as number));
   }
 
-  const plan = pager.update(desiredGlobals, { maxAppends: MAX_PLAN_APPEND_SPLATS });
+  const uncachedTouched = [...result.touched].filter(([cc]) => !cache.has(cc));
+  const camKey = cameraKey(msg);
+  const cameraMoved = lastCameraKey !== null && camKey !== lastCameraKey;
+  lastCameraKey = camKey;
+  const publish = shouldPublishFrontier(
+    cameraMoved,
+    uncachedTouched.length,
+    totalBytes >= cpuCacheBytes,
+    pager.hasPublishedDisplay,
+  );
+
+  const plan = pager.update(desiredGlobals, { maxAppends: MAX_PLAN_APPEND_SPLATS, publish });
   protectPendingAppends();
 
   const touched = Uint32Array.from(
@@ -356,7 +389,9 @@ self.onmessage = (event: MessageEvent<FrontierRequest>): void => {
     chunkSize = msg.chunkSize;
     cpuCacheBytes = msg.cpuCacheBytes;
     pager = new FrontierPager(msg.capacity, chunkSize);
+    solvedLimit = Number.POSITIVE_INFINITY;
     lastPlanKey = null;
+    lastCameraKey = null;
     return;
   }
   if (msg.type === 'resize') {

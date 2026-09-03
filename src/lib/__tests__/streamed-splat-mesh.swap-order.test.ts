@@ -3,11 +3,9 @@ import { buildSwapGroups, groupPriority } from '../streaming/streamed-splat-mesh
 import type { LodRun } from '../streaming/lod-scheduler';
 
 /**
- * The wave gate in `reschedule` holds a group that retires coverage until every
- * purely additive group has landed, so a `.rad` region never draws with its
- * coarse splats gone and their replacements still uploading. That gate can only
- * decide correctly if the additive groups have already had their turn, which is
- * what this ordering guarantees.
+ * The RAD wave stages cached adds hidden, then commits them with retirements.
+ * Additive groups still sort first so staging happens before the wave decides
+ * whether every cached replacement has landed.
  */
 
 function run(level: number, leafStart: number, leafEnd: number): LodRun {
