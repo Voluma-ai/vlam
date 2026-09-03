@@ -68,6 +68,15 @@ describe('supportsUnifiedSplatMesh', () => {
 });
 
 describe('UnifiedSplatMesh', () => {
+  it('uses the stable radix sorter when requested', () => {
+    const unified = new UnifiedSplatMesh(mockRenderer(), 1, { sortStrategy: 'radix' });
+    const sorterName = (
+      unified as unknown as { sorter: { constructor: { name: string } } }
+    ).sorter.constructor.name;
+    expect(sorterName).toBe('RadixSorter');
+    unified.dispose();
+  });
+
   it('copies the source projected-footprint floor into the unified draw path', () => {
     const renderer = mockRenderer();
     const mesh = source({ minSplatSizePx: 1.5 });
