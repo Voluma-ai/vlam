@@ -33,6 +33,17 @@ export interface PagerPlan {
   readonly degenerateCount: number;
   /** Occupied slot count after the update (`[0, count)` are live). */
   readonly count: number;
+  /**
+   * Drawn prefix. Stays at the last published cut while a replacement is
+   * staged onto the tail (`[displayCount, count)`). The host must draw only
+   * `[0, displayCount)` until this advances.
+   */
+  readonly displayCount: number;
+  /**
+   * Monotonic version of the mapping inside the drawn prefix. Unlike
+   * `displayCount`, this changes when a same-sized cut replaces its contents.
+   */
+  readonly displayGeneration: number;
   /** Newcomers dropped because the slab was full (selection exceeded capacity). */
   readonly dropped: number;
   /**
@@ -49,19 +60,26 @@ export interface PagerUpdateOptions {
    * in one tick.
    *
    * A hard camera cut can want hundreds of thousands of new splats at once, and
-   * the caller applies a plan whole - a single freeze. Capping the appends alone
-   * would not be enough, because reaching the new frontier also *evicts*, and
-   * every eviction can relocate a survivor (swap-remove); so the cap doubles as
-   * an eviction budget: leavers are evicted only as fast as the appends need
-   * room. That bounds `moves + appends.length` at `2 × maxAppends`, and when the
-   * slab has headroom nothing is evicted at all and `moves` is empty.
+   * the caller applies a plan whole - a single freeze. Truncated plans are
+   * **append-only** while the previous cut still has leavers: replacements go
+   * on the tail and leavers stay put, so the host can keep drawing the last
+   * complete prefix (Spark holds `display` until the new mapping is ready).
+   * Evict only to make room when the slab is full, and retire every remaining
+   * leaver on the plan that seats the last newcomer - that commit is the one
+   * frame the host presents.
    *
-   * Deferred leavers stay resident for another plan or two. They are valid
-   * content at a coarser (or finer) cut than the frontier now wants - briefly
-   * drawn alongside their replacements - which is a far cheaper artifact than
-   * the stall, and is the same trade Spark makes by paging incrementally.
+   * With headroom, truncated plans have empty `moves`. A full-slab replacement
+   * still paces evictions with appends (`needRoom`) so it can make progress.
    */
   readonly maxAppends?: number;
+  /**
+   * When true (the default), a plan that has seated every newcomer also retires
+   * the previous cut and advances {@link PagerPlan.displayCount}. When false,
+   * the drawn prefix stays put: replacements accumulate on the tail until a
+   * later update passes `publish: true` (the frontier has the chunks it
+   * asked for, the cache is full, or the camera moved).
+   */
+  readonly publish?: boolean;
 }
 
 export class FrontierPager {
@@ -94,6 +112,19 @@ export class FrontierPager {
   /** Stale residents this plan deferred, in the slot order they were found. */
   private queuedStale: number[] = [];
   private queuedStaleIndex = 0;
+  /** Prefix of {@link queuedStale} that sits in the undrawn tail and may be
+   * evicted while holding the published display. The rest are in the drawn
+   * prefix and wait for `publish`. */
+  private queuedTailStaleCount = 0;
+  /** `publish` flag the truncated update stored, replayed by {@link drain}. */
+  private queuedPublish = true;
+  /**
+   * Drawn prefix. Grows with the first cover, then freezes until a published
+   * replacement commits.
+   */
+  private published = 0;
+  private hasPublishedCut = false;
+  private publishedGeneration = 0;
 
   constructor(capacity: number, chunkSize = 65536) {
     this.capacity = capacity;
@@ -103,10 +134,67 @@ export class FrontierPager {
 
   /** Whether a truncated plan left work {@link drain} can still deliver. */
   get hasPendingDrain(): boolean {
-    return (
-      this.queuedNewcomerIndex < this.queuedNewcomers.length ||
-      this.queuedStaleIndex < this.queuedStale.length
-    );
+    const remainingNew = this.queuedNewcomers.length - this.queuedNewcomerIndex;
+    const remainingStale = this.queuedStale.length - this.queuedStaleIndex;
+    const remainingTailStale = Math.max(0, this.queuedTailStaleCount - this.queuedStaleIndex);
+    const headroom = this.capacity - this.count;
+    if (
+      remainingNew > 0 &&
+      (headroom > 0 || remainingTailStale > 0 || (this.queuedPublish && remainingStale > 0))
+    ) {
+      return true;
+    }
+    if (remainingStale <= 0) return false;
+    const hold = this.hasPublishedCut && !this.queuedPublish;
+    if (hold) {
+      return this.queuedStaleIndex < this.queuedTailStaleCount;
+    }
+    return true;
+  }
+
+  /** Newcomers still queued after the last truncated plan. */
+  get pendingNewcomerCount(): number {
+    return Math.max(0, this.queuedNewcomers.length - this.queuedNewcomerIndex);
+  }
+
+  /** Leavers still queued - the host must keep drawing them until the commit. */
+  get pendingStaleCount(): number {
+    return Math.max(0, this.queuedStale.length - this.queuedStaleIndex);
+  }
+
+  /** Drawn prefix the host should present (`[0, displayCount)`). */
+  get displayCount(): number {
+    return this.published;
+  }
+
+  /** True after the pager has exposed at least one complete cut. */
+  get hasPublishedDisplay(): boolean {
+    return this.hasPublishedCut;
+  }
+
+  /** Version of the contents addressed by the drawn prefix. */
+  get displayGeneration(): number {
+    return this.publishedGeneration;
+  }
+
+  /**
+   * How many leavers this plan may retire.
+   *
+   * While replacements are still arriving, evict only tail slots the admitted
+   * appends need (`needRoom`). Never spend leftover cap on the published
+   * prefix - that mixed the previous cut with the next on screen. Once every
+   * newcomer is seated *and* the caller asked to publish, retire the rest.
+   */
+  private evictBudget(
+    admitted: number,
+    remainingNewAfter: number,
+    tailStale: number,
+    prefixStale: number,
+    publish: boolean,
+  ): number {
+    const needRoom = Math.max(0, admitted - (this.capacity - this.count));
+    if (remainingNewAfter === 0 && publish) return tailStale + prefixStale;
+    return Math.min(publish ? tailStale + prefixStale : tailStale, needRoom);
   }
 
   /** Forgets any deferred work, so the next plan re-diffs from scratch. */
@@ -115,6 +203,22 @@ export class FrontierPager {
     this.queuedNewcomerIndex = 0;
     this.queuedStale = [];
     this.queuedStaleIndex = 0;
+    this.queuedTailStaleCount = 0;
+  }
+
+  private advancePublished(truncated: boolean, moves: readonly PagerMove[]): void {
+    let changed = moves.some((move) => move.slot < this.published);
+    if (!this.hasPublishedCut) {
+      if (this.queuedPublish && !truncated) {
+        changed = changed || this.published !== this.count || this.count > 0;
+        this.published = this.count;
+        this.hasPublishedCut = true;
+      }
+    } else if (this.queuedPublish && !truncated) {
+      changed = changed || this.published !== this.count;
+      this.published = this.count;
+    }
+    if (changed) this.publishedGeneration++;
   }
 
   /**
@@ -156,17 +260,21 @@ export class FrontierPager {
 
     // Newcomers past the slab's total future capacity can never be seated, so
     // report them now rather than leaving the queue permanently unfinishable.
-    const seatable = headroom + remainingStale;
-    const dropped = Math.max(0, remainingNew - seatable);
+    const totalFutureRoom = headroom + remainingStale;
+    const dropped = Math.max(0, remainingNew - totalFutureRoom);
     if (dropped > 0) this.queuedNewcomers.length -= dropped;
 
+    const remainingTailStale = Math.max(0, this.queuedTailStaleCount - this.queuedStaleIndex);
+    const remainingPrefixStale = remainingStale - remainingTailStale;
+    const seatable = headroom + (this.queuedPublish ? remainingStale : remainingTailStale);
     const admitted = Math.min(remainingNew - dropped, maxAppends, seatable);
-    // Same coupling as `update`: evict only what the appends need, then spend
-    // whatever is left of the cap retiring the rest, so a queue with no
-    // newcomers left still drains its deferred leavers.
-    const evictCount = Math.min(
-      remainingStale,
-      Math.max(admitted - headroom, maxAppends - admitted),
+    const remainingNewAfter = remainingNew - dropped - admitted;
+    const evictCount = this.evictBudget(
+      admitted,
+      remainingNewAfter,
+      remainingTailStale,
+      remainingPrefixStale,
+      this.queuedPublish,
     );
 
     for (let k = 0; k < evictCount; k++) {
@@ -189,8 +297,12 @@ export class FrontierPager {
 
     for (let s = this.count; s < prevCount; s++) this.slotGlobal[s] = -1;
 
-    const truncated = this.hasPendingDrain;
+    const pendingNew = this.queuedNewcomerIndex < this.queuedNewcomers.length;
+    const pendingStale = this.queuedStale.length - this.queuedStaleIndex;
+    const pendingTail = this.queuedStaleIndex < this.queuedTailStaleCount;
+    const truncated = pendingNew || (this.queuedPublish ? pendingStale > 0 : pendingTail);
     if (!truncated) this.clearQueue();
+    this.advancePublished(truncated, moves);
     return {
       moves,
       appendStart: survivors,
@@ -198,6 +310,8 @@ export class FrontierPager {
       degenerateStart: this.count,
       degenerateCount: Math.max(0, prevCount - this.count),
       count: this.count,
+      displayCount: this.published,
+      displayGeneration: this.publishedGeneration,
       dropped,
       truncated,
     };
@@ -270,6 +384,8 @@ export class FrontierPager {
     this.slotGlobal = next;
     this.capacity = capacity;
     this.count = keep;
+    this.published = Math.min(this.published, keep);
+    if (this.published === 0) this.hasPublishedCut = false;
     return evicted;
   }
 
@@ -304,39 +420,44 @@ export class FrontierPager {
     //    caller did not write.
     let truncated = false;
     const maxAppends = options?.maxAppends ?? Infinity;
+    this.queuedPublish = options?.publish ?? true;
     if (Number.isFinite(maxAppends)) {
       const newcomers: number[] = [];
       for (const g of desiredSet) if (!this.slotOf.has(g)) newcomers.push(g);
-      // Stale residents, in slot order - the eviction candidates.
-      const stale: number[] = [];
+      const tailStale: number[] = [];
+      const prefixStale: number[] = [];
       for (let slot = 0; slot < this.count; slot++) {
         const g = this.slotGlobal[slot] as number;
-        if (!desiredSet.has(g)) stale.push(g);
+        if (desiredSet.has(g)) continue;
+        if (slot < this.published) prefixStale.push(g);
+        else tailStale.push(g);
       }
-      // Room for newcomers comes from free slots first, evictions second. Never
-      // evict more than the appends actually need.
       const headroom = this.capacity - this.count;
-      const admitted = Math.min(newcomers.length, maxAppends, headroom + stale.length);
-      // Evict enough to seat the admitted newcomers, and spend whatever is left
-      // of the cap draining the rest. Without that second term a plan with no
-      // newcomers left to add would never retire the deferred leavers, and the
-      // frontier would sit permanently truncated.
-      const evictCount = Math.min(
-        stale.length,
-        Math.max(admitted - headroom, maxAppends - admitted),
+      const staleCount = tailStale.length + prefixStale.length;
+      const seatable = headroom + (this.queuedPublish ? staleCount : tailStale.length);
+      const admitted = Math.min(newcomers.length, maxAppends, seatable);
+      const remainingNewAfter = newcomers.length - admitted;
+      const evictCount = this.evictBudget(
+        admitted,
+        remainingNewAfter,
+        tailStale.length,
+        prefixStale.length,
+        this.queuedPublish,
       );
-      truncated = admitted < newcomers.length || evictCount < stale.length;
-      if (truncated) {
+      const staleToRetire = this.queuedPublish ? staleCount : tailStale.length;
+      truncated = admitted < newcomers.length || evictCount < staleToRetire;
+      const holdingPublishedPrefix = !this.queuedPublish && prefixStale.length > 0;
+      if (truncated || holdingPublishedPrefix) {
+        // Evict tail stale first so hold never swap-removes into the drawn prefix.
+        const evictOrder = [...tailStale, ...prefixStale];
         const keep = new Set<number>();
-        for (let i = evictCount; i < stale.length; i++) keep.add(stale[i] as number);
+        for (let i = evictCount; i < evictOrder.length; i++) keep.add(evictOrder[i] as number);
         for (const g of desiredSet) if (this.slotOf.has(g)) keep.add(g);
         for (let i = 0; i < admitted; i++) keep.add(newcomers[i] as number);
         desiredSet = keep;
-        // Hand the remainder to `drain`, which finishes it without ever
-        // rebuilding this set. Both keep their original order: newcomers as the
-        // traversal emitted them (biggest-on-screen first), leavers by slot.
         this.queuedNewcomers = newcomers.slice(admitted);
-        this.queuedStale = stale.slice(evictCount);
+        this.queuedStale = evictOrder.slice(evictCount);
+        this.queuedTailStaleCount = Math.max(0, tailStale.length - evictCount);
       }
     }
 
@@ -385,6 +506,7 @@ export class FrontierPager {
     // 3. Degenerate the vacated tail `[count, prevCount)`.
     for (let s = this.count; s < prevCount; s++) this.slotGlobal[s] = -1;
 
+    this.advancePublished(truncated, moves);
     return {
       moves,
       appendStart: survivors,
@@ -392,6 +514,8 @@ export class FrontierPager {
       degenerateStart: this.count,
       degenerateCount: Math.max(0, prevCount - this.count),
       count: this.count,
+      displayCount: this.published,
+      displayGeneration: this.publishedGeneration,
       dropped: newcomers.length - appendCount,
       truncated,
     };
@@ -404,5 +528,9 @@ export class FrontierPager {
     this.residentPerFile.clear();
     this.slotGlobal.fill(-1);
     this.count = 0;
+    this.published = 0;
+    this.hasPublishedCut = false;
+    this.publishedGeneration = 0;
+    this.queuedPublish = true;
   }
 }

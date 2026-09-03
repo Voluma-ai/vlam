@@ -508,13 +508,28 @@ export class RadLodSource implements LodSource {
 
   private fetchIntentRun(chunk: number): LodRun {
     const count = this.chunkCounts[chunk] as number;
-    return makeRun(chunk, this.numChunks - chunk, 0, count, chunk * this.chunkSize);
+    return makeRun(chunk, this.numChunks - chunk, 0, count, chunk * this.chunkSize, true);
   }
 }
 
 /** A run for chunk `file`'s local splats `[lo, hi)`, keyed by global index. */
-function makeRun(file: number, level: number, lo: number, hi: number, base: number): LodRun {
-  return { file, level, offset: lo, count: hi - lo, leafStart: base + lo, leafEnd: base + hi };
+function makeRun(
+  file: number,
+  level: number,
+  lo: number,
+  hi: number,
+  base: number,
+  fetchIntent = false,
+): LodRun {
+  return {
+    file,
+    level,
+    offset: lo,
+    count: hi - lo,
+    leafStart: base + lo,
+    leafEnd: base + hi,
+    ...(fetchIntent ? { fetchIntent: true } : {}),
+  };
 }
 
 function countSplats(runs: readonly LodRun[]): number {

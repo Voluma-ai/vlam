@@ -138,6 +138,13 @@ export interface FrontierPlanMessage {
   /** Drawn (non-degenerate) frontier size - the true on-screen splat count. */
   readonly residentCount: number;
   /**
+   * Drawn prefix. While a replacement is staged this stays at the last
+   * published cut; the host must not draw `[displayCount, residentCount)`.
+   */
+  readonly displayCount?: number;
+  /** Changes whenever the contents of the drawn prefix change, even at equal count. */
+  readonly displayGeneration?: number;
+  /**
    * Splats this plan could not gather because their chunk had been evicted, and
    * so wrote as zeros into slots that are still drawn - coverage holes, seen as
    * dark speckle in a region while it refines. Eviction protects every chunk

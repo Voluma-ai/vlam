@@ -108,6 +108,13 @@ const MAX_INFLIGHT = 8;
  * So this is set well past the point of interference and kept only so that a
  * pool roomy enough never to report pressure cannot hold superseded coverage for
  * the entire session. At 60 fps it is about ten seconds.
+ *
+ * Ticks, not wall clock, and deliberately so. A wall-clock bound looks more
+ * principled - the same 600 ticks is thirty seconds at the 20 fps a heavy
+ * `.rad` load actually runs at - but converting it to 10 s was measured on the
+ * `veersetoren` capture at nine hundred early retirements against fifty-seven,
+ * because a slow frame rate means chunks are arriving slowly too. The bound
+ * wants to outlast the stream, and on a slow renderer the stream is long.
  */
 const MAX_RETIRE_HELD_TICKS = 600;
 /** Reschedule at least this often even when the camera is still, ms. */
@@ -644,6 +651,13 @@ export class StreamedSplatMesh extends SplatMesh {
   private pagerSlots = 0;
   /** Consecutive ticks the wave gate has held retirements back. */
   private retireHeldTicks = 0;
+  /**
+   * Latest drawable cut for {@link applyRadWave}. Prefix-reader discovery
+   * deepens every tick; the published picture waits until the pipe is idle so
+   * intermediate depths (including chunk 0's overview) never become the frame.
+   */
+  /** True after the prefix-reader wave has presented a cut. */
+  private waveHasPublished = false;
   /** Backing store for {@link planTimings}. */
   private readonly planTimingsValue = {
     applyMs: 0,
@@ -685,6 +699,16 @@ export class StreamedSplatMesh extends SplatMesh {
   private readonly slabPageSplats: number = SLAB_PAGE_SPLATS;
   /** Target drawn-splat count for the page-table frontier; see the constructor. */
   private pageTableDrawBudget = 0;
+  /**
+   * Slab slots to reserve: the draw budget plus 50% staging tail, capped at
+   * the pool ceiling. Refinement appends replacements into that undrawn tail
+   * so the previous complete prefix can keep drawing until the commit.
+   */
+  private get pageTableStagingSlots(): number {
+    const draw = this.pageTableDrawBudget;
+    if (draw <= 0) return 0;
+    return Math.min(this.slabCeiling, draw + Math.ceil(draw / 2));
+  }
   /** The unclamped draw target (`foveationDrawBudget` or the default), kept so
    * `setBudget` can re-derive the effective draw budget when the pool budget
    * moves (e.g. under a `BudgetGovernor`). */
@@ -696,6 +720,7 @@ export class StreamedSplatMesh extends SplatMesh {
   /** Last frontier's drawn (non-degenerate) splat count - the true on-screen size
    * in `page-table` mode, where the slab is fully "active" but mostly degenerate. */
   private pageTableDrawn = 0;
+  private pageTableDisplayGeneration = -1;
   private frontierConverged = true;
   private pendingFrontierSplats = 0;
   private staleResidentSplats = 0;
@@ -1210,13 +1235,14 @@ export class StreamedSplatMesh extends SplatMesh {
     // cache - a scene of `.lcc2` additional meshes would otherwise sit outside the one
     // number that is supposed to bound the whole scene.
     //
-    // The ceiling is the most this mesh could put to use. A page-table mesh
-    // needs more: its frontier can only refine into chunks that are resident
-    // *together*, so a whole `.rad` view spans many chunks (cest_ca: ~249 x
-    // ~6.5 MB decoded ~ 1.6 GB) and a cache holding a fraction of them leaves
-    // the near frontier thrashing and the scene "coarse forever". Hence a
-    // ceiling above the host's per-mesh figure, bounded by what this capture
-    // could even hold.
+    // The ceiling is the most this mesh could put to use. A `.rad` mesh
+    // (prefix or page-table) needs more than the host's 256 MiB default: its
+    // frontier can only refine into chunks that are resident *together*, so a
+    // whole view spans many chunks (cest_ca: ~249 x ~6.5 MB decoded ~ 1.6 GB)
+    // and a cache holding a fraction of them leaves the near frontier
+    // thrashing and the scene oscillating between a sharp cut and a noisy
+    // one. Hence a ceiling above the host's per-mesh figure, bounded by what
+    // this capture could even hold.
     //
     // That figure used to be the *cap*, at a flat 2 GiB: right for one big scene
     // and wrong for a wall of additional meshes, where 13 meshes were each allowed 2 GiB
@@ -1224,12 +1250,13 @@ export class StreamedSplatMesh extends SplatMesh {
     // fix it - thirteen 500 MB captures still allow 6.5 GB, because nothing
     // related the meshes to each other. The budget is that missing relation.
     const isPageTable = isPageTableFoveation(options.foveationMode);
-    const cacheCeilingBytes = isPageTable
-      ? Math.max(
-          this.cpuCacheBytes,
-          Math.min(PAGETABLE_CACHE_FLOOR_BYTES, estimateSceneDecodedBytes(scene)),
-        )
-      : this.cpuCacheBytes;
+    const cacheCeilingBytes =
+      isPageTable || scene.chunkSize !== undefined
+        ? Math.max(
+            this.cpuCacheBytes,
+            Math.min(PAGETABLE_CACHE_FLOOR_BYTES, estimateSceneDecodedBytes(scene)),
+          )
+        : this.cpuCacheBytes;
     this.cacheBudgetHandle = this.cacheBudget?.register({
       // The governor weight `fetchWeight` already carries, so cache and network
       // follow the same camera-projected measure. The `1` fallback matches
@@ -1281,13 +1308,11 @@ export class StreamedSplatMesh extends SplatMesh {
       // reservations are what let this mesh later grow and release storage with
       // its budget instead of holding its ceiling for the whole session.
       this.slabPageSplats = Math.min(SLAB_PAGE_SPLATS, capacity);
-      // Reserve only what the current draw budget needs. The ceiling stays a
-      // *permission* to grow rather than an up-front claim, which is what lets
-      // many meshes share one pool: a distant mesh holds a page or two while
-      // the one the camera approaches climbs. `syncSlabPages` moves the line as
-      // the governor changes the budget.
+      // Draw budget plus a staging tail so refinement can append replacements
+      // without overwriting the drawn prefix. The ceiling stays a permission
+      // to grow, not an up-front claim, so distant meshes still share the pool.
       this.slabCeiling = capacity;
-      this.syncSlabPages(this.pageTableDrawBudget);
+      this.syncSlabPages(this.pageTableStagingSlots);
       this.frontierWorker = new FrontierWorkerCtor();
       this.frontierWorker.onmessage = (e: MessageEvent<FrontierPlanMessage>) =>
         this.applyFrontierPlan(e.data);
@@ -1717,9 +1742,8 @@ export class StreamedSplatMesh extends SplatMesh {
       // Page-table mode draws the frontier, not the LOD schedule - keep its
       // draw target under the (possibly shared/governed) pool budget too.
       this.pageTableDrawBudget = Math.min(next, this.pageTableDrawTarget);
-      // Storage follows the budget: climb toward the new draw target, or hand
-      // pages back when the governor shrinks this mesh.
-      this.syncSlabPages(this.pageTableDrawBudget);
+      // Storage follows the draw budget plus staging tail.
+      this.syncSlabPages(this.pageTableStagingSlots);
       // A caller-pinned `foveationDrawBudget` outranks the budget, so a governor
       // that grows this mesh past it buys nothing and the mesh stays coarse for
       // a reason nothing on screen explains. Say so once.
@@ -1901,6 +1925,7 @@ export class StreamedSplatMesh extends SplatMesh {
       }
     }
     const lodCamera = xrView?.head ?? camera;
+    this.noteRenderer(renderer);
     const performanceEvent = this.shouldReschedule(lodCamera, now)
       ? this.reschedule(lodCamera, now)
       : null;
@@ -1920,6 +1945,19 @@ export class StreamedSplatMesh extends SplatMesh {
   /** Root bounds of the whole scene, valid before any chunk has loaded. */
   override computeSplatBounds(): THREE.Box3 {
     return this.scene.bounds.clone();
+  }
+
+  /**
+   * Keep counting-sort quantization anchored to the complete capture bounds.
+   * Streaming writes arrive in cache-dependent order, so an incrementally
+   * accumulated bound can describe only the staged cut when the first sort
+   * runs. Centers outside that temporary range then clamp into an end bucket
+   * and look exactly like an unsorted patch.
+   */
+  protected override refreshSortBounds(): void {
+    if (!this.boundsDirty) return;
+    this.scene.bounds.getBoundingSphere(this.boundingSphereLocal);
+    this.boundsDirty = false;
   }
 
   /**
@@ -2265,10 +2303,16 @@ export class StreamedSplatMesh extends SplatMesh {
     // coverage set is desired. After release, the normal swap transaction
     // keeps that coverage active while the live cut stages, then replaces it
     // atomically rather than drawing coarse and fine runs together.
-    const desiredRuns = holdingRuns ?? scheduledRuns;
+    const liveRuns = holdingRuns ?? scheduledRuns;
+    const classicSource =
+      !holding && liveRuns.length > 0 && liveRuns.every((run) => run.coverageGroup !== undefined);
+    const swapRuns = !classicSource && !holding ? this.captureWaveRuns(liveRuns) : liveRuns;
     const desired = new Map<string, LodRun>();
     const desiredFiles = new Set<number>();
-    for (const run of desiredRuns) {
+    for (const run of liveRuns) {
+      desiredFiles.add(run.file);
+    }
+    for (const run of swapRuns) {
       desired.set(runKey(run), run);
       desiredFiles.add(run.file);
     }
@@ -2301,7 +2345,14 @@ export class StreamedSplatMesh extends SplatMesh {
     // livelock under CPU-cache pressure). Fully staged runs may leave the CPU
     // cache: their GPU inactive range already holds the bytes.
     this.neededFiles.clear();
-    for (const run of desiredRuns) {
+    for (const run of liveRuns) {
+      const key = runKey(run);
+      if (this.resident.has(key)) continue;
+      const staged = this.staged.get(key);
+      if (staged && staged.uploadedCount === run.count) continue;
+      this.neededFiles.add(run.file);
+    }
+    for (const run of swapRuns) {
       const key = runKey(run);
       if (this.resident.has(key)) continue;
       const staged = this.staged.get(key);
@@ -2318,7 +2369,7 @@ export class StreamedSplatMesh extends SplatMesh {
       this.neededFiles.add(this.envFile);
     }
 
-    const toAdd = desiredRuns.filter((run) => !this.resident.has(runKey(run)));
+    const toAdd = swapRuns.filter((run) => !this.resident.has(runKey(run)));
     // During hold, never retire unrelated resident coverage - the viewer is
     // hidden and we only build the critical set.
     const toRemove = holding
@@ -2356,146 +2407,164 @@ export class StreamedSplatMesh extends SplatMesh {
     // enqueue its fetch ahead of LOD wants so the sky is not last in the pipe.
     this.updateEnvironment(now, pendingFetches);
 
-    // A `.rad` refinement splits across groups, and that is what used to punch
-    // holes in a region while it sharpened. Grouping pairs adds with removals by
-    // leaf-interval overlap, which works for the octree formats because a
-    // parent's interval contains its children's - but `.rad` keys runs by global
-    // splat index and a node's children live in a *later chunk*, so parent and
-    // children can never share a group. The parent's group therefore committed
-    // at once while the children's group was still staging, and for those frames
-    // the region drew with its coarse splats gone and their replacements not yet
-    // visible.
+    // A `.rad` refinement splits across groups: leaf-interval overlap pairs an
+    // octree parent with its children, but `.rad` keys runs by global splat
+    // index and a node's children live in a later chunk, so they never share a
+    // group. Prefetch fetch-intent runs for still-undecoded chunks are also
+    // purely additive. The old wave gate treated *any* pending add as a reason
+    // to hold every retirement, then committed ready children immediately - so
+    // parents stayed drawn while children appeared, and prefetch kept that
+    // mixed cut up for the whole stream.
     //
-    // Spark cannot reach that state: it publishes a refined cut only once every
-    // splat in it is drawable, holding the previous complete frame meanwhile
-    // (`SparkRenderer.driveSort` advances `display` only after a sort of the new
-    // mapping lands). Do the same - a group that retires coverage waits until
-    // every group that purely adds has landed. Waiting costs brief over-draw,
-    // never a hole, since a deferred group keeps rendering its old runs.
-    let appended = 0;
-    let addsPending = false;
-    let poolPressure = false;
-    let held = false;
-    for (const group of groups) {
-      if (!classicLccGroups && group.removes.length > 0 && addsPending) {
-        // Bounded so the wait can never strand coverage: the replacements
-        // normally land within a few ticks, and past that the pool matters more
-        // than the seam.
-        if (
-          this.neverRetireCoverageEarly ||
-          (!poolPressure && this.retireHeldTicks < MAX_RETIRE_HELD_TICKS)
-        ) {
-          this.pendingWork = true;
-          held = true;
-          continue;
-        }
-        // Falling through here retires coverage whose replacement has *not*
-        // landed - the one deliberate hole in this path. Two causes, one
-        // consequence: the pool needs the rows more than the seam needs hiding
-        // (`poolPressure`), or the hold has run past MAX_RETIRE_HELD_TICKS. A
-        // higher budget makes the first likelier - more and larger groups in
-        // flight against a pool sized from the same budget - so this is the
-        // first thing to read when holes appear only at a raised budget.
-        this.fetchCountsValue.retiredEarly++;
-      }
-      if (group.adds.length === 0) {
-        this.applyGroup(group, now); // dropped regions: just free them
-        continue;
-      }
-      const missing = group.adds.filter((run) => !this.cache.has(run.file));
-      // Resolved L0: skip coarse stand-in for empty gaps (keep prior coverage
-      // on each sub-leaf until that slice's L0 commits). L1+: allow per-slice
-      // coarsest substitute while that slice's target loads.
-      // Startup hold never paints coarse for the critical set.
-      const holdForTarget =
-        holding || (isWaitingOnFinest(group) && this.initialRevealHold !== 'hold-coverage');
-      if (missing.length > 0) {
-        // Only keep re-scheduling if some missing chunk is still
-        // recoverable (fetching or awaiting a retry); a group whose chunks
-        // have all permanently failed settles on its coarse substitute.
-        let recoverable = false;
-        for (const run of missing) {
-          if (this.failedFiles.has(run.file)) continue;
-          enqueueClassicFetch(
-            pendingFetches,
-            run.file,
-            classicFetchPhaseForDesired(run, this.scene.source.lodBaseDistance),
-            run,
-          );
-          recoverable = true;
-        }
-        // Far / L1+ gaps: install coarsest shell. L0 hold: do not fetch or
-        // paint that shell - only the resolved L0 target is requested.
-        // Startup hold: still stage any siblings already in cache (below).
-        if (!holding) {
-          this.substituteCoverage(group, now, pendingFetches, holdForTarget);
-        }
-        if (recoverable) {
-          this.pendingWork = true;
-          addsPending = true;
-        }
-        // During startup, continue into staging so available chunks upload
-        // before every sibling is cached.
-        if (!holding) continue;
-      }
-      if (holding && this.environmentPendingForReveal()) {
-        // Keep pool headroom for the env tile; coverage stays cached until it
-        // lands. Fetches for the frozen set are already queued above.
+    // Spark publishes a refined cut only once every splat in it is drawable.
+    // Do the same on this path: stage every cached replacement hidden, ignore
+    // still-fetching prefetch, and activate adds together with their
+    // retirements. Classic LCC keeps per-slice apply below - it already has
+    // independent coverage for every cell.
+    if (!classicLccGroups && !holding) {
+      // Fetch-intent runs are excluded from the drawable cut so they cannot
+      // delay it, but they still have to enter the pipe or discovery never
+      // deepens past the first decoded prefix.
+      for (const run of liveRuns) {
+        if (this.cache.has(run.file) || this.failedFiles.has(run.file)) continue;
+        enqueueClassicFetch(
+          pendingFetches,
+          run.file,
+          classicFetchPhaseForDesired(run, this.scene.source.lodBaseDistance),
+          run,
+        );
         this.pendingWork = true;
-        addsPending = true;
-        continue;
       }
-      const forceStage = holding || (this.stagedSwapsEnabled && group.addCount > this.appendCap);
-      if (forceStage && this.canStageGroup(group)) {
-        const stagedNow = this.stageGroup(group, now, Math.max(0, this.appendCap - appended));
-        appended += stagedNow;
-        if (!group.adds.every((run) => this.staged.get(runKey(run))?.uploadedCount === run.count)) {
-          this.pendingWork = true;
-          addsPending = true;
+      this.applyRadWave(groups, liveRuns, now, pendingFetches);
+    } else {
+      let appended = 0;
+      let addsPending = false;
+      let poolPressure = false;
+      let held = false;
+      for (const group of groups) {
+        if (!classicLccGroups && group.removes.length > 0 && addsPending) {
+          // Bounded so the wait can never strand coverage: the replacements
+          // normally land within a few ticks, and past that the pool matters more
+          // than the seam.
+          if (
+            this.neverRetireCoverageEarly ||
+            (!poolPressure && this.retireHeldTicks < MAX_RETIRE_HELD_TICKS)
+          ) {
+            this.pendingWork = true;
+            held = true;
+            continue;
+          }
+          // Falling through here retires coverage whose replacement has *not*
+          // landed - the one deliberate hole in this path. Two causes, one
+          // consequence: the pool needs the rows more than the seam needs hiding
+          // (`poolPressure`), or the hold has run past MAX_RETIRE_HELD_TICKS. A
+          // higher budget makes the first likelier - more and larger groups in
+          // flight against a pool sized from the same budget - so this is the
+          // first thing to read when holes appear only at a raised budget.
+          this.fetchCountsValue.retiredEarly++;
+        }
+        if (group.adds.length === 0) {
+          this.applyGroup(group, now); // dropped regions: just free them
           continue;
         }
-        // Keep the old region for one additional frame when this tick wrote
-        // the final hidden segment. The following tick performs only the
-        // atomic active-list switch and forced sort, rather than combining
-        // those costs with the last texture upload.
-        if (stagedNow > 0 && !holding) {
-          this.deferNextSortRequest();
+        const missing = group.adds.filter((run) => !this.cache.has(run.file));
+        // Resolved L0: skip coarse stand-in for empty gaps (keep prior coverage
+        // on each sub-leaf until that slice's L0 commits). L1+: allow per-slice
+        // coarsest substitute while that slice's target loads.
+        // Startup hold never paints coarse for the critical set.
+        const holdForTarget =
+          holding || (isWaitingOnFinest(group) && this.initialRevealHold !== 'hold-coverage');
+        if (missing.length > 0) {
+          // Only keep re-scheduling if some missing chunk is still
+          // recoverable (fetching or awaiting a retry); a group whose chunks
+          // have all permanently failed settles on its coarse substitute.
+          let recoverable = false;
+          for (const run of missing) {
+            if (this.failedFiles.has(run.file)) continue;
+            enqueueClassicFetch(
+              pendingFetches,
+              run.file,
+              classicFetchPhaseForDesired(run, this.scene.source.lodBaseDistance),
+              run,
+            );
+            recoverable = true;
+          }
+          // Far / L1+ gaps: install coarsest shell. L0 hold: do not fetch or
+          // paint that shell - only the resolved L0 target is requested.
+          // Startup hold: still stage any siblings already in cache (below).
+          if (!holding) {
+            this.substituteCoverage(group, now, pendingFetches, holdForTarget);
+          }
+          if (recoverable) {
+            this.pendingWork = true;
+            addsPending = true;
+          }
+          // During startup, continue into staging so available chunks upload
+          // before every sibling is cached.
+          if (!holding) continue;
+        }
+        if (holding && this.environmentPendingForReveal()) {
+          // Keep pool headroom for the env tile; coverage stays cached until it
+          // lands. Fetches for the frozen set are already queued above.
           this.pendingWork = true;
           addsPending = true;
           continue;
         }
-        this.commitStagedGroup(group);
-        continue;
+        const forceStage = holding || (this.stagedSwapsEnabled && group.addCount > this.appendCap);
+        if (forceStage && this.canStageGroup(group)) {
+          const stagedNow = this.stageGroup(group, now, Math.max(0, this.appendCap - appended));
+          appended += stagedNow;
+          if (
+            !group.adds.every((run) => this.staged.get(runKey(run))?.uploadedCount === run.count)
+          ) {
+            this.pendingWork = true;
+            addsPending = true;
+            continue;
+          }
+          // Keep the old region for one additional frame when this tick wrote
+          // the final hidden segment. The following tick performs only the
+          // atomic active-list switch and forced sort, rather than combining
+          // those costs with the last texture upload.
+          if (stagedNow > 0 && !holding) {
+            this.deferNextSortRequest();
+            this.pendingWork = true;
+            addsPending = true;
+            continue;
+          }
+          this.commitStagedGroup(group);
+          continue;
+        }
+        // The cap bounds per-tick upload work, but a group is indivisible
+        // (splitting it would break region atomicity), so a single group larger
+        // than the cap is deliberately let through when it comes first - the
+        // one-frame hitch beats never applying it at all.
+        if (!holding && appended > 0 && appended + group.addCount > this.appendCap) {
+          this.pendingWork = true;
+          addsPending = true;
+          continue;
+        }
+        // Startup hold always stages (above); if staging could not start, keep
+        // pending rather than applying visible coverage while the viewer is gated.
+        if (holding) {
+          this.pendingWork = true;
+          addsPending = true;
+          continue;
+        }
+        if (!this.applyGroup(group, now)) {
+          this.pendingWork = true; // transient pool pressure; retry next tick
+          // Rows are the scarce resource now, so stop holding retirements back.
+          poolPressure = true;
+          continue;
+        }
+        appended += group.addCount;
       }
-      // The cap bounds per-tick upload work, but a group is indivisible
-      // (splitting it would break region atomicity), so a single group larger
-      // than the cap is deliberately let through when it comes first - the
-      // one-frame hitch beats never applying it at all.
-      if (!holding && appended > 0 && appended + group.addCount > this.appendCap) {
-        this.pendingWork = true;
-        addsPending = true;
-        continue;
-      }
-      // Startup hold always stages (above); if staging could not start, keep
-      // pending rather than applying visible coverage while the viewer is gated.
-      if (holding) {
-        this.pendingWork = true;
-        addsPending = true;
-        continue;
-      }
-      if (!this.applyGroup(group, now)) {
-        this.pendingWork = true; // transient pool pressure; retry next tick
-        // Rows are the scarce resource now, so stop holding retirements back.
-        poolPressure = true;
-        continue;
-      }
-      appended += group.addCount;
+      // Counts only ticks that actually held something back, so reaching the bound
+      // releases the retirement and starts the count over rather than latching the
+      // gate off for the rest of the session.
+      this.retireHeldTicks = held ? this.retireHeldTicks + 1 : 0;
     }
+
     this.flushClassicFetches(pendingFetches, this.scene.source.lodBaseDistance, holding);
-    // Counts only ticks that actually held something back, so reaching the bound
-    // releases the retirement and starts the count over rather than latching the
-    // gate off for the rest of the session.
-    this.retireHeldTicks = held ? this.retireHeldTicks + 1 : 0;
 
     if (holding) {
       this.finishInitialRevealIfComplete();
@@ -2924,6 +2993,213 @@ export class StreamedSplatMesh extends SplatMesh {
         activeCount === 0 || appendedCount + removedCount >= activeCount * CONTENT_FORCE_FRACTION,
       compacted,
     };
+  }
+
+  /**
+   * Snapshot the latest drawable desired runs. Live discovery still drives
+   * fetches; nothing in this list is presented until {@link radWaveShouldPublish}.
+   */
+  private captureWaveRuns(live: readonly LodRun[]): LodRun[] {
+    const drawable = live.filter((run) => !run.fetchIntent);
+    if (drawable.length === 0) return [...live];
+    return drawable;
+  }
+
+  /**
+   * Page-table `publish` equivalent for the prefix reader.
+   *
+   * First paint waits until prefetch is cached or the CPU cache cannot hold
+   * more. After that the presented cut is sticky: cache-full and pool
+   * pressure must not swap in a coarser/partial replacement (that is the
+   * sharp↔noisy flicker once the scene has appeared). A later cut publishes
+   * only when it is fully staged, the pipe is idle, and it is not coarser
+   * than what is already on screen.
+   */
+  private radWaveShouldPublish(live: readonly LodRun[], poolPressure: boolean): boolean {
+    const drawable = live.filter((run) => !run.fetchIntent);
+    if (this.waveHasPublished && this.radWaveIsRegression(drawable)) return false;
+    if (!this.waveHasPublished) {
+      if (poolPressure) return true;
+      if (this.cacheBytesTotal >= this.cpuCacheBytes) return true;
+    }
+    return !live.some(
+      (run) =>
+        run.fetchIntent === true && !this.cache.has(run.file) && !this.failedFiles.has(run.file),
+    );
+  }
+
+  /** True when `incoming` would put a coarser prefix on screen than the resident cut. */
+  private radWaveIsRegression(incoming: readonly LodRun[]): boolean {
+    if (this.resident.size === 0) return false;
+    const next = this.radWaveCutQuality(incoming);
+    const prev = this.radWaveCutQuality([...this.resident.values()].map((entry) => entry.run));
+    return next.fine < prev.fine || (next.fine === prev.fine && next.count < prev.count);
+  }
+
+  /**
+   * Prefix quality: lower `level` is finer, and a deeper prefix usually draws
+   * more splats. Weighted so a same-count finer cut still outranks a coarser one.
+   */
+  private radWaveCutQuality(runs: readonly LodRun[]): { count: number; fine: number } {
+    let count = 0;
+    let fine = 0;
+    for (const run of runs) {
+      count += run.count;
+      fine += run.count * (32 - run.level);
+    }
+    return { count, fine };
+  }
+
+  /**
+   * Two-phase commit for hierarchical sources that cannot pair a parent with
+   * its children in one swap group (prefix-reader `.rad`).
+   *
+   * Cached replacements upload into inactive ranges; still-fetching prefetch
+   * does not participate. Adds stay hidden until {@link radWaveShouldPublish},
+   * so the first presented cut is the one the stream has actually caught up
+   * to. A tick bound still force-applies if the hold would otherwise last the
+   * whole session.
+   */
+  private applyRadWave(
+    groups: readonly SwapGroup[],
+    live: readonly LodRun[],
+    now: number,
+    pendingFetches: Map<number, ClassicFetchWant>,
+  ): void {
+    let appended = 0;
+    let stagedNow = 0;
+    let poolPressure = false;
+    let awaitingFetch = false;
+    const ready: SwapGroup[] = [];
+
+    for (const group of groups) {
+      if (group.adds.length === 0) {
+        ready.push(group);
+        continue;
+      }
+      const missing = group.adds.filter((run) => {
+        if (this.staged.get(runKey(run))?.uploadedCount === run.count) return false;
+        return !this.cache.has(run.file);
+      });
+      if (missing.length > 0) {
+        awaitingFetch = true;
+        let recoverable = false;
+        for (const run of missing) {
+          if (this.failedFiles.has(run.file)) continue;
+          enqueueClassicFetch(
+            pendingFetches,
+            run.file,
+            classicFetchPhaseForDesired(run, this.scene.source.lodBaseDistance),
+            run,
+          );
+          recoverable = true;
+        }
+        if (recoverable) this.pendingWork = true;
+        continue;
+      }
+      ready.push(group);
+      if (this.groupFullyStaged(group)) continue;
+      if (!this.canStageGroup(group)) {
+        this.pendingWork = true;
+        poolPressure = true;
+        continue;
+      }
+      const allowance = Math.max(0, this.appendCap - appended);
+      if (allowance <= 0) {
+        this.pendingWork = true;
+        continue;
+      }
+      const uploaded = this.stageGroup(group, now, allowance);
+      appended += uploaded;
+      stagedNow += uploaded;
+      if (!this.groupFullyStaged(group)) this.pendingWork = true;
+    }
+
+    const shouldPublish = this.radWaveShouldPublish(live, poolPressure);
+    const readyComplete =
+      !poolPressure &&
+      (!awaitingFetch || (!this.waveHasPublished && shouldPublish)) &&
+      ready.every((group) => group.adds.length === 0 || this.groupFullyStaged(group));
+    const holdingRetires = ready.some((group) => group.removes.length > 0);
+
+    if (!readyComplete) {
+      this.pendingWork = true;
+      if (!holdingRetires) {
+        this.retireHeldTicks = 0;
+        return;
+      }
+      // The published cover is the picture until a later cut is allowed to
+      // swap. Do not bulk-retire it just because discovery is still deepening
+      // or the CPU cache is thrashing.
+      if (this.waveHasPublished && (!shouldPublish || awaitingFetch)) {
+        this.retireHeldTicks = 0;
+        return;
+      }
+      if (
+        this.neverRetireCoverageEarly ||
+        (!poolPressure && this.retireHeldTicks < MAX_RETIRE_HELD_TICKS)
+      ) {
+        this.retireHeldTicks++;
+        return;
+      }
+      this.fetchCountsValue.retiredEarly++;
+      this.commitRadWave(ready, now, true);
+      this.retireHeldTicks = 0;
+      return;
+    }
+
+    // Same split as the per-group staged path: do not combine the last upload
+    // of an oversized group with the active-list switch. Only skip a sort on
+    // that drain frame when the next tick will actually commit — hidden
+    // staging after a published cut must not starve camera sorts, or orbiting
+    // while the stream is still warming looks like the unsorted (noisy) view.
+    if (stagedNow > 0 && ready.some((group) => group.addCount > this.appendCap)) {
+      if (shouldPublish) this.deferNextSortRequest();
+      this.pendingWork = true;
+      this.retireHeldTicks = 0;
+      return;
+    }
+
+    if (!shouldPublish) {
+      this.pendingWork = true;
+      this.retireHeldTicks = 0;
+      return;
+    }
+
+    this.commitRadWave(ready, now, false);
+    this.retireHeldTicks = 0;
+  }
+
+  private groupFullyStaged(group: SwapGroup): boolean {
+    return group.adds.every((run) => this.staged.get(runKey(run))?.uploadedCount === run.count);
+  }
+
+  /**
+   * Activates every fully staged group in `ready` and applies pure removals.
+   * `force` also applyGroups leftovers (after dropping partial staging) so a
+   * stuck wave can still make progress - that is the retiredEarly hole.
+   */
+  private commitRadWave(ready: readonly SwapGroup[], now: number, force: boolean): void {
+    this.waveHasPublished = true;
+    for (const group of ready) {
+      if (group.adds.length === 0) {
+        this.applyGroup(group, now);
+        continue;
+      }
+      if (this.groupFullyStaged(group)) {
+        this.commitStagedGroup(group);
+        continue;
+      }
+      if (!force) continue;
+      for (const run of group.adds) {
+        const key = runKey(run);
+        const entry = this.staged.get(key);
+        if (!entry || entry.uploadedCount === run.count) continue;
+        this.removeRange(entry.handle);
+        this.staged.delete(key);
+      }
+      if (!this.applyGroup(group, now)) this.pendingWork = true;
+    }
   }
 
   /** Returns whether all new rows can coexist with the currently visible region. */
@@ -3446,9 +3722,7 @@ export class StreamedSplatMesh extends SplatMesh {
       if (clamped > 0) this.writeSlabSlots(plan.appends, plan.appendStart, clamped);
     }
     const writeFinishedAt = performance.now();
-    // Draw exactly the used prefix.
-    const resident = Math.min(plan.residentCount, limit);
-    this.setSlabResident(resident);
+    const drawn = Math.min(plan.displayCount ?? plan.residentCount, limit);
     // Freed tail slots leave the active list, so their data is not drawn - but
     // zero it anyway. It costs a fill over the freed range only, and it means a
     // slot that somehow ends up drawn without being written renders nothing
@@ -3457,7 +3731,21 @@ export class StreamedSplatMesh extends SplatMesh {
     const degenerateCount = Math.min(plan.degenerateCount, limit - degenerateStart);
     if (degenerateCount > 0) this.degenerateSlabSlots(degenerateStart, degenerateCount);
     const residentFinishedAt = performance.now();
-    this.pageTableDrawn = resident;
+    // Spark holds `display` until the new mapping is fully paged. The pager
+    // freezes `displayCount` at the last published cut while replacements
+    // stage onto the tail, and only advances it when the worker publishes
+    // (wanted chunks cached, cache full, or camera moved).
+    const presented =
+      plan.displayGeneration !== undefined
+        ? plan.displayGeneration !== this.pageTableDisplayGeneration
+        : drawn !== this.pageTableDrawn;
+    if (presented) {
+      this.setSlabResident(drawn);
+      this.pageTableDrawn = drawn;
+      this.pageTableDisplayGeneration =
+        plan.displayGeneration ?? this.pageTableDisplayGeneration + 1;
+      this.invalidateSort();
+    }
     this.frontierConverged = plan.converged;
     this.pendingFrontierSplats = plan.pendingFrontierSplats ?? 0;
     this.staleResidentSplats = plan.staleResidentSplats ?? 0;
@@ -3497,14 +3785,18 @@ export class StreamedSplatMesh extends SplatMesh {
     // smaller - a band still sized for the target cut would cull them, so the
     // extra budget would buy nothing visible. Scaling by the same ratio keeps
     // the band spanning one LOD level.
-    if (this.frontierBandBase !== null && plan.solvedLimit > 0 && this.pageTableLimit > 0) {
+    if (
+      presented &&
+      this.frontierBandBase !== null &&
+      plan.solvedLimit > 0 &&
+      this.pageTableLimit > 0
+    ) {
       const ratio = Math.min(1, plan.solvedLimit / this.pageTableLimit);
       this.setScreenRadiusBand(
         this.frontierBandBase.min * ratio,
         this.frontierBandBase.max * ratio,
       );
     }
-    this.invalidateSort();
     if (plan.dropped > 0) {
       // The traversal is budget-bounded, so the slab always has room. If it does
       // not, the pool is smaller than the draw budget and part of the frontier is

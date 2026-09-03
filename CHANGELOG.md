@@ -21,10 +21,31 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
-- The demo camera now clips at 1,000 world units instead of 10,000, keeping
-  extreme capture outliers out of the render. Library users remain in control:
-  splat clipping follows the host Three.js camera's live `near` and `far`
-  projection settings.
+- **Prefix-reader `.rad` no longer mixes LOD levels while the stream runs.**
+  Cached replacements stage hidden and the mesh presents only when prefetch
+  chunks are cached (or the CPU cache / pool is full) — the same publish
+  policy as the page-table pager, including skipping chunk 0's overview.
+  After that first presented cut, later swaps are monotonic: a full CPU cache
+  must not retire it for a coarser/partial replacement (that was the
+  sharp↔noisy flicker once the scene appeared). Hidden staging of a later
+  cut no longer skips camera depth-sorts — that made orbiting during the
+  remaining stream look like the unsorted first frame. Prefix `.rad` also
+  uses the same capture-sized cache ceiling as the page-table path, so a
+  lone hotel-scale scene is not capped at 256 MiB while still streaming.
+- **Demo WebGPU sorting defaults to the per-frame counting sorter again.**
+  The demo had been forcing `sortStrategy: 'worker'` to mimic Spark's async
+  cadence; Spark comparison is load speed and LOD quality, not that sort.
+  A 2M-splat orbit waited on an in-flight CPU worker (HUD `sort 0 Hz` /
+  `age` hundreds of ms) and `?sortIntervalMs=0` could not help.
+  `?sort=worker` remains an explicit A/B. WebGPU also no longer uploads an
+  unsorted CPU `splatIndex` on the first streamed commit, which was drawing
+  a few frames of pool order before the GPU permutation stuck.
+- **Page-table `.rad` holds the last complete LOD cut until the frontier
+  has the chunks it asked for.** After the first cover, replacements stage
+  onto an undrawn tail; the drawn prefix swaps only when `touched` is empty,
+  the chunk cache is full, or the camera moves. Publishing every drained
+  intermediate cut was still swapping LOD levels as each chunk landed. The
+  cut search also no longer coarsens `solvedLimit` after a budget clamp.
 - Demo auto-framing now finds a dense detailed region before framing a scene,
   so sparse distant splats cannot open the viewer on an empty view. Wheel and
   free-flight navigation use that same region's scale, preventing outlier

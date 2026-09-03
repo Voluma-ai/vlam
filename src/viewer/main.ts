@@ -1347,12 +1347,16 @@ async function main(): Promise<void> {
 
   const sortParam = params.get('sort');
   const sortStrategy: 'radix' | 'counting' | 'exact' | 'worker' =
-    sortParam === 'radix' || sortParam === 'counting' || sortParam === 'exact'
+    sortParam === 'radix' ||
+    sortParam === 'counting' ||
+    sortParam === 'exact' ||
+    sortParam === 'worker'
       ? sortParam
-      : 'worker';
-  // The stable asynchronous worker mirrors Spark's lower-frequency sort
-  // behavior while WebGPU continues to render. Keep view-axis depth as the
-  // fidelity default; ?sortMetric=radial opts into Spark's rotation-stable key.
+      : 'counting';
+  // WebGPU always uses a GPU sorter unless `?sort=worker` is explicit.
+  // Spark comparison is load speed and LOD quality, never Spark's async
+  // CPU sort cadence — that made a 2M-splat orbit lag hundreds of ms
+  // behind the camera. `?sortMetric=radial` is the rotation-stable key.
   const sortMetric: SplatSortMetric = params.get('sortMetric') === 'radial' ? 'radial' : 'depth';
   // ?budget pins the budget for A/B; otherwise performance mode picks the low
   // one and the library resolves the device default.
