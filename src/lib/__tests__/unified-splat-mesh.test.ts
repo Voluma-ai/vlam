@@ -70,9 +70,8 @@ describe('supportsUnifiedSplatMesh', () => {
 describe('UnifiedSplatMesh', () => {
   it('uses the stable radix sorter when requested', () => {
     const unified = new UnifiedSplatMesh(mockRenderer(), 1, { sortStrategy: 'radix' });
-    const sorterName = (
-      unified as unknown as { sorter: { constructor: { name: string } } }
-    ).sorter.constructor.name;
+    const sorterName = (unified as unknown as { sorter: { constructor: { name: string } } }).sorter
+      .constructor.name;
     expect(sorterName).toBe('RadixSorter');
     unified.dispose();
   });
