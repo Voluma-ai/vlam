@@ -100,14 +100,14 @@ export interface UnifiedSplatMeshOptions {
   /** Composite source colors in display (sRGB) space. Defaults to `false`. */
   srgbOutput?: boolean;
   /**
-   * Global depth-sort strategy. `'exact'` preserves every Float32 depth bit
-   * through a stable radix sort of gathered world-space centers. `'counting'`
-   * remains the lower-cost default for existing callers.
+   * Global depth-sort strategy. `'radix'` provides stable quantized ordering,
+   * while `'exact'` preserves every Float32 depth bit through the same stable
+   * radix pipeline. `'counting'` remains the lower-cost default.
    *
    * @experimental Exact sorting trades two additional radix passes for better
    * ordering in large scenes with dense foliage or overlapping surfaces.
    */
-  sortStrategy?: 'counting' | 'exact';
+  sortStrategy?: 'counting' | 'radix' | 'exact';
   /**
    * Camera-space key used for global ordering. Defaults to `'depth'` for
    * compatibility; `'radial'` matches Spark's rotation-invariant ordering.
@@ -303,8 +303,12 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       sourceIndexAttribute: this.workSourceIndex,
     };
     this.sorter =
-      options.sortStrategy === 'exact'
-        ? new RadixSorter({ ...sortInputs, exactDepth: true, sortMetric: this.sortMetric })
+      options.sortStrategy === 'radix' || options.sortStrategy === 'exact'
+        ? new RadixSorter({
+            ...sortInputs,
+            exactDepth: options.sortStrategy === 'exact',
+            sortMetric: this.sortMetric,
+          })
         : new ComputeSorter({ ...sortInputs, sortMetric: this.sortMetric });
     this.frustumCulled = false;
     this.matrixAutoUpdate = false;
