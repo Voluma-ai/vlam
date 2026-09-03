@@ -380,7 +380,7 @@ export interface SplatMaterialBuildInputs {
      * swap via the TextureNode / rebuild when the mesh updates `setRelighting`.
      * Display fragment only; pick ignores this.
      */
-    relightMap: THREE.Texture;
+    relightMap: THREE.Texture | null;
     /** `0` = baked color only; `1` = full modulate. Live uniform. */
     relightBlend: FloatUniform;
     /** Scales lit RGB (PlayCanvas default ~2 for 0.5 gray proxy). Live. */
@@ -726,41 +726,62 @@ export function applySplatMaterialGraph(
       const dRaw = stack.scaleSquared === null ? dQ : dQ.mul(stack.scaleSquared);
       const bRaw = stack.scaleSquared === null ? bQ : bQ.mul(stack.scaleSquared);
 
-      // Core projected-2D DoF (Spark splatVertex.glsl). Aperture maps through
-      // the live focus plane, so pulling focus toward the camera widens the
-      // angle and softens the whole scene - the authored effect.
-      const depth = viewCenter.z.negate().max(1e-4);
-      const focus = uniforms.dofFocusDistance.max(1e-4);
-      const halfApertureAngle = uniforms.dofAperture.max(0).mul(0.5).div(focus).atan();
-      // Spark's falloff (`/depth`). Unbounded near the camera; MAX_DOF_VARIANCE
-      // below is the fill-rate guard, exactly as Spark's maxPixelRadius is.
-      const focusBlur = depth.sub(focus).abs().div(depth);
-      const apertureRadius = uniforms.focal.x.mul(halfApertureAngle.tan());
-      const cocRadiusPx = focusBlur.mul(apertureRadius);
-      const cocVar = cocRadiusPx.mul(cocRadiusPx).min(float(MAX_DOF_VARIANCE));
-
       // XGRIDS classic LCC uses a 0.1 px² low-pass with integral-preserving
       // opacity compensation. Other formats retain the 3DGS 0.3 px² path.
       const lowPassVariance = settings.projectedFilterProfile === 'lcc' ? 0.1 : 0.3;
-      const a = aRaw.add(lowPassVariance).add(cocVar);
-      const d = dRaw.add(lowPassVariance).add(cocVar);
+      const a = aRaw.add(lowPassVariance).toVar();
+      const d = dRaw.add(lowPassVariance).toVar();
       const b = bRaw;
 
       // Mass conservation: √(det Σ / det(Σ + dilation)). Classic LCC always
       // compensates its low-pass; the standard path retains the existing
       // antialias-controlled compatibility behavior. Screen-capped isotropic
       // points skip the fade.
-      const detBlur = a.mul(d).sub(b.mul(b)).max(1e-9);
-      const detForFade =
-        settings.antialias || settings.projectedFilterProfile === 'lcc'
-          ? aRaw.mul(dRaw).sub(bRaw.mul(bRaw)).max(0.0)
-          : aRaw.add(lowPassVariance).mul(dRaw.add(lowPassVariance)).sub(bRaw.mul(bRaw)).max(1e-9);
-      const mipFade = detForFade.div(detBlur).sqrt();
-      opacityCompensation.assign(
-        stack.isotropicCovarianceMix === null
-          ? mipFade
-          : mix(mipFade, float(1), stack.isotropicCovarianceMix),
-      );
+      const detBlur = a.mul(d).sub(b.mul(b)).max(1e-9).toVar();
+      if (settings.antialias || settings.projectedFilterProfile === 'lcc') {
+        const detForFade = aRaw.mul(dRaw).sub(bRaw.mul(bRaw)).max(0.0);
+        const mipFade = detForFade.div(detBlur).sqrt();
+        opacityCompensation.assign(
+          stack.isotropicCovarianceMix === null
+            ? mipFade
+            : mix(mipFade, float(1), stack.isotropicCovarianceMix),
+        );
+      }
+
+      // Aperture is a live uniform, so this remains a shader branch. With the
+      // default zero aperture, depth/atan/CoC work is absent from the hot path
+      // while the low-pass behavior above remains unchanged.
+      If(uniforms.dofAperture.greaterThan(0), () => {
+        // Core projected-2D DoF (Spark splatVertex.glsl). Aperture maps through
+        // the live focus plane, so pulling focus toward the camera widens the
+        // angle and softens the whole scene - the authored effect.
+        const depth = viewCenter.z.negate().max(1e-4);
+        const focus = uniforms.dofFocusDistance.max(1e-4);
+        const halfApertureAngle = uniforms.dofAperture.mul(0.5).div(focus).atan();
+        // Spark's falloff (`/depth`). Unbounded near the camera; MAX_DOF_VARIANCE
+        // below is the fill-rate guard, exactly as Spark's maxPixelRadius is.
+        const focusBlur = depth.sub(focus).abs().div(depth);
+        const apertureRadius = uniforms.focal.x.mul(halfApertureAngle.tan());
+        const cocRadiusPx = focusBlur.mul(apertureRadius);
+        const cocVar = cocRadiusPx.mul(cocRadiusPx).min(float(MAX_DOF_VARIANCE));
+        a.assign(aRaw.add(lowPassVariance).add(cocVar));
+        d.assign(dRaw.add(lowPassVariance).add(cocVar));
+        detBlur.assign(a.mul(d).sub(b.mul(b)).max(1e-9));
+        const detForFade =
+          settings.antialias || settings.projectedFilterProfile === 'lcc'
+            ? aRaw.mul(dRaw).sub(bRaw.mul(bRaw)).max(0.0)
+            : aRaw
+                .add(lowPassVariance)
+                .mul(dRaw.add(lowPassVariance))
+                .sub(bRaw.mul(bRaw))
+                .max(1e-9);
+        const fade = detForFade.div(detBlur).sqrt();
+        opacityCompensation.assign(
+          stack.isotropicCovarianceMix === null
+            ? fade
+            : mix(fade, float(1), stack.isotropicCovarianceMix),
+        );
+      });
 
       // Eigen-decomposition of the 2×2 covariance gives the ellipse axes.
       // λ is variance in px², so √λ is the standard deviation in pixels;
@@ -978,36 +999,49 @@ export function applySplatMaterialGraph(
       }
       const alpha = opacity.mul(opacityCompensation);
       // PlayCanvas-style screen-space relight: sample the host's lit proxy RT
-      // at this fragment, then multiply baked RGB. `blend === 0` leaves color
-      // unchanged (placeholder map is fine). Pick path does not use this.
+      // at this fragment, then multiply baked RGB. Pick path does not use this.
       // Softness > 0 box-filters the map. Average RGB **weighted by alpha** so
       // uncovered clear pixels (A=0) do not pull coverage edges toward black —
       // that used to draw a dark outline of every collision triangle.
-      const litCenter = tslTexture(uniforms.relightMap, screenUV);
-      const ox = uniforms.relightSoftness.div(uniforms.viewport.x.max(1));
-      const oy = uniforms.relightSoftness.div(uniforms.viewport.y.max(1));
-      const s0 = litCenter;
-      const s1 = tslTexture(uniforms.relightMap, screenUV.add(vec2(ox, 0)));
-      const s2 = tslTexture(uniforms.relightMap, screenUV.add(vec2(ox.negate(), 0)));
-      const s3 = tslTexture(uniforms.relightMap, screenUV.add(vec2(0, oy)));
-      const s4 = tslTexture(uniforms.relightMap, screenUV.add(vec2(0, oy.negate())));
-      const wSum = s0.a.add(s1.a).add(s2.a).add(s3.a).add(s4.a).max(1e-4);
-      const rgbSoft = s0.rgb
-        .mul(s0.a)
-        .add(s1.rgb.mul(s1.a))
-        .add(s2.rgb.mul(s2.a))
-        .add(s3.rgb.mul(s3.a))
-        .add(s4.rgb.mul(s4.a))
-        .div(wSum);
-      const aSoft = wSum.mul(0.2);
-      const litSoft = vec4(rgbSoft, aSoft);
-      const lit = uniforms.relightSoftness.greaterThan(0.5).select(litSoft, litCenter);
-      const factor = mix(
-        vec3(uniforms.relightBackground),
-        lit.rgb.mul(uniforms.relightBrightness),
-        lit.a,
-      );
-      const rgb = mix(splatColor.rgb, splatColor.rgb.mul(factor), uniforms.relightBlend);
+      const rgb = splatColor.rgb.toVar();
+      const relightMap = uniforms.relightMap;
+      if (relightMap !== null) {
+        // Blend is live, so a host can disable relighting without rebuilding;
+        // the uniform branch also avoids map reads while it is disabled.
+        If(uniforms.relightBlend.greaterThan(0), () => {
+          const litCenter = tslTexture(relightMap, screenUV);
+          const factor = mix(
+            vec3(uniforms.relightBackground),
+            litCenter.rgb.mul(uniforms.relightBrightness),
+            litCenter.a,
+          );
+          If(uniforms.relightSoftness.greaterThan(0.5), () => {
+            const ox = uniforms.relightSoftness.div(uniforms.viewport.x.max(1));
+            const oy = uniforms.relightSoftness.div(uniforms.viewport.y.max(1));
+            const s1 = tslTexture(relightMap, screenUV.add(vec2(ox, 0)));
+            const s2 = tslTexture(relightMap, screenUV.add(vec2(ox.negate(), 0)));
+            const s3 = tslTexture(relightMap, screenUV.add(vec2(0, oy)));
+            const s4 = tslTexture(relightMap, screenUV.add(vec2(0, oy.negate())));
+            const wSum = litCenter.a.add(s1.a).add(s2.a).add(s3.a).add(s4.a).max(1e-4);
+            const rgbSoft = litCenter.rgb
+              .mul(litCenter.a)
+              .add(s1.rgb.mul(s1.a))
+              .add(s2.rgb.mul(s2.a))
+              .add(s3.rgb.mul(s3.a))
+              .add(s4.rgb.mul(s4.a))
+              .div(wSum);
+            const softFactor = mix(
+              vec3(uniforms.relightBackground),
+              rgbSoft.mul(uniforms.relightBrightness),
+              wSum.mul(0.2),
+            );
+            rgb.assign(mix(splatColor.rgb, splatColor.rgb.mul(softFactor), uniforms.relightBlend));
+          });
+          If(uniforms.relightSoftness.lessThanEqual(0.5), () => {
+            rgb.assign(mix(splatColor.rgb, splatColor.rgb.mul(factor), uniforms.relightBlend));
+          });
+        });
+      }
       return vec4(rgb.mul(alpha), alpha); // premultiplied alpha
     })();
 
@@ -1021,6 +1055,9 @@ export function applySplatMaterialGraph(
     material.blendDst = THREE.OneMinusSrcAlphaFactor;
     material.blendSrcAlpha = THREE.OneFactor;
     material.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
+    // Splat billboards are symmetric; avoid three.js's default two-pass
+    // DoubleSide submission for transparent materials.
+    material.forceSinglePass = true;
     // Splat colors are already authored for display; scene exposure should not
     // re-grade them, but the renderer still performs the final sRGB encoding.
     material.toneMapped = false;

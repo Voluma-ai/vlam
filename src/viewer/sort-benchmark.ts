@@ -38,17 +38,26 @@ export type SlowFrameAttribution = {
 
 export type FrameBenchmarkResult = Record<string, number | SlowFrameAttribution[]>;
 
+/** Per-frame renderer counters kept separate from CPU frame timing. */
+export type FrameBenchmarkStats = {
+  /** Three.js render submissions in the frame that just completed. */
+  renderDrawCalls?: number;
+};
+
 /** Collects raw animation-loop timing after a configurable warm-up. */
 export function createFrameBenchmark(warmupSeconds: number, sampleSeconds: number) {
   let startedAt: number | null = null;
   let previous: number | null = null;
   const durations: number[] = [];
   const eventsByFrame: StreamedSplatPerformanceEvent[][] = [];
+  const renderDrawCalls: number[] = [];
   let pendingEvents: StreamedSplatPerformanceEvent[] = [];
+  let pendingStats: FrameBenchmarkStats = {};
   let result: FrameBenchmarkResult | null = null;
   const record = (
     timestamp: number,
     events: readonly StreamedSplatPerformanceEvent[] = [],
+    stats: FrameBenchmarkStats = {},
   ): FrameBenchmarkResult | null => {
     startedAt ??= timestamp;
     const elapsed = timestamp - startedAt;
@@ -62,9 +71,13 @@ export function createFrameBenchmark(warmupSeconds: number, sampleSeconds: numbe
       // A mutation submitted during the previous frame affects the interval
       // ending at this rAF timestamp, not the interval that preceded it.
       eventsByFrame.push(pendingEvents);
+      if (pendingStats.renderDrawCalls !== undefined) {
+        renderDrawCalls.push(pendingStats.renderDrawCalls);
+      }
     }
     previous = timestamp;
     pendingEvents = [...events];
+    pendingStats = stats;
     if (elapsed < (warmupSeconds + sampleSeconds) * 1000 || result) return result;
     const sorted = [...durations].sort((a, b) => a - b);
     const mean = durations.reduce((sum, value) => sum + value, 0) / durations.length;
@@ -80,6 +93,7 @@ export function createFrameBenchmark(warmupSeconds: number, sampleSeconds: numbe
     const swapEvents = eventsByFrame.flat();
     const meanOf = (values: readonly number[]): number =>
       values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
+    const sortedDrawCalls = [...renderDrawCalls].sort((a, b) => a - b);
     const worstFrameMs = sorted.at(-1) ?? 0;
     const p99FrameMs = at(sorted, 0.99);
     const slowFrames = durations
@@ -115,6 +129,9 @@ export function createFrameBenchmark(warmupSeconds: number, sampleSeconds: numbe
       onePercentLowFps: p99FrameMs > 0 ? 1000 / p99FrameMs : 0,
       p95FrameMs: at(sorted, 0.95),
       p99FrameMs,
+      renderDrawCallsMean: meanOf(renderDrawCalls),
+      renderDrawCallsP95: at(sortedDrawCalls, 0.95),
+      renderDrawCallsMax: at(sortedDrawCalls, 1),
       worstFrameMs,
       swapTickCount: swapEvents.length,
       swapFrameCount: swapDurations.length,

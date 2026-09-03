@@ -11,6 +11,7 @@ const MAX_UNIFIED_SPLAT_RADIUS_PX = 256;
 import {
   Discard,
   Fn,
+  If,
   cameraProjectionMatrix,
   float,
   instanceIndex,
@@ -60,7 +61,7 @@ export function createWorkBufferMaterial(options: {
    * Proxy-mesh relight map (RGB = lit, A = coverage). Display only.
    * Host swaps the texture object and rebuilds when enabling/changing map.
    */
-  relightMap: THREE.Texture;
+  relightMap: THREE.Texture | null;
   relightBlend: FloatUniform;
   relightBrightness: FloatUniform;
   relightBackground: FloatUniform;
@@ -122,23 +123,11 @@ export function createWorkBufferMaterial(options: {
     const dRaw = u2.dot(covariance.mul(u2));
     const bRaw = u1.dot(covariance.mul(u2));
 
-    const depth = viewCenter.z.negate().max(1e-4);
-    const focus = options.dofFocusDistance.max(1e-4);
-    // Aperture maps through the live focus plane (Spark host-helper parity), so
-    // a near focus plane widens the angle and softens the whole scene.
-    const halfApertureAngle = options.dofAperture.max(0).mul(0.5).div(focus).atan();
-    // Spark's falloff (`/depth`). Unbounded near the camera; MAX_DOF_VARIANCE
-    // below is the fill-rate guard, exactly as Spark's maxPixelRadius is.
-    const focusBlur = depth.sub(focus).abs().div(depth);
-    const apertureRadius = options.focal.x.mul(halfApertureAngle.tan());
-    const cocRadiusPx = focusBlur.mul(apertureRadius);
-    const cocVar = cocRadiusPx.mul(cocRadiusPx).min(float(MAX_DOF_VARIANCE));
-
-    const a = aRaw.add(options.projectedLowPassVariance).add(cocVar);
-    const d = dRaw.add(options.projectedLowPassVariance).add(cocVar);
+    const a = aRaw.add(options.projectedLowPassVariance).toVar();
+    const d = dRaw.add(options.projectedLowPassVariance).toVar();
     const b = bRaw;
     const isoMix = isotropicMix.element(workIndex);
-    const detBlur = a.mul(d).sub(b.mul(b)).max(1e-9);
+    const detBlur = a.mul(d).sub(b.mul(b)).max(1e-9).toVar();
     // Classic LCC always compensates its 0.1 px² low-pass. Standard sources
     // retain their antialias-controlled 0.3 px² compatibility behavior.
     const detRaw = aRaw.mul(dRaw).sub(bRaw.mul(bRaw)).max(0);
@@ -147,13 +136,34 @@ export function createWorkBufferMaterial(options: {
       .mul(dRaw.add(options.projectedLowPassVariance))
       .sub(bRaw.mul(bRaw))
       .max(1e-9);
-    const mipFade = detRaw.div(detBlur).sqrt();
-    const dofOnlyFade = detBase.div(detBlur).sqrt();
     const compensate = options.antialias.max(options.compensateProjectedLowPass);
-    const fade = mix(dofOnlyFade, mipFade, compensate);
-    // Screen-capped isotropic points must not inherit the mip-filter opacity
-    // fade - it was derived from the pre-cap footprint and washes out dots.
-    opacityCompensation.assign(mix(fade, float(1), isoMix));
+    // With both compensation controls at zero this result is identically one;
+    // keep that default path free of determinant/square-root work.
+    opacityCompensation.assign(float(1));
+    If(compensate.greaterThan(0), () => {
+      const mipFade = detRaw.div(detBlur).sqrt();
+      const fade = mix(float(1), mipFade, compensate);
+      opacityCompensation.assign(mix(fade, float(1), isoMix));
+    });
+    // Aperture is live, so this shader branch preserves animated setters while
+    // keeping the default zero-aperture path free of depth/atan/CoC math.
+    If(options.dofAperture.greaterThan(0), () => {
+      const depth = viewCenter.z.negate().max(1e-4);
+      const focus = options.dofFocusDistance.max(1e-4);
+      // Aperture maps through the live focus plane (Spark host-helper parity).
+      const halfApertureAngle = options.dofAperture.mul(0.5).div(focus).atan();
+      const focusBlur = depth.sub(focus).abs().div(depth);
+      const apertureRadius = options.focal.x.mul(halfApertureAngle.tan());
+      const cocRadiusPx = focusBlur.mul(apertureRadius);
+      const cocVar = cocRadiusPx.mul(cocRadiusPx).min(float(MAX_DOF_VARIANCE));
+      a.assign(aRaw.add(options.projectedLowPassVariance).add(cocVar));
+      d.assign(dRaw.add(options.projectedLowPassVariance).add(cocVar));
+      detBlur.assign(a.mul(d).sub(b.mul(b)).max(1e-9));
+      const dofOnlyFade = detBase.div(detBlur).sqrt();
+      const mipFade = detRaw.div(detBlur).sqrt();
+      const fade = mix(dofOnlyFade, mipFade, compensate);
+      opacityCompensation.assign(mix(fade, float(1), isoMix));
+    });
     const mid = a.add(d).mul(0.5);
     const radius = vec2(a.sub(d).mul(0.5), b).length();
     let lambda1 = mid.add(radius);
@@ -232,31 +242,43 @@ export function createWorkBufferMaterial(options: {
     const merged = g.oneMinus().pow(aExp).oneMinus();
     const opacity = workColor.a.greaterThan(1).select(merged, g.mul(workColor.a));
     const alpha = opacity.mul(opacityCompensation).mul(displayOpacity);
-    const litCenter = tslTexture(options.relightMap, screenUV);
-    const ox = options.relightSoftness.div(options.viewport.x.max(1));
-    const oy = options.relightSoftness.div(options.viewport.y.max(1));
-    const s0 = litCenter;
-    const s1 = tslTexture(options.relightMap, screenUV.add(vec2(ox, 0)));
-    const s2 = tslTexture(options.relightMap, screenUV.add(vec2(ox.negate(), 0)));
-    const s3 = tslTexture(options.relightMap, screenUV.add(vec2(0, oy)));
-    const s4 = tslTexture(options.relightMap, screenUV.add(vec2(0, oy.negate())));
-    const wSum = s0.a.add(s1.a).add(s2.a).add(s3.a).add(s4.a).max(1e-4);
-    const rgbSoft = s0.rgb
-      .mul(s0.a)
-      .add(s1.rgb.mul(s1.a))
-      .add(s2.rgb.mul(s2.a))
-      .add(s3.rgb.mul(s3.a))
-      .add(s4.rgb.mul(s4.a))
-      .div(wSum);
-    const aSoft = wSum.mul(0.2);
-    const litSoft = vec4(rgbSoft, aSoft);
-    const lit = options.relightSoftness.greaterThan(0.5).select(litSoft, litCenter);
-    const factor = mix(
-      vec3(options.relightBackground),
-      lit.rgb.mul(options.relightBrightness),
-      lit.a,
-    );
-    const rgb = mix(workColor.rgb, workColor.rgb.mul(factor), options.relightBlend);
+    const rgb = workColor.rgb.toVar();
+    const relightMap = options.relightMap;
+    if (relightMap !== null) {
+      If(options.relightBlend.greaterThan(0), () => {
+        const litCenter = tslTexture(relightMap, screenUV);
+        const factor = mix(
+          vec3(options.relightBackground),
+          litCenter.rgb.mul(options.relightBrightness),
+          litCenter.a,
+        );
+        If(options.relightSoftness.greaterThan(0.5), () => {
+          const ox = options.relightSoftness.div(options.viewport.x.max(1));
+          const oy = options.relightSoftness.div(options.viewport.y.max(1));
+          const s1 = tslTexture(relightMap, screenUV.add(vec2(ox, 0)));
+          const s2 = tslTexture(relightMap, screenUV.add(vec2(ox.negate(), 0)));
+          const s3 = tslTexture(relightMap, screenUV.add(vec2(0, oy)));
+          const s4 = tslTexture(relightMap, screenUV.add(vec2(0, oy.negate())));
+          const wSum = litCenter.a.add(s1.a).add(s2.a).add(s3.a).add(s4.a).max(1e-4);
+          const rgbSoft = litCenter.rgb
+            .mul(litCenter.a)
+            .add(s1.rgb.mul(s1.a))
+            .add(s2.rgb.mul(s2.a))
+            .add(s3.rgb.mul(s3.a))
+            .add(s4.rgb.mul(s4.a))
+            .div(wSum);
+          const softFactor = mix(
+            vec3(options.relightBackground),
+            rgbSoft.mul(options.relightBrightness),
+            wSum.mul(0.2),
+          );
+          rgb.assign(mix(workColor.rgb, workColor.rgb.mul(softFactor), options.relightBlend));
+        });
+        If(options.relightSoftness.lessThanEqual(0.5), () => {
+          rgb.assign(mix(workColor.rgb, workColor.rgb.mul(factor), options.relightBlend));
+        });
+      });
+    }
     return vec4(rgb.mul(alpha), alpha);
   })();
   material.transparent = true;
@@ -268,6 +290,9 @@ export function createWorkBufferMaterial(options: {
   material.blendDst = THREE.OneMinusSrcAlphaFactor;
   material.blendSrcAlpha = THREE.OneFactor;
   material.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
+  // The billboard is symmetric; avoid three.js's default two-pass DoubleSide
+  // submission for transparent materials.
+  material.forceSinglePass = true;
   material.toneMapped = false;
   return material;
 }

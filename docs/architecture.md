@@ -20,7 +20,7 @@ directory name and `package.json` disagree, trust `package.json`.
 | Command | What it does |
 | --- | --- |
 | `npm install` | install dependencies (also registers lint + typecheck + docs:check git hooks) |
-| `npm run dev` | VitePress docs site → http://localhost:5170 (port pinned; interactive viewer at `/demo/`, harnesses at `/chunk-harness.html` / `/unified-harness.html` / `/rad-parity-harness.html`) |
+| `npm run dev` | VitePress docs site → http://localhost:5170 (port pinned; interactive viewer at `/demo/`, harnesses at `/chunk-harness.html` / `/unified-harness.html` / `/rad-parity-harness.html`, settled benchmark at `/render-benchmark.html`) |
 | `npm run build:site` | docs site + viewer + TypeDoc HTML → `dist-site/` |
 | `npm run build:lib` | library ES build + `.d.ts` → `dist/` |
 | `npm run build` | site + library |
@@ -42,6 +42,7 @@ src/
  unified-harness.ts / .html UnifiedSplatMesh GPU harness (`/unified-harness.html`)
  rad-parity-harness.ts / .html Opt-in streamed `.rad` direct/unified screenshot run
  sort-benchmark.ts frame/sort timing rig behind ?benchmarkSeconds
+ render-benchmark.html / .ts settled plain-SplatMesh device benchmark
  lib/ the published library ("@voluma/vlam" on npm); folders match package
       subpaths (each `index.ts` is the published entry)
  core/ → `@voluma/vlam` (SplatMesh, MergedSplatMesh, renderer, sort)

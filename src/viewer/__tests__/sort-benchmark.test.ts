@@ -24,14 +24,17 @@ describe('createFrameBenchmark swap attribution', () => {
   it('attributes a mutation to the following frame interval', () => {
     const benchmark = createFrameBenchmark(0, 0.1);
     expect(benchmark.record(0)).toBeNull();
-    expect(benchmark.record(10, [swapEvent()])).toBeNull();
-    expect(benchmark.record(60)).toBeNull();
-    const result = benchmark.record(100);
+    expect(benchmark.record(10, [swapEvent()], { renderDrawCalls: 1 })).toBeNull();
+    expect(benchmark.record(60, [], { renderDrawCalls: 1 })).toBeNull();
+    const result = benchmark.record(100, [], { renderDrawCalls: 1 });
 
     expect(result).toMatchObject({
       sampleCount: 3,
       minimumFps: 20,
       onePercentLowFps: 20,
+      renderDrawCallsMean: 1,
+      renderDrawCallsP95: 1,
+      renderDrawCallsMax: 1,
       swapTickCount: 1,
       swapFrameCount: 1,
       swapMeanFrameMs: 50,

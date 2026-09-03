@@ -41,6 +41,7 @@ describe('createWorkBufferMaterial', () => {
     expect(material.transparent).toBe(true);
     expect(material.depthWrite).toBe(false);
     expect(material.side).toBe(THREE.DoubleSide);
+    expect(material.forceSinglePass).toBe(true);
     expect(material.blending).toBe(THREE.CustomBlending);
     expect(material.blendSrc).toBe(THREE.OneFactor);
     expect(material.blendDst).toBe(THREE.OneMinusSrcAlphaFactor);

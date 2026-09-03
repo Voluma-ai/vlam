@@ -143,14 +143,29 @@ function monotonicallyDecreasing(values: number[]): boolean {
 }
 
 async function run(): Promise<void> {
+  const params = new URLSearchParams(location.search);
+  const effectsCheck = params.get('effects-check') === '1';
   // requireWebGpu: the harness's pixel gates are meaningless on WebGL2, and an
   // owned device keeps the backend in core mode (three requests none of the
   // adapter's features on its own path, so it lands in compatibility mode).
-  const renderer = await createSplatRenderer({ antialias: false, requireWebGpu: true });
+  const renderer = await createSplatRenderer({
+    antialias: false,
+    requireWebGpu: !effectsCheck,
+    forceWebGL: effectsCheck && params.get('backend') === 'webgl',
+  });
   renderer.setSize(SIZE, SIZE, false);
   renderer.setClearColor(0x000000, 1);
   document.body.append(renderer.domElement);
   await renderer.init();
+  if (effectsCheck) {
+    const { verifyRenderEffects } = await import('./render-effects-check');
+    const result = await verifyRenderEffects(renderer);
+    if (status) status.textContent = JSON.stringify(result, null, 2);
+    renderer.dispose();
+    renderer.domElement.remove();
+    if (!result.passed) throw new Error('Render effect pixel comparison failed.');
+    return;
+  }
   if (!supportsUnifiedSplatMesh(renderer)) {
     throw new Error('Unified renderer GPU harness requires a WebGPU backend.');
   }

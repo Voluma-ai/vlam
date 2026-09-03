@@ -4,6 +4,11 @@ PlayCanvas-style **screen-space** relighting for Gaussian splats: render a
 triangle **proxy** into an RGBA target, then multiply that onto baked splat
 color in the display fragment.
 
+When relighting is disabled (the default), VLAM! does not bind or sample a
+relighting texture in the splat display shader. Enabling a map rebuilds the
+display graph once; changing blend, brightness, background, or softness keeps
+the existing live-uniform behavior.
+
 This is **not** a [`SplatModifier`](effects-and-modifiers.md). Modifiers run
 per splat in the vertex / gather stage; coverage is per pixel. Relighting is
 a draw-time material feature, same class as `SplatMesh.setDepthOfField`.

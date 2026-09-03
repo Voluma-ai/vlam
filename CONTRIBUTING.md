@@ -85,11 +85,17 @@ output. Pull requests have no description template; write what the change does.
 
 [`src/viewer/chunk-harness.html`](src/viewer/chunk-harness.html),
 [`src/viewer/unified-harness.html`](src/viewer/unified-harness.html), and
-[`src/viewer/rad-parity-harness.html`](src/viewer/rad-parity-harness.html)
+[`src/viewer/rad-parity-harness.html`](src/viewer/rad-parity-harness.html), plus
+[`src/viewer/render-benchmark.html`](src/viewer/render-benchmark.html),
 are standalone browser pages for poking at one subsystem in isolation. They are
-served by `npm run dev` at `/chunk-harness.html`, `/unified-harness.html`, and
-`/rad-parity-harness.html`. The RAD parity page is opt-in (`?url=` to a
-`.rad`); missing remote assets must not fail CI.
+served by `npm run dev` at `/chunk-harness.html`, `/unified-harness.html`,
+`/rad-parity-harness.html`, and `/render-benchmark.html`. The RAD parity page is
+opt-in (`?url=` to a `.rad`); missing remote assets must not fail CI. The render
+benchmark uses a fixed 800×600 canvas and reports settled frame percentiles, CPU
+render-submit time, sampled GPU timestamps, and separate total/splat draw
+submissions as downloadable JSON. Its screenshot remains available after GPU
+resources are released. See [render benchmark instructions](docs/render-benchmark.md)
+for repeatable baseline comparisons and the Mac validation procedure.
 
 ## Ground rules (the non-negotiables)
 

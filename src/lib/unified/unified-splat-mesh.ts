@@ -5,7 +5,6 @@ import { RadixSorter } from '../core/radix-sorter';
 import { clampDepthOfFieldSettings, type DepthOfFieldSettings } from '../core/depth-of-field';
 import {
   clampRelightingSettings,
-  createPlaceholderRelightTexture,
   DEFAULT_RELIGHT_BACKGROUND,
   DEFAULT_RELIGHT_BRIGHTNESS,
   DEFAULT_RELIGHT_SOFTNESS,
@@ -191,8 +190,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   private readonly compensateProjectedLowPass: FloatUniform;
   private readonly dofFocusDistance: FloatUniform;
   private readonly dofAperture: FloatUniform;
-  private readonly relightPlaceholder: THREE.DataTexture;
-  private relightMap: THREE.Texture;
+  private relightMap: THREE.Texture | null = null;
   private readonly relightBlend: FloatUniform;
   private readonly relightBrightness: FloatUniform;
   private readonly relightBackground: FloatUniform;
@@ -230,7 +228,6 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     const compensateProjectedLowPass = uniform(0);
     const dofFocusDistance = uniform(10);
     const dofAperture = uniform(0);
-    const relightPlaceholder = createPlaceholderRelightTexture();
     const relightBlend = uniform(0);
     const relightBrightness = uniform(DEFAULT_RELIGHT_BRIGHTNESS);
     const relightBackground = uniform(DEFAULT_RELIGHT_BACKGROUND);
@@ -263,7 +260,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         compensateProjectedLowPass,
         dofFocusDistance,
         dofAperture,
-        relightMap: relightPlaceholder,
+        relightMap: null,
         relightBlend,
         relightBrightness,
         relightBackground,
@@ -282,8 +279,6 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.compensateProjectedLowPass = compensateProjectedLowPass;
     this.dofFocusDistance = dofFocusDistance;
     this.dofAperture = dofAperture;
-    this.relightPlaceholder = relightPlaceholder;
-    this.relightMap = relightPlaceholder;
     this.relightBlend = relightBlend;
     this.relightBrightness = relightBrightness;
     this.relightBackground = relightBackground;
@@ -458,8 +453,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.assertNotDisposed('setRelighting');
     if (options === null) {
       this.relightBlend.value = 0;
-      if (this.relightMap !== this.relightPlaceholder) {
-        this.relightMap = this.relightPlaceholder;
+      if (this.relightMap !== null) {
+        this.relightMap = null;
         this.rebuildDrawMaterial();
       }
       return;
@@ -835,7 +830,6 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.sorter.dispose();
     this.geometry.dispose();
     (this.material as THREE.Material).dispose();
-    this.relightPlaceholder.dispose();
     // The work buffer, its source-index list and the draw-order buffer are
     // storage attributes outside the geometry, so nothing above frees their
     // GPU buffers - ~72 B per work slot leaked per scene swap without this.

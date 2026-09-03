@@ -39,7 +39,6 @@ import { SplatPicker } from './splat-mesh-picking';
 import { clampDepthOfFieldSettings, type DepthOfFieldSettings } from './depth-of-field';
 import {
   clampRelightingSettings,
-  createPlaceholderRelightTexture,
   DEFAULT_RELIGHT_BACKGROUND,
   DEFAULT_RELIGHT_BRIGHTNESS,
   DEFAULT_RELIGHT_SOFTNESS,
@@ -313,8 +312,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * Proxy-mesh screen-space relighting (live uniforms + map). `blend === 0`
    * disables. Swapping the map rebuilds the material graph once.
    */
-  private readonly relightPlaceholder = createPlaceholderRelightTexture();
-  private relightMap: THREE.Texture = this.relightPlaceholder;
+  private relightMap: THREE.Texture | null = null;
   private readonly relightBlend = uniform(0);
   private readonly relightBrightness = uniform(DEFAULT_RELIGHT_BRIGHTNESS);
   private readonly relightBackground = uniform(DEFAULT_RELIGHT_BACKGROUND);
@@ -1364,7 +1362,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   /**
    * PlayCanvas-style proxy-mesh relighting. Multiplies baked splat color in the
    * **display** fragment by a screen-space sample of `map` (RGB = lit proxy,
-   * A = coverage). Pass `null` to disable (`blend → 0`, placeholder map).
+   * A = coverage). Pass `null` to disable (`blend → 0` and remove map
+   * sampling from the display shader).
    *
    * Blend / brightness / background are live uniforms (no rebuild). Changing
    * the map texture identity rebuilds the material once. Does not affect the
@@ -1373,8 +1372,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   setRelighting(options: RelightingSettings | null): void {
     if (options === null) {
       this.relightBlend.value = 0;
-      if (this.relightMap !== this.relightPlaceholder) {
-        this.relightMap = this.relightPlaceholder;
+      if (this.relightMap !== null) {
+        this.relightMap = null;
         this.rebuildGraph();
       }
       return;
@@ -1869,7 +1868,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.geometry.dispose();
     (this.material as THREE.Material).dispose();
     this.picker.dispose();
-    this.relightPlaceholder.dispose();
     // Leaving the pool releases this mesh's rows: `compact` accounts for every
     // row against a registered tenant, so a departing one must take its
     // allocations with it.

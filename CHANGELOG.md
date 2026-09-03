@@ -19,6 +19,20 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Performance
+
+- Rendering benchmarks now default to a stationary camera, restart after hidden
+  intervals, drain GPU timestamps during measurement, and retain screenshots
+  after renderer disposal. Reports distinguish sampled GPU timings and actual
+  splat draws from total draw calls and include comparison settings and versions.
+
+- **Default splat rendering no longer pays for redundant work.** Transparent
+  double-sided splat billboards use Three.js's single-pass path, the default
+  display graph omits relighting texture reads until a map is configured, and
+  zero-aperture depth of field skips its projection math. Appearance, blending,
+  live effect setters, and the public API are unchanged. The frame benchmark
+  JSON now records Three.js render submissions separately from CPU frame time.
+
 ### Fixed
 
 - **Prefix-reader `.rad` no longer mixes LOD levels while the stream runs.**
