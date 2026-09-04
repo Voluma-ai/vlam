@@ -24,7 +24,7 @@ function dataset(overrides: Partial<SplatDatasetSource> = {}): SplatDatasetSourc
 }
 
 /** STORE-method ZIP readable by the peek path (and by parseSog). */
-function buildZip(entries: Record<string, Uint8Array | string>): Uint8Array {
+function buildZip(entries: Record<string, Uint8Array | string>): Uint8Array<ArrayBuffer> {
   const encoder = new TextEncoder();
   const files = Object.entries(entries).map(([name, content]) => ({
     name: encoder.encode(name),
@@ -220,7 +220,7 @@ describe('detectPaletteShBands', () => {
     const bytes = buildZip({ 'meta.json': JSON.stringify({ shN: { bands: 3 } }) });
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string, init?: RequestInit) => {
+      vi.fn(async (_url: string, init?: RequestInit) => {
         const range = (init?.headers as Record<string, string> | undefined)?.Range;
         const match = /^bytes=(\d+)-(\d+)$/.exec(range ?? '');
         if (match === null) return new Response('nope', { status: 200 });
