@@ -28,12 +28,16 @@ Git history, not in this queue.
   `maxStdDev`; `?minSplatPx=1.5` vs `3.5`.
 - **Streamed spherical harmonics** — `[v]` implementation is covered by tests;
   blocked on an SH-bearing streamed capture and headed `?sh=0` versus `?sh=N`.
-- **RAD parity and coverage** — `[v]` page-table traversal keeps a coarse shell,
-  prioritizes touched chunks, and respects the draw budget in tests. Fractional
-  opacity no longer changes merged-vs-leaf classification (unit + unified /
-  standalone GPU harness). Compare a large capture against Spark during a headed
-  WebGPU fly-through, including a marker crossfade on a construction timeline.
-  See the [RAD format notes](docs/formats/rad-notes.md).
+- **RAD parity and coverage** — `[~]` page-table traversal, budget, and
+  fractional-opacity/`lodAlpha` are covered by tests. **2026-09-04 headed
+  VLAM** hotel-core orbit (`HOTEL.clean.comp-lod.rad`, ~4.2M nodes, 1M draw,
+  Chrome WebGPU / M3 Air): coherent coverage, `hole 0`, plan-apply worst
+  ~10–20 ms after the publish-retire cap; shots under
+  `.tmp/rad-parity/`. **Still open:** same-camera Spark side-by-side (Spark
+  2.1.0 `streaming-lod` + this file crashed in `SplatPager.uploadPage` with
+  a stand-in three@0.185; needs Spark’s vendor three), and a construction-
+  timeline marker crossfade capture. See
+  [RAD format notes](docs/formats/rad-notes.md#headed-spark-parity-2026-09-04).
 - **Multi-mesh budget** — `[v]` camera-weighted sharing and pool headroom are
   tested; visually validate several RAD meshes sharpening as the camera moves.
   See the [multi-mesh guide](docs/guide/multi-mesh-budgets.md).

@@ -52,6 +52,7 @@ function walkMarkdown(dir, acc = []) {
       name === 'dist-demo' ||
       name === 'dist-site' ||
       name === 'dist-viewer' ||
+      name === '.tmp' ||
       name === '.git'
     ) {
       continue;
