@@ -99,7 +99,10 @@ function makeMesh(
  * main thread and evicts against `cpuCacheBytes`. This is what a `.lcc2` or SOG
  * mesh is, and it must join the same scene envelope the `.rad` meshes do.
  */
-function makeClassicMesh(options: StreamedSplatMeshOptions = {}): StreamedSplatMesh {
+function makeClassicMesh(
+  options: StreamedSplatMeshOptions = {},
+  prefixRad = false,
+): StreamedSplatMesh {
   const budget = 4 * WIDTH;
   const scene = {
     source: {
@@ -113,8 +116,9 @@ function makeClassicMesh(options: StreamedSplatMeshOptions = {}): StreamedSplatM
     chunkKind: 'file' as const,
     bounds: new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(100, 100, 100)),
     pinnedFiles: new Set<number>(),
-    maxResidentSplats: budget,
-    chunkSize: 65536,
+    maxResidentSplats: prefixRad ? 10_000_000 : budget,
+    chunkSize: prefixRad ? undefined : 65536,
+    chunkOptions: prefixRad ? [{ format: 'rad-chunk' as const }] : undefined,
   };
   const Ctor = StreamedSplatMesh as unknown as new (
     scene: unknown,
@@ -186,6 +190,12 @@ describe('StreamedSplatMesh chunk cache budget', () => {
     track(makeMesh());
     const init = RecordingWorker.last?.of('init')[0];
     expect(init?.['cpuCacheBytes']).toBeGreaterThan(0);
+  });
+
+  it('gives a chunked prefix RAD its estimated cache ceiling without chunkSize', () => {
+    const mesh = track(makeClassicMesh({ cpuCacheBytes: 128 * MIB }, true));
+
+    expect(inner(mesh).cacheLimitBytes).toBeGreaterThan(128 * MIB);
   });
 
   it('uses stable scene bounds for streamed counting-sort quantization', () => {

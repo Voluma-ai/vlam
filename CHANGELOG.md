@@ -35,17 +35,18 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
-- **Prefix-reader `.rad` no longer mixes LOD levels while the stream runs.**
-  Cached replacements stage hidden and the mesh presents only when prefetch
-  chunks are cached (or the CPU cache / pool is full) — the same publish
-  policy as the page-table pager, including skipping chunk 0's overview.
-  After that first presented cut, later swaps are monotonic: a full CPU cache
-  must not retire it for a coarser/partial replacement (that was the
-  sharp↔noisy flicker once the scene appeared). Hidden staging of a later
-  cut no longer skips camera depth-sorts — that made orbiting during the
-  remaining stream look like the unsorted first frame. Prefix `.rad` also
-  uses the same capture-sized cache ceiling as the page-table path, so a
-  lone hotel-scale scene is not capped at 256 MiB while still streaming.
+- **Prefix-reader `.rad` publish gate no longer freezes first paint or refinement.**
+  Speculative `fetchIntent` runs are excluded from the presented cut and no
+  longer block publishing it. Cache-full and pool-pressure valves apply after
+  first paint as well as before it, so a never-landing prefetch cannot hold a
+  drawable overview hostage. Chunked prefix `.rad` (format `rad-chunk`) now
+  gets the same capture-sized cache ceiling as the page-table path even when
+  `chunkSize` is unset. Cut quality uses level base `1024` instead of `32`, so
+  deep RAD chunk-index levels are not scored as regressions against the
+  overview (that left meshes stuck at ~53k after a fast first paint). After
+  the first presented cut, later swaps stay monotonic: pressure must not retire
+  coverage for a coarser/partial replacement. Hidden staging of a later cut
+  still does not skip camera depth-sorts.
 - **Demo WebGPU sorting defaults to the per-frame counting sorter again.**
   The demo had been forcing `sortStrategy: 'worker'` to mimic Spark's async
   cadence; Spark comparison is load speed and LOD quality, not that sort.
