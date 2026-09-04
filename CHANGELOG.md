@@ -65,7 +65,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `WebGPURenderer` terminology. The README, quick-start page, and first-viewer
   example construct a standard three.js renderer, while the following
   local-file walkthrough introduces VLAM!'s optional helper for demanding
-  scenes.
+  scenes. The helper's API reference documents every added parameter and a
+  copyable equivalent for applications that own WebGPU device creation.
 
 ### Fixed
 
