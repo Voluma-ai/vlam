@@ -183,7 +183,10 @@ export class FrontierPager {
    * While replacements are still arriving, evict only tail slots the admitted
    * appends need (`needRoom`). Never spend leftover cap on the published
    * prefix - that mixed the previous cut with the next on screen. Once every
-   * newcomer is seated *and* the caller asked to publish, retire the rest.
+   * newcomer is seated *and* the caller asked to publish, retire remaining
+   * stale - but still under `maxEvicts`. Publishing used to dump the whole
+   * deferred leaver queue in one plan (hotel-orbit spikes of 300k+ moves /
+   * ~150 ms apply); the append cap alone does not bound that half.
    */
   private evictBudget(
     admitted: number,
@@ -191,9 +194,12 @@ export class FrontierPager {
     tailStale: number,
     prefixStale: number,
     publish: boolean,
+    maxEvicts: number,
   ): number {
     const needRoom = Math.max(0, admitted - (this.capacity - this.count));
-    if (remainingNewAfter === 0 && publish) return tailStale + prefixStale;
+    if (remainingNewAfter === 0 && publish) {
+      return Math.min(tailStale + prefixStale, maxEvicts);
+    }
     return Math.min(publish ? tailStale + prefixStale : tailStale, needRoom);
   }
 
@@ -275,6 +281,7 @@ export class FrontierPager {
       remainingTailStale,
       remainingPrefixStale,
       this.queuedPublish,
+      maxAppends,
     );
 
     for (let k = 0; k < evictCount; k++) {
@@ -443,6 +450,7 @@ export class FrontierPager {
         tailStale.length,
         prefixStale.length,
         this.queuedPublish,
+        maxAppends,
       );
       const staleToRetire = this.queuedPublish ? staleCount : tailStale.length;
       truncated = admitted < newcomers.length || evictCount < staleToRetire;

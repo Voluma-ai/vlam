@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { localHttpsCertificate, viewerDevPlugin } from './viewer-dev-plugin';
+import { benchmarkDevPlugin } from './benchmark-dev-plugin';
 
 const siteDir = dirname(fileURLToPath(import.meta.url));
 const sidebarPath = join(siteDir, '../api/typedoc-sidebar.json');
@@ -38,7 +39,7 @@ export default defineConfig({
   // /demo is filled in after the VitePress build by build-site.mjs.
   ignoreDeadLinks: [/^\/demo/],
   vite: {
-    plugins: [viewerDevPlugin()],
+    plugins: [benchmarkDevPlugin(), viewerDevPlugin()],
     server: {
       port: 5170,
       strictPort: true,

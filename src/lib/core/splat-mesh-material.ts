@@ -30,6 +30,7 @@ import {
   cameraProjectionMatrix,
   positionGeometry,
   screenUV,
+  storage,
   texture as tslTexture,
   textureLoad,
   uint,
@@ -163,6 +164,12 @@ export function vec3Uniform() {
   return uniform(new THREE.Vector3());
 }
 export type Vec3Uniform = ReturnType<typeof vec3Uniform>;
+
+/** A boolean uniform, named for optional graph inputs. */
+export function boolUniform() {
+  return uniform(false);
+}
+export type BoolUniform = ReturnType<typeof boolUniform>;
 
 function vec2Uniform() {
   return uniform(new THREE.Vector2());
@@ -326,18 +333,25 @@ export function evaluateSplatSh(
     .add(coefficient(7).mul(xx.sub(yy).mul(SH_C2[4])));
   if (sh.bands === 2) return band2;
 
-  return band2
-    .add(coefficient(8).mul(y.mul(xx.mul(3.0).sub(yy)).mul(SH_C3[0])))
-    .add(coefficient(9).mul(x.mul(y).mul(z).mul(SH_C3[1])))
-    .add(coefficient(10).mul(y.mul(zz.mul(4.0).sub(xx).sub(yy)).mul(SH_C3[2])))
-    .add(coefficient(11).mul(z.mul(zz.mul(2.0).sub(xx.mul(3.0)).sub(yy.mul(3.0))).mul(SH_C3[3])))
-    .add(coefficient(12).mul(x.mul(zz.mul(4.0).sub(xx).sub(yy)).mul(SH_C3[4])))
-    .add(coefficient(13).mul(z.mul(xx.sub(yy)).mul(SH_C3[5])))
-    .add(coefficient(14).mul(x.mul(xx.sub(yy.mul(3.0))).mul(SH_C3[6])));
+  return (
+    band2
+      .add(coefficient(8).mul(y.mul(xx.mul(3.0).sub(yy)).mul(SH_C3[0])))
+      .add(coefficient(9).mul(x.mul(y).mul(z).mul(SH_C3[1])))
+      .add(coefficient(10).mul(y.mul(zz.mul(4.0).sub(xx).sub(yy)).mul(SH_C3[2])))
+      .add(coefficient(11).mul(z.mul(zz.mul(2.0).sub(xx.mul(3.0)).sub(yy.mul(3.0))).mul(SH_C3[3])))
+      .add(coefficient(12).mul(x.mul(zz.mul(4.0).sub(xx).sub(yy)).mul(SH_C3[4])))
+      .add(coefficient(13).mul(z.mul(xx.sub(yy)).mul(SH_C3[5])))
+      // l=3, m=3 is x(x² − 3y²), not x(x² − y²).
+      .add(coefficient(14).mul(x.mul(xx.sub(yy.mul(3.0))).mul(SH_C3[6])))
+  );
 }
 
 /** Everything the material graph reads, gathered by the mesh. */
 export interface SplatMaterialBuildInputs {
+  /** Display-only RGB contribution cache; pick always evaluates the original graph. */
+  shContribution?: THREE.StorageBufferAttribute;
+  /** Selects cached SH, including bounded reuse between moving-camera sort updates. */
+  shContributionEnabled?: BoolUniform;
   textures: SplatMaterialTextures;
   sh: SplatShInputs | null;
   /**
@@ -491,7 +505,11 @@ export function applySplatMaterialGraph(
     : null;
   /** Splat center in mesh-local space: the pool texel, or its placed position. */
   const localCenter = placed ? placed.worldCenter : asNode<'vec3'>(poolCenter);
-  const shSum =
+  const cachedSh = mode === 'display' ? inputs.shContribution : undefined;
+  const cachedRgb = cachedSh ? storage(cachedSh, 'float', cachedSh.count).toReadOnly() : null;
+  const cacheEnabled = inputs.shContributionEnabled;
+  const cachedOffset = splatIndex.mul(3);
+  const uncachedShSum =
     sh === null
       ? null
       : (() => {
@@ -506,48 +524,30 @@ export function applySplatMaterialGraph(
               .mul(localCenter.sub(uniforms.localCameraPosition))
               .normalize();
           })();
-          const x = direction.x;
-          const y = direction.y;
-          const z = direction.z;
-
-          /** Coefficient c of this splat, per color channel. */
-          const coefficient = shCoefficientReader(sh, textures, splatTexel);
-
-          const band1 = coefficient(0)
-            .mul(y.mul(-SH_C1))
-            .add(coefficient(1).mul(z.mul(SH_C1)))
-            .add(coefficient(2).mul(x.mul(-SH_C1)));
-          if (sh.bands === 1) return band1;
-
-          const xx = x.mul(x);
-          const yy = y.mul(y);
-          const zz = z.mul(z);
-          const band2 = band1
-            .add(coefficient(3).mul(x.mul(y).mul(SH_C2[0])))
-            .add(coefficient(4).mul(y.mul(z).mul(SH_C2[1])))
-            .add(coefficient(5).mul(zz.mul(2.0).sub(xx).sub(yy).mul(SH_C2[2])))
-            .add(coefficient(6).mul(x.mul(z).mul(SH_C2[3])))
-            .add(coefficient(7).mul(xx.sub(yy).mul(SH_C2[4])));
-          if (sh.bands === 2) return band2;
-
-          return (
-            band2
-              .add(coefficient(8).mul(y.mul(xx.mul(3.0).sub(yy)).mul(SH_C3[0])))
-              .add(coefficient(9).mul(x.mul(y).mul(z).mul(SH_C3[1])))
-              .add(coefficient(10).mul(y.mul(zz.mul(4.0).sub(xx).sub(yy)).mul(SH_C3[2])))
-              .add(
-                coefficient(11).mul(
-                  z.mul(zz.mul(2.0).sub(xx.mul(3.0)).sub(yy.mul(3.0))).mul(SH_C3[3]),
-                ),
-              )
-              .add(coefficient(12).mul(x.mul(zz.mul(4.0).sub(xx).sub(yy)).mul(SH_C3[4])))
-              .add(coefficient(13).mul(z.mul(xx.sub(yy)).mul(SH_C3[5])))
-              // l=3, m=3 is x(x² − 3y²) - the mirror of m=−3's y(3x² − y²)
-              // above. This read x(x² − y²) until 2026-07-17, tinting the
-              // band-3 lobes of every shN scene.
-              .add(coefficient(14).mul(x.mul(xx.sub(yy.mul(3.0))).mul(SH_C3[6])))
-          );
+          return evaluateSplatSh(sh, textures, splatTexel, direction);
         })();
+  const shSum =
+    uncachedShSum === null
+      ? null
+      : cachedRgb && cacheEnabled
+        ? Fn(() => {
+            // A value-level select would evaluate both sides and retain the
+            // vertex SH cost even while the cache is active.
+            const selected = vec3(0).toVar();
+            If(cacheEnabled, () => {
+              selected.assign(
+                vec3(
+                  cachedRgb.element(cachedOffset),
+                  cachedRgb.element(cachedOffset.add(1)),
+                  cachedRgb.element(cachedOffset.add(2)),
+                ),
+              );
+            }).Else(() => {
+              selected.assign(uncachedShSum);
+            });
+            return selected;
+          })()
+        : uncachedShSum;
   const colorAfterSh =
     shSum === null ? baseColor : vec4(baseColor.rgb.add(shSum).clamp(0.0, 1.0), baseColor.a);
   /** Approximate surface normal for lighting hooks: Σ⁻¹ amplifies the

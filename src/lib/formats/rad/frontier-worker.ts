@@ -86,7 +86,9 @@ const BUDGET_SPEND_URGENT = 0.5;
  *
  * Each traversal therefore still runs at the full solved cut; only its *delivery*
  * is spread over frames. ~60 k ≈ 9 ms of write per plan, plus at most as much
- * again in moves.
+ * again in moves. Publishing must use the same eviction ceiling: finishing the
+ * newcomer queue used to retire every deferred leaver in one uncapped plan
+ * (hundreds of thousands of moves on a dense hotel orbit).
  */
 const MAX_PLAN_APPEND_SPLATS = 60_000;
 

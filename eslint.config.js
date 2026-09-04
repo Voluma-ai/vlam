@@ -32,6 +32,7 @@ export default tseslint.config(
       // Git-ignored tooling scratch (agent worktrees carry their own
       // node_modules and VitePress dep caches, which are not ours to lint).
       '.claude/',
+      '.tmp/',
       'site/.vitepress/cache/',
       'site/.vitepress/dist/',
       'site/.vitepress/**',

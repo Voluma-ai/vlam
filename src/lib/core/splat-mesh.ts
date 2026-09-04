@@ -77,6 +77,7 @@ import {
 } from './splat-mesh-pool';
 import { warn } from './logging';
 import { radialSortState } from './splat-sort-bounds';
+import type { ShComputeCache } from './sh-compute-cache';
 
 interface ChannelRecord {
   readonly type: SplatChannelType;
@@ -89,9 +90,23 @@ interface ChannelRecord {
   pendingRows: { start: number; count: number }[];
 }
 
-/** Reusable GPU source texture for a same-layout pool upload. */
-/** Number of exact-size upload textures retained per data channel. */
-const UPLOAD_STAGING_CACHE_SIZE = 4;
+/**
+ * Number of power-of-two height buckets retained per data channel.
+ *
+ * Page-table RAD plans dirty many non-adjacent row spans with distinct exact
+ * heights; an exact-height LRU of 4 thrashed and allocated dozens of staging
+ * textures per flush (hotel-orbit `swapUploadWorstMs` ~90–300 ms on M3 Air).
+ * Bucketing heights to powers of two collapses that set; twelve slots cover
+ * 1…2048-row uploads with room for a few larger spans.
+ */
+const UPLOAD_STAGING_CACHE_SIZE = 12;
+
+/** Next power of two ≥ n (n ≥ 1). Staging GPU textures are immutable-sized. */
+function uploadStagingBucketHeight(height: number): number {
+  const h = Math.max(1, height | 0);
+  if (h >= 0x40000000) return h;
+  return 1 << (32 - Math.clz32(h - 1));
+}
 
 interface RangeRecord {
   startRow: number;
@@ -193,6 +208,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /** True when constructed from a complete SplatData (single fixed range). */
   private readonly isStatic: boolean;
+  private readonly shEvaluation: NonNullable<SplatMeshOptions['shEvaluation']>;
+  private shCache: ShComputeCache | null = null;
+  private shCacheSh: SplatShInputs | null = null;
+  private shCacheRenderer: THREE.WebGPURenderer | null = null;
+  private ShCacheCtor: (typeof import('./sh-compute-cache'))['ShComputeCache'] | null = null;
+  private shCacheLoading = false;
+  private shCacheFailed = false;
+  private readonly shEvaluationState = { reason: 'not-prepared' };
   /** Constructor-created range, retained for static in-place LOD replacement. */
   private staticRange: SplatRange | undefined;
   private readonly shEnabled: boolean;
@@ -420,6 +443,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   constructor(source: SplatData | { capacity: number }, options: SplatMeshOptions = {}) {
     const sortIntervalMs = validateSortIntervalMs(options.sortIntervalMs);
+    const shEvaluation = options.shEvaluation ?? 'auto';
+    if (!['auto', 'vertex', 'compute'].includes(shEvaluation)) {
+      throw new RangeError('SplatMesh: invalid shEvaluation.');
+    }
     // Mobile GPUs are fragment-bound, so several defaults below trade detail
     // no one can see for the fill rate they cost. Every one is overridable.
     // The footprint floor addresses the low-resolution mobile coverage case,
@@ -555,6 +582,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     geometry.instanceCount = 0;
 
     super(geometry, new THREE.NodeMaterial());
+    this.shEvaluation = shEvaluation;
     this.pool = pool;
     this.ownsPool = ownsPool;
     pool.register(this);
@@ -1526,11 +1554,13 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.adaptFoveationLimit(projectionCamera, viewHeight);
     this.writeViewUniforms(projectionCamera, viewWidth, viewHeight, sortCamera);
     this.updateTimings.activeListUpdateRanges = this.sourceIndexAttribute.updateRanges.length;
+    let sortAccepted = false;
     if (options.sort !== false) {
       const sortStartedAt = performance.now();
-      this.requestSortIfNeeded(sortCamera, renderer);
+      sortAccepted = this.requestSortIfNeeded(sortCamera, renderer);
       this.updateTimings.sortSubmitMs = performance.now() - sortStartedAt;
     }
+    this.prepareShEvaluation(renderer, false, sortAccepted, options.sort !== false);
   }
 
   /** Returns the render-preparation CPU timings for the current update. */
@@ -1781,6 +1811,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (target) _viewSize.set(target.width, target.height);
     else renderer.getDrawingBufferSize(_viewSize);
     this.writeViewUniforms(camera, _viewSize.x, _viewSize.y);
+    this.prepareShEvaluation(renderer, true);
     const sorted = this.sortForView(camera, renderer);
 
     const previousTarget = renderer.getRenderTarget();
@@ -1794,6 +1825,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       // actually ran: WebGL2 still holds the primary order and must not fight
       // its asynchronous worker for a redundant re-sort.
       if (sorted) this.orderIsForeign = true;
+      this.shCache?.invalidate();
     }
   }
 
@@ -1863,6 +1895,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.shCacheRenderer) this.shCache?.dispose(this.shCacheRenderer);
+    this.shCache = null;
+    this.shCacheRenderer = null;
     this.sorter?.dispose();
     this.sorter = null;
     this.geometry.dispose();
@@ -2290,7 +2325,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * Uploads the given row spans of one or more same-layout pool textures via
    * per-region staging copies. Spans are merged first so consecutive appends
    * upload as one rectangle each - the copyTextureToTexture call count, not
-   * the pixel volume, dominates.
+   * the pixel volume, dominates. Staging textures are sized to a power-of-two
+   * height bucket and reused; only the live row count is copied into the pool.
    */
   private uploadRows(
     renderer: THREE.WebGPURenderer,
@@ -2338,8 +2374,16 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           region.count,
           format,
           type,
+          components,
         );
-        renderer.copyTextureToTexture(staging, texture, null, _uploadPosition.set(0, region.start));
+        _uploadSrcRegion.min.set(0, 0);
+        _uploadSrcRegion.max.set(width, region.count);
+        renderer.copyTextureToTexture(
+          staging,
+          texture,
+          _uploadSrcRegion,
+          _uploadPosition.set(0, region.start),
+        );
       }
     }
   }
@@ -2347,17 +2391,21 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   /** Reuses a same-length half encode buffer for one staging key. */
   private acquireHalfEncodeBuffer(key: string, length: number): Uint16Array {
     const existing = this.halfEncodeBuffers.get(key);
-    if (existing && existing.length === length) return existing;
-    const buffer = new Uint16Array(length);
+    if (existing && existing.length >= length) return existing.subarray(0, length);
+    // Bucket half buffers the same way as staging heights so alternating RAD
+    // row counts do not allocate a new encode scratch every flush.
+    const bucketLength = uploadStagingBucketHeight(length);
+    const buffer = new Uint16Array(bucketLength);
     this.halfEncodeBuffers.set(key, buffer);
-    return buffer;
+    return buffer.subarray(0, length);
   }
 
   /**
-   * Reuses one of the recent same-sized staging textures for this upload. WebGPU
-   * texture dimensions are immutable, so each cached entry remains exact-sized. Keeping
-   * a small LRU per channel avoids recreating all core/SH staging resources when
-   * a stream alternates among a few chunk heights, while bounding GPU memory.
+   * Reuses a power-of-two-height staging texture for this upload. WebGPU
+   * texture dimensions are immutable, so each cached entry is a height bucket;
+   * {@link uploadRows} copies only the live row count via `srcRegion`. Keeping
+   * a small LRU per channel avoids recreating staging resources when a stream
+   * alternates among many exact row counts.
    */
   private acquireUploadStaging(
     key: string,
@@ -2366,22 +2414,38 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     height: number,
     format: THREE.PixelFormat,
     type: THREE.TextureDataType,
+    components: number,
   ): THREE.DataTexture {
+    const bucketHeight = uploadStagingBucketHeight(height);
     let cache = this.uploadStaging.get(key);
     if (!cache) {
       cache = new Map();
       this.uploadStaging.set(key, cache);
     }
-    const existing = cache.get(height);
+    const existing = cache.get(bucketHeight);
     if (existing) {
-      existing.image = { data, width, height };
+      const imageData = existing.image.data as
+        Float32Array | Uint8Array | Uint32Array | Uint16Array;
+      imageData.set(data);
       existing.needsUpdate = true;
       // Map insertion order supplies a tiny LRU without another allocation.
-      cache.delete(height);
-      cache.set(height, existing);
+      cache.delete(bucketHeight);
+      cache.set(bucketHeight, existing);
       return existing;
     }
-    const texture = new THREE.DataTexture(data, width, height, format, type);
+    const bucketSamples = width * bucketHeight * components;
+    let stagingData: Float32Array | Uint8Array | Uint32Array | Uint16Array;
+    if (data instanceof Uint16Array) {
+      stagingData = new Uint16Array(bucketSamples);
+    } else if (data instanceof Uint8Array) {
+      stagingData = new Uint8Array(bucketSamples);
+    } else if (data instanceof Uint32Array) {
+      stagingData = new Uint32Array(bucketSamples);
+    } else {
+      stagingData = new Float32Array(bucketSamples);
+    }
+    stagingData.set(data);
+    const texture = new THREE.DataTexture(stagingData, width, bucketHeight, format, type);
     // An integer texture cannot be filtered; a staging texture that says
     // otherwise is rejected when its GPU descriptor is built.
     if (format === THREE.RGBAIntegerFormat) {
@@ -2389,7 +2453,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       texture.minFilter = THREE.NearestFilter;
     }
     texture.needsUpdate = true;
-    cache.set(height, texture);
+    cache.set(bucketHeight, texture);
     if (cache.size > UPLOAD_STAGING_CACHE_SIZE) {
       const oldestHeight = cache.keys().next().value as number;
       cache.get(oldestHeight)?.dispose();
@@ -2407,6 +2471,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     return {
       textures,
       sh,
+      ...(this.shCache ? { shContribution: this.shCache.contribution } : {}),
+      ...(this.shCache ? { shContributionEnabled: this.shCache.enabled } : {}),
       sourcePlacement: this.perSourceSort,
       // The uniform node instances, shared with the pick graph on purpose: one
       // per-frame write then reaches both.
@@ -2455,7 +2521,159 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.picker.rebuildMaterial();
   }
 
-  private requestSortIfNeeded(camera: THREE.Camera, renderer: THREE.WebGPURenderer): void {
+  private clearShCache(): void {
+    if (!this.shCache) return;
+    if (this.shCacheRenderer) this.shCache.dispose(this.shCacheRenderer);
+    this.shCache = null;
+    this.shCacheSh = null;
+    this.shCacheRenderer = null;
+    this.buildMaterial(this.materialInputs.textures, this.materialInputs.sh);
+    (this.material as THREE.Material).needsUpdate = true;
+  }
+
+  /** Apple Silicon Macs use the validated hybrid path; every other auto cohort stays vertex. */
+  private prepareShEvaluation(
+    renderer: THREE.WebGPURenderer,
+    force = false,
+    refreshForSort = false,
+    reuseBetweenSorts = false,
+  ): void {
+    const backend = renderer.backend as unknown as {
+      isWebGPUBackend?: boolean;
+      device?: {
+        adapterInfo?: {
+          vendor?: string;
+          architecture?: string;
+          device?: string;
+          description?: string;
+        };
+        limits?: {
+          maxStorageBufferBindingSize: number;
+          maxBufferSize: number;
+          maxComputeWorkgroupsPerDimension: number;
+        };
+      };
+    };
+    const adapterInfo = backend.device?.adapterInfo;
+    const adapterText = [
+      adapterInfo?.vendor,
+      adapterInfo?.architecture,
+      adapterInfo?.device,
+      adapterInfo?.description,
+    ]
+      .join(' ')
+      .toLowerCase();
+    const nav = typeof navigator === 'undefined' ? null : navigator;
+    const platform = nav
+      ? ((nav as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ??
+        nav.platform)
+      : '';
+    // iPadOS can request a desktop UA and report MacIntel. maxTouchPoints keeps
+    // those devices out until the mobile SH path has physical validation.
+    const appleMac =
+      (platform === 'macOS' || /mac/i.test(platform)) &&
+      (nav?.maxTouchPoints ?? 0) <= 1 &&
+      (adapterText.includes('apple') || adapterText.includes('metal'));
+    const useCompute =
+      this.shEvaluation === 'compute' || (this.shEvaluation === 'auto' && appleMac);
+    if (!useCompute) {
+      this.shEvaluationState.reason =
+        this.shEvaluation === 'auto' ? 'unvalidated-auto-device' : 'explicit-vertex';
+      return;
+    }
+    const sh = this.materialInputs.sh;
+    const limits = backend.device?.limits;
+    const bytes = this.capacity * 12;
+    const reason =
+      backend.isWebGPUBackend !== true
+        ? 'webgl'
+        : !this.isStatic || !this.ownsPool
+          ? 'dynamic-or-shared-pool'
+          : this.perSourceSort !== null
+            ? 'source-placement'
+            : this.unifiedPickVisibility !== null
+              ? 'unified-source'
+              : renderer.xr?.isPresenting
+                ? 'xr'
+                : sh === null
+                  ? 'sh-disabled'
+                  : !limits ||
+                      !(
+                        bytes <= limits.maxStorageBufferBindingSize && bytes <= limits.maxBufferSize
+                      ) ||
+                      !(this.activeCount <= limits.maxComputeWorkgroupsPerDimension * 256)
+                    ? 'device-limits'
+                    : this.shCacheFailed
+                      ? 'initialization-failed'
+                      : null;
+    if (reason !== null || sh === null) {
+      this.shEvaluationState.reason = reason ?? 'sh-disabled';
+      this.clearShCache();
+      return;
+    }
+    if (!this.ShCacheCtor) {
+      this.shEvaluationState.reason = 'loading-compute-module';
+      if (!this.shCacheLoading) {
+        this.shCacheLoading = true;
+        void import('./sh-compute-cache')
+          .then(({ ShComputeCache }) => {
+            if (!this.disposed) this.ShCacheCtor = ShComputeCache;
+          })
+          .catch((error: unknown) => {
+            this.shCacheFailed = true;
+            warn(`SplatMesh: SH compute module failed; keeping vertex SH. ${String(error)}`);
+          });
+      }
+      return;
+    }
+    if (this.shCache && (this.shCacheSh !== sh || this.shCacheRenderer !== renderer)) {
+      this.clearShCache();
+    }
+    if (!this.shCache) {
+      try {
+        this.shCache = new this.ShCacheCtor({
+          capacity: this.capacity,
+          sourceIndex: this.sourceIndexAttribute,
+          centersTexture: this.centersTexture,
+          covarianceBTexture: this.materialInputs.textures.covarianceBTexture,
+          dataTextureWidth: SplatMesh.DATA_TEXTURE_WIDTH,
+          sh,
+          localCameraPosition: this.localCameraPosition,
+        });
+        this.shCacheSh = sh;
+        this.shCacheRenderer = renderer;
+        this.buildMaterial(this.materialInputs.textures, sh);
+        (this.material as THREE.Material).needsUpdate = true;
+      } catch (error) {
+        this.shCacheFailed = true;
+        this.shEvaluationState.reason = 'initialization-failed';
+        this.clearShCache();
+        warn(`SplatMesh: SH cache allocation failed; keeping vertex SH. ${String(error)}`);
+        return;
+      }
+    }
+    const phase = this.shCache.prepare(
+      renderer,
+      this.activeCount,
+      this.localCameraPosition.value,
+      this.contentRevision,
+      this.graphRevision,
+      performance.now(),
+      force,
+      refreshForSort,
+      reuseBetweenSorts,
+    );
+    this.shEvaluationState.reason =
+      phase === 'vertex-motion'
+        ? 'camera-motion-vertex'
+        : phase === 'cache-between-sorts'
+          ? 'camera-motion-cached'
+          : this.shEvaluation === 'auto'
+            ? 'apple-mac-auto'
+            : 'explicit-compute';
+  }
+
+  private requestSortIfNeeded(camera: THREE.Camera, renderer: THREE.WebGPURenderer): boolean {
     if (this.deferSortRequestOnce) {
       this.deferSortRequestOnce = false;
       // Only a frame whose draw list the current order still describes can be
@@ -2465,9 +2683,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       // permutation: removed splats linger and live ones vanish for a frame.
       // A foreign order (a secondary renderView's) never describes the primary
       // draw, so it can't be skipped over either.
-      if (this.activeListVersion === this.sortedActiveListVersion && !this.orderIsForeign) return;
+      if (this.activeListVersion === this.sortedActiveListVersion && !this.orderIsForeign)
+        return false;
     }
-    if (this.activeCount === 0) return;
+    if (this.activeCount === 0) return false;
     this.currentModelView.multiplyMatrices(camera.matrixWorldInverse, this.matrixWorld);
     this.writeSortState(camera);
 
@@ -2485,7 +2704,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
             now,
           )
         ) {
-          return;
+          return false;
         }
       } else if (
         // WebGL2 has no cadence, but a content swap under a stationary camera
@@ -2495,14 +2714,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         !this.sortScheduler.hasPendingForce() &&
         this.currentSortState.equals(this.lastSortedState)
       ) {
-        return;
+        return false;
       }
     }
 
     this.refreshSortBounds();
 
     this.sorter ??= this.createSorter(renderer);
-    if (!this.sorter) return;
+    if (!this.sorter) return false;
     if (
       this.sorter.sort(
         this.currentModelView,
@@ -2517,7 +2736,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       // On WebGL2 `now` is 0 - harmless, cadence timing is WebGPU-only; the
       // call still clears the pending-force flag consumed above.
       this.sortScheduler.markAccepted(now);
+      return true;
     }
+    return false;
   }
 
   /**
@@ -2655,6 +2876,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
 const _appendBox = new THREE.Box3();
 const _uploadPosition = new THREE.Vector2();
+const _uploadSrcRegion = new THREE.Box2();
 const _queryLocal = new THREE.Vector3();
 const _queryWorld = new THREE.Vector3();
 const _queryScale = new THREE.Vector3();

@@ -240,9 +240,10 @@ describe('FrontierPager', () => {
 
     it('holds the previous prefix until replacements are fully staged', () => {
       // Spark display-hold: append replacements onto the tail, leave every
-      // previous-cut splat in place, then retire leavers on the commit plan.
-      // Intermediate prefixes must still equal the old set so the host can
-      // keep drawing it.
+      // previous-cut splat in place, then retire leavers on the commit plans.
+      // While newcomers are still arriving, intermediate prefixes must still
+      // equal the old set so the host can keep drawing it. Once only stale
+      // remains, retire is paced under the same cap (not one uncapped dump).
       const p = new FrontierPager(600);
       const slab = new SlabModel(600);
       const before = Array.from({ length: 400 }, (_v, i) => i);
@@ -251,16 +252,21 @@ describe('FrontierPager', () => {
       let plan = p.update(next, { maxAppends: CAP });
       let rounds = 0;
       while (plan.truncated) {
-        expect(plan.moves).toEqual([]);
+        expect(plan.appends.length).toBeLessThanOrEqual(CAP);
+        expect(plan.moves.length).toBeLessThanOrEqual(CAP);
+        const stagingNewcomers = plan.appends.length > 0 && plan.moves.length === 0;
         slab.apply(plan);
-        expect(slab.count).toBeGreaterThanOrEqual(before.length);
-        for (let s = 0; s < before.length; s++) expect(slab.slots[s]).toBe(before[s]);
+        if (stagingNewcomers) {
+          expect(slab.count).toBeGreaterThanOrEqual(before.length);
+          for (let s = 0; s < before.length; s++) expect(slab.slots[s]).toBe(before[s]);
+        }
         expect(p.pendingStaleCount).toBeGreaterThan(0);
         expect(++rounds).toBeLessThan(50);
         plan = p.drain(CAP);
       }
       slab.apply(plan);
       expect(plan.truncated).toBe(false);
+      expect(plan.moves.length).toBeLessThanOrEqual(CAP);
       expect(p.pendingStaleCount).toBe(0);
       expect(slab.residentSet()).toEqual(new Set(next));
     });
@@ -347,7 +353,7 @@ describe('FrontierPager', () => {
       let plan = p.update(next, { maxAppends: CAP });
       for (;;) {
         expect(plan.appends.length).toBeLessThanOrEqual(CAP);
-        if (plan.truncated) expect(plan.moves.length).toBeLessThanOrEqual(CAP);
+        expect(plan.moves.length).toBeLessThanOrEqual(CAP);
         expect(plan.dropped).toBe(0);
         slab.apply(plan);
         expect(slab.residentSet().size).toBe(plan.count); // no holes, no dupes
@@ -390,11 +396,49 @@ describe('FrontierPager', () => {
       for (let round = 0; round < 100; round++) {
         const plan = p.update(next, { maxAppends: CAP });
         expect(plan.appends.length).toBeLessThanOrEqual(CAP);
-        if (plan.truncated) expect(plan.moves.length).toBeLessThanOrEqual(CAP);
+        expect(plan.moves.length).toBeLessThanOrEqual(CAP);
         slab.apply(plan);
         expect(slab.residentSet().size).toBe(plan.count);
         if (!plan.truncated) break;
       }
+      expect(slab.residentSet()).toEqual(new Set(next));
+    });
+
+    it('paces publish-retire of a large stale prefix across plans', () => {
+      // Hotel-orbit hitch: stage the whole replacement with publish:false, then
+      // one publish:true plan used to swap-remove every deferred leaver at once
+      // (300k+ moves). Cap must spread that retire too.
+      const p = new FrontierPager(600);
+      const slab = new SlabModel(600);
+      const before = Array.from({ length: 400 }, (_v, i) => i);
+      slab.apply(p.update(before));
+      const next = [...before.slice(200), ...Array.from({ length: 200 }, (_v, i) => 5000 + i)];
+
+      let plan = p.update(next, { maxAppends: CAP, publish: false });
+      while (plan.truncated) {
+        expect(plan.moves.length).toBeLessThanOrEqual(CAP);
+        expect(plan.appends.length).toBeLessThanOrEqual(CAP);
+        slab.apply(plan);
+        plan = p.drain(CAP);
+      }
+      slab.apply(plan);
+      expect(p.displayCount).toBe(400);
+      expect(p.residentCount).toBeGreaterThan(400);
+
+      plan = p.update(next, { maxAppends: CAP, publish: true });
+      let rounds = 0;
+      let sawTruncatedPublish = false;
+      for (;;) {
+        expect(plan.moves.length).toBeLessThanOrEqual(CAP);
+        expect(plan.appends.length).toBeLessThanOrEqual(CAP);
+        if (plan.truncated) sawTruncatedPublish = true;
+        slab.apply(plan);
+        if (!plan.truncated) break;
+        expect(++rounds).toBeLessThan(100);
+        plan = p.drain(CAP);
+      }
+      expect(sawTruncatedPublish).toBe(true);
+      expect(p.displayCount).toBe(p.residentCount);
       expect(slab.residentSet()).toEqual(new Set(next));
     });
   });
@@ -427,7 +471,7 @@ describe('FrontierPager', () => {
         expect(viaDrain.hasPendingDrain).toBe(true);
         plan = viaDrain.drain(CAP);
         expect(plan.appends.length).toBeLessThanOrEqual(CAP);
-        if (plan.truncated) expect(plan.moves.length).toBeLessThanOrEqual(CAP);
+        expect(plan.moves.length).toBeLessThanOrEqual(CAP);
         drainSlab.apply(plan);
         expect(drainSlab.residentSet().size).toBe(plan.count); // no holes, no dupes
         expect(++rounds).toBeLessThan(100);

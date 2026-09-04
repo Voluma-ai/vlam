@@ -404,7 +404,10 @@ false: per-splat `parent_size` is a GPU-cut input the worker never reads, and
 computing it kept one pending-range object per internal node alive in
 `RadParentSizes` until its child chunk decoded (tens of millions of live objects
 on an 800-chunk capture). Paging plans are applied as *runs* of consecutive slots
-rather than one `overwriteRangeData` call per moved splat.
+rather than one `overwriteRangeData` call per moved splat. The worker's
+`MAX_PLAN_APPEND_SPLATS` (60 k) caps both appends and publish-time stale
+evictions: finishing the newcomer queue used to retire every deferred leaver in
+one plan (hotel-orbit spikes of 300 k+ moves / ~150 ms apply).
 
 **Bootstrap.** `buildRadScene` hands the chunk 0 it already decoded to the worker
 via `StreamedScene.bootstrapChunk`; the tree roots come from chunk 0, so without
@@ -464,6 +467,36 @@ speculation; `evict` climbing alongside `pri`/`base` means the working set does
 not fit and streaming *cannot* end; `pri`/`base` climbing with `evict` flat is
 ordinary convergence. That distinction is what separated causes 2 and 3 above -
 two rounds of plausible-but-wrong guesses preceded it.
+
+### Headed Spark parity (2026-09-04)
+
+**VLAM fly-through (done on this machine).** Chrome WebGPU, MacBook Air M3,
+`HOTEL.clean.comp-lod.rad` via `/remote/…`, hotel-core orbit
+(`cameraPosition=56.68,14.91,0.48` / `cameraTarget=-33.32,-5.1,0.48`,
+distance ~90), SD, `pixelRatio=0.8`, draw budget 1M:
+
+| Check | Result |
+| --- | --- |
+| Coverage / holes | `hole 0` / `late 0` in HUD; aerial and orbit views show continuous hotel + tower + lot (no black wedges) |
+| Drawn vs budget | ~999,998 / 1,000,000 while orbiting |
+| Plan-apply hitch | `worst plan apply` ~9–20 ms (after publish-retire move cap) |
+| Chunks | 65 resident; cache ~200 / 256 MiB |
+| Artifacts | `.tmp/rad-parity/vlam-hotel-painted-0.png`, `vlam-hotel-q{25,50,75}.png`, `vlam-hotel-flythrough.json` |
+
+**Marker crossfade.** Construction-timeline capture not on hand. `lodAlpha` +
+modifier opacity path is unit-tested (`splat-mesh-material.lod-alpha`,
+fractional display opacity); demo `?effects=demo` / effect **pulse** is the
+headed stress for “fade must not reclassify merged nodes”. Re-run that once a
+timeline `.rad` is available.
+
+**Spark same-file compare (blocked here).** Spark 2.1.0
+`examples/streaming-lod` was pointed at the same hotel file (local copy under
+`.tmp/`). With three@0.185.1 as a stand-in vendor (Spark’s `examples/js/vendor`
+was not in the shallow checkout), the page titled correctly then threw
+`RangeError: offset is out of bounds` in `SplatPager.uploadPage` and showed
+streak artifacts (`.tmp/rad-parity/spark-hotel-settle2.png`). Close this row
+with Spark’s own `npm run` / vendor three, matching camera, and a visual A/B
+against the VLAM shots above — do not treat the streak frame as a VLAM defect.
 
 ## Other gaps / next steps
 - **Coordinate frame:** Spark's loader documents the 180°-X OpenCV→OpenGL

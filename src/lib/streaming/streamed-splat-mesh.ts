@@ -390,28 +390,27 @@ export interface StreamedSplatMeshOptions extends SplatMeshOptions {
   /**
    * View-dependent color (higher-order SH). This is the streaming counterpart
    * of {@link SplatMeshOptions.shBands}: besides sizing the pool it decides
-   * whether SH is fetched/decoded at all. Two sources feed it - a `Quality` LCC
-   * `Quality` LCC (`.lcc`) capture, which stores SH per splat, and a Streamed SOG scene,
-   * whose per-file palette shN is converted to that same packed form at decode
-   * (M11; see `docs/formats/streamed-shn-notes.md`).
+   * whether SH is fetched/decoded at all. Sources that carry SH are a `Quality`
+   * LCC (`.lcc`) capture, which stores coefficients per splat, and Streamed
+   * SOG / `.lcc2` tiles, whose per-file palette shN is converted to that same
+   * packed form at decode (M11; see `docs/formats/streamed-shn-notes.md`).
    *
-   * **For LCC, unset (the default) means every band the capture carries** - so
-   * a Quality scene shows its real view-dependent color without the caller
-   * having to know the format. The exception is a `smooth` performance profile
-   * (the default on mobile), which defaults this to 0: SH roughly triples
-   * per-chunk bandwidth (`shcoef.bin` is 64 B/splat against `data.bin`'s 32) and
+   * **Unset (the default) means every band the capture carries**, so a Quality
+   * LCC scene and a Streamed SOG / `.lcc2` tile with `shN` in `meta.json` show
+   * view-dependent color without the caller knowing the format. Those SOG
+   * manifests never declare bands, so the loader peeks one tile (a small JSON
+   * GET, or a ranged ZIP tail plus `meta.json`) and stays at 0 when the tile
+   * has no `shN` or the server ignores Range. The exception is a `smooth`
+   * performance profile (the default on mobile), which defaults this to 0: SH
    * adds up to 64 B/splat of pool textures (~384 MB over a 6M-splat pool at 3
-   * bands) - precisely the costs that profile avoids.
-   *
-   * **For Streamed SOG it is strictly opt-in** (unset = off): the manifest does
-   * not declare whether the tiles carry shN, so enabling the conversion - and
-   * the pool textures it needs - must be a deliberate choice, not a default.
+   * bands) and extra per-chunk bytes - precisely the costs that profile avoids.
    *
    * Set it explicitly to override either way: 0 forces SH off, and 1, 2 or 3
    * keep 3, 8 or 15 coefficients per channel. For LCC the value is clamped to
    * what the scene actually has (a `Portable` capture fetches and allocates
-   * nothing regardless); for SOG a scene with fewer bands zero-pads and one with
-   * no shN simply renders DC color, wasting the allocated textures.
+   * nothing regardless); for SOG / `.lcc2` a scene with fewer bands zero-pads
+   * and one with no shN simply renders DC color, wasting the allocated
+   * textures if you asked for bands the file does not have.
    *
    * Only read at load: the pool's SH textures are allocated once, so a later
    * {@link SplatMesh.setPerformanceProfile} does not change this.
@@ -935,7 +934,8 @@ export class StreamedSplatMesh extends SplatMesh {
     // its real colors without the caller knowing the format - except on a
     // `smooth` profile (the default on mobile), where the bandwidth and the
     // ~64 B/splat of extra pool textures are exactly what that profile exists
-    // to avoid. The scene then clamps this to what the file actually has.
+    // to avoid. Classic `.lcc` / `.rad` read the count from the file; Streamed
+    // SOG / `.lcc2` peek one tile's `meta.json` (those manifests omit shN).
     const shBands =
       options.shBands ??
       (resolveSplatPerformanceProfile(options.performanceProfile, deviceProfile) === 'smooth'
@@ -1004,17 +1004,39 @@ export class StreamedSplatMesh extends SplatMesh {
           // represent internal chunks through synthetic namespace exports, which a
           // consuming production build can incorrectly tree-shake while rebundling.
           const { buildLcc2Scene } = await import('../formats/lcc');
-          // LCC2 tiles are SOG v2; SH is opt-in like Streamed SOG (tiles may be DC-only).
-          scene = buildLcc2Scene(json, source, sourceOptions, options.shBands ?? 0);
+          const { resolvePaletteShBands } = await import('../formats/sog/peek-sog-sh');
+          // LCC2 tiles are SOG v2. The manifest never states shN, so peek one
+          // tile unless the caller or the `smooth` profile already decided.
+          scene = buildLcc2Scene(
+            json,
+            source,
+            sourceOptions,
+            await resolvePaletteShBands('lcc2', json, source, options.shBands, shBands !== 0, {
+              request: options.request,
+              signal,
+            }),
+          );
         } else if (format === 'lcc') {
           const { buildLccScene } = await import('../formats/lcc');
           scene = await buildLccScene(json, source, { ...sourceOptions, shBands });
         } else {
-          // Streamed SOG SH is strictly opt-in: unlike LCC (whose manifest
-          // states its band count), a SOG manifest never says whether the
-          // tiles carry shN, so the "every band the capture carries" default
-          // cannot apply - an explicit `shBands` turns it on.
-          scene = buildSogScene(json, source, sourceOptions, options.shBands ?? 0);
+          const { resolvePaletteShBands } = await import('../formats/sog/peek-sog-sh');
+          // Streamed SOG's lod-meta.json also omits shN. Peek the first chunk's
+          // meta.json so a capture that carries bands gets them without an
+          // explicit `shBands` (still declined on `smooth`, and by `shBands: 0`).
+          scene = buildSogScene(
+            json,
+            source,
+            sourceOptions,
+            await resolvePaletteShBands(
+              'streamed-sog',
+              json,
+              source,
+              options.shBands,
+              shBands !== 0,
+              { request: options.request, signal },
+            ),
+          );
         }
       } catch (error) {
         if (isAbortError(error)) throw error;

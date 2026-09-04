@@ -13,12 +13,12 @@ and [`architecture.md`](architecture.md).
 | **PLY** (3DGS INRIA) | ✅ |, | ✅ file | ✅ | ✅ packed shN (`f_rest_*`, bands 1–3) | `parse-splat-ply.test.ts` | orbit; SH vs DC |
 | **Compressed PLY** (SuperSplat) | ✅ |, | ✅ file | ✅ | ✅ packed shN when `sh` element present | `parse-compressed-ply.test.ts` | large capture |
 | **SOG** v2 (bundled ZIP) | ✅ |, | ✅ bundled `.sog` file | ✅ | ✅ palette shN | `parse-sog.test.ts` | demo default scene |
-| **Streamed SOG** (`lod-meta.json`) |, | ✅ | ✅ directory | ✅ | ⚠️ opt-in `shBands` (re-quantized packed) | `lod-scheduler`, `sog-scene-shn` | `?sh=N` A/B |
+| **Streamed SOG** (`lod-meta.json`) |, | ✅ | ✅ directory | ✅ | ✅ peek `meta.json` `shN` (re-quantized packed; off on `smooth`) | `lod-scheduler`, `sog-scene-shn`, `peek-sog-sh` | `?sh=0` vs `?sh=N` |
 | **SPLAT** (antimatter15) | ✅ |, | ✅ file | ✅ | ❌ DC only (32-byte record has no SH) | `parse-splat.test.ts` |, |
 | **KSPLAT** | ✅ |, | ✅ file | ✅ | ✅ packed shN (SH degrees 1–2) | `parse-ksplat.test.ts` |, |
 | **SPZ** | ✅ |, | ✅ file | ✅ | ✅ packed shN when `shDegree` > 0 (caps at 3 bands) | `parse-spz.test.ts` |, |
 | **LCC** (`.lcc` / `meta.lcc`, v3–v5) |, | ✅ | ✅ manifest + siblings | ✅ | ⚠️ `Quality` profile: packed SH (`shBands`); `Portable` DC | `lcc.test.ts`, `parse-lcc.test.ts` | Quality vs Portable |
-| **LCC2** (XGRIDS tiles) |, | ✅ | ✅ manifest + `.sog` tiles | ✅ | ⚠️ opt-in `shBands` (palette → packed at decode; verified tiles DC-only) | `lcc2-*` tests | octree LOD orbit |
+| **LCC2** (XGRIDS tiles) |, | ✅ | ✅ manifest + `.sog` tiles | ✅ | ✅ peek tile `meta.json` `shN` (palette → packed; off on `smooth`) | `lcc2-*`, `peek-sog-sh` | octree LOD orbit |
 | **RAD** (Spark `.rad`) | ✅ whole-file ≤ ~16.7M leaves | ✅ prefix or **page-table** foveation | ✅ `.rad` folder (optional `.radc` chunks) | ✅ | ✅ packed SH when capture has `maxSh` | `parse-rad`, `rad-*`, `frontier-pager` | page-table fly-through |
 
 ### Format notes
@@ -26,9 +26,11 @@ and [`architecture.md`](architecture.md).
 - **Local folder:** self-contained files and streamed manifests (SOG dir, LCC,
  LCC2, `.rad` + `.radc`). Unbundled SOG directory via single `File` alone ❌
  (needs HTTP sibling fetches).
-- **Streamed SH:** not LCC-only, opt-in `shBands` on **streamed SOG**, LCC
-  `Quality`, **LCC2**, and **`.rad`** (native packed). SOG/LCC2 palette shN is
-  re-quantized into the shared pool at decode (`formats/streamed-shn-notes.md`).
+- **Streamed SH:** not LCC-only. Unset `shBands` means every band the capture
+  carries on **streamed SOG**, LCC `Quality`, **LCC2**, and **`.rad`**, declined
+  on the `smooth` profile. SOG/LCC2 peek one tile's `meta.json` because those
+  manifests omit `shN`; palette shN is re-quantized into the shared pool at
+  decode (`formats/streamed-shn-notes.md`).
 - **LCC manifest versions:** `.lcc` / `meta.lcc` v3.x, 4.x and 5.x share one
   binary layout; v3 often omits `fileType` (inferred). See `formats/lcc-notes.md`.
 - **RAD paging:** large captures default `foveationMode: 'page-table'`
@@ -236,6 +238,64 @@ Intel/AMD iGPUs are still unmeasured. Library `resolveSplatBudget` stays on
 the 2M sampled / 1M LCC integrated caps. `vlam:performance-mode-v2` does not
 need a bump. M2 Pro was on hand and was not re-run; the 8 GB Air is the
 tighter machine.
+
+### Apple Silicon GPU tiers (design, not shipped)
+
+**Problem.** `classifySplatGpuClass` maps every Apple vendor string to
+`integrated`. That is correct for unified memory, but it also folds a MacBook
+Air M3 and a MacBook Pro M5 Max into the same fill-constrained policy: demo SD
+on by default, integrated budgets (~1M LCC / RAD, ~2M sampled SOG), and
+adaptive DPR that only fights for headroom *below* dpr 1. Air measurements
+justify that path. Public M5 Max positioning (high-end Pro GPU, large unified
+memory, multi-display) does not: that machine is underserved by Air defaults,
+not missing an M5-specific shader.
+
+**Do not** flip all Apple Silicon to HD or to the discrete 8M path from
+marketing specs alone. An Air-class default that protects phones and thin
+laptops must stay until a Max (or Pro) headed matrix says otherwise.
+
+**Goals.**
+
+1. Keep Air / base M-series on today's fill-constrained defaults.
+2. Let Pro / Max-class Macs take a higher quality ceiling (HD-leaning demo
+   defaults, larger budgets, adaptive DPR that can rise toward 1.5) without
+   inventing a fake `discrete` GPU.
+3. Remain safe when WebGPU only exposes `vendor: apple` and Safari omits
+   `deviceMemory`.
+
+**Proposed signals (prefer in this order).**
+
+| Signal | Use | Caveat |
+| --- | --- | --- |
+| Host / URL override (`deviceProfile.gpuClass`, demo `?gpuClass=`) | Force `integrated` or a future Apple tier for A/B and embedders that know the SKU | Must stay explicit; never infer Max from user agent alone |
+| `navigator.deviceMemory` when present | Soft hint only (e.g. ≥16 GiB → candidate for a higher Apple tier) | Chrome often privacy-caps at 8; Safari macOS often omits it entirely |
+| `adapter.info` architecture / device strings | If browsers ever distinguish base vs Pro/Max | Today often blank or generic `apple` |
+| Adapter limits (`maxBufferSize`, storage binding sizes) | Optional capability score as a last resort | Correlates loosely with class; needs calibration on real devices |
+
+**Proposed tiers (names illustrative).**
+
+| Tier | Who | Policy sketch |
+| --- | --- | --- |
+| `apple-integrated` (today's `integrated`) | Air, base M-series, unknown Apple | SD default; adaptive DPR floor 0.8 / ceiling 1 under SD; 1M LCC / 2M sampled |
+| `apple-pro` (new) | Pro / Max class once validated | Prefer HD-leaning or SD-off default; adaptive between 1 and `recommendedMaxPixelRatio` (1.5); budgets between integrated and discrete, raised only after hotel-orbit / streamed measures |
+| `discrete` | Unchanged (NVIDIA / AMD / Arc) | Current workstation path |
+
+Until `apple-pro` exists in code, Max owners can A/B with performance mode off
+and pinned `?budget=` / `?pixelRatio=` / `?adaptiveDpr=1`; library hosts can
+pass an explicit `deviceProfile`.
+
+**Validation gate before shipping a higher Apple tier.** Same hotel-core
+Veersetoren orbit used on the M3 Air (dense XZ pivot, not the outlier
+cinematic shell), Chrome and Safari WebGPU, SD vs HD, adaptive on/off,
+`?hud=1&gpuTimestamps=1`. Record browser, macOS, chip marketing name if known,
+`gpuClass`, memory signal, active splat count, median / p95 / p99, missed 16.6
+and 33.3 ms deadlines. M3 Air results do not close an M5 Max row (see also
+[render benchmark](render-benchmark.md)).
+
+**Implementation order.** Document here → unit-test classification hooks and
+host overrides → headed Max matrix → only then change demo / budget defaults.
+RAD swap-upload cost and Air adaptive behavior remain separate work; they help
+every Mac tier.
 
 **Galaxy S24 Ultra, Chrome 151 WebGPU (2026-08-25).** Public demo, portrait,
 `?hud=1&gpuTimestamps=1`. HUD `Chrome 151  mem 8  mobile discrete`, native

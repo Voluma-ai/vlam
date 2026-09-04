@@ -19,7 +19,32 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Added
+
+- Streamed SOG and `.lcc2` enable SH by default when a tile's `meta.json`
+  reports `shN`. The loader peeks one chunk (a small JSON GET, or a ranged
+  ZIP tail plus `meta.json`) instead of allocating pool textures speculatively.
+  Still off on the `smooth` profile, demo SD, and explicit `shBands: 0`. A
+  server that ignores HTTP Range keeps SH off. See
+  [streamed shN notes](docs/formats/streamed-shn-notes.md).
+
+- Standalone Spark 2.1.0 / VLAM benchmarks with defaults and matched presets,
+  identical cached scenes and camera paths, CPU/GPU timing, retained screenshots,
+  and an alternating sequential comparison suite. VLAM accepts `backend=webgl`
+  for a WebGL2 + worker-sort diagnostic against Spark. See
+  [the protocol](docs/render-benchmark.md).
+
 ### Performance
+
+- Added opt-in `SplatMeshOptions.shEvaluation: 'compute'` for a color-only SH
+  cache on fully loaded standalone WebGPU meshes, plus demo/benchmark controls
+  and internal diagnostics. Moving-camera colors refresh with each accepted GPU
+  sort and are reused between sorts, then refresh after settling. On the M3 Air
+  SH3 test this reached 25.14 FPS stationary and a three-run median of 16.10 FPS
+  in orbit, compared with 11.92 and 11.13 on vertex SH.
+  `auto` selects it on identified Apple Silicon Macs and retains vertex SH on
+  unidentified, mobile and other devices. See
+  [the measurements and limitations](docs/render-benchmark.md).
 
 - Rendering benchmarks now default to a stationary camera, restart after hidden
   intervals, drain GPU timestamps during measurement, and retain screenshots

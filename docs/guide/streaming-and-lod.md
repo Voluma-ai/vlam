@@ -36,8 +36,9 @@ export async function openStreamed(scene: THREE.Scene, signal: AbortSignal) {
 <!-- full file: docs/guide/samples/streaming-basic.ts -->
 
 Other options worth knowing: `request` (headers/credentials for manifest and
-chunk fetches), `shBands` (view-dependent color in the streamed pool, on by
-default for LCC `Quality`, strictly opt-in for Streamed SOG), and
+chunk fetches), `shBands` (view-dependent color in the streamed pool; unset
+uses every band the capture carries, including a peeked SOG / `.lcc2`
+`meta.json`, and stays off on the `smooth` profile), and
 `lodBaseDistance`, which is scene-scale-dependent, the default 10 assumes
 roughly unit-scale scenes, so tune it for captures spanning hundreds of
 units.
