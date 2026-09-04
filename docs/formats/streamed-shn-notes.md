@@ -89,28 +89,34 @@ at a large complexity and bookkeeping cost.
   it. LCC/`.rad` chunks already share one range, so for them this stays a
   verbatim copy.
 
-### Opt-in, and why
+### Detection, and why peek rather than allocate
 
-Streamed SOG SH is **opt-in** via the `shBands` load option (default off,
-preserving prior behavior). Unlike LCC, whose manifest states its band count,
-so "every band the capture carries" is knowable, a Streamed SOG `lod-meta.json`
-does **not** declare whether the tiles carry shN. Turning SH on speculatively
-would allocate up to 384 MB of pool textures for a scene that may have none, so
-the caller asks for it deliberately. (`.lcc2` tiles are verified DC-only -
-[`lcc2-notes.md`](lcc2-notes.md), so the toggle is inert there, but the same path would
-carry their shN if a future capture had it.)
+Streamed SOG / `.lcc2` manifests do **not** declare whether the tiles carry
+shN. Turning SH on speculatively would allocate up to 384 MB of pool
+textures for a scene that may have none.
 
-### A/B in the demo
+`StreamedSplatMesh.load` therefore peeks **one** tile when `shBands` is
+unset and the performance profile allows SH:
 
-`?sh=N` (N = 1/2/3) turns it on for a streamed scene; the debug line's `SH n`
-reports the bands actually rendered. Load the same SOG capture as a fully loaded mesh
-(palette shN) and as a streamed mesh with `?sh=3` (converted packed shN) to
-compare, they should match to within quantization.
+- Streamed SOG: a GET of the first chunk's `meta.json` (a few kilobytes).
+- `.lcc2`: a ranged read of one splat `.sog` (ZIP tail for the central
+  directory, then the `meta.json` entry). A server that answers 200 instead
+  of 206 cancels the body and leaves SH off rather than downloading a
+  multi-hundred-megabyte tile.
+
+The peek is skipped when `shBands` is explicit (including `0`) and when the
+`smooth` profile declined SH. A tile without `shN` still loads as DC color.
+The Dehaar reference capture is DC-only; a later XGRIDS tile with `shN`
+turns SH on without `?sh=N`.
+
+`?sh=N` (N = 1/2/3) still forces the conversion for a streamed scene; `?sh=0`
+forces it off. The debug line's `SH n` reports the bands actually rendered.
 
 ### Verification note
 
-The conversion math, zero-padding, requantization, and the pool's
-range-mismatch requantize are covered by unit tests (`sh-pack.test.ts`,
-`splat-mesh.packed-sh.test.ts`, `sog-scene-shn.test.ts`). End-to-end visual A/B
-needs a Streamed SOG capture that actually carries shN; none is checked in
-(captures are gitignored), so on-device confirmation is pending such a fixture.
+The conversion math, zero-padding, requantization, the pool's
+range-mismatch requantize, and the tile peek are covered by unit tests
+(`sh-pack.test.ts`, `splat-mesh.packed-sh.test.ts`, `sog-scene-shn.test.ts`,
+`peek-sog-sh.test.ts`). End-to-end visual A/B needs a Streamed SOG / `.lcc2`
+capture that actually carries shN; none is checked in (captures are
+gitignored), so on-device confirmation is pending such a fixture.

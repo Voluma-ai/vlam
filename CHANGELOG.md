@@ -21,6 +21,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- Streamed SOG and `.lcc2` enable SH by default when a tile's `meta.json`
+  reports `shN`. The loader peeks one chunk (a small JSON GET, or a ranged
+  ZIP tail plus `meta.json`) instead of allocating pool textures speculatively.
+  Still off on the `smooth` profile, demo SD, and explicit `shBands: 0`. A
+  server that ignores HTTP Range keeps SH off. See
+  [streamed shN notes](docs/formats/streamed-shn-notes.md).
+
 - Standalone Spark 2.1.0 / VLAM benchmarks with defaults and matched presets,
   identical cached scenes and camera paths, CPU/GPU timing, retained screenshots,
   and an alternating sequential comparison suite. VLAM accepts `backend=webgl`

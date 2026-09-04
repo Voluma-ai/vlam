@@ -18,12 +18,14 @@ Dehaar/
 └── info/ ← poses.json, report.json, thumb.jpg (skip)
 ```
 
-**The splat tiles are plain SOG v2** (verified: `version: 2`, no `shN`),
-decodable by our existing `parseSog`. One `.sog` file packs *several*
-nodes' splats concatenated: e.g. `0_9_0.sog` holds 524,407 splats, and one
-node reads the sub-range `[0, 43866)` of it. This is exactly the Streamed
-SOG chunk model, a file is a chunk, a node's `(start, count)` is a range
-within it.
+**The splat tiles are plain SOG v2** (Dehaar verified: `version: 2`, no `shN`),
+decodable by our existing `parseSog`. Captures that *do* store palette shN
+are detected at load by peeking one tile's `meta.json` (a ranged ZIP read;
+see [`streamed-shn-notes.md`](streamed-shn-notes.md)). One `.sog` file packs
+*several* nodes' splats concatenated: e.g. `0_9_0.sog` holds 524,407 splats,
+and one node reads the sub-range `[0, 43866)` of it. This is exactly the
+Streamed SOG chunk model, a file is a chunk, a node's `(start, count)` is a
+range within it.
 
 ## Manifest schema (`De haar.lcc2`, version "0.0.2")
 

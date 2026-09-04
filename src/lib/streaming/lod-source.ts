@@ -220,12 +220,12 @@ export interface LodSourceOptions {
 /**
  * Builds a scene from a parsed Streamed SOG manifest (JSON already fetched).
  *
- * `shBands` opts into view-dependent color (M11): when ≥ 1, each chunk's
+ * `shBands` selects view-dependent color (M11): when ≥ 1, each chunk's
  * palette shN is converted to per-splat packed shN at decode so it survives
- * the shared pool, and the pool allocates that many SH bands. Unset/0 keeps
- * the historical behavior (palette shN dropped). It is opt-in because the
- * manifest does not declare whether the tiles carry shN; a scene with none
- * renders unchanged but wastes the allocated SH textures, so ask deliberately.
+ * the shared pool, and the pool allocates that many SH bands. 0 drops the
+ * palette. {@link StreamedSplatMesh.load} peeks a tile's `meta.json` when this
+ * is omitted, so a capture that carries shN turns SH on without the caller
+ * naming a count.
  */
 export function buildSogScene(
   json: unknown,

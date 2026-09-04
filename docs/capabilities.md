@@ -13,12 +13,12 @@ and [`architecture.md`](architecture.md).
 | **PLY** (3DGS INRIA) | ✅ |, | ✅ file | ✅ | ✅ packed shN (`f_rest_*`, bands 1–3) | `parse-splat-ply.test.ts` | orbit; SH vs DC |
 | **Compressed PLY** (SuperSplat) | ✅ |, | ✅ file | ✅ | ✅ packed shN when `sh` element present | `parse-compressed-ply.test.ts` | large capture |
 | **SOG** v2 (bundled ZIP) | ✅ |, | ✅ bundled `.sog` file | ✅ | ✅ palette shN | `parse-sog.test.ts` | demo default scene |
-| **Streamed SOG** (`lod-meta.json`) |, | ✅ | ✅ directory | ✅ | ⚠️ opt-in `shBands` (re-quantized packed) | `lod-scheduler`, `sog-scene-shn` | `?sh=N` A/B |
+| **Streamed SOG** (`lod-meta.json`) |, | ✅ | ✅ directory | ✅ | ✅ peek `meta.json` `shN` (re-quantized packed; off on `smooth`) | `lod-scheduler`, `sog-scene-shn`, `peek-sog-sh` | `?sh=0` vs `?sh=N` |
 | **SPLAT** (antimatter15) | ✅ |, | ✅ file | ✅ | ❌ DC only (32-byte record has no SH) | `parse-splat.test.ts` |, |
 | **KSPLAT** | ✅ |, | ✅ file | ✅ | ✅ packed shN (SH degrees 1–2) | `parse-ksplat.test.ts` |, |
 | **SPZ** | ✅ |, | ✅ file | ✅ | ✅ packed shN when `shDegree` > 0 (caps at 3 bands) | `parse-spz.test.ts` |, |
 | **LCC** (`.lcc` / `meta.lcc`, v3–v5) |, | ✅ | ✅ manifest + siblings | ✅ | ⚠️ `Quality` profile: packed SH (`shBands`); `Portable` DC | `lcc.test.ts`, `parse-lcc.test.ts` | Quality vs Portable |
-| **LCC2** (XGRIDS tiles) |, | ✅ | ✅ manifest + `.sog` tiles | ✅ | ⚠️ opt-in `shBands` (palette → packed at decode; verified tiles DC-only) | `lcc2-*` tests | octree LOD orbit |
+| **LCC2** (XGRIDS tiles) |, | ✅ | ✅ manifest + `.sog` tiles | ✅ | ✅ peek tile `meta.json` `shN` (palette → packed; off on `smooth`) | `lcc2-*`, `peek-sog-sh` | octree LOD orbit |
 | **RAD** (Spark `.rad`) | ✅ whole-file ≤ ~16.7M leaves | ✅ prefix or **page-table** foveation | ✅ `.rad` folder (optional `.radc` chunks) | ✅ | ✅ packed SH when capture has `maxSh` | `parse-rad`, `rad-*`, `frontier-pager` | page-table fly-through |
 
 ### Format notes
@@ -26,9 +26,11 @@ and [`architecture.md`](architecture.md).
 - **Local folder:** self-contained files and streamed manifests (SOG dir, LCC,
  LCC2, `.rad` + `.radc`). Unbundled SOG directory via single `File` alone ❌
  (needs HTTP sibling fetches).
-- **Streamed SH:** not LCC-only, opt-in `shBands` on **streamed SOG**, LCC
-  `Quality`, **LCC2**, and **`.rad`** (native packed). SOG/LCC2 palette shN is
-  re-quantized into the shared pool at decode (`formats/streamed-shn-notes.md`).
+- **Streamed SH:** not LCC-only. Unset `shBands` means every band the capture
+  carries on **streamed SOG**, LCC `Quality`, **LCC2**, and **`.rad`**, declined
+  on the `smooth` profile. SOG/LCC2 peek one tile's `meta.json` because those
+  manifests omit `shN`; palette shN is re-quantized into the shared pool at
+  decode (`formats/streamed-shn-notes.md`).
 - **LCC manifest versions:** `.lcc` / `meta.lcc` v3.x, 4.x and 5.x share one
   binary layout; v3 often omits `fileType` (inferred). See `formats/lcc-notes.md`.
 - **RAD paging:** large captures default `foveationMode: 'page-table'`
