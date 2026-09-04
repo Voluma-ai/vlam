@@ -1250,8 +1250,12 @@ export class StreamedSplatMesh extends SplatMesh {
     // fix it - thirteen 500 MB captures still allow 6.5 GB, because nothing
     // related the meshes to each other. The budget is that missing relation.
     const isPageTable = isPageTableFoveation(options.foveationMode);
+    // Prefix RAD has chunked data too, but unlike LCC its scene does not expose
+    // a `chunkSize`. Use the chunk format marker so its cache ceiling still
+    // reflects the estimated capture size.
+    const isChunkedRad = scene.chunkOptions?.[0]?.format === 'rad-chunk';
     const cacheCeilingBytes =
-      isPageTable || scene.chunkSize !== undefined
+      isPageTable || scene.chunkSize !== undefined || isChunkedRad
         ? Math.max(
             this.cpuCacheBytes,
             Math.min(PAGETABLE_CACHE_FLOOR_BYTES, estimateSceneDecodedBytes(scene)),
@@ -3008,24 +3012,25 @@ export class StreamedSplatMesh extends SplatMesh {
   /**
    * Page-table `publish` equivalent for the prefix reader.
    *
-   * First paint waits until prefetch is cached or the CPU cache cannot hold
-   * more. After that the presented cut is sticky: cache-full and pool
-   * pressure must not swap in a coarser/partial replacement (that is the
-   * sharp↔noisy flicker once the scene has appeared). A later cut publishes
-   * only when it is fully staged, the pipe is idle, and it is not coarser
-   * than what is already on screen.
+   * Speculative prefetch runs are not part of the presented cut and must not
+   * hold it hostage. Cache-full and pool pressure provide a valve for both
+   * first paint and refinement; the regression guard prevents a coarser
+   * replacement from reaching the screen. Otherwise publish only when every
+   * drawable run's file is cached or failed — staging completeness itself is
+   * enforced by {@link applyRadWave}'s `readyComplete` check.
    */
   private radWaveShouldPublish(live: readonly LodRun[], poolPressure: boolean): boolean {
     const drawable = live.filter((run) => !run.fetchIntent);
+    // Never publish a fetch-only wave: there is no drawable cover to present.
+    if (drawable.length === 0) return false;
     if (this.waveHasPublished && this.radWaveIsRegression(drawable)) return false;
-    if (!this.waveHasPublished) {
-      if (poolPressure) return true;
-      if (this.cacheBytesTotal >= this.cpuCacheBytes) return true;
-    }
-    return !live.some(
-      (run) =>
-        run.fetchIntent === true && !this.cache.has(run.file) && !this.failedFiles.has(run.file),
-    );
+    // Fetch-intent runs are speculative and are excluded from `drawable`, so a
+    // prefetch that never lands cannot hold the presented cut hostage. Pressure
+    // still provides an escape hatch for both first paint and refinement; the
+    // regression guard above prevents either hatch from swapping in a coarser
+    // cut than the one already on screen.
+    if (poolPressure || this.cacheBytesTotal >= this.cpuCacheBytes) return true;
+    return drawable.every((run) => this.cache.has(run.file) || this.failedFiles.has(run.file));
   }
 
   /** True when `incoming` would put a coarser prefix on screen than the resident cut. */
@@ -3039,13 +3044,21 @@ export class StreamedSplatMesh extends SplatMesh {
   /**
    * Prefix quality: lower `level` is finer, and a deeper prefix usually draws
    * more splats. Weighted so a same-count finer cut still outranks a coarser one.
+   *
+   * Level bases must clear the largest level a format assigns. Prefix `.rad`
+   * uses `level = numChunks - chunkIndex`, which routinely exceeds 32 on real
+   * captures; a too-small base makes every deep cut score *worse* than the
+   * overview and permanently blocks refinement after first paint.
    */
   private radWaveCutQuality(runs: readonly LodRun[]): { count: number; fine: number } {
     let count = 0;
     let fine = 0;
+    // 1024 clears RAD chunk-index levels with headroom; octree depths stay well
+    // below it so the relative ordering among those cuts is unchanged.
+    const levelBase = 1024;
     for (const run of runs) {
       count += run.count;
-      fine += run.count * (32 - run.level);
+      fine += run.count * (levelBase - run.level);
     }
     return { count, fine };
   }
@@ -3116,9 +3129,13 @@ export class StreamedSplatMesh extends SplatMesh {
     }
 
     const shouldPublish = this.radWaveShouldPublish(live, poolPressure);
+    // Do not lead with `!poolPressure`: that made the pressure valve inside
+    // `radWaveShouldPublish` unreachable. When the valve says publish, a
+    // partially staged ready set is still allowed to commit. Likewise do not
+    // restrict the `awaitingFetch` escape to first paint — refinement under
+    // pressure must be able to present what is already staged.
     const readyComplete =
-      !poolPressure &&
-      (!awaitingFetch || (!this.waveHasPublished && shouldPublish)) &&
+      (!awaitingFetch || shouldPublish) &&
       ready.every((group) => group.adds.length === 0 || this.groupFullyStaged(group));
     const holdingRetires = ready.some((group) => group.removes.length > 0);
 
@@ -3129,9 +3146,11 @@ export class StreamedSplatMesh extends SplatMesh {
         return;
       }
       // The published cover is the picture until a later cut is allowed to
-      // swap. Do not bulk-retire it just because discovery is still deepening
-      // or the CPU cache is thrashing.
-      if (this.waveHasPublished && (!shouldPublish || awaitingFetch)) {
+      // swap. Do not bulk-retire it just because discovery is still deepening.
+      // When `shouldPublish` is true (pressure valve or drawable fully cached),
+      // fall through so a staged refinement can commit even while later
+      // drawable siblings are still fetching.
+      if (this.waveHasPublished && !shouldPublish) {
         this.retireHeldTicks = 0;
         return;
       }

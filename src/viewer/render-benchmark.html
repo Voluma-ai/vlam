@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VLAM! render benchmark</title>
+    <style>
+      body { margin: 16px; background: #111; color: #ddd; font: 13px/1.5 ui-monospace, monospace; }
+      canvas { display: block; width: min(800px, 100%); height: auto; margin-bottom: 12px; }
+      button { margin-right: 8px; padding: 5px 10px; font: inherit; }
+      pre { white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas" width="800" height="600"></canvas>
+    <button id="download-json" disabled>Download JSON</button>
+    <button id="download-shot" disabled>Download screenshot</button>
+    <pre id="status">Loading benchmark scene…</pre>
+    <script type="module" src="/src/viewer/render-benchmark.ts"></script>
+  </body>
+</html>

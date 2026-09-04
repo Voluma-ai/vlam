@@ -22,6 +22,31 @@ import type { SplatContext, SplatModifier } from '../core/splat-modifier';
 
 const WIDTH = 4;
 
+// Exercise Three's actual dispatch decision without needing a GPU. Only the
+// low-level draw handler is substituted; the face-pass logic stays upstream.
+function threeTransparentSubmissionCount(material: THREE.Material): number {
+  let submissions = 0;
+  const renderer = {
+    _currentSourceMaterial: null,
+    _handleObjectFunction: () => {
+      submissions++;
+    },
+  } as unknown as THREE.WebGPURenderer;
+  const geometry = new THREE.BufferGeometry();
+  THREE.WebGPURenderer.prototype.renderObject.call(
+    renderer,
+    new THREE.Mesh(geometry, material),
+    new THREE.Scene(),
+    new THREE.PerspectiveCamera(),
+    geometry,
+    material,
+    null,
+    null as unknown as Parameters<THREE.WebGPURenderer['renderObject']>[6],
+  );
+  geometry.dispose();
+  return submissions;
+}
+
 function makeTextures() {
   return {
     centersTexture: new THREE.DataTexture(new Float32Array(WIDTH * 4), WIDTH, 1),
@@ -45,6 +70,11 @@ function makeInputs(
   sourcePlacement: SplatSourcePlacement | null,
   modifiers: readonly SplatModifier[],
   mode: 'display' | 'pick',
+  relightMap: THREE.Texture | null = new THREE.DataTexture(
+    new Uint8Array([255, 255, 255, 255]),
+    1,
+    1,
+  ),
 ): SplatMaterialBuildInputs {
   return {
     textures: makeTextures(),
@@ -61,7 +91,7 @@ function makeInputs(
       // here because this fixture builds no screen-radius cull.
       screenBandMin: uniform(0),
       screenBandMax: uniform(0),
-      relightMap: new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1),
+      relightMap,
       relightBlend: uniform(0),
       relightBrightness: uniform(2),
       relightBackground: uniform(1),
@@ -96,6 +126,15 @@ const readsEveryFrame: SplatModifier = (ctx) => ({
 });
 
 describe('material graph - per-source placement', () => {
+  it('detects the upstream two-pass path when single-pass is not enabled', () => {
+    const material = new THREE.NodeMaterial();
+    material.transparent = true;
+    material.side = THREE.DoubleSide;
+    expect(threeTransparentSubmissionCount(material)).toBe(2);
+    material.forceSinglePass = true;
+    expect(threeTransparentSubmissionCount(material)).toBe(1);
+    material.dispose();
+  });
   for (const mode of ['display', 'pick'] as const) {
     for (const placed of [false, true]) {
       it(`builds in ${mode} mode ${placed ? 'with' : 'without'} a source placement`, () => {
@@ -108,6 +147,10 @@ describe('material graph - per-source placement', () => {
           ),
         ).not.toThrow();
         expect(material.vertexNode).not.toBeUndefined();
+        if (mode === 'display') {
+          expect(material.forceSinglePass).toBe(true);
+          expect(threeTransparentSubmissionCount(material)).toBe(1);
+        }
       });
     }
   }
@@ -121,6 +164,15 @@ describe('material graph - per-source placement', () => {
       applySplatMaterialGraph(material, 'display', makeInputs(makePlacement(), [], 'display')),
     ).not.toThrow();
     expect(material.vertexNode).not.toBeUndefined();
+  });
+
+  it('builds the default display graph without a relighting texture', () => {
+    const material = new THREE.NodeMaterial();
+    expect(() =>
+      applySplatMaterialGraph(material, 'display', makeInputs(null, [], 'display', null)),
+    ).not.toThrow();
+    expect(material.forceSinglePass).toBe(true);
+    expect(threeTransparentSubmissionCount(material)).toBe(1);
   });
 });
 

@@ -45,8 +45,8 @@ export interface LodRun {
   /**
    * True when this run only exists to keep a not-yet-decoded chunk in the
    * fetch pipe. Prefix-reader `.rad` appends these ahead of the resident
-   * frontier; they are not part of the drawable cut. They keep the mesh from
-   * presenting until every prefetch file is cached.
+   * frontier; they are not part of the drawable cut and never block publishing
+   * that cut when their speculative fetch does not land.
    */
   readonly fetchIntent?: boolean;
 }

@@ -58,6 +58,7 @@ describe('clampRelightingSettings', () => {
 describe('SplatMesh.setRelighting', () => {
   it('writes live blend uniforms without requiring a map change', () => {
     const mesh = new SplatMesh({ capacity: 64 });
+    expect((mesh.material as THREE.Material).forceSinglePass).toBe(true);
     const map = createPlaceholderRelightTexture();
     mesh.setRelighting({ map, blend: 0.5, brightness: 1.5, background: 0.8, softness: 2 });
     expect(mesh.getRelighting()).toEqual({
@@ -71,6 +72,7 @@ describe('SplatMesh.setRelighting', () => {
     expect(mesh.getRelighting().brightness).toBe(1.5);
     mesh.setRelighting(null);
     expect(mesh.getRelighting().blend).toBe(0);
+    expect((mesh.material as THREE.Material).forceSinglePass).toBe(true);
     map.dispose();
     mesh.dispose();
   });

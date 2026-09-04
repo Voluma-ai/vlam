@@ -4003,7 +4003,12 @@ async function main(): Promise<void> {
     }
     const frameSwapEvents = swapPerformanceEvents;
     swapPerformanceEvents = [];
-    const benchmarkResult = benchmark?.record(timestamp, frameSwapEvents);
+    const benchmarkResult = benchmark?.record(timestamp, frameSwapEvents, {
+      // This is Three's per-frame draw counter, not CPU submission time and
+      // not GPU duration. Keeping the names distinct prevents mislabeling the
+      // two measurements in device reports.
+      renderDrawCalls: renderer.info.render.drawCalls,
+    });
     if (benchmarkResult && benchmarkOutput && benchmarkOutput.textContent === '') {
       benchmark = null;
       benchmarkOutput.textContent = 'resolving';
@@ -4020,7 +4025,20 @@ async function main(): Promise<void> {
         .then(async () => {
           const sortVerification =
             backendName === 'WebGPU' ? await verifyGpuSort(splats, camera, renderer) : undefined;
+          renderer.getDrawingBufferSize(drawingBufferSize);
           benchmarkOutput.textContent = JSON.stringify({
+            environment: {
+              browser: hudBrowser,
+              userAgent: typeof navigator === 'undefined' ? undefined : navigator.userAgent,
+              platform: typeof navigator === 'undefined' ? undefined : navigator.platform,
+              backend: backendName,
+              drawingBuffer: { width: drawingBufferSize.x, height: drawingBufferSize.y },
+              pixelRatio: renderer.getPixelRatio(),
+              msaa: getRendererMsaaSamples(renderer),
+              splatCount: splats.activeSplatCount,
+              shBands: splats.shBands,
+              device: hudDeviceProfile,
+            },
             sortStrategy,
             performanceProfile,
             sortIntervalMs: sortIntervalMs ?? 'automatic',
