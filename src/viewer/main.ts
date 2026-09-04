@@ -1381,6 +1381,13 @@ async function main(): Promise<void> {
   // Omitted unless pinned: the library picks the profile from the device, and
   // passing one unconditionally would mask that default.
   const profileParam = params.get('profile');
+  const shEvaluationParam = params.get('shEvaluation');
+  if (shEvaluationParam !== null && !['auto', 'vertex', 'compute'].includes(shEvaluationParam)) {
+    throw new Error('Invalid shEvaluation: expected auto, vertex or compute.');
+  }
+  const shEvaluation = (shEvaluationParam ?? 'auto') as NonNullable<
+    SplatMeshOptions['shEvaluation']
+  >;
   const performanceProfile: SplatPerformanceProfile | undefined =
     profileParam === null ? undefined : profileParam === 'smooth' ? 'smooth' : 'quality';
   // ?cacheMB=N pins the decoded-chunk CPU cache cap, to reproduce a phone's
@@ -1457,6 +1464,7 @@ async function main(): Promise<void> {
     return {
       sortStrategy,
       sortMetric,
+      shEvaluation,
       orientation,
       ...(performanceProfile === undefined ? {} : { performanceProfile }),
       ...(sortIntervalMs === undefined ? {} : { sortIntervalMs }),

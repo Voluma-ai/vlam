@@ -105,12 +105,16 @@ async function run(): Promise<void> {
       draws: number[] = [],
       activeCounts: number[] = [];
     let frame = 0;
+    let diagnosticStart: Record<string, unknown> | undefined;
+    const dispatchFrames: { frame: number; sh: number; sort: number }[] = [];
     let lastStatus = '';
     const reset = () => {
       if (document.visibilityState === 'visible') return;
       session.reset();
       active.reset();
       cpu.length = draws.length = activeCounts.length = 0;
+      diagnosticStart = undefined;
+      dispatchFrames.length = 0;
       status.textContent = 'Paused — keep this page visible. Warm-up restarts on return.';
       lastStatus = '';
     };
@@ -128,10 +132,19 @@ async function run(): Promise<void> {
               camera,
               pose,
               Math.max(0, state.elapsedMs - config.warmup * 1000),
-              config.mode === 'orbit',
+              config.mode,
             );
+            const before = state.sampling ? active.diagnostics?.() : undefined;
+            diagnosticStart ??= before;
             const sample = active.frame(camera, ++frame, state.sampling);
             if (state.sampling) {
+              const after = active.diagnostics?.();
+              if (before && after)
+                dispatchFrames.push({
+                  frame,
+                  sh: Number(after.dispatches) - Number(before.dispatches),
+                  sort: Number(after.sortSubmissions) - Number(before.sortSubmissions),
+                });
               cpu.push(sample.cpuMs);
               draws.push(sample.draws);
               activeCounts.push(sample.activeSplats);
@@ -178,6 +191,12 @@ async function run(): Promise<void> {
       scene: manifest,
       camera: { ...pose, fov: 45, near: 0.01, far: 10000 },
       renderer: active.metadata,
+      diagnostics: active.diagnostics?.() ?? null,
+      measuredDispatches: {
+        sh: dispatchFrames.reduce((sum, entry) => sum + entry.sh, 0),
+        sort: dispatchFrames.reduce((sum, entry) => sum + entry.sort, 0),
+        initial: diagnosticStart ?? null,
+      },
       frame: {
         ...frameSummary,
         averageFps: frameSummary.meanMs ? 1000 / frameSummary.meanMs : null,
@@ -199,11 +218,14 @@ async function run(): Promise<void> {
         cpuUpdateAndRenderMs: cpu,
         gpuRender: [...gpu.render],
         gpuCompute: [...gpu.compute],
+        dispatchFrames,
       },
       caveats: [
         'FPS is observed animation callback cadence, not display presentation or uncapped throughput.',
         'CPU submission excludes asynchronous worker execution and GPU completion.',
         'GPU render and compute percentiles are separate; do not add unpaired percentiles.',
+        'Compute timing includes SH preparation and sorting; dispatch counters distinguish their frequency.',
+        'Diagnostic counters include initial preparation and warm-up; timed deltas are recorded separately.',
       ],
     };
     status.textContent = `${suiteLabel}Capturing fixed comparison poses…`;

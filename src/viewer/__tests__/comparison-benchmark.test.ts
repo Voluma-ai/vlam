@@ -23,6 +23,7 @@ describe('shared comparison configuration', () => {
       warmup: 5,
       seconds: 15,
       preset: 'defaults',
+      shEvaluation: 'auto',
     });
     expect(
       comparisonConfig('/spark-benchmark.html', new URLSearchParams('preset=matched&sh=0')),
@@ -40,11 +41,40 @@ describe('shared comparison configuration', () => {
       'position=a,2,3&target=0,0,0',
       'preset=unknown',
       'backend=metal',
+      'shEvaluation=unknown',
+      'mode=unknown',
     ])
       expect(() => comparisonConfig('/vlam-benchmark.html', new URLSearchParams(query))).toThrow();
     expect(() =>
       comparisonConfig('/spark-benchmark.html', new URLSearchParams('backend=webgpu')),
     ).toThrow();
+  });
+  it('separates rotation, translation and settling for SH invalidation probes', () => {
+    const pose = {
+      position: [4, 2, 8] as [number, number, number],
+      target: [1, 0, 1] as [number, number, number],
+    };
+    const camera = new PerspectiveCamera();
+    applyComparisonCamera(camera, pose, 0, 'rotate');
+    const initialRotation = camera.quaternion.clone();
+    applyComparisonCamera(camera, pose, 12000, 'rotate');
+    expect(camera.position.toArray()).toEqual(pose.position);
+    expect(camera.quaternion.equals(initialRotation)).toBe(false);
+    applyComparisonCamera(camera, pose, 0, 'translate');
+    const translationRotation = camera.quaternion.clone();
+    applyComparisonCamera(camera, pose, 12000, 'translate');
+    expect(camera.position.x).not.toBe(pose.position[0]);
+    expect(camera.quaternion.angleTo(translationRotation)).toBeLessThan(1e-7);
+    applyComparisonCamera(camera, pose, 5000, 'settle');
+    const settled = camera.matrixWorld.clone();
+    applyComparisonCamera(camera, pose, 15000, 'settle');
+    expect(camera.matrixWorld.elements).toEqual(settled.elements);
+    expect(
+      comparisonConfig(
+        '/vlam-benchmark.html',
+        new URLSearchParams('shEvaluation=compute&mode=settle'),
+      ),
+    ).toMatchObject({ shEvaluation: 'compute', mode: 'settle' });
   });
   it('reproduces camera matrices and preserves poses in comparison links', () => {
     const pose = { position: [4, 2, 8], target: [1, 0, 1] } as const;

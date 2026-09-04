@@ -5,6 +5,17 @@ named visual or device validation. Completed work belongs in the changelog and
 Git history, not in this queue.
 
 
+## Next
+
+- **Standalone WebGPU SH cache** — experimental implementation and benchmark
+  controls are available via `shEvaluation: 'compute'`. Refreshing moving-camera
+  colors only with accepted GPU sorts measured 25.14 FPS stationary and 16.10
+  FPS orbit on the M3 Air, versus 11.92/11.13 on vertex SH and a fresh 18.48 FPS
+  Spark orbit probe. The identified Apple Mac cohort uses this path while other
+  `auto` devices stay on vertex evaluation. Still needs broader SH/PLY/reference/lifecycle coverage,
+  workload-size and discrete-GPU checks, and a thermal comparison. See the
+  [retest and protocol](docs/render-benchmark.md#m3-air-sh-cache-retest-2026-09-04).
+
 ## Later
 
 - **Apple Silicon GPU tiers** — design recorded in

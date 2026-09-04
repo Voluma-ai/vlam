@@ -36,6 +36,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Performance
 
+- Added opt-in `SplatMeshOptions.shEvaluation: 'compute'` for a color-only SH
+  cache on fully loaded standalone WebGPU meshes, plus demo/benchmark controls
+  and internal diagnostics. Moving-camera colors refresh with each accepted GPU
+  sort and are reused between sorts, then refresh after settling. On the M3 Air
+  SH3 test this reached 25.14 FPS stationary and a three-run median of 16.10 FPS
+  in orbit, compared with 11.92 and 11.13 on vertex SH.
+  `auto` selects it on identified Apple Silicon Macs and retains vertex SH on
+  unidentified, mobile and other devices. See
+  [the measurements and limitations](docs/render-benchmark.md).
+
 - Rendering benchmarks now default to a stationary camera, restart after hidden
   intervals, drain GPU timestamps during measurement, and retain screenshots
   after renderer disposal. Reports distinguish sampled GPU timings and actual

@@ -5,7 +5,8 @@ export interface ComparisonConfig {
   engine: 'spark' | 'vlam';
   scene: 'Langenthal-Manola4A' | 'goose';
   preset: 'defaults' | 'matched';
-  mode: 'stationary' | 'orbit';
+  mode: 'stationary' | 'orbit' | 'rotate' | 'translate' | 'settle';
+  shEvaluation: 'auto' | 'vertex' | 'compute';
   /** VLAM only: `webgpu` (default) or forced `webgl`. Spark is always WebGL2. */
   backend: 'webgpu' | 'webgl';
   width: number;
@@ -45,11 +46,12 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
     throw new Error('Camera position must differ from target.');
   for (const [key, allowed] of Object.entries({
     preset: ['defaults', 'matched'],
-    mode: ['stationary', 'orbit'],
     scene: ['Langenthal-Manola4A', 'goose'],
     sh: ['0'],
     gpuTimestamps: ['0', '1'],
     backend: ['webgpu', 'webgl'],
+    mode: ['stationary', 'orbit', 'rotate', 'translate', 'settle'],
+    shEvaluation: ['auto', 'vertex', 'compute'],
   })) {
     if (params.has(key) && !allowed.includes(params.get(key)!)) throw new Error(`Invalid ${key}.`);
   }
@@ -57,13 +59,13 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
   // Spark's comparison page is WebGL2-only; rejecting webgpu avoids a silent no-op.
   if (engine === 'spark' && params.get('backend') === 'webgpu')
     throw new Error('Spark comparison is WebGL2-only; omit backend or use backend=webgl.');
-  const backend =
-    engine === 'spark' || params.get('backend') === 'webgl' ? 'webgl' : 'webgpu';
+  const backend = engine === 'spark' || params.get('backend') === 'webgl' ? 'webgl' : 'webgpu';
   return {
     engine,
     scene: params.get('scene') === 'goose' ? 'goose' : 'Langenthal-Manola4A',
     preset: params.get('preset') === 'matched' ? 'matched' : 'defaults',
-    mode: params.get('mode') === 'orbit' ? 'orbit' : 'stationary',
+    mode: (params.get('mode') ?? 'stationary') as ComparisonConfig['mode'],
+    shEvaluation: (params.get('shEvaluation') ?? 'auto') as ComparisonConfig['shEvaluation'],
     backend,
     width: Math.max(1, Math.floor(positive('width', 1280, 4096))),
     height: Math.max(1, Math.floor(positive('height', 720, 4096))),
@@ -88,12 +90,26 @@ export function applyComparisonCamera(
   camera: PerspectiveCamera,
   pose: ComparisonPose,
   elapsedMs: number,
-  orbit: boolean,
+  motion: boolean | ComparisonConfig['mode'],
 ): void {
   const target = new Vector3(...pose.target);
   const offset = new Vector3(...pose.position).sub(target);
-  if (orbit) offset.applyAxisAngle(new Vector3(0, 1, 0), elapsedMs * 0.00012);
+  const mode = typeof motion === 'boolean' ? (motion ? 'orbit' : 'stationary') : motion;
+  const time = mode === 'settle' ? Math.min(elapsedMs, 5000) : elapsedMs;
+  if (mode === 'orbit' || mode === 'settle')
+    offset.applyAxisAngle(new Vector3(0, 1, 0), time * 0.00012);
   camera.position.copy(target).add(offset);
+  if (mode === 'rotate') {
+    const direction = target
+      .clone()
+      .sub(camera.position)
+      .applyAxisAngle(new Vector3(0, 1, 0), time * 0.00012);
+    target.copy(camera.position).add(direction);
+  } else if (mode === 'translate') {
+    const shift = Math.sin(time * 0.00012) * offset.length() * 0.25;
+    camera.position.x += shift;
+    target.x += shift;
+  }
   camera.lookAt(target);
   camera.updateMatrixWorld();
 }

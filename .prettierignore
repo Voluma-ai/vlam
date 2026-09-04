@@ -4,6 +4,7 @@ dist-demo
 assets
 coverage
 package-lock.json
+.tmp
 
 # Prose is hand-wrapped to fit a terminal; Prettier would reflow it.
 *.md

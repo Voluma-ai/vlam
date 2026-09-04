@@ -47,7 +47,8 @@ Canvas CSS can shrink the displayed image without changing GPU resolution.
 | Parameter | Default | Purpose |
 | --- | --- | --- |
 | `preset` | `defaults` | `defaults` or `matched` |
-| `mode` | `stationary` | `stationary` or elapsed-time `orbit` |
+| `mode` | `stationary` | `stationary`, `orbit`, position-preserving `rotate`, `translate`, or five seconds of orbit then `settle` |
+| `shEvaluation` | `auto` | VLAM SH evaluation: `vertex` or `compute`; `auto` selects the hybrid cache on identified Apple Silicon Macs |
 | `scene` | `Langenthal-Manola4A` | Cached capture, or `goose` |
 | `width`, `height` | `1280`, `720` | Drawing-buffer pixels, at pixel ratio 1 |
 | `warmup`, `seconds` | `5`, `15` | Warm-up and measured seconds after initial load/sort |
@@ -77,6 +78,112 @@ adaptive GPU counting-sort schedule. Record those differences when interpreting
 motion quality and cost; never change VLAM's default sorter to improve a score.
 
 ### Repeatable suite and results
+
+For the experimental standalone WebGPU SH cache, compare
+`?preset=matched&shEvaluation=vertex&gpuTimestamps=0` with
+`?preset=matched&shEvaluation=compute&gpuTimestamps=0`. Repeat each three times,
+alternating order, for stationary and orbit modes. The existing 32-run suite
+does not perform this SH-path comparison automatically. Reports include the
+resolved path and fallback reason, SH/sort dispatch counts, invalidations and
+cache bytes; `measuredDispatches` excludes initial preparation and warm-up.
+GPU compute timings include both SH preparation and sorting, so use separate
+timestamped diagnostic runs and dispatch counts to interpret them.
+
+The demo also accepts `?shEvaluation=compute`; applications can pass
+`shEvaluation: 'compute'` to `SplatMesh`. This manual override applies only
+to fully loaded standalone WebGPU meshes with SH and sufficient device buffer
+limits. It allocates 12 bytes per pool slot and releases its temporary CPU
+mirror after initialization. WebGL, SH0, shared/dynamic pools, merged placement,
+unified sources and XR retain their existing path. `auto` selects this hybrid
+path when both the browser platform identifies macOS and WebGPU adapter details
+identify Apple/Metal. Touch-capable desktop-UA devices are excluded so iPadOS
+does not enter the cohort. Unidentified adapters retain vertex evaluation. On
+moving cameras the cache refreshes with accepted GPU sorts and is reused between
+them; content changes remain immediate and stationary cameras incur no dispatch.
+
+#### M3 Air SH cache retest, 2026-09-04
+
+On a 16 GB M3 Air, macOS 26.3.1, AC power with low power mode off, the
+foreground in-app Chromium 152 browser produced the following observed FPS.
+These are separate from the earlier standalone Chrome 151 results. All runs
+used the matched 8.72M SH3 scene at 1280×720 with timestamps disabled, five
+seconds of warm-up and 15 seconds of sampling. VLAM rows use the median of
+three runs; Spark and rotation-only are single diagnostic probes.
+
+| Motion | VLAM vertex | VLAM compute cache | Spark |
+| --- | ---: | ---: | ---: |
+| Stationary | 11.92 | 22.35 | 21.79 |
+| Orbit | 11.13 | 8.51 | 18.48 |
+| Rotation only | 11.19 | 19.71 | not measured |
+
+Stationary mean frame time improved from 83.89 to 44.74 ms, but orbit worsened
+from 89.82 to 117.45 ms. Orbit median/p95 also regressed (84.3/116.7 ms to
+116.7/133.4 ms), failing the rollout gate. The cache remains opt-in; there is
+no validated automatic device or workload cutoff. Stationary and rotation-only
+sampling performed zero SH dispatches; orbit refreshed SH on every rendered
+frame. The cache used 99.84 MiB of GPU storage with a 199.69 MiB temporary
+CPU-plus-GPU allocation peak, excluding other mesh/renderer memory.
+
+The local `.tmp/benchmark-report-m3air-sh-cache/findings.md` links raw results
+and screenshots. Front/orbit images were visually compared; synthetic SH1
+effect checks matched exactly. Broader CPU-reference/SH/PLY/lifecycle coverage,
+other scene sizes, the discrete-GPU regression check and the ten-minute thermal
+comparison remain outstanding. These measurements do not validate mobile,
+Pro/Max or other Apple devices, or establish cross-backend GPU-time equivalence.
+
+#### M3 Air hybrid follow-up
+
+A follow-up retains cached SH while camera position is stable, switches to the
+existing vertex evaluator during translation, and refreshes the cache once
+after 150 ms of positional stability. Three new repetitions measured **25.21
+FPS stationary** and **11.02 FPS orbit**. Mean frame times were 39.67 and 90.76
+ms; median/p95 were 33.4/50.1 and 83.8/116.7 ms. Compared with the preceding
+three-run vertex medians, stationary improved by 52.7% in mean frame time while
+orbit mean changed by 1.0%; orbit median and p95 had no material regression.
+
+Every orbit run recorded one motion fallback and zero timed SH dispatches. A
+motion-then-settle probe recorded one refresh after movement and ended on the
+cache path. The synthetic SH1 effect check retained exact pixel parity.
+The hybrid removes the compute-every-frame regression, but its 11.02 orbit FPS
+remains well outside 15% of the single fresh 18.48 FPS Spark probe. The Apple
+Mac `auto` cohort used this hybrid evaluation at this stage. Full data is in
+`.tmp/benchmark-report-m3air-sh-hybrid/findings.md`.
+
+An SH3 WGSL inspection then found that Three.js already emits one palette-label
+load, one normalized direction, shared squared terms and exactly 15 palette
+reads for 15 coefficients. Explicitly hoisting the few remaining repeated
+polynomial products measured 11.05 FPS orbit versus 11.02 before (+0.3%), with
+unchanged median/p95 and elevated p99 stalls in two runs. The optimization was
+rolled back. Local evidence is retained in
+`.tmp/benchmark-report-m3air-sh-hoist/findings.md`.
+
+#### M3 Air sort-cadence follow-up
+
+The next follow-up refreshes cached SH when the WebGPU sorter accepts a moving-
+camera order and reuses that color between accepted sorts. Content and graph
+changes still refresh immediately, rotation-only frames reuse the cache, and a
+stopped camera receives an exact refresh after 150 ms when needed.
+
+Three orbit repetitions measured **15.74, 16.10 and 16.11 FPS**, for a median
+of **16.10 FPS** and median mean frame time of **62.13 ms**. Median/p95 frame
+times were 50.0/116.7 ms in all three runs. This is 46.1% faster by observed FPS
+than the preceding 11.02 FPS moving hybrid, 44.6% faster than the 11.13 FPS
+vertex baseline, and 12.9% behind the fresh single 18.48 FPS Spark orbit probe.
+Each sampled orbit run issued exactly one SH dispatch per accepted sort (63–64),
+with 177–183 rendered frames reusing color between sorts.
+
+A stationary regression probe measured **25.14 FPS**, zero sampled SH work and
+33.4/50.1 ms median/p95. A five-second-motion-then-settle probe measured **22.18
+FPS** overall and ended on the exact cache path. A synthetic, directionally
+varied SH3 comparison at the orbit's approximate 0.02-radian inter-sort step
+had a maximum channel difference of 1/255 and mean absolute difference of
+0.052/255 against vertex SH. Static SH/effect parity remained byte-exact.
+
+This result meets the observed within-15%-of-Spark target on the M3 Air, although
+Spark is still represented by one fresh probe rather than three alternating
+runs. Discrete-GPU, scene-size, physical mobile/Pro/Max and thermal validation
+remain outstanding. Full local evidence is in
+`.tmp/benchmark-report-m3air-sh-sort-cadence/findings.md`.
 
 ```text
 /spark-benchmark.html?suite=1&label=RTX4070Ti-Linux-Chrome-AC

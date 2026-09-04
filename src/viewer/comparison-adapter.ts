@@ -5,6 +5,7 @@ import type { GpuSample } from './comparison-gpu';
 export interface ComparisonAdapter {
   canvas: HTMLCanvasElement;
   metadata: Record<string, unknown>;
+  diagnostics?(): Record<string, unknown>;
   settle(camera: PerspectiveCamera): Promise<void>;
   frame(
     camera: PerspectiveCamera,

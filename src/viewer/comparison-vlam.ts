@@ -1,10 +1,17 @@
-import { LinearSRGBColorSpace, NoToneMapping, Scene, REVISION, type PerspectiveCamera } from 'three';
+import {
+  LinearSRGBColorSpace,
+  NoToneMapping,
+  Scene,
+  REVISION,
+  type PerspectiveCamera,
+} from 'three';
 import { createSplatRenderer, detectSplatDeviceProfile, SplatMesh } from '../lib/core';
 import { automaticSortIntervalMs } from '../lib/core/sort-scheduler';
 import { loadSplatData } from '../lib/loaders';
 import { version } from '../../package.json';
 import type { ComparisonAdapter } from './comparison-adapter';
 import type { ComparisonConfig } from './comparison-config';
+import { shEvaluationDiagnostics } from './sh-evaluation-diagnostics';
 import {
   ComparisonWebGlTimer,
   ComparisonWebGpuTimer,
@@ -38,6 +45,7 @@ export async function createComparisonVlam(
   renderer.setSize(config.width, config.height, false);
   const matched = config.preset === 'matched';
   const mesh = new SplatMesh(data, {
+    shEvaluation: config.shEvaluation,
     orientation: 'source',
     ...(matched
       ? ({
@@ -103,6 +111,7 @@ export async function createComparisonVlam(
       lod: false,
       outputColorSpace: renderer.outputColorSpace,
       msaa: renderer.samples,
+      shEvaluation: config.shEvaluation,
       requestedBackend: config.backend,
     },
     differences: useWebGl
@@ -153,6 +162,7 @@ export async function createComparisonVlam(
     const debug = gl.getExtension('WEBGL_debug_renderer_info');
     return {
       canvas: renderer.domElement,
+      diagnostics: () => shEvaluationDiagnostics(mesh),
       metadata: {
         ...baseMetadata,
         gpu: debug ? (gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) as string) : null,
@@ -167,7 +177,11 @@ export async function createComparisonVlam(
         renderer.render(scene, camera);
         const cpuMs = performance.now() - start;
         timer.end();
-        return { cpuMs, draws: renderer.info.render.drawCalls, activeSplats: mesh.activeSplatCount };
+        return {
+          cpuMs,
+          draws: renderer.info.render.drawCalls,
+          activeSplats: mesh.activeSplatCount,
+        };
       },
       reset() {
         timer.reset();
@@ -201,6 +215,7 @@ export async function createComparisonVlam(
   const adapterInfo = backend.device?.adapterInfo;
   return {
     canvas: renderer.domElement,
+    diagnostics: () => shEvaluationDiagnostics(mesh),
     metadata: {
       ...baseMetadata,
       gpu: adapterInfo
@@ -214,6 +229,14 @@ export async function createComparisonVlam(
     },
     async settle(camera) {
       mesh.update(camera, renderer);
+      // Lazy module loading must finish before timed warm-up starts. A fallback
+      // remains explicit in diagnostics instead of masquerading as compute SH.
+      const deadline = performance.now() + 30000;
+      while (shEvaluationDiagnostics(mesh).reason === 'loading-compute-module') {
+        if (performance.now() > deadline) throw new Error('SH compute initialization timed out.');
+        await new Promise((resolve) => setTimeout(resolve, 16));
+        mesh.update(camera, renderer);
+      }
       // A second identical update signals the settled pose to the adaptive
       // scheduler, bypassing its moving-camera cadence outside timed sampling.
       mesh.update(camera, renderer);
