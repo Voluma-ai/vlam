@@ -404,7 +404,10 @@ false: per-splat `parent_size` is a GPU-cut input the worker never reads, and
 computing it kept one pending-range object per internal node alive in
 `RadParentSizes` until its child chunk decoded (tens of millions of live objects
 on an 800-chunk capture). Paging plans are applied as *runs* of consecutive slots
-rather than one `overwriteRangeData` call per moved splat.
+rather than one `overwriteRangeData` call per moved splat. The worker's
+`MAX_PLAN_APPEND_SPLATS` (60 k) caps both appends and publish-time stale
+evictions: finishing the newcomer queue used to retire every deferred leaver in
+one plan (hotel-orbit spikes of 300 k+ moves / ~150 ms apply).
 
 **Bootstrap.** `buildRadScene` hands the chunk 0 it already decoded to the worker
 via `StreamedScene.bootstrapChunk`; the tree roots come from chunk 0, so without
