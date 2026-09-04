@@ -2404,11 +2404,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     const existing = cache.get(bucketHeight);
     if (existing) {
       const imageData = existing.image.data as
-        | Float32Array
-        | Uint8Array
-        | Uint32Array
-        | Uint16Array;
-      imageData.set(data as ArrayLike<number>);
+        Float32Array | Uint8Array | Uint32Array | Uint16Array;
+      imageData.set(data);
       existing.needsUpdate = true;
       // Map insertion order supplies a tiny LRU without another allocation.
       cache.delete(bucketHeight);
@@ -2426,7 +2423,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     } else {
       stagingData = new Float32Array(bucketSamples);
     }
-    stagingData.set(data as ArrayLike<number>);
+    stagingData.set(data);
     const texture = new THREE.DataTexture(stagingData, width, bucketHeight, format, type);
     // An integer texture cannot be filtered; a staging texture that says
     // otherwise is rejected when its GPU descriptor is built.

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Spark rendering benchmark</title>
+    <style>
+      body { margin: 16px; background: #111; color: #ddd; font: 14px/1.5 system-ui, sans-serif; }
+      canvas, img { display: block; max-width: 100%; height: auto; margin: 12px 0; }
+      button, a { margin-right: 16px; } a { color: #aaf; } pre { white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h1>Spark / VLAM minimal comparison</h1>
+    <p id="status" role="status">Preparing benchmark…</p>
+    <div id="links"></div>
+    <p><button id="suite">Run full sequential suite (32 runs)</button><button id="download-json" disabled>Download JSON</button><button id="download-shot" disabled>Download screenshot</button></p>
+    <div id="view"></div>
+    <details><summary>Full measurement report</summary><pre id="results"></pre></details>
+    <script type="module" src="/src/viewer/comparison-benchmark.ts"></script>
+  </body>
+</html>

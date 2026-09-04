@@ -11,6 +11,7 @@ import { createSplatRenderer, SplatMesh, type SplatPerformanceProfile } from '..
 import { loadSplatData } from '../lib/loaders';
 import { version as vlamVersion } from '../../package.json';
 import { BenchmarkGpuSampler, RenderBenchmarkSession } from './render-benchmark-session';
+import { applyComparisonCamera } from './comparison-config';
 
 const params = new URLSearchParams(globalThis.location.search);
 const sceneUrl = params.get('scene') ?? '/goose.sog';
@@ -104,9 +105,15 @@ async function run(): Promise<void> {
   const bounds = mesh.computeSplatBounds();
   const center = bounds.getCenter(new THREE.Vector3());
   const radius = Math.max(bounds.getSize(new THREE.Vector3()).length() * 0.5, 0.1);
-  camera.position.set(center.x, center.y, center.z + radius * 2.5);
-  camera.lookAt(center);
-  camera.updateMatrixWorld();
+  applyComparisonCamera(
+    camera,
+    {
+      target: [center.x, center.y, center.z],
+      position: [center.x, center.y, center.z + radius * 2.5],
+    },
+    0,
+    false,
+  );
   camera.updateProjectionMatrix();
 
   const session = new RenderBenchmarkSession(warmupSeconds * 1000, sampleSeconds * 1000);
