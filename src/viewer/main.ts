@@ -204,8 +204,18 @@ function shLabel(mesh: SplatMesh | undefined): string {
 
 CameraControls.install({ THREE });
 
-/** Render scale while performance mode is on - 1 device pixel per CSS pixel. */
+/** Render scale ceiling while performance mode is on - 1 device pixel per CSS pixel. */
 const PERF_MODE_PIXEL_RATIO = 1;
+/**
+ * Adaptive DPR floor under performance mode.
+ *
+ * SD used to pin `PERF_MODE_PIXEL_RATIO` forever, so adaptive DPR (default-on
+ * for fill-constrained devices) never ran. On a MacBook Air M3 hotel-core
+ * Veersetoren orbit that left ~1M splats at ~13–20 fps; pinning
+ * `?pixelRatio=0.9` / `0.8` recovered ~32–34 fps. Floor at 0.8 so SD can still
+ * step down under pressure without going softer than that measured sweet spot.
+ */
+const PERF_MODE_ADAPTIVE_MIN_PIXEL_RATIO = 0.8;
 /**
  * Gaussian cutoff while performance mode is on. The library default on a phone
  * is 4σ so zoomed-out coverage tiles; that extra tail is ~1.8× the quad area of
@@ -512,7 +522,9 @@ async function main(): Promise<void> {
   // Render resolution. Splat rendering is fragment-bound, so on a high-DPI
   // mobile screen this is often the single largest cost; ?pixelRatio=N pins it
   // (e.g. 1 or 1.5) for A/B, overriding performance mode and adaptive DPR.
-  // ?adaptiveDpr=1 enables frame-time scaling between 1 and the device ceiling.
+  // ?adaptiveDpr=1 enables frame-time scaling; under SD that is between
+  // PERF_MODE_ADAPTIVE_MIN_PIXEL_RATIO and 1, under HD between 1 and the
+  // device ceiling.
   const pixelRatioParam = Number(params.get('pixelRatio'));
   const pinnedPixelRatio =
     Number.isFinite(pixelRatioParam) && pixelRatioParam > 0 ? pixelRatioParam : null;
@@ -530,20 +542,25 @@ async function main(): Promise<void> {
   // supersample. Adaptive DPR may still step down from that ceiling under
   // frame-time pressure.
   const pixelRatioCeiling = (): number => recommendedMaxPixelRatio(deviceProfile);
+  const adaptivePixelRatioMax = (): number =>
+    perfMode.enabled ? PERF_MODE_PIXEL_RATIO : pixelRatioCeiling();
+  const adaptivePixelRatioMin = (): number =>
+    perfMode.enabled ? PERF_MODE_ADAPTIVE_MIN_PIXEL_RATIO : 1;
   let adaptiveEmaMs: number | undefined;
   let adaptiveWarmupRemaining = ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES;
-  let adaptivePixelRatio = pixelRatioCeiling();
+  // SD starts at 1 and may step down; HD starts at the quality ceiling.
+  let adaptivePixelRatio = adaptivePixelRatioMax();
   const resetAdaptivePixelRatio = (): void => {
     adaptiveEmaMs = undefined;
     adaptiveWarmupRemaining = ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES;
-    adaptivePixelRatio = pixelRatioCeiling();
+    adaptivePixelRatio = adaptivePixelRatioMax();
   };
   const resolvePixelRatio = (): number =>
     pinnedPixelRatio ??
-    (perfMode.enabled
-      ? PERF_MODE_PIXEL_RATIO
-      : adaptiveDpr
-        ? adaptivePixelRatio
+    (adaptiveDpr
+      ? adaptivePixelRatio
+      : perfMode.enabled
+        ? PERF_MODE_PIXEL_RATIO
         : pixelRatioCeiling());
   renderer.setPixelRatio(resolvePixelRatio());
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -3762,17 +3779,20 @@ async function main(): Promise<void> {
     if (
       adaptiveDpr &&
       pinnedPixelRatio === null &&
-      !perfMode.enabled &&
       // In VR the canvas pixel ratio is irrelevant (rendering targets the XR
       // framebuffer) and resizing it mid-session would only churn the DOM.
       !renderer.xr.isPresenting &&
       Number.isFinite(frameDelta) &&
       frameDelta > 0
     ) {
+      // SD adapts within [0.8, 1]; HD within [1, device ceiling]. Perf mode used
+      // to skip this path entirely, which left fill-constrained laptops stuck
+      // at dpr 1 on dense RAD views.
       const suggestion = suggestAdaptivePixelRatio({
         frameMs: frameDelta * 1000,
         current: adaptivePixelRatio,
-        max: pixelRatioCeiling(),
+        max: adaptivePixelRatioMax(),
+        min: adaptivePixelRatioMin(),
         emaMs: adaptiveEmaMs,
         warmupRemaining: adaptiveWarmupRemaining,
       });
@@ -3965,7 +3985,7 @@ async function main(): Promise<void> {
           ...(mesh === undefined
             ? {}
             : { maxStdDev: mesh.maxStdDev, performanceProfile: mesh.performanceProfile }),
-          ...(perfMode.enabled || pinnedPixelRatio !== null ? {} : { adaptiveDpr }),
+          ...(pinnedPixelRatio !== null || !adaptiveDpr ? {} : { adaptiveDpr }),
           browser: hudBrowser,
           backend: backendName,
           physicalSize: {
@@ -4146,9 +4166,9 @@ async function main(): Promise<void> {
   if (chrome.perfMode) {
     buildPerformanceToggle(perfMode.enabled, (enabled) => {
       perfMode.set(enabled);
-      // Snap HD to the quality ceiling and restart warmup so a compile or
-      // resize hitch cannot pin the drawing buffer at dpr 1 for the session.
-      if (!enabled) resetAdaptivePixelRatio();
+      // SD starts at dpr 1 (may adapt down); HD snaps to the quality ceiling.
+      // Restart warmup so a compile or resize hitch cannot pin the buffer.
+      resetAdaptivePixelRatio();
       renderer.setPixelRatio(resolvePixelRatio());
       renderer.setSize(window.innerWidth, window.innerHeight);
       if (rendererAntialiasParam === null) {
