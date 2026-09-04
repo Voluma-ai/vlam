@@ -3030,9 +3030,7 @@ export class StreamedSplatMesh extends SplatMesh {
     // regression guard above prevents either hatch from swapping in a coarser
     // cut than the one already on screen.
     if (poolPressure || this.cacheBytesTotal >= this.cpuCacheBytes) return true;
-    return drawable.every(
-      (run) => this.cache.has(run.file) || this.failedFiles.has(run.file),
-    );
+    return drawable.every((run) => this.cache.has(run.file) || this.failedFiles.has(run.file));
   }
 
   /** True when `incoming` would put a coarser prefix on screen than the resident cut. */
