@@ -64,6 +64,30 @@ load. Otherwise, a slow file may replace the newer selection.
 
 :::
 
+## Why this example uses `createWebGPURenderer`
+
+The first example viewer uses a regular `THREE.WebGPURenderer` because that is all
+`SplatMesh` requires. This example introduces VLAM!'s optional
+`createWebGPURenderer()` helper so you can choose it when an app may grow into
+large streamed or unified scenes.
+
+The helper still returns a three.js `WebGPURenderer`. It first requests the
+adapter's higher buffer and texture limits, which avoids WebGPU's conservative
+defaults becoming the ceiling for a large scene. It also requests the available
+device features so MSAA remains enabled where supported. If WebGPU is not
+available, it falls back to WebGL2 just like the regular constructor.
+
+Using it only changes the import and renderer construction:
+
+```ts
+import { createWebGPURenderer } from '@voluma/vlam';
+
+const renderer = await createWebGPURenderer();
+```
+
+It is a convenience for renderer setup, not a separate splat renderer and not a
+requirement for drawing VLAM! meshes.
+
 ## Swap late, dispose the old one
 
 Note the order: the new mesh is built *after* the decode succeeds, and only then is the old one removed and disposed. The previous capture stays on screen the whole time the new one is loading, and a failed load leaves you with what you had rather than an empty screen.

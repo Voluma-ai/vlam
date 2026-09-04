@@ -2,7 +2,7 @@
 // collision meshes shipped beside a streamed De Haar capture.
 import * as THREE from 'three/webgpu';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-import { createSplatRenderer } from '@voluma/vlam';
+import { createWebGPURenderer } from '@voluma/vlam';
 import { StreamedSplatMesh, isAbortError } from '@voluma/vlam/streaming';
 import { createCollisionWorld, type CollisionWorld } from './collision-world';
 
@@ -16,7 +16,7 @@ const GROUND_SNAP = 0.5;
 const MAX_GROUND_DROP = 50;
 const MAX_FALL_SPEED = 40;
 
-const renderer = await createSplatRenderer();
+const renderer = await createWebGPURenderer();
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 

@@ -58,6 +58,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   live effect setters, and the public API are unchanged. The frame benchmark
   JSON now records Three.js render submissions separately from CPU frame time.
 
+### Changed
+
+- **Breaking:** `createSplatRenderer()` is now `createWebGPURenderer()`; the old
+  name is removed. Its public options and GPU seam types now use the same
+  `WebGPURenderer` terminology. The README, quick-start page, and first-viewer
+  example construct a standard three.js renderer, while the following
+  local-file walkthrough introduces VLAM!'s optional helper for demanding
+  scenes.
+
 ### Fixed
 
 - **Prefix-reader `.rad` publish gate no longer freezes first paint or refinement.**

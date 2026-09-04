@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { createSplatRenderer } from '../lib/core';
+import { createWebGPURenderer } from '../lib/core';
 import { StreamedSplatMesh } from '../lib/streaming';
 import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '../lib/unified';
 
@@ -61,7 +61,7 @@ async function run(): Promise<void> {
     return;
   }
 
-  const renderer = await createSplatRenderer({ antialias: false, requireWebGpu: true });
+  const renderer = await createWebGPURenderer({ antialias: false, requireWebGpu: true });
   renderer.setSize(SIZE, SIZE, false);
   renderer.setClearColor(0x111111, 1);
   document.body.prepend(renderer.domElement);

@@ -20,7 +20,7 @@ Every three.js app has these parts; VLAM! adds the last one:
 
 | | |
 | --- | --- |
-| **Renderer** | The thing that actually paints pixels into a `<canvas>` on your page. |
+| **Renderer** | The regular three.js `WebGPURenderer` that paints pixels into a `<canvas>` on your page. |
 | **Scene** | A container. Anything you `add` to it can be drawn. |
 | **Camera** | Where you are standing and which way you are looking. |
 | **SplatMesh** | The capture, as an object the scene can hold. |

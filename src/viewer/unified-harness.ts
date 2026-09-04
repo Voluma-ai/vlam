@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { bool, uniform, vec4 } from 'three/tsl';
-import { SplatMesh, createSplatRenderer, type SplatData } from '../lib/core';
+import { SplatMesh, createWebGPURenderer, type SplatData } from '../lib/core';
 import { StreamedSplatMesh } from '../lib/streaming';
 import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '../lib/unified';
 
@@ -148,7 +148,7 @@ async function run(): Promise<void> {
   // requireWebGpu: the harness's pixel gates are meaningless on WebGL2, and an
   // owned device keeps the backend in core mode (three requests none of the
   // adapter's features on its own path, so it lands in compatibility mode).
-  const renderer = await createSplatRenderer({
+  const renderer = await createWebGPURenderer({
     antialias: false,
     requireWebGpu: !effectsCheck,
     forceWebGL: effectsCheck && params.get('backend') === 'webgl',

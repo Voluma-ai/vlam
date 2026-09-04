@@ -7,7 +7,7 @@
  * included in the reported frame statistics.
  */
 import * as THREE from 'three/webgpu';
-import { createSplatRenderer, SplatMesh, type SplatPerformanceProfile } from '../lib/core';
+import { createWebGPURenderer, SplatMesh, type SplatPerformanceProfile } from '../lib/core';
 import { loadSplatData } from '../lib/loaders';
 import { version as vlamVersion } from '../../package.json';
 import { BenchmarkGpuSampler, RenderBenchmarkSession } from './render-benchmark-session';
@@ -83,7 +83,7 @@ function downloadScreenshot(): void {
 }
 
 async function run(): Promise<void> {
-  const renderer = await createSplatRenderer({
+  const renderer = await createWebGPURenderer({
     antialias: params.get('msaa') !== '0',
     forceWebGL,
     trackTimestamp: gpuTimestamps,

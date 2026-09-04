@@ -30,7 +30,7 @@ Order matters: stop the loop before disposing what the loop reads, or a frame al
 
 ## The async setup problem
 
-`createSplatRenderer` and `loadSplatData` are both async. React can, and in development *will*, unmount your component while they are still running. When the promise finally resolves, the effect that started it is long gone, and the code cheerfully appends a canvas to a DOM node nobody is looking at.
+`createWebGPURenderer` and `loadSplatData` are both async. React can, and in development *will*, unmount your component while they are still running. When the promise finally resolves, the effect that started it is long gone, and the code cheerfully appends a canvas to a DOM node nobody is looking at.
 
 Two guards handle it:
 

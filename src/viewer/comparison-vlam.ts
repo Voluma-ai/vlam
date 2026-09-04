@@ -5,7 +5,7 @@ import {
   REVISION,
   type PerspectiveCamera,
 } from 'three';
-import { createSplatRenderer, detectSplatDeviceProfile, SplatMesh } from '../lib/core';
+import { createWebGPURenderer, detectSplatDeviceProfile, SplatMesh } from '../lib/core';
 import { automaticSortIntervalMs } from '../lib/core/sort-scheduler';
 import { loadSplatData } from '../lib/loaders';
 import { version } from '../../package.json';
@@ -33,7 +33,7 @@ export async function createComparisonVlam(
   const useWebGl = config.backend === 'webgl';
   // Decode before allocating a GPU device so a fetch/decode failure leaves no renderer alive.
   const data = await loadSplatData(url);
-  const renderer = await createSplatRenderer({
+  const renderer = await createWebGPURenderer({
     ...(useWebGl ? { forceWebGL: true } : { requireWebGpu: true }),
     antialias: false,
     // WebGPU timestamps only; WebGL uses EXT_disjoint_timer_query_webgl2 below.

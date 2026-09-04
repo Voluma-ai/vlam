@@ -2,15 +2,15 @@
 // reporting which one it got and adapting what it asks for.
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { SplatMesh, createWebGPURenderer } from '@voluma/vlam';
 import { loadSplatData } from '@voluma/vlam/loaders';
 import { lightingPreset, revealPreset, sdfEffects } from '@voluma/vlam/effects';
 
 // `?backend=webgl` forces the fallback path, so you can see it on a machine
 // that has WebGPU. In your own app you would simply call
-// createSplatRenderer() and let it decide.
+// createWebGPURenderer() and let it decide.
 const useWebGL = new URLSearchParams(location.search).get('backend') === 'webgl';
-const renderer = await createSplatRenderer(useWebGL ? { forceWebGL: true } : {});
+const renderer = await createWebGPURenderer(useWebGL ? { forceWebGL: true } : {});
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 

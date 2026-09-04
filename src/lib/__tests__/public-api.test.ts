@@ -115,7 +115,8 @@ describe('public API surface (vlam)', () => {
     expect(typeof vlam.suggestAdaptivePixelRatio).toBe('function');
     expect(vlam.ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES).toBe(5);
     expect(typeof vlam.estimateSplatPoolBytes).toBe('function');
-    expect(typeof vlam.createSplatRenderer).toBe('function');
+    expect(typeof vlam.createWebGPURenderer).toBe('function');
+    expect(vlam).not.toHaveProperty('createSplatRenderer');
     expect(typeof vlam.recommendedWebGpuRequiredLimits).toBe('function');
     expect(typeof vlam.supportsWebGpuPowerPreference).toBe('function');
     expect(typeof vlam.webGpuPowerPreferenceOptions).toBe('function');

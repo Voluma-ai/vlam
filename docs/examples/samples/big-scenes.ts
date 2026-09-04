@@ -1,10 +1,10 @@
 // Example: site/examples/big-scenes.md - a streamed capture with LOD.
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { createSplatRenderer, resolveSplatBudget } from '@voluma/vlam';
+import { createWebGPURenderer, resolveSplatBudget } from '@voluma/vlam';
 import { StreamedSplatMesh } from '@voluma/vlam/streaming';
 
-const renderer = await createSplatRenderer();
+const renderer = await createWebGPURenderer();
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 

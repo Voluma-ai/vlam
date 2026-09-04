@@ -3,7 +3,7 @@ import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
   SplatMesh,
-  createSplatRenderer,
+  createWebGPURenderer,
   recommendedXrFramebufferScale,
   resolveSplatBudget,
   resolveXrSplatBudget,
@@ -11,7 +11,7 @@ import {
 } from '@voluma/vlam';
 import { loadSplatData } from '@voluma/vlam/loaders';
 
-const renderer = await createSplatRenderer();
+const renderer = await createWebGPURenderer();
 renderer.setSize(innerWidth, innerHeight);
 renderer.xr.enabled = true;
 // Headsets render two eyes at high refresh, so they get a smaller framebuffer

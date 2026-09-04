@@ -2,12 +2,12 @@
 // Renderer + scene + camera + splats, plus OrbitControls for mouse input.
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { SplatMesh } from '@voluma/vlam';
 import { loadSplatData } from '@voluma/vlam/loaders';
 
-// 1. The renderer draws pixels into a <canvas>. `createSplatRenderer` picks
-//    WebGPU when the browser has it and falls back to WebGL2 when it does not.
-const renderer = await createSplatRenderer();
+// 1. The renderer draws pixels into a <canvas>. This is the regular three.js
+//    renderer; it picks WebGPU when available and falls back to WebGL2.
+const renderer = new THREE.WebGPURenderer({ antialias: true });
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 

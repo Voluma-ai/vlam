@@ -51,7 +51,7 @@ and [`architecture.md`](architecture.md).
 | Shared budget across meshes (`BudgetGovernor`) | ✅ weighted split via `setBudget`; flat-leaf, octree-cut and RAD page-table paths | ✅ same | ⚠️ per-source meshes registrable | `budget-governor.test.ts` |, |
 | Float16 pool textures | ⚠️ opt-in `poolFloatTextures: 'float16'` (centers + covA) | ⚠️ same |, | `half-float`, `splat-mesh.pool` | `?poolFloat=float16` |
 | Adaptive pixel ratio | ⚠️ policy `suggestAdaptivePixelRatio`; application applies | ⚠️ same |, | `splat-budget.test.ts` | `?adaptiveDpr=1` |
-| Raised WebGPU storage buffer limits | ✅ `createSplatRenderer()`; applications owning device creation pass `recommendedWebGpuRequiredLimits(adapter)` |, | ✅ early throw if pool exceeds device bind limit | `webgpu-limits.test.ts` | large LCC2 / unified capacity >8M |
+| Raised WebGPU storage buffer limits | ✅ `createWebGPURenderer()`; applications owning device creation pass `recommendedWebGpuRequiredLimits(adapter)` |, | ✅ early throw if pool exceeds device bind limit | `webgpu-limits.test.ts` | large LCC2 / unified capacity >8M |
 | `SplatMesh.pick` (GPU depth) | ✅ | ✅ |, | `splat-mesh.pick` | click focus |
 | Position queries (`queryNearest`, `queryHeight`) | ✅ | ✅ |, (per-source mesh) | `splat-mesh.query`, `streamed-splat-mesh.query` | M9 |
 | Multi-view exact sort (`renderView`) | ✅ | ⚠️ async worker; sequential views | ⚠️ WebGPU: per-view gather+sort | `splat-mesh.render-view` | `?mirror=1` |
@@ -400,7 +400,7 @@ Force with `?backend=webgl` in the demo.
 WebGPU's default `maxStorageBufferBindingSize` is **128 MiB**. Unified work
 buffers allocate an RGBA32F centers storage attribute at **16 B/splat**, so
 capacities above ~8M exceed the default. Desktop adapters commonly advertise
-~2 GiB. `createSplatRenderer()` requests them (along with the adapter's
+~2 GiB. `createWebGPURenderer()` requests them (along with the adapter's
 features, which is what keeps the device out of compatibility mode); applications that
 own device creation themselves pass `recommendedWebGpuRequiredLimits(adapter)`
 to `WebGPURenderer` instead.
