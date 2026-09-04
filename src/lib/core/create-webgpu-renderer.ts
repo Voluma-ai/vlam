@@ -96,12 +96,20 @@ function ambientGpu(): WebGPURendererGpu | null {
 }
 
 /**
- * Creates a `THREE.WebGPURenderer` configured for splat rendering: the
- * adapter's advertised buffer/texture maxima as `requiredLimits`, every adapter
- * feature as `requiredFeatures`, and `powerPreference` only where the platform
- * honours it.
+ * Optional convenience for creating a standard `THREE.WebGPURenderer` with
+ * raised WebGPU limits. `SplatMesh` also works with a renderer constructed
+ * directly by the application; this function does not return a VLAM-specific
+ * renderer.
  *
- * Both raised values matter late rather than loudly. Without the limits, large
+ * ### What the helper adds
+ *
+ * | Call | Added parameters |
+ * | --- | --- |
+ * | `navigator.gpu.requestAdapter` | `powerPreference: 'high-performance'`, except on Windows where Chrome ignores it and warns |
+ * | `adapter.requestDevice` | Every advertised adapter feature as `requiredFeatures`, plus `maxStorageBufferBindingSize`, `maxBufferSize`, and `maxTextureDimension2D` at the adapter's advertised maxima as `requiredLimits` |
+ * | `new THREE.WebGPURenderer` | `antialias: true`, the supported `powerPreference`, and the requested `device` (or just the raised `requiredLimits` when device creation failed and Three.js must retry); caller options can override `antialias` |
+ *
+ * These settings matter late rather than loudly. Without the limits, large
  * unified or streamed scenes throw past ~8.4 M splats. Without
  * `core-features-and-limits` among the requested features, three treats the
  * backend as compatibility-mode and **silently drops MSAA** - which is why the
@@ -117,6 +125,41 @@ function ambientGpu(): WebGPURendererGpu | null {
  * Does **not** call `setSize`, `renderer.init()`, or append the canvas - those
  * stay in host code - and does not touch `outputColorSpace`, whose three.js
  * default (sRGB) is already what the splat shader expects.
+ *
+ * ### Manual equivalent
+ *
+ * Applications that own renderer or device creation can apply the same
+ * successful WebGPU setup themselves. The two exported helpers keep the exact
+ * limit selection and Windows `powerPreference` behavior reusable:
+ *
+ * ```ts
+ * import * as THREE from 'three/webgpu';
+ * import {
+ *   recommendedWebGpuRequiredLimits,
+ *   webGpuPowerPreferenceOptions,
+ * } from '@voluma/vlam';
+ *
+ * const powerOptions = webGpuPowerPreferenceOptions('high-performance');
+ * const adapter = await navigator.gpu?.requestAdapter(powerOptions);
+ * if (!adapter) throw new Error('WebGPU is unavailable.');
+ *
+ * const requiredLimits = recommendedWebGpuRequiredLimits(adapter);
+ * const device = await adapter.requestDevice({
+ *   requiredFeatures: [...adapter.features],
+ *   requiredLimits,
+ * });
+ *
+ * const renderer = new THREE.WebGPURenderer({
+ *   antialias: true,
+ *   ...powerOptions,
+ *   device,
+ * });
+ * ```
+ *
+ * That version deliberately leaves failure policy to the application. This
+ * helper instead falls back to Three.js device creation or WebGL2 unless
+ * `requireWebGpu` is set, and routes recoverable warnings through
+ * {@link setVlamLogHandler}.
  *
  * @example
  * const renderer = await createWebGPURenderer();

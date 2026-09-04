@@ -68,8 +68,8 @@ load. Otherwise, a slow file may replace the newer selection.
 
 The first example viewer uses a regular `THREE.WebGPURenderer` because that is all
 `SplatMesh` requires. This example introduces VLAM!'s optional
-`createWebGPURenderer()` helper so you can choose it when an app may grow into
-large streamed or unified scenes.
+[`createWebGPURenderer()`](/api/core/functions/createWebGPURenderer) helper so
+you can choose it when an app may grow into large streamed or unified scenes.
 
 The helper still returns a three.js `WebGPURenderer`. It first requests the
 adapter's higher buffer and texture limits, which avoids WebGPU's conservative
@@ -86,7 +86,8 @@ const renderer = await createWebGPURenderer();
 ```
 
 It is a convenience for renderer setup, not a separate splat renderer and not a
-requirement for drawing VLAM! meshes.
+requirement for drawing VLAM! meshes. Its API reference shows the exact
+parameters and the equivalent manual device setup.
 
 ## Swap late, dispose the old one
 
