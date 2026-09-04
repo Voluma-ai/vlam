@@ -4,7 +4,7 @@
  * Every host needs the same four things right - adapter, device, raised limits
  * and the platform-dependent `powerPreference` - and getting any of them wrong
  * fails *late*: past ~8.4 M unified splats, or with MSAA silently dropped.
- * {@link createSplatRenderer} is that block, once.
+ * {@link createWebGPURenderer} is that block, once.
  *
  * The primitives it composes ({@link recommendedWebGpuRequiredLimits},
  * {@link webGpuPowerPreferenceOptions}) stay exported for hosts that own device
@@ -28,13 +28,13 @@ import {
  * passes `npm run typecheck` and fails `npm run build:lib`.
  */
 
-/** The device handle `createSplatRenderer` hands to `WebGPURenderer`. */
-export interface SplatRendererGpuDevice {
+/** The device handle `createWebGPURenderer` hands to `WebGPURenderer`. */
+export interface WebGPURendererGpuDevice {
   readonly features: ReadonlySet<string>;
 }
 
-/** The adapter surface `createSplatRenderer` reads limits and features from. */
-export interface SplatRendererGpuAdapter {
+/** The adapter surface `createWebGPURenderer` reads limits and features from. */
+export interface WebGPURendererGpuAdapter {
   readonly features: ReadonlySet<string>;
   readonly limits: {
     readonly maxStorageBufferBindingSize: number;
@@ -44,18 +44,18 @@ export interface SplatRendererGpuAdapter {
   requestDevice(descriptor?: {
     requiredFeatures?: readonly string[];
     requiredLimits?: Record<string, number>;
-  }): Promise<SplatRendererGpuDevice>;
+  }): Promise<WebGPURendererGpuDevice>;
 }
 
-/** The `navigator.gpu` surface `createSplatRenderer` probes. */
-export interface SplatRendererGpu {
+/** The `navigator.gpu` surface `createWebGPURenderer` probes. */
+export interface WebGPURendererGpu {
   requestAdapter(options?: {
     powerPreference?: WebGpuPowerPreference;
-  }): Promise<SplatRendererGpuAdapter | null>;
+  }): Promise<WebGPURendererGpuAdapter | null>;
 }
 
 /**
- * Options for {@link createSplatRenderer}.
+ * Options for {@link createWebGPURenderer}.
  *
  * Everything `THREE.WebGPURenderer` accepts passes straight through -
  * `antialias`, `forceWebGL`, `trackTimestamp`, `canvas`, `alpha`, `samples`,
@@ -63,7 +63,7 @@ export interface SplatRendererGpu {
  * `requiredLimits`, and `powerPreference`, which is widened here to allow
  * `null`).
  */
-export interface CreateSplatRendererOptions extends Omit<
+export interface CreateWebGPURendererOptions extends Omit<
   WebGPURendererParameters,
   'device' | 'requiredLimits' | 'powerPreference'
 > {
@@ -86,13 +86,13 @@ export interface CreateSplatRendererOptions extends Omit<
    * The WebGPU entry point to probe. Defaults to `navigator.gpu`; pass `null`
    * to skip the probe entirely (tests, non-DOM hosts).
    */
-  gpu?: SplatRendererGpu | null;
+  gpu?: WebGPURendererGpu | null;
 }
 
-function ambientGpu(): SplatRendererGpu | null {
+function ambientGpu(): WebGPURendererGpu | null {
   const nav = typeof navigator !== 'undefined' ? (navigator as { gpu?: unknown }) : undefined;
   const gpu = nav?.gpu;
-  return gpu ? (gpu as SplatRendererGpu) : null;
+  return gpu ? (gpu as WebGPURendererGpu) : null;
 }
 
 /**
@@ -119,14 +119,14 @@ function ambientGpu(): SplatRendererGpu | null {
  * default (sRGB) is already what the splat shader expects.
  *
  * @example
- * const renderer = await createSplatRenderer();
+ * const renderer = await createWebGPURenderer();
  * renderer.setSize(innerWidth, innerHeight);
  * document.body.appendChild(renderer.domElement);
  *
  * @throws {TypeError} if `requireWebGpu` and `forceWebGL` are both set.
  */
-export async function createSplatRenderer(
-  options: CreateSplatRendererOptions = {},
+export async function createWebGPURenderer(
+  options: CreateWebGPURendererOptions = {},
 ): Promise<WebGPURenderer> {
   const {
     powerPreference = 'high-performance',
@@ -137,13 +137,13 @@ export async function createSplatRenderer(
   const powerOptions =
     powerPreference === null ? {} : webGpuPowerPreferenceOptions(powerPreference);
 
-  let adapter: SplatRendererGpuAdapter | null = null;
-  let device: SplatRendererGpuDevice | null = null;
+  let adapter: WebGPURendererGpuAdapter | null = null;
+  let device: WebGPURendererGpuDevice | null = null;
 
   if (rendererOptions.forceWebGL === true) {
     if (requireWebGpu) {
       throw new TypeError(
-        'vlam: createSplatRenderer cannot honour both requireWebGpu and forceWebGL.',
+        'vlam: createWebGPURenderer cannot honour both requireWebGpu and forceWebGL.',
       );
     }
   } else {

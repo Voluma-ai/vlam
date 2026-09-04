@@ -90,7 +90,7 @@ splat**, so capacities above roughly 8M splats exceed the default. Desktop
 adapters commonly advertise around 2 GiB, but only if the application asks for it at
 device creation.
 
-**Fix.** The quickest one is `await createSplatRenderer()`, which does exactly
+**Fix.** The quickest one is `await createWebGPURenderer()`, which does exactly
 the recipe below (and requests the adapter's features too, keeping MSAA alive).
 To do it by hand, pass the adapter's advertised maxima as `requiredLimits`,
 and prefer `webGpuPowerPreferenceOptions()` so Windows Chrome does not warn

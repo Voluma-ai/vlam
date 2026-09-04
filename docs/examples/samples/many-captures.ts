@@ -2,10 +2,10 @@
 // as one cloud, each movable at no cost.
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { MergedSplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { MergedSplatMesh, createWebGPURenderer } from '@voluma/vlam';
 import { loadSplatData } from '@voluma/vlam/loaders';
 
-const renderer = await createSplatRenderer();
+const renderer = await createWebGPURenderer();
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 

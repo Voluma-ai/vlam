@@ -3,7 +3,7 @@
  *
  * The relight example is a sidecar `render(relightScene, camera)` into an RT.
  * That only fills TSL `shadow()` maps when the renderer looks like a fresh
- * `createSplatRenderer` (`autoClear` true, no tone-map wrap). Host apps often
+ * `createWebGPURenderer` (`autoClear` true, no tone-map wrap). Host apps often
  * already own a `WebGPURenderer` with `autoClear: false` and an inline ACES /
  * sRGB `contextNode`. This helper isolates those for one pass, then restores
  * them, so the example works in a custom scene.

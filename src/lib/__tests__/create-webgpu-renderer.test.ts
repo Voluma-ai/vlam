@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  createSplatRenderer,
-  type SplatRendererGpu,
-  type SplatRendererGpuAdapter,
-} from '../core/create-splat-renderer';
+  createWebGPURenderer,
+  type WebGPURendererGpu,
+  type WebGPURendererGpuAdapter,
+} from '../core/create-webgpu-renderer';
 import { setVlamLogHandler } from '../core/logging';
 import { recommendedWebGpuRequiredLimits } from '../core/webgpu-limits';
 
@@ -47,13 +47,13 @@ const DEVICE = { features: new Set(['core-features-and-limits']) };
 function fakeGpu(
   overrides: {
     features?: readonly string[];
-    requestAdapter?: SplatRendererGpu['requestAdapter'];
-    requestDevice?: SplatRendererGpuAdapter['requestDevice'];
+    requestAdapter?: WebGPURendererGpu['requestAdapter'];
+    requestDevice?: WebGPURendererGpuAdapter['requestDevice'];
   } = {},
-): { gpu: SplatRendererGpu; adapterOptions: () => unknown; deviceDescriptor: () => unknown } {
+): { gpu: WebGPURendererGpu; adapterOptions: () => unknown; deviceDescriptor: () => unknown } {
   let adapterOptions: unknown;
   let deviceDescriptor: unknown;
-  const adapter: SplatRendererGpuAdapter = {
+  const adapter: WebGPURendererGpuAdapter = {
     features: new Set(overrides.features ?? ['core-features-and-limits', 'timestamp-query']),
     limits: LIMITS,
     requestDevice:
@@ -63,7 +63,7 @@ function fakeGpu(
         return Promise.resolve(DEVICE);
       }),
   };
-  const gpu: SplatRendererGpu = {
+  const gpu: WebGPURendererGpu = {
     requestAdapter:
       overrides.requestAdapter ??
       ((options) => {
@@ -89,11 +89,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('createSplatRenderer', () => {
+describe('createWebGPURenderer', () => {
   it('requests every adapter feature and the recommended limits, then passes the device', async () => {
     const { gpu, adapterOptions, deviceDescriptor } = fakeGpu();
 
-    await createSplatRenderer({ gpu });
+    await createWebGPURenderer({ gpu });
 
     expect(adapterOptions()).toEqual({ powerPreference: 'high-performance' });
     const descriptor = deviceDescriptor() as {
@@ -114,7 +114,7 @@ describe('createSplatRenderer', () => {
   it('warns and falls back to WebGL2 when no adapter is available', async () => {
     const { gpu } = fakeGpu({ requestAdapter: () => Promise.resolve(null) });
 
-    await createSplatRenderer({ gpu });
+    await createWebGPURenderer({ gpu });
 
     expect(lastParams()).not.toHaveProperty('device');
     expect(lastParams()).not.toHaveProperty('requiredLimits');
@@ -126,7 +126,7 @@ describe('createSplatRenderer', () => {
     const boom = new Error('adapter exploded');
     const { gpu } = fakeGpu({ requestAdapter: () => Promise.reject(boom) });
 
-    await createSplatRenderer({ gpu });
+    await createWebGPURenderer({ gpu });
 
     expect(warnings).toHaveLength(1);
     expect(warnings[0]?.[1]).toContain(boom);
@@ -136,7 +136,7 @@ describe('createSplatRenderer', () => {
     const boom = new Error('D3D12 command queue create failed');
     const { gpu } = fakeGpu({ requestDevice: () => Promise.reject(boom) });
 
-    await createSplatRenderer({ gpu });
+    await createWebGPURenderer({ gpu });
 
     // The error *instance*, not a message - this is the value three's
     // `getFallback` hook swallows.
@@ -149,7 +149,7 @@ describe('createSplatRenderer', () => {
   });
 
   it('is silent when there is no WebGPU at all', async () => {
-    await createSplatRenderer({ gpu: null });
+    await createWebGPURenderer({ gpu: null });
 
     // A browser without WebGPU is not a fixable misconfiguration.
     expect(warnings).toEqual([]);
@@ -157,31 +157,31 @@ describe('createSplatRenderer', () => {
   });
 
   it('throws instead of degrading when requireWebGpu is set', async () => {
-    await expect(createSplatRenderer({ gpu: null, requireWebGpu: true })).rejects.toThrow(
+    await expect(createWebGPURenderer({ gpu: null, requireWebGpu: true })).rejects.toThrow(
       /WebGPU is unavailable/,
     );
 
     const noAdapter = fakeGpu({ requestAdapter: () => Promise.resolve(null) });
-    await expect(createSplatRenderer({ gpu: noAdapter.gpu, requireWebGpu: true })).rejects.toThrow(
+    await expect(createWebGPURenderer({ gpu: noAdapter.gpu, requireWebGpu: true })).rejects.toThrow(
       /no WebGPU adapter/,
     );
 
     const adapterBoom = new Error('adapter exploded');
     const badAdapter = fakeGpu({ requestAdapter: () => Promise.reject(adapterBoom) });
-    await expect(createSplatRenderer({ gpu: badAdapter.gpu, requireWebGpu: true })).rejects.toBe(
+    await expect(createWebGPURenderer({ gpu: badAdapter.gpu, requireWebGpu: true })).rejects.toBe(
       adapterBoom,
     );
 
     const deviceBoom = new Error('device exploded');
     const badDevice = fakeGpu({ requestDevice: () => Promise.reject(deviceBoom) });
     // Rethrown unwrapped, so hosts can inspect the original.
-    await expect(createSplatRenderer({ gpu: badDevice.gpu, requireWebGpu: true })).rejects.toBe(
+    await expect(createWebGPURenderer({ gpu: badDevice.gpu, requireWebGpu: true })).rejects.toBe(
       deviceBoom,
     );
   });
 
   it('rejects requireWebGpu together with forceWebGL', async () => {
-    await expect(createSplatRenderer({ forceWebGL: true, requireWebGpu: true })).rejects.toThrow(
+    await expect(createWebGPURenderer({ forceWebGL: true, requireWebGpu: true })).rejects.toThrow(
       TypeError,
     );
   });
@@ -190,7 +190,7 @@ describe('createSplatRenderer', () => {
     const requestAdapter = vi.fn(() => Promise.resolve(null));
     const { gpu } = fakeGpu({ requestAdapter });
 
-    await createSplatRenderer({ gpu, forceWebGL: true });
+    await createWebGPURenderer({ gpu, forceWebGL: true });
 
     expect(requestAdapter).not.toHaveBeenCalled();
     expect(lastParams().forceWebGL).toBe(true);
@@ -200,7 +200,7 @@ describe('createSplatRenderer', () => {
   it('passes renderer options through and lets them override the defaults', async () => {
     const { gpu } = fakeGpu();
 
-    await createSplatRenderer({
+    await createWebGPURenderer({
       gpu,
       antialias: false,
       trackTimestamp: true,
@@ -219,31 +219,31 @@ describe('createSplatRenderer', () => {
     // Excess-property checking reports only the first unknown key, so
     // `requiredLimits` needs its own call to be rejected.
     // @ts-expect-error the helper owns requiredLimits.
-    await createSplatRenderer({ gpu, requiredLimits: { maxBufferSize: 1 } });
+    await createWebGPURenderer({ gpu, requiredLimits: { maxBufferSize: 1 } });
   });
 
   it('omits powerPreference on Windows and sends it elsewhere', async () => {
     vi.stubGlobal('navigator', { platform: 'Win32', userAgent: 'Windows NT 10.0' });
     const windows = fakeGpu();
-    await createSplatRenderer({ gpu: windows.gpu });
+    await createWebGPURenderer({ gpu: windows.gpu });
     expect(windows.adapterOptions()).toEqual({});
     expect(lastParams()).not.toHaveProperty('powerPreference');
 
     vi.stubGlobal('navigator', { platform: 'MacIntel', userAgent: 'Mac OS X' });
     const mac = fakeGpu();
-    await createSplatRenderer({ gpu: mac.gpu });
+    await createWebGPURenderer({ gpu: mac.gpu });
     expect(mac.adapterOptions()).toEqual({ powerPreference: 'high-performance' });
     expect(lastParams().powerPreference).toBe('high-performance');
   });
 
   it('honours an explicit powerPreference, and null to never send one', async () => {
     const lowPower = fakeGpu();
-    await createSplatRenderer({ gpu: lowPower.gpu, powerPreference: 'low-power' });
+    await createWebGPURenderer({ gpu: lowPower.gpu, powerPreference: 'low-power' });
     expect(lowPower.adapterOptions()).toEqual({ powerPreference: 'low-power' });
     expect(lastParams().powerPreference).toBe('low-power');
 
     const none = fakeGpu();
-    await createSplatRenderer({ gpu: none.gpu, powerPreference: null });
+    await createWebGPURenderer({ gpu: none.gpu, powerPreference: null });
     expect(none.adapterOptions()).toEqual({});
     expect(lastParams()).not.toHaveProperty('powerPreference');
   });

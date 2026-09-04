@@ -2,7 +2,7 @@
 // from its collision mesh rendered into a screen-space lighting map.
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { createSplatRenderer } from '@voluma/vlam';
+import { createWebGPURenderer } from '@voluma/vlam';
 import { StreamedSplatMesh } from '@voluma/vlam/streaming';
 import {
   createRelightingProxy,
@@ -10,7 +10,7 @@ import {
   renderRelightingFactorMap,
 } from '@voluma/vlam/effects';
 
-const renderer = await createSplatRenderer();
+const renderer = await createWebGPURenderer();
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 renderer.shadowMap.enabled = true;
@@ -105,7 +105,7 @@ renderer.setAnimationLoop(() => {
   sun.target.updateMatrixWorld();
 
   // Isolates autoClear / shadow maps and swaps a passthrough contextNode so
-  // this works on an application-owned WebGPURenderer, not only createSplatRenderer().
+  // this works on an application-owned WebGPURenderer, not only createWebGPURenderer().
   // Clears white + A0.
   renderRelightingFactorMap(renderer, relightScene, camera, relightTarget);
 

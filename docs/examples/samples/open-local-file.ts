@@ -1,10 +1,12 @@
 // Example: site/examples/open-local-file.md - pick or drop a capture from disk.
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { SplatMesh, createWebGPURenderer } from '@voluma/vlam';
 import { SplatLoadError, isAbortError, loadSplatDataFile } from '@voluma/vlam/loaders';
 
-const renderer = await createSplatRenderer();
+// Optional VLAM! convenience: still a three.js WebGPURenderer, configured with
+// raised WebGPU limits and available device features for more demanding scenes.
+const renderer = await createWebGPURenderer();
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 

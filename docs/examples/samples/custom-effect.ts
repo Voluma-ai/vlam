@@ -3,10 +3,10 @@
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { mix, sin, smoothstep, uniform, vec3, vec4 } from 'three/tsl';
-import { SplatMesh, type SplatModifier, createSplatRenderer } from '@voluma/vlam';
+import { SplatMesh, type SplatModifier, createWebGPURenderer } from '@voluma/vlam';
 import { loadSplatData } from '@voluma/vlam/loaders';
 
-const renderer = await createSplatRenderer();
+const renderer = await createWebGPURenderer();
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 

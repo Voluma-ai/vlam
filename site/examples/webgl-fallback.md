@@ -7,13 +7,13 @@ fallback for testing.
 
 ## You already have a fallback
 
-`createSplatRenderer()` probes for WebGPU and, if it is missing, quietly builds three.js's WebGL2 renderer instead. Your capture renders either way, and most apps need no code for this at all.
+`createWebGPURenderer()` probes for WebGPU and, if it is missing, quietly builds three.js's WebGL2 renderer instead. Your capture renders either way, and most apps need no code for this at all.
 
 Test the fallback path: older browsers, locked-down machines, and some mobile
 configurations use it, and WebGPU-only effects will not run there.
 
 ```ts
-const renderer = await createSplatRenderer(); // WebGPU if possible, WebGL2 otherwise
+const renderer = await createWebGPURenderer(); // WebGPU if possible, WebGL2 otherwise
 const isWebGPU = renderer.backend.isWebGPUBackend === true;
 ```
 
@@ -46,7 +46,7 @@ The trick that makes this practical: `forceWebGL: true` builds the WebGL2 backen
 
 ```ts
 const useWebGL = new URLSearchParams(location.search).get('backend') === 'webgl';
-const renderer = await createSplatRenderer(useWebGL ? { forceWebGL: true } : {});
+const renderer = await createWebGPURenderer(useWebGL ? { forceWebGL: true } : {});
 ```
 
 (`forceWebGL` and `requireWebGpu` are mutually exclusive, asking for both throws, since there is no sensible answer.)

@@ -109,7 +109,7 @@ misses, or a pick pending across `dispose()` resolve `null`.
 Unified work buffers cost **16 bytes of storage per splat of capacity**, and
 WebGPU's default `maxStorageBufferBindingSize` is 128 MiB, so capacities
 above ~8M splats need raised limits, requested at renderer creation.
-`createSplatRenderer()` requests them for you; the explicit adapter below is
+`createWebGPURenderer()` requests them for you; the explicit adapter below is
 here because the optional pre-flight check needs the `adapter` handle itself.
 
 ```ts

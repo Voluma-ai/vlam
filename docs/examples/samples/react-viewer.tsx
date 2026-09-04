@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { SplatMesh, createWebGPURenderer } from '@voluma/vlam';
 import { isAbortError, loadSplatData } from '@voluma/vlam/loaders';
 
 interface SplatViewerProps {
@@ -29,7 +29,7 @@ export function SplatViewer({ src, className }: SplatViewerProps) {
 
     void (async () => {
       try {
-        const renderer = await createSplatRenderer();
+        const renderer = await createWebGPURenderer();
         // The effect was cleaned up while the renderer was being created:
         // throw away what we just built instead of attaching it to a DOM node
         // React has already discarded.

@@ -14,7 +14,7 @@ import {
   suggestAdaptivePixelRatio,
   ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES,
   xrSessionInit,
-  createSplatRenderer,
+  createWebGPURenderer,
   yUpTransformForFormat,
   type SplatData,
   type SplatDeviceProfile,
@@ -514,7 +514,7 @@ async function main(): Promise<void> {
   // one call - including the owned `requestDevice` that keeps MSAA alive and
   // preserves the real failure instead of three's flat "WebGPU is not
   // available" fallback log.
-  const renderer = await createSplatRenderer({
+  const renderer = await createWebGPURenderer({
     antialias: rendererAntialias,
     forceWebGL,
     trackTimestamp: gpuTimestampsEnabled,
@@ -629,7 +629,7 @@ async function main(): Promise<void> {
   // consumes scarce GPU resources until context creation fails. Always dispose
   // on pagehide; if bfcache restores this now-empty document, reload it to
   // construct one fresh renderer. The explicit device destroy covers the
-  // WebGPU device supplied by createSplatRenderer, which three leaves alone.
+  // WebGPU device supplied by createWebGPURenderer, which three leaves alone.
   installPageResourceLifecycle(
     window,
     () => {

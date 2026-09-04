@@ -24,10 +24,10 @@ Renderer, camera, one splat mesh, a render loop:
 
 ```ts
 import * as THREE from 'three/webgpu';
-import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { SplatMesh, createWebGPURenderer } from '@voluma/vlam';
 import { loadSplatData } from '@voluma/vlam/loaders';
 
-const renderer = await createSplatRenderer();
+const renderer = await createWebGPURenderer();
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 
@@ -53,7 +53,7 @@ Notes on the lines that matter most:
   `renderer.render`.** It updates the projection uniforms and schedules the
  GPU depth sort that keeps splats blending back-to-front. Skipping it leaves
  the scene sorted for a stale camera.
-- **`createSplatRenderer()` is the renderer boilerplate, once.** It requests
+- **`createWebGPURenderer()` is the renderer boilerplate, once.** It requests
  the adapter, then owns the `requestDevice` call so it can ask for two things
  three would not: the adapter's advertised buffer/texture maxima as
   `requiredLimits` (WebGPU's default `maxStorageBufferBindingSize` is 128 MiB,

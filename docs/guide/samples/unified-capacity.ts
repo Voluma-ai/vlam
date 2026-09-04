@@ -7,7 +7,7 @@ import { UnifiedSplatMesh, estimateLargestStorageBufferBytes } from '@voluma/vla
 export async function createRendererAndUnified(capacity: number) {
   // Ask for the adapter's advertised limits up front: unified work buffers
   // need 16 B/splat of storage, so capacities above ~8M splats exceed
-  // WebGPU's default 128 MiB maxStorageBufferBindingSize. `createSplatRenderer()`
+  // WebGPU's default 128 MiB maxStorageBufferBindingSize. `createWebGPURenderer()`
   // does this for you - the adapter is requested by hand here only because the
   // pre-flight check below wants the handle.
   const adapter = await navigator.gpu?.requestAdapter();

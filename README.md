@@ -13,7 +13,8 @@ A WebGPU Gaussian Splat viewer for three.js.
 
 Local site and generated API: `npm run dev` (http://localhost:5170, viewer at `/demo/`).
 
-## Important notice!
+## Warning
+
 This is a pre-release not yet recommended for production. The API can still change in breaking ways before v1.0.
 
 
@@ -29,10 +30,10 @@ npm install @voluma/vlam three
 
 ```ts
 import * as THREE from 'three/webgpu';
-import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { SplatMesh } from '@voluma/vlam';
 import { loadSplatData } from '@voluma/vlam/loaders';
 
-const renderer = await createSplatRenderer();
+const renderer = new THREE.WebGPURenderer({ antialias: true });
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 
@@ -49,6 +50,11 @@ renderer.setAnimationLoop(() => {
  renderer.render(scene, camera);
 });
 ```
+
+`SplatMesh` works with a regular three.js `WebGPURenderer` (including its
+automatic WebGL2 fallback). For large streamed or unified scenes,
+`createWebGPURenderer()` is an optional convenience that requests higher WebGPU
+device limits and preserves MSAA where supported.
 
 
 Supported formats: `.sog`, `.ply`, `.spz`, `.splat`, `.ksplat`, `.lcc`, `.lcc2`, `.rad`. 

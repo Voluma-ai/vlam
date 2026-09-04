@@ -14,10 +14,10 @@ npm install @voluma/vlam three
 
 ```ts
 import * as THREE from 'three/webgpu';
-import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { SplatMesh } from '@voluma/vlam';
 import { loadSplatData } from '@voluma/vlam/loaders';
 
-const renderer = await createSplatRenderer();
+const renderer = new THREE.WebGPURenderer({ antialias: true });
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 
@@ -34,6 +34,10 @@ renderer.setAnimationLoop(() => {
  renderer.render(scene, camera);
 });
 ```
+
+This is the regular three.js `WebGPURenderer`; VLAM! does not require a
+special renderer. The next walkthrough explains the optional
+[`createWebGPURenderer()` helper](/examples/open-local-file#why-this-example-uses-createwebgpurenderer).
 
 Call `splats.update(camera, renderer)` every frame before `renderer.render`.
 

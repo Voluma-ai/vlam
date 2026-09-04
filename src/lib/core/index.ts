@@ -115,12 +115,12 @@ export {
 } from './splat-budget';
 export { xrSessionInit } from './xr-view';
 export {
-  createSplatRenderer,
-  type CreateSplatRendererOptions,
-  type SplatRendererGpu,
-  type SplatRendererGpuAdapter,
-  type SplatRendererGpuDevice,
-} from './create-splat-renderer';
+  createWebGPURenderer,
+  type CreateWebGPURendererOptions,
+  type WebGPURendererGpu,
+  type WebGPURendererGpuAdapter,
+  type WebGPURendererGpuDevice,
+} from './create-webgpu-renderer';
 export {
   recommendedWebGpuRequiredLimits,
   supportsWebGpuPowerPreference,

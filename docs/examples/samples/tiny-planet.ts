@@ -2,11 +2,11 @@
 // (or a bowl) without moving the camera.
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { createSplatRenderer } from '@voluma/vlam';
+import { createWebGPURenderer } from '@voluma/vlam';
 import { StreamedSplatMesh } from '@voluma/vlam/streaming';
 import { worldWarpPreset } from '@voluma/vlam/effects';
 
-const renderer = await createSplatRenderer();
+const renderer = await createWebGPURenderer();
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
 

@@ -79,7 +79,7 @@ any `THREE.Texture` from your own RT.
 ## Minimal loop (shadow-factor)
 
 ```ts
-import { SplatMesh, createSplatRenderer } from '@voluma/vlam';
+import { SplatMesh, createWebGPURenderer } from '@voluma/vlam';
 import { loadSplatData } from '@voluma/vlam/loaders';
 import {
   createRelightingProxy,
@@ -131,7 +131,7 @@ Use {@link renderRelightingFactorMap} on an application-owned `WebGPURenderer`
 resizes the RT, clears white with alpha 0, turns shadow maps on for the pass,
 swaps in a passthrough `contextNode` (never `undefined` — WebGPURenderer
 reads `contextNode.id`), and restores renderer state afterward. Hand-rolling
-`setRenderTarget` only matches a fresh `createSplatRenderer()`.
+`setRenderTarget` only matches a fresh `createWebGPURenderer()`.
 
 `blend` / `brightness` / `background` / `softness` are live uniforms (no material
 rebuild). Changing the map texture identity rebuilds once. Pass `null` to
