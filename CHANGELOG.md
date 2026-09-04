@@ -23,7 +23,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 - Standalone Spark 2.1.0 / VLAM benchmarks with defaults and matched presets,
   identical cached scenes and camera paths, CPU/GPU timing, retained screenshots,
-  and an alternating sequential comparison suite. See [the protocol](docs/render-benchmark.md).
+  and an alternating sequential comparison suite. VLAM accepts `backend=webgl`
+  for a WebGL2 + worker-sort diagnostic against Spark. See
+  [the protocol](docs/render-benchmark.md).
 
 ### Performance
 

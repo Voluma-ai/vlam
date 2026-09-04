@@ -21,6 +21,7 @@ Open these paths on the dev server printed by the last command:
 /vlam-benchmark.html
 /spark-benchmark.html?preset=matched&mode=orbit
 /vlam-benchmark.html?preset=matched&mode=orbit
+/vlam-benchmark.html?preset=matched&mode=stationary&backend=webgl
 ```
 
 The cache command downloads Langenthal-Manola4A once to the ignored
@@ -51,6 +52,7 @@ Canvas CSS can shrink the displayed image without changing GPU resolution.
 | `width`, `height` | `1280`, `720` | Drawing-buffer pixels, at pixel ratio 1 |
 | `warmup`, `seconds` | `5`, `15` | Warm-up and measured seconds after initial load/sort |
 | `sh=0` | source | Separate SH-disabled diagnostic |
+| `backend` | `webgpu` (VLAM) | VLAM only: `webgl` forces the WebGL2 + worker-sort fallback. Spark is always WebGL2 |
 | `gpuTimestamps=0` | enabled | Timing-overhead control run |
 | `position`, `target` | cached scene pose | Paired comma-separated world-space vectors |
 | `label` | empty | Device, power state or experiment note |
@@ -183,6 +185,81 @@ cannot prove equal sorting latency during motion. One baseline reported lost
 focus at completion despite normal cadence; it is flagged in the local report.
 Driver/clock/power state was not independently recorded. Repeat on the target
 hardware before choosing renderer optimizations.
+
+### Local findings: M3 Air / macOS / Chrome 151
+
+A 32-run suite completed on 2026-09-04 on an Apple M3 MacBook Air (10-core
+GPU, 16 GB), macOS 26.3.1, Chrome 151.0.7922.174, AC power, label
+`M3Air-macOS-Chrome-AC`, commit `2d721bcc91329bcd2d50dec1a06319d850b09997`.
+Spark **2.1.0 / WebGL2** versus VLAM WebGPU on the same Langenthal interior
+pose and scene hash as above. These results do **not** validate the RTX
+4070 Ti/Linux or M4 Max/macOS reports; M3 Air also does not establish Pro /
+Max performance.
+
+The table shows the median of three per-run medians, and the median of three
+observed FPS values. GPU render excludes the separate compute/worker timings.
+
+| Preset / motion | Spark GPU render | VLAM GPU render | Spark observed FPS | VLAM observed FPS |
+| --- | ---: | ---: | ---: | ---: |
+| Defaults / stationary | 80.85 ms | 92.93 ms | 24.15 | 13.02 |
+| Defaults / orbit | 89.56 ms | 81.99 ms | 21.29 | 12.07 |
+| Matched / stationary | 82.00 ms | 84.67 ms | 23.88 | 12.89 |
+| Matched / orbit | 90.72 ms | 77.00 ms | 21.00 | 12.03 |
+
+On this integrated GPU, Spark held a clear **observed-FPS** lead (~21–24 vs
+~12–13). VLAM frame-interval medians clustered near ~82 ms. GPU render
+medians were much closer: Spark slightly ahead on stationary baselines,
+VLAM slightly ahead on orbit render timestamps. Absolute GPU times are
+roughly an order of magnitude above the RTX 3090 table; do not convert either
+into an uncapped FPS claim. All 32 runs stayed focused and visible with no
+slow-callback warning.
+
+Half-resolution matched probes measured Spark/VLAM **76.14/80.67 ms**
+stationary and **84.93/73.99 ms** orbit. There was no clear win from
+quartering pixel count. SH0 measured **82.04/41.88 ms** stationary and
+**83.69/40.57 ms** orbit. VLAM's SH0 change was large (about half the matched
+GPU-render median, with observed FPS rising to ~23–27); Spark's measured
+render-call work barely moved. Each diagnostic has one repetition.
+
+VLAM orbit compute medians were approximately **28.7–28.8 ms per sorting
+frame**, still on the adaptive 166.67 ms interval for 8.72 million splats.
+Stationary compute is unavailable. Spark worker duration is unavailable.
+
+The local report at `.tmp/benchmark-report-m3air/findings.md` links all 32
+original JSON files and image pairs. Its `summary.json` preserves compact run
+metadata. Suite ID: `39a295f2-274f-4334-bdad-01912d86c75f`. Private scene
+captures and results remain ignored local artifacts.
+
+Matched screenshots were checked for framing, orientation and completeness.
+Fixed images cannot prove equal sorting latency during motion.
+Driver/clock/thermal state was not independently recorded beyond AC power.
+
+### Local findings: M3 Air WebGL diagnostic (one repetition)
+
+Same machine, Chrome, AC power, Langenthal pose and scene hash as the M3 Air
+suite above. Label `M3Air-macOS-Chrome-AC-webgl-probe`. Eight single-repetition
+runs compare Spark WebGL2 with VLAM `backend=webgl` (Three WebGL2 fallback +
+CPU worker sort). Not a replacement for the repeated WebGPU baselines.
+
+| Preset / motion | Spark GPU render | VLAM WebGL GPU | Spark observed FPS | VLAM WebGL FPS |
+| --- | ---: | ---: | ---: | ---: |
+| Matched / stationary | 82.41 ms | 49.46 ms | 23.68 | 22.57 |
+| Matched / orbit | 90.74 ms | 88.58 ms | 20.84 | 21.75 |
+| Matched SH0 / stationary | 82.24 ms | 46.41 ms | 23.75 | 24.41 |
+| Matched SH0 / orbit | 84.39 ms | 78.72 ms | 22.84 | 24.31 |
+
+On this probe, **VLAM WebGL observed FPS matched Spark** (within ~1 FPS), while
+the earlier WebGPU suite left VLAM near ~12–13 FPS on the same matched
+baselines. Forcing WebGL also switched VLAM to worker sorting
+(`sortStrategy: worker`), so this isolates backend + sort placement together,
+not SH alone. SH0 barely moved VLAM WebGL FPS (unlike the large WebGPU SH0
+gain), which is consistent with WebGL already being closer to Spark before
+disabling SH.
+
+Treat GPU-render milliseconds cautiously: both engines use
+`EXT_disjoint_timer_query_webgl2` on every eighth frame and exclude worker
+time. Artifacts: `.tmp/benchmark-report-m3air/webgl-probe-summary.json` and
+the eight run directories under `.tmp/benchmark-results/`.
 
 ## Existing VLAM settled benchmark
 

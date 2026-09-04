@@ -17,6 +17,7 @@ describe('shared comparison configuration', () => {
   it('pins resolution, timing and actual renderer selection', () => {
     expect(comparisonConfig('/vlam-benchmark.html', new URLSearchParams())).toMatchObject({
       engine: 'vlam',
+      backend: 'webgpu',
       width: 1280,
       height: 720,
       warmup: 5,
@@ -25,7 +26,10 @@ describe('shared comparison configuration', () => {
     });
     expect(
       comparisonConfig('/spark-benchmark.html', new URLSearchParams('preset=matched&sh=0')),
-    ).toMatchObject({ engine: 'spark', preset: 'matched', sh: 0 });
+    ).toMatchObject({ engine: 'spark', preset: 'matched', sh: 0, backend: 'webgl' });
+    expect(
+      comparisonConfig('/vlam-benchmark.html', new URLSearchParams('backend=webgl&preset=matched')),
+    ).toMatchObject({ engine: 'vlam', backend: 'webgl', preset: 'matched' });
   });
   it('rejects invalid or ambiguous camera and measurement inputs', () => {
     for (const query of [
@@ -35,8 +39,12 @@ describe('shared comparison configuration', () => {
       'position=1,2,3&target=1,2,3',
       'position=a,2,3&target=0,0,0',
       'preset=unknown',
+      'backend=metal',
     ])
       expect(() => comparisonConfig('/vlam-benchmark.html', new URLSearchParams(query))).toThrow();
+    expect(() =>
+      comparisonConfig('/spark-benchmark.html', new URLSearchParams('backend=webgpu')),
+    ).toThrow();
   });
   it('reproduces camera matrices and preserves poses in comparison links', () => {
     const pose = { position: [4, 2, 8], target: [1, 0, 1] } as const;

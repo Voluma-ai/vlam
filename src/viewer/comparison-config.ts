@@ -6,6 +6,8 @@ export interface ComparisonConfig {
   scene: 'Langenthal-Manola4A' | 'goose';
   preset: 'defaults' | 'matched';
   mode: 'stationary' | 'orbit';
+  /** VLAM only: `webgpu` (default) or forced `webgl`. Spark is always WebGL2. */
+  backend: 'webgpu' | 'webgl';
   width: number;
   height: number;
   warmup: number;
@@ -47,14 +49,22 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
     scene: ['Langenthal-Manola4A', 'goose'],
     sh: ['0'],
     gpuTimestamps: ['0', '1'],
+    backend: ['webgpu', 'webgl'],
   })) {
     if (params.has(key) && !allowed.includes(params.get(key)!)) throw new Error(`Invalid ${key}.`);
   }
+  const engine = path.includes('spark-benchmark') ? 'spark' : 'vlam';
+  // Spark's comparison page is WebGL2-only; rejecting webgpu avoids a silent no-op.
+  if (engine === 'spark' && params.get('backend') === 'webgpu')
+    throw new Error('Spark comparison is WebGL2-only; omit backend or use backend=webgl.');
+  const backend =
+    engine === 'spark' || params.get('backend') === 'webgl' ? 'webgl' : 'webgpu';
   return {
-    engine: path.includes('spark-benchmark') ? 'spark' : 'vlam',
+    engine,
     scene: params.get('scene') === 'goose' ? 'goose' : 'Langenthal-Manola4A',
     preset: params.get('preset') === 'matched' ? 'matched' : 'defaults',
     mode: params.get('mode') === 'orbit' ? 'orbit' : 'stationary',
+    backend,
     width: Math.max(1, Math.floor(positive('width', 1280, 4096))),
     height: Math.max(1, Math.floor(positive('height', 720, 4096))),
     warmup: positive('warmup', 5, 120),
