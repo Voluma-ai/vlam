@@ -67,7 +67,9 @@ On the M3 MacBook Air, run three warmed comparisons per mode on the same
 browser, resolution and power configuration. Test Chrome and Safari where
 supported, then run `seconds=600` on sparse and dense scenes to check thermal
 behavior. Record macOS version, GPU configuration and commit labels with the
-exported files. M3 results do not establish M4 Max performance.
+exported files. M3 Air results do not establish Pro / Max performance; Apple
+Silicon still classifies as a single `integrated` tier today (see
+[capabilities § Apple Silicon GPU tiers](capabilities.md#apple-silicon-gpu-tiers-design-not-shipped)).
 
 Compare standalone and unified output with an SH-bearing capture, relighting
 off/on (including softness), and depth of field off/on. Orbit around overlap

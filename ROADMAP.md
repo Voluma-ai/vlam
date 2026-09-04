@@ -7,6 +7,13 @@ Git history, not in this queue.
 
 ## Later
 
+- **Apple Silicon GPU tiers** — design recorded in
+  [capabilities](docs/capabilities.md#apple-silicon-gpu-tiers-design-not-shipped).
+  Today every Apple adapter is `integrated` (correct for Air; underserves
+  Pro / Max). Do not raise Mac defaults from marketing specs. Needs host/URL
+  override hooks in tests, then headed M-series Pro/Max hotel-orbit matrix
+  (Chrome + Safari) before any `apple-pro` budget or SD-default change.
+  Blocked on physical Pro/Max validation.
 - **Mobile device gate** — `[~]` iPhone 15 Pro/WebGPU core passed. Galaxy S24 Ultra
   Chrome 151 WebGPU: goose SD locked 60, HD ~58 rAF; streamed Dehaar /
   sandwijck SD vs HD on 2026-08-25; keep the phone SD default (see
@@ -47,6 +54,7 @@ Git history, not in this queue.
 
 | Work                        | Blocker                                  |
 | --------------------------- | ---------------------------------------- |
+| Apple Silicon Pro/Max tier  | Physical MacBook Pro (M-series Pro/Max)  |
 | Mobile matrix               | Physical iPhone 15 (non-Pro)             |
 | Streamed SH comparison      | SH-bearing streamed capture              |
 | Reference pixel comparisons | External datasets and viewers            |

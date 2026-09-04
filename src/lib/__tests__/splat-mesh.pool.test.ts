@@ -64,6 +64,7 @@ function acquireUploadStaging(
   data: Float32Array,
   width: number,
   height: number,
+  components = 4,
 ): THREE.DataTexture {
   return (
     mesh as unknown as {
@@ -74,9 +75,10 @@ function acquireUploadStaging(
         height: number,
         format: THREE.PixelFormat,
         type: THREE.TextureDataType,
+        components: number,
       ): THREE.DataTexture;
     }
-  ).acquireUploadStaging(key, data, width, height, THREE.RGBAFormat, THREE.FloatType);
+  ).acquireUploadStaging(key, data, width, height, THREE.RGBAFormat, THREE.FloatType, components);
 }
 
 describe('SplatMesh pool row allocator', () => {
@@ -254,34 +256,57 @@ describe('SplatMesh pool row allocator', () => {
     expect(source.updateRanges).toEqual([{ start: 0, count: 150 }]);
   });
 
-  it('caches recent exact-size staging textures across varying upload heights', () => {
+  it('reuses power-of-two height buckets across nearby upload heights', () => {
     const mesh = dynamicMesh();
+    // Live data can be shorter than the bucket; allocate enough for height 3→4.
     const data = new Float32Array(4 * WIDTH * 3);
-    const first = acquireUploadStaging(mesh, 'test', data, WIDTH, 2);
-    const exactReuse = acquireUploadStaging(mesh, 'test', data, WIDTH, 2);
-    const smaller = acquireUploadStaging(mesh, 'test', data, WIDTH, 1);
+    const first = acquireUploadStaging(mesh, 'test', data.subarray(0, 4 * WIDTH * 2), WIDTH, 2);
+    const exactReuse = acquireUploadStaging(
+      mesh,
+      'test',
+      data.subarray(0, 4 * WIDTH * 2),
+      WIDTH,
+      2,
+    );
+    const smaller = acquireUploadStaging(mesh, 'test', data.subarray(0, 4 * WIDTH), WIDTH, 1);
+    // Height 3 buckets to 4 — distinct from height-2's bucket.
     const larger = acquireUploadStaging(mesh, 'test', data, WIDTH, 3);
-    const firstAgain = acquireUploadStaging(mesh, 'test', data, WIDTH, 2);
+    const firstAgain = acquireUploadStaging(
+      mesh,
+      'test',
+      data.subarray(0, 4 * WIDTH * 2),
+      WIDTH,
+      2,
+    );
+    // Height 4 shares the same bucket as height 3.
+    const sameBucketAsLarger = acquireUploadStaging(mesh, 'test', data, WIDTH, 4);
 
     expect(exactReuse).toBe(first);
+    expect(first.image.height).toBe(2);
     expect(smaller).not.toBe(first);
     expect(smaller.image.height).toBe(1);
     expect(larger).not.toBe(smaller);
-    expect(larger.image.height).toBe(3);
+    expect(larger.image.height).toBe(4);
     expect(firstAgain).toBe(first);
+    expect(sameBucketAsLarger).toBe(larger);
   });
 
-  it('bounds each staging cache and evicts the least recently used height', () => {
+  it('bounds each staging cache and evicts the least recently used bucket', () => {
     const mesh = dynamicMesh();
-    const data = new Float32Array(4 * WIDTH * 5);
-    const first = acquireUploadStaging(mesh, 'test', data, WIDTH, 1);
+    // Twelve distinct power-of-two buckets fill the LRU; a thirteenth evicts.
+    // Use width=1 so the test does not allocate multi-megabyte staging buffers.
+    const w = 1;
+    const heights = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048];
+    const data = new Float32Array(4 * w * 4096);
+    const first = acquireUploadStaging(mesh, 'test', data.subarray(0, 4 * w), w, 1);
     const dispose = vi.spyOn(first, 'dispose');
-    for (let height = 2; height <= 5; height++) {
-      acquireUploadStaging(mesh, 'test', data, WIDTH, height);
+    for (const height of heights.slice(1)) {
+      acquireUploadStaging(mesh, 'test', data.subarray(0, 4 * w * height), w, height);
     }
+    acquireUploadStaging(mesh, 'test', data.subarray(0, 4 * w * 4096), w, 4096);
 
     expect(dispose).toHaveBeenCalledOnce();
-    expect(acquireUploadStaging(mesh, 'test', data, WIDTH, 1)).not.toBe(first);
+    expect(acquireUploadStaging(mesh, 'test', data.subarray(0, 4 * w), w, 1)).not.toBe(first);
   });
 
   it('removeRange rejects an unknown handle', () => {
@@ -333,11 +358,17 @@ describe('SplatMesh poolFloatTextures float16', () => {
 
     const stagingTypes: THREE.TextureDataType[] = [];
     const stagingDataKinds: string[] = [];
+    const srcRegions: THREE.Box2[] = [];
     const renderer = {
-      copyTextureToTexture: vi.fn((src: THREE.DataTexture) => {
-        stagingTypes.push(src.type);
-        stagingDataKinds.push(Object.prototype.toString.call(src.image.data));
-      }),
+      copyTextureToTexture: vi.fn(
+        (src: THREE.DataTexture, _dst: THREE.DataTexture, srcRegion: THREE.Box2 | null) => {
+          stagingTypes.push(src.type);
+          stagingDataKinds.push(Object.prototype.toString.call(src.image.data));
+          if (srcRegion) srcRegions.push(srcRegion.clone());
+          // Bucketed staging must be at least as tall as the live row count.
+          expect(src.image.height).toBeGreaterThanOrEqual(1);
+        },
+      ),
     } as unknown as THREE.WebGPURenderer;
 
     (mesh as unknown as { flushPendingUploads(r: THREE.WebGPURenderer): void }).flushPendingUploads(
@@ -354,6 +385,13 @@ describe('SplatMesh poolFloatTextures float16', () => {
     expect(stagingDataKinds[0]).toBe('[object Uint16Array]');
     expect(stagingDataKinds[2]).toBe('[object Uint16Array]');
     expect(stagingDataKinds[3]).toBe('[object Float32Array]');
+    expect(srcRegions).toHaveLength(4);
+    for (const region of srcRegions) {
+      expect(region.min.x).toBe(0);
+      expect(region.min.y).toBe(0);
+      expect(region.max.x).toBe(WIDTH);
+      expect(region.max.y).toBe(1);
+    }
   });
 
   it('static constructor packs half images before the initial upload', () => {
