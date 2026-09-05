@@ -64,26 +64,29 @@ export async function fetchRange(
   }
   const range = response.headers.get('Content-Range');
   const expectedEnd = start + length - 1;
-  const match = range?.match(/^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i);
-  if (!match) {
-    throw toSplatLoadError(
-      new Error(
-        `${url} returned a partial response without an exposed valid Content-Range header. ` +
-          'For cross-origin streaming, expose Content-Range with Access-Control-Expose-Headers.',
-      ),
-      { phase: 'fetch', url, status: response.status },
-    );
-  }
-  const returnedStart = Number(match[1]);
-  const returnedEnd = Number(match[2]);
-  if (returnedStart !== start || returnedEnd !== expectedEnd) {
-    throw toSplatLoadError(
-      new Error(
-        `${url} returned Content-Range bytes ${returnedStart}-${returnedEnd}, expected bytes ` +
-          `${start}-${expectedEnd}.`,
-      ),
-      { phase: 'fetch', url, status: response.status },
-    );
+  if (range !== null) {
+    // Content-Range is not CORS-safelisted. Existing object-storage deployments
+    // can return a correct 206 while hiding this header from JavaScript, so an
+    // absent header must retain the established exact-body-length fallback.
+    // When visible, validate it strictly to catch shifted proxy responses.
+    const match = range.match(/^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i);
+    if (!match) {
+      throw toSplatLoadError(
+        new Error(`${url} returned an invalid Content-Range header: ${range}.`),
+        { phase: 'fetch', url, status: response.status },
+      );
+    }
+    const returnedStart = Number(match[1]);
+    const returnedEnd = Number(match[2]);
+    if (returnedStart !== start || returnedEnd !== expectedEnd) {
+      throw toSplatLoadError(
+        new Error(
+          `${url} returned Content-Range bytes ${returnedStart}-${returnedEnd}, expected bytes ` +
+            `${start}-${expectedEnd}.`,
+        ),
+        { phase: 'fetch', url, status: response.status },
+      );
+    }
   }
   let buffer: ArrayBuffer;
   try {

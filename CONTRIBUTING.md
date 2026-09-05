@@ -148,9 +148,9 @@ for repeatable baseline comparisons and the Mac validation procedure.
   panel's Choose file / Choose folder buttons) on WebGPU **and** the forced
   WebGL2 fallback (`?backend=webgl`). A remote `?scene=`
   only works if that host sends `Access-Control-Allow-Origin`, and streamed
-  formats additionally need the `Range` header allowed and `Content-Range`
-  exposed; there is no client-side workaround, so a cross-origin fetch failure
-  is reported as a CORS problem (`describeLoadError` in `src/viewer/failure.ts`).
+  formats additionally need the `Range` header allowed. Exposing `Content-Range`
+  lets VLAM! validate the returned offset as well as its byte count, but is not
+  required for compatibility with existing object-storage CORS policies.
 - Device-only validations: record browser, OS, GPU, backend, dataset, splat
   count, and observed result.
 
