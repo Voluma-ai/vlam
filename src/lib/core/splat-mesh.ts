@@ -79,6 +79,29 @@ import { warn } from './logging';
 import { radialSortState } from './splat-sort-bounds';
 import type { ShComputeCache } from './sh-compute-cache';
 
+interface UploadRowSpan {
+  readonly start: number;
+  readonly count: number;
+}
+
+/** Sorts dirty rows and coalesces overlapping or adjacent spans for one flush. */
+function mergeUploadRows(rows: readonly UploadRowSpan[]): UploadRowSpan[] {
+  const regions = [...rows].sort((a, b) => a.start - b.start);
+  const merged: UploadRowSpan[] = [];
+  for (const region of regions) {
+    const last = merged[merged.length - 1];
+    if (last && region.start <= last.start + last.count) {
+      merged[merged.length - 1] = {
+        start: last.start,
+        count: Math.max(last.count, region.start + region.count - last.start),
+      };
+    } else {
+      merged.push(region);
+    }
+  }
+  return merged;
+}
+
 interface ChannelRecord {
   readonly type: SplatChannelType;
   /** Default value; rows are reset to it when {@link SplatMesh.appendRange} reuses them. */
@@ -87,7 +110,7 @@ interface ChannelRecord {
   readonly texture: THREE.DataTexture;
   readonly textureType: THREE.TextureDataType;
   /** Row spans written since the last flush, awaiting GPU upload. */
-  pendingRows: { start: number; count: number }[];
+  pendingRows: UploadRowSpan[];
 }
 
 /**
@@ -278,7 +301,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private readonly cachedUnifiedViewWorldBounds = new THREE.Sphere();
 
   /** Row spans written since the last flush, awaiting GPU upload. */
-  private pendingUploadRows: { start: number; count: number }[] = [];
+  private pendingUploadRows: UploadRowSpan[] = [];
   /** Row spans awaiting mirroring to the CPU sort worker (WebGL2 path). */
   private workerDirtyRows: { start: number; count: number }[] = [];
   /** Persistent copy sources avoid allocating four temporary textures per upload region. */
@@ -2242,9 +2265,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // The four core pool textures share one dirty-row set (they are written
     // together), each RGBA (4 components).
     if (this.pendingUploadRows.length > 0) {
+      const rows = mergeUploadRows(this.pendingUploadRows);
       const floatType =
         this.poolFloatTextures === 'float16' ? THREE.HalfFloatType : THREE.FloatType;
-      this.uploadRows(renderer, this.pendingUploadRows, THREE.RGBAFormat, 4, [
+      this.uploadRows(renderer, rows, THREE.RGBAFormat, 4, [
         {
           key: 'centers',
           texture: this.dataTextures[0] as THREE.DataTexture,
@@ -2277,7 +2301,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       if (this.shPackedTextures.length > 0) {
         this.uploadRows(
           renderer,
-          this.pendingUploadRows,
+          rows,
           THREE.RGBAIntegerFormat,
           4,
           this.shPackedTextures.map((texture, group) => ({
@@ -2293,7 +2317,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // Each channel is single-component (Red) and tracks its own dirty rows.
     for (const [name, channel] of this.channels.entries()) {
       if (channel.pendingRows.length === 0) continue;
-      this.uploadRows(renderer, channel.pendingRows, THREE.RedFormat, 1, [
+      const rows = mergeUploadRows(channel.pendingRows);
+      this.uploadRows(renderer, rows, THREE.RedFormat, 1, [
         {
           key: `channel:${name}`,
           texture: channel.texture,
@@ -2323,14 +2348,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /**
    * Uploads the given row spans of one or more same-layout pool textures via
-   * per-region staging copies. Spans are merged first so consecutive appends
-   * upload as one rectangle each - the copyTextureToTexture call count, not
-   * the pixel volume, dominates. Staging textures are sized to a power-of-two
+   * per-region staging copies. Callers provide normalized spans so shared core
+   * and packed-SH rows use one merge. The copyTextureToTexture call count, not
+   * pixel volume, dominates. Staging textures are sized to a power-of-two
    * height bucket and reused; only the live row count is copied into the pool.
    */
   private uploadRows(
     renderer: THREE.WebGPURenderer,
-    rows: { start: number; count: number }[],
+    rows: readonly UploadRowSpan[],
     format: THREE.PixelFormat,
     components: number,
     entries: {
@@ -2343,19 +2368,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     }[],
   ): void {
     const width = SplatMesh.DATA_TEXTURE_WIDTH;
-    // Sorting in place is safe: every caller discards its pending-rows list
-    // right after the flush, and re-passing an already-sorted list is a no-op.
-    const regions = rows.sort((a, b) => a.start - b.start);
-    const merged: { start: number; count: number }[] = [];
-    for (const region of regions) {
-      const last = merged[merged.length - 1];
-      if (last && region.start <= last.start + last.count) {
-        last.count = Math.max(last.count, region.start + region.count - last.start);
-      } else {
-        merged.push({ start: region.start, count: region.count });
-      }
-    }
-    for (const region of merged) {
+    for (const region of rows) {
       for (const { key, texture, data, type, encodeHalf } of entries) {
         const view = data.subarray(
           region.start * width * components,
