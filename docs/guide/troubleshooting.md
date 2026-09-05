@@ -129,12 +129,12 @@ it.
 
 **Fix.** Serve the dataset from an origin that honours `Range` and answers
 `206 Partial Content`. Common culprits: dev servers or object-storage proxies
- with range support disabled, and CDN or compression middleware that rewrites
- the response. Expose `Content-Range` through
- `Access-Control-Expose-Headers` when possible so VLAM! can validate the
- returned offset. For compatibility with existing CORS policies that hide it,
- a `206` response is still accepted when its body has exactly the requested
- byte length.
+with range support disabled, and CDN or compression middleware that rewrites
+the response. Expose `Content-Range` through
+`Access-Control-Expose-Headers` when possible so VLAM! can validate the
+returned offset. For compatibility with existing CORS policies that hide it,
+a `206` response is still accepted when its body has exactly the requested
+byte length.
 
 Dropping the folder into the page locally sidesteps servers entirely:
 `StreamedSplatMesh.loadLocal` reads each file through a `blob:` URL, which
