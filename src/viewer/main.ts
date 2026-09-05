@@ -4177,6 +4177,8 @@ async function main(): Promise<void> {
     setPointerTool(initialTool);
     syncDofFocusSlider = effectPicker.syncDofFocus;
     syncWarpIntensitySlider = effectPicker.syncWarpIntensity;
+    syncRelightModeVisible = (visible) => effectPicker.setModeVisible('relight', visible);
+    refreshRelightEffectOption();
     if (effectMode === 'dof' && mounted) {
       const bounds = splats.computeSplatBounds();
       const span = bounds.getSize(new THREE.Vector3()).length();
