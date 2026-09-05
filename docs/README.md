@@ -13,6 +13,7 @@ from public JSDoc and is deliberately not checked in.
 | [Streaming and LOD](guide/streaming-and-lod.md) | Large-scene loading and budgets |
 | [Effects](guide/effects-and-modifiers.md) | Built-in and custom TSL effects |
 | [Proxy-mesh relighting](guide/relighting.md) | Screen-space lit-proxy modulate |
+| [Experimental static LOD](guide/experimental-static-lod.md) | Whole-capture hierarchy generation |
 | [Picking and queries](guide/picking-and-queries.md) | GPU picking and spatial queries |
 | [Unified rendering](guide/unified-rendering.md) | Correct ordering across splat meshes |
 | [Troubleshooting](guide/troubleshooting.md) | Common integration failures |

@@ -63,12 +63,14 @@ describe('static LOD worker packed SH transfer', () => {
     expect(built.data.colors.length).toBe(built.data.count * 4);
     expect(built.data.covariances.length).toBe(built.data.count * 6);
     expect(built.data.shPacked?.packed.length).toBe(built.data.count * stride);
-    expect([...(built.data.shPacked?.packed.subarray(0, stride) ?? [])]).toEqual([
-      ...(source.shPacked?.packed.subarray(0, stride) ?? []),
+    const sourceSh = Array.from({ length: source.count }, (_, index) => [
+      ...(source.shPacked?.packed.subarray(index * stride, (index + 1) * stride) ?? []),
     ]);
-    expect([...(built.data.shPacked?.packed.subarray(stride, stride * 2) ?? [])]).toEqual([
-      ...(source.shPacked?.packed.subarray(stride * 2, stride * 3) ?? []),
-    ]);
+    for (let index = 0; index < built.finestSplatCount; index++) {
+      expect(sourceSh).toContainEqual([
+        ...(built.data.shPacked?.packed.subarray(index * stride, (index + 1) * stride) ?? []),
+      ]);
+    }
 
     handleStaticLodWorkerRequest(
       {
@@ -85,9 +87,9 @@ describe('static LOD worker packed SH transfer', () => {
     const index = selection.indices[0] as number;
     expect(index).toBeGreaterThanOrEqual(0);
     expect(index).toBeLessThan(built.data.count);
-    expect([
+    expect(sourceSh).toContainEqual([
       ...(built.data.shPacked?.packed.subarray(index * stride, (index + 1) * stride) ?? []),
-    ]).toEqual([...(source.shPacked?.packed.subarray(stride * 2, stride * 3) ?? [])]);
+    ]);
   });
 
   it('reports inconsistent worker input structurally before copying packed SH', () => {

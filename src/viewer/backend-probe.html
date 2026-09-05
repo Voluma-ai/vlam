@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" />
+  <title>VLAM backend probe</title>
+  <canvas id="canvas" width="4" height="4"></canvas>
+  <output data-testid="backend"></output>
+  <output data-testid="pixel"></output>
+  <script type="module">
+    import * as THREE from 'three/webgpu';
+    import { createWebGPURenderer, SplatMesh } from '../lib/core';
+
+    const requested = new URLSearchParams(location.search).get('backend');
+    const canvas = document.querySelector('#canvas');
+    const backend = document.querySelector('[data-testid="backend"]');
+    const pixel = document.querySelector('[data-testid="pixel"]');
+    if (requested !== 'webgpu' && requested !== 'webgl2') {
+      throw new Error(`Unknown backend: ${requested}`);
+    }
+
+    const renderer = await createWebGPURenderer({
+      canvas,
+      antialias: false,
+      forceWebGL: requested === 'webgl2',
+      requireWebGpu: requested === 'webgpu',
+    });
+    renderer.setSize(5, 5, false);
+    await renderer.init();
+    const actual = renderer.backend.isWebGPUBackend ? 'webgpu' : 'webgl2';
+    if (actual !== requested) throw new Error(`Requested ${requested}, initialized ${actual}.`);
+
+    const splats = new SplatMesh({
+      count: 1,
+      positions: new Float32Array([0, 0, 0]),
+      colors: new Uint8Array([255, 255, 255, 255]),
+      covariances: new Float32Array([0.04, 0, 0, 0.04, 0, 0.04]),
+    });
+    const scene = new THREE.Scene();
+    scene.add(splats);
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 10);
+    camera.position.z = 2;
+    camera.updateMatrixWorld();
+    const target = new THREE.RenderTarget(5, 5, { type: THREE.UnsignedByteType });
+    splats.update(camera, renderer);
+    renderer.setRenderTarget(target);
+    renderer.setClearColor(0x000000, 0);
+    renderer.clear();
+    renderer.render(scene, camera);
+    const bytes = await renderer.readRenderTargetPixelsAsync(target, 2, 2, 1, 1);
+    renderer.setRenderTarget(null);
+    backend.textContent = actual;
+    pixel.textContent = Array.from(bytes).join(',');
+    target.dispose();
+    splats.dispose();
+    renderer.dispose();
+  </script>
+</html>

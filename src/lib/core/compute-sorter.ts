@@ -41,8 +41,9 @@ export interface PerSourceSortTransform {
 }
 
 /**
- * GPU depth sorter: a single-pass counting sort over 2²² (~4M) depth
- * buckets, running entirely in TSL compute passes on the WebGPU backend.
+ * GPU depth sorter: a single-pass counting sort over 2¹⁶…2²² depth buckets,
+ * sized once from pool capacity and running entirely in TSL compute passes on
+ * the WebGPU backend.
  *
  *   1. clear      - zero the histogram
  *   2. histogram  - depth per active splat → bucket id; count per bucket
@@ -87,6 +88,8 @@ export class ComputeSorter implements SplatSorter {
   private static readonly MIN_BUCKET_COUNT = 1 << 16;
 
   private readonly renderer: THREE.WebGPURenderer;
+  /** Histogram slots reserved for this pool; never changes as residency changes. */
+  private readonly histogramBucketCount: number;
   private readonly clearPass: THREE.ComputeNode;
   private readonly histogramPass: THREE.ComputeNode;
   private readonly scanBlocksPass: THREE.ComputeNode;
@@ -151,12 +154,16 @@ export class ComputeSorter implements SplatSorter {
 
     this.renderer = renderer;
     this.sortMetric = options.sortMetric ?? 'depth';
+    this.histogramBucketCount = ComputeSorter.bucketCountFor(capacity);
 
     // GPU-only working buffers. The histogram is accessed atomically in
     // every pass so all pipelines see one consistent buffer declaration;
     // after `addOffsets` it holds the global write offsets that `scatter`
     // consumes (and destroys - it is rebuilt on every sort).
-    const histogramAttribute = new THREE.StorageBufferAttribute(new Uint32Array(BUCKET_COUNT), 1);
+    const histogramAttribute = new THREE.StorageBufferAttribute(
+      new Uint32Array(this.histogramBucketCount),
+      1,
+    );
     const blockSumsAttribute = new THREE.StorageBufferAttribute(
       new Uint32Array(BUCKET_COUNT / BLOCK_SIZE),
       1,
@@ -173,7 +180,7 @@ export class ComputeSorter implements SplatSorter {
       bucketsAttribute,
     ];
     this.mirrors = new StorageMirrorReleaser(this.workingAttributes);
-    const histogram = storage(histogramAttribute, 'uint', BUCKET_COUNT).toAtomic();
+    const histogram = storage(histogramAttribute, 'uint', this.histogramBucketCount).toAtomic();
     const blockSums = storage(blockSumsAttribute, 'uint', BUCKET_COUNT / BLOCK_SIZE);
     const superBlockSums = storage(
       superBlockSumsAttribute,
@@ -187,7 +194,7 @@ export class ComputeSorter implements SplatSorter {
 
     this.clearPass = Fn(() => {
       atomicStore(histogram.element(instanceIndex), uint(0));
-    })().compute(BUCKET_COUNT, [BLOCK_SIZE]);
+    })().compute(this.histogramBucketCount, [BLOCK_SIZE]);
 
     this.histogramPass = Fn(() => {
       If(float(instanceIndex).lessThan(this.activeCount), () => {
@@ -249,7 +256,7 @@ export class ComputeSorter implements SplatSorter {
         runningTotal.addAssign(bucketCount);
       });
       blockSums.element(instanceIndex).assign(runningTotal);
-    })().compute(BUCKET_COUNT / BLOCK_SIZE, [64]);
+    })().compute(this.histogramBucketCount / BLOCK_SIZE, [64]);
 
     // Scan 256 block totals per invocation, then scan the resulting 64
     // super-block totals. The old single invocation walked all 16,384 totals
@@ -287,7 +294,7 @@ export class ComputeSorter implements SplatSorter {
       const slot = histogram.element(instanceIndex);
       const offset = blockSums.element(instanceIndex.shiftRight(uint(Math.log2(BLOCK_SIZE))));
       atomicStore(slot, atomicLoad(slot).add(offset));
-    })().compute(BUCKET_COUNT, [BLOCK_SIZE]);
+    })().compute(this.histogramBucketCount, [BLOCK_SIZE]);
 
     // Ascending view-space z puts the most negative (farthest) splats
     // first: back-to-front, matching the CPU sorter.
@@ -316,16 +323,17 @@ export class ComputeSorter implements SplatSorter {
    * Buckets to actually use for `activeCount` splats, rounded up to a power of
    * two so block indexing stays exact.
    *
-   * The histogram is allocated once for the pool's worst case, but clearing and
-   * scanning all 2²² buckets costs the same whether one splat is resident or
-   * four million - a fixed per-sort bill that dominates on a mobile GPU when
-   * the pool is only partly filled (a streaming scene ramping up, or any small
-   * scene). Sizing the dispatch to the live splat count keeps the design's
-   * ~1-bucket-per-splat depth resolution, so ordering is unaffected, while
-   * skipping work on buckets no splat can land in.
+   * The histogram is allocated once for the pool's worst case. Sizing each
+   * dispatch to the live splat count keeps the design's ~1-bucket-per-splat
+   * depth resolution while skipping work on buckets no splat can land in.
    */
   private effectiveBucketCount(activeCount: number): number {
-    const exponent = Math.ceil(Math.log2(Math.max(1, activeCount)));
+    return Math.min(ComputeSorter.bucketCountFor(activeCount), this.histogramBucketCount);
+  }
+
+  /** Rounds a pool or live-splat count to the supported power-of-two range. */
+  private static bucketCountFor(count: number): number {
+    const exponent = Math.ceil(Math.log2(Math.max(1, count)));
     const rounded = 2 ** exponent;
     return Math.min(Math.max(rounded, ComputeSorter.MIN_BUCKET_COUNT), ComputeSorter.BUCKET_COUNT);
   }
@@ -366,8 +374,8 @@ export class ComputeSorter implements SplatSorter {
     this.renderer.compute(this.sortPasses);
     // The working buffers are GPU-only: the histogram is zeroed by `clearPass`
     // and read atomically on the GPU, and `buckets` never leaves it. Three keeps
-    // a JS mirror of each anyway - 16 MiB for the histogram alone, plus 4 B per
-    // splat of capacity - so drop it once the dispatch has uploaded them.
+    // a JS mirror of each anyway - 4 B per allocated histogram bucket, plus
+    // 4 B per splat of capacity - so drop it once the dispatch has uploaded them.
     // Deliberately *not* `sourceIndex`/`splatIndex`: those belong to the mesh
     // and are rewritten from the CPU every frame. Same ownership line as
     // `releaseRendererAttributes` draws below.
@@ -382,7 +390,7 @@ export class ComputeSorter implements SplatSorter {
     this.disposed = true;
     // Disposing each compute node releases its pipeline, bind groups and
     // node state from the renderer - without this, every scene switch on a
-    // long-lived renderer leaked the sorter's working set (~32 MB GPU + CPU).
+    // long-lived renderer leaked the sorter's capacity-sized working set.
     for (const pass of this.sortPasses) pass.dispose();
     // Only the sorter-owned working buffers are freed here -
     // sourceIndex/splatIndex belong to the mesh (see releaseRendererAttributes).

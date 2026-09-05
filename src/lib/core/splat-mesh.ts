@@ -38,14 +38,6 @@ import { encodeFloat32ToHalf } from './half-float';
 import { SplatPicker } from './splat-mesh-picking';
 import { clampDepthOfFieldSettings, type DepthOfFieldSettings } from './depth-of-field';
 import {
-  clampRelightingSettings,
-  DEFAULT_RELIGHT_BACKGROUND,
-  DEFAULT_RELIGHT_BRIGHTNESS,
-  DEFAULT_RELIGHT_SOFTNESS,
-  type RelightingSettings,
-  type RelightingUniforms,
-} from './relighting';
-import {
   applySplatMaterialGraph,
   shCoefficientCount,
   vec3Uniform,
@@ -53,6 +45,7 @@ import {
   type SplatMaterialTextures,
   type SplatShInputs,
   type Vec3Uniform,
+  type DisplayColorModifier,
 } from './splat-mesh-material';
 import {
   neutralShWord as neutralShWordFor,
@@ -79,6 +72,27 @@ import { warn } from './logging';
 import { radialSortState } from './splat-sort-bounds';
 import type { ShComputeCache } from './sh-compute-cache';
 
+interface UploadRowSpan {
+  readonly start: number;
+  readonly count: number;
+}
+
+/** Sorts dirty rows and coalesces overlapping or adjacent spans for one flush. */
+function mergeUploadRows(rows: UploadRowSpan[]): UploadRowSpan[] {
+  // Pending-list order is disposable, including on retry after a failed copy.
+  const regions = rows.sort((a, b) => a.start - b.start);
+  const merged: { start: number; count: number }[] = [];
+  for (const region of regions) {
+    const last = merged[merged.length - 1];
+    if (last && region.start <= last.start + last.count) {
+      last.count = Math.max(last.count, region.start + region.count - last.start);
+    } else {
+      merged.push({ start: region.start, count: region.count });
+    }
+  }
+  return merged;
+}
+
 interface ChannelRecord {
   readonly type: SplatChannelType;
   /** Default value; rows are reset to it when {@link SplatMesh.appendRange} reuses them. */
@@ -87,7 +101,7 @@ interface ChannelRecord {
   readonly texture: THREE.DataTexture;
   readonly textureType: THREE.TextureDataType;
   /** Row spans written since the last flush, awaiting GPU upload. */
-  pendingRows: { start: number; count: number }[];
+  pendingRows: UploadRowSpan[];
 }
 
 /**
@@ -278,7 +292,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private readonly cachedUnifiedViewWorldBounds = new THREE.Sphere();
 
   /** Row spans written since the last flush, awaiting GPU upload. */
-  private pendingUploadRows: { start: number; count: number }[] = [];
+  private pendingUploadRows: UploadRowSpan[] = [];
   /** Row spans awaiting mirroring to the CPU sort worker (WebGL2 path). */
   private workerDirtyRows: { start: number; count: number }[] = [];
   /** Persistent copy sources avoid allocating four temporary textures per upload region. */
@@ -331,15 +345,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    */
   private readonly dofFocusDistance = uniform(10);
   private readonly dofAperture = uniform(0);
-  /**
-   * Proxy-mesh screen-space relighting (live uniforms + map). `blend === 0`
-   * disables. Swapping the map rebuilds the material graph once.
-   */
-  private relightMap: THREE.Texture | null = null;
-  private readonly relightBlend = uniform(0);
-  private readonly relightBrightness = uniform(DEFAULT_RELIGHT_BRIGHTNESS);
-  private readonly relightBackground = uniform(DEFAULT_RELIGHT_BACKGROUND);
-  private readonly relightSoftness = uniform(DEFAULT_RELIGHT_SOFTNESS);
+  private displayColorModifierValue: DisplayColorModifier | null = null;
   /**
    * Live screen-radius band bounds (px), seeded from
    * {@link SplatMeshOptions.minSplatScreenRadius} / `maxSplatScreenRadius` and
@@ -402,7 +408,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private activeListVersion = 0;
   /** The active list the current depth order was built from. */
   private sortedActiveListVersion = -1;
-  private readonly sortStrategy: SplatSortStrategy;
+  private sortStrategyValue: SplatSortStrategy;
+  private sortStrategyRevision = 0;
   private readonly sortMetric: SplatSortMetric;
   /** Resolved only when `sortStrategy === 'radix'`; see {@link ensureRadixSorter}. */
   private RadixSorterCtor: (typeof import('./radix-sorter'))['RadixSorter'] | null = null;
@@ -587,7 +594,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.ownsPool = ownsPool;
     pool.register(this);
     this.sortScheduler = new WebGpuSortScheduler(sortIntervalMs, isMobile);
-    this.sortStrategy = options.sortStrategy ?? 'counting';
+    this.sortStrategyValue = options.sortStrategy ?? 'counting';
     this.sortMetric = options.sortMetric ?? 'depth';
     if (this.sortStrategy === 'radix' || this.sortStrategy === 'exact') this.ensureRadixSorter();
     this.performanceProfileValue = resolveSplatPerformanceProfile(options.performanceProfile);
@@ -675,6 +682,35 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    */
   get performanceProfile(): SplatPerformanceProfile {
     return this.performanceProfileValue;
+  }
+
+  /** Selected sorting strategy. WebGL2 always uses the worker fallback. */
+  get sortStrategy(): SplatSortStrategy {
+    return this.sortStrategyValue;
+  }
+
+  /**
+   * Replaces the sorter without reloading scene data. The previous sorter stays
+   * active while the radix module loads; the latest request wins. Resolves once
+   * selected, with the new sort submitted on the next update, even at rest.
+   */
+  async setSortStrategy(strategy: SplatSortStrategy): Promise<void> {
+    const revision = ++this.sortStrategyRevision;
+    if (this.disposed || strategy === this.sortStrategyValue) return;
+    if (strategy === 'radix' || strategy === 'exact') {
+      this.ensureRadixSorter();
+      await this.radixSorterLoad;
+    }
+    if (this.disposed || revision !== this.sortStrategyRevision) return;
+    const wasCpu = this.usesCpuDrawList();
+    this.sorter?.dispose();
+    this.sorter = null;
+    this.sortStrategyValue = strategy;
+    if (wasCpu !== this.usesCpuDrawList()) {
+      this.drawListSorted = false;
+      this.rebuildActiveList();
+    }
+    this.invalidateSort();
   }
 
   /**
@@ -1388,43 +1424,18 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   }
 
   /**
-   * PlayCanvas-style proxy-mesh relighting. Multiplies baked splat color in the
-   * **display** fragment by a screen-space sample of `map` (RGB = lit proxy,
-   * A = coverage). Pass `null` to disable (`blend → 0` and remove map
-   * sampling from the display shader).
-   *
-   * Blend / brightness / background are live uniforms (no rebuild). Changing
-   * the map texture identity rebuilds the material once. Does not affect the
-   * pick pass. Does not invalidate a unified gather cache.
+   * Optional RGB transform in the display fragment, before alpha
+   * premultiplication. Replacing it rebuilds only the display material graph;
+   * it never changes picking, covariance, sorting, or unified gathering.
    */
-  setRelighting(options: RelightingSettings | null): void {
-    if (options === null) {
-      this.relightBlend.value = 0;
-      if (this.relightMap !== null) {
-        this.relightMap = null;
-        this.rebuildGraph();
-      }
-      return;
-    }
-    const next = clampRelightingSettings(options, this.getRelighting());
-    this.relightBlend.value = next.blend;
-    this.relightBrightness.value = next.brightness;
-    this.relightBackground.value = next.background;
-    this.relightSoftness.value = next.softness;
-    if (options.map !== this.relightMap) {
-      this.relightMap = options.map;
-      this.rebuildGraph();
-    }
+  get displayColorModifier(): DisplayColorModifier | null {
+    return this.displayColorModifierValue;
   }
 
-  /** Current relight numeric uniforms (`blend === 0` means off). */
-  getRelighting(): RelightingUniforms {
-    return {
-      blend: this.relightBlend.value,
-      brightness: this.relightBrightness.value,
-      background: this.relightBackground.value,
-      softness: this.relightSoftness.value,
-    };
+  set displayColorModifier(modifier: DisplayColorModifier | null) {
+    if (modifier === this.displayColorModifierValue) return;
+    this.displayColorModifierValue = modifier;
+    this.rebuildGraph();
   }
 
   /**
@@ -2242,9 +2253,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // The four core pool textures share one dirty-row set (they are written
     // together), each RGBA (4 components).
     if (this.pendingUploadRows.length > 0) {
+      const rows = mergeUploadRows(this.pendingUploadRows);
       const floatType =
         this.poolFloatTextures === 'float16' ? THREE.HalfFloatType : THREE.FloatType;
-      this.uploadRows(renderer, this.pendingUploadRows, THREE.RGBAFormat, 4, [
+      this.uploadRows(renderer, rows, THREE.RGBAFormat, 4, [
         {
           key: 'centers',
           texture: this.dataTextures[0] as THREE.DataTexture,
@@ -2277,7 +2289,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       if (this.shPackedTextures.length > 0) {
         this.uploadRows(
           renderer,
-          this.pendingUploadRows,
+          rows,
           THREE.RGBAIntegerFormat,
           4,
           this.shPackedTextures.map((texture, group) => ({
@@ -2293,7 +2305,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // Each channel is single-component (Red) and tracks its own dirty rows.
     for (const [name, channel] of this.channels.entries()) {
       if (channel.pendingRows.length === 0) continue;
-      this.uploadRows(renderer, channel.pendingRows, THREE.RedFormat, 1, [
+      const rows = mergeUploadRows(channel.pendingRows);
+      this.uploadRows(renderer, rows, THREE.RedFormat, 1, [
         {
           key: `channel:${name}`,
           texture: channel.texture,
@@ -2323,14 +2336,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /**
    * Uploads the given row spans of one or more same-layout pool textures via
-   * per-region staging copies. Spans are merged first so consecutive appends
-   * upload as one rectangle each - the copyTextureToTexture call count, not
-   * the pixel volume, dominates. Staging textures are sized to a power-of-two
+   * per-region staging copies. Callers provide normalized spans so shared core
+   * and packed-SH rows use one merge. The copyTextureToTexture call count, not
+   * pixel volume, dominates. Staging textures are sized to a power-of-two
    * height bucket and reused; only the live row count is copied into the pool.
    */
   private uploadRows(
     renderer: THREE.WebGPURenderer,
-    rows: { start: number; count: number }[],
+    rows: readonly UploadRowSpan[],
     format: THREE.PixelFormat,
     components: number,
     entries: {
@@ -2343,19 +2356,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     }[],
   ): void {
     const width = SplatMesh.DATA_TEXTURE_WIDTH;
-    // Sorting in place is safe: every caller discards its pending-rows list
-    // right after the flush, and re-passing an already-sorted list is a no-op.
-    const regions = rows.sort((a, b) => a.start - b.start);
-    const merged: { start: number; count: number }[] = [];
-    for (const region of regions) {
-      const last = merged[merged.length - 1];
-      if (last && region.start <= last.start + last.count) {
-        last.count = Math.max(last.count, region.start + region.count - last.start);
-      } else {
-        merged.push({ start: region.start, count: region.count });
-      }
-    }
-    for (const region of merged) {
+    for (const region of rows) {
       for (const { key, texture, data, type, encodeHalf } of entries) {
         const view = data.subarray(
           region.start * width * components,
@@ -2474,6 +2475,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       ...(this.shCache ? { shContribution: this.shCache.contribution } : {}),
       ...(this.shCache ? { shContributionEnabled: this.shCache.enabled } : {}),
       sourcePlacement: this.perSourceSort,
+      displayColorModifier: this.displayColorModifierValue,
       // The uniform node instances, shared with the pick graph on purpose: one
       // per-frame write then reaches both.
       uniforms: {
@@ -2485,11 +2487,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         dofAperture: this.dofAperture,
         screenBandMin: this.screenBandMin,
         screenBandMax: this.screenBandMax,
-        relightMap: this.relightMap,
-        relightBlend: this.relightBlend,
-        relightBrightness: this.relightBrightness,
-        relightBackground: this.relightBackground,
-        relightSoftness: this.relightSoftness,
       },
       pick: this.picker.uniforms,
       settings: {
@@ -2839,16 +2836,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       dataTextureWidth: SplatMesh.DATA_TEXTURE_WIDTH,
       splatIndexAttribute: this.splatIndexAttribute,
       sourceIndexAttribute: this.sourceIndexAttribute,
+      ...(this.perSourceSort ? { perSource: this.perSourceSort } : {}),
     };
-    // A per-source world transform (unified pool) needs the counting sorter's
-    // world-depth path; radix has no equivalent, so it is not offered there.
-    if (this.perSourceSort) {
-      return new ComputeSorter({
-        ...options,
-        perSource: this.perSourceSort,
-        sortMetric: this.sortMetric,
-      });
-    }
     if (this.sortStrategy === 'radix' || this.sortStrategy === 'exact') {
       this.ensureRadixSorter();
       if (!this.RadixSorterCtor) return null; // skip until the module resolves

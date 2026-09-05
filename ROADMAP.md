@@ -55,7 +55,7 @@ Git history, not in this queue.
 - **Selection and separation** — `[v]` logic and headless flow are tested;
   verify seams, global sort, and SDF highlighting in headed WebGPU. Use
   `?tool=select` in the demo.
-- **Static merged auto-LOD** — `[v]` hierarchy, Gaussian parents, paging,
+- **Experimental static merged auto-LOD** — `[v]` hierarchy, Gaussian parents, paging,
   cancellation, and budgets are tested; compare WebGPU and forced WebGL2 with
   Spark on small and large captures.
 - **WebGL2 streamed sort flicker** — race and permutation tests pass; visually

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import * as THREE from 'three/webgpu';
 import { SplatMesh } from '../core/splat-mesh';
 import { requantizeShWord } from '../core/sh-pack';
 import { writeCovariance, type SplatData } from '../core/splat-data';
@@ -50,6 +51,17 @@ function shBacking(mesh: SplatMesh): Uint32Array[] {
 /** Coefficient `c` of pool splat `index`, as stored. */
 function storedWord(mesh: SplatMesh, index: number, c: number): number {
   return shBacking(mesh)[c >> 2]![index * 4 + (c & 3)] as number;
+}
+
+interface UploadRowSpan {
+  readonly start: number;
+  readonly count: number;
+}
+
+interface UploadInternals {
+  pendingUploadRows: UploadRowSpan[];
+  flushPendingUploads(renderer: THREE.WebGPURenderer): void;
+  uploadRows(...args: unknown[]): void;
 }
 
 describe('SplatMesh packed SH storage', () => {
@@ -193,6 +205,49 @@ describe('SplatMesh packed SH storage', () => {
     const mesh = new SplatMesh(makeData(4, { bands: 3 }), { shBands: 1 });
     expect(mesh.shBands).toBe(3);
     expect(shBacking(mesh)).toHaveLength(4);
+    mesh.dispose();
+  });
+
+  it('normalizes shared core and packed-SH dirty rows once per flush', () => {
+    const mesh = new SplatMesh({ capacity: WIDTH * 8 }, { shBands: 1 });
+    const internals = mesh as unknown as UploadInternals;
+    // Deliberately unordered, duplicated, overlapping, and adjacent, with one
+    // separated row. Rows 1…4 must collapse into one span.
+    internals.pendingUploadRows = [
+      { start: 4, count: 1 },
+      { start: 1, count: 2 },
+      { start: 3, count: 1 },
+      { start: 1, count: 1 },
+      { start: 7, count: 1 },
+    ];
+    const uploadRows = vi.spyOn(internals, 'uploadRows');
+    const destinations: number[] = [];
+    const renderer = {
+      copyTextureToTexture: vi.fn(
+        (
+          _source: THREE.Texture,
+          _destination: THREE.Texture,
+          _region: THREE.Box2 | null,
+          pos: THREE.Vector2,
+        ) => {
+          destinations.push(pos.y);
+        },
+      ),
+    } as unknown as THREE.WebGPURenderer;
+
+    internals.flushPendingUploads(renderer);
+
+    expect(uploadRows).toHaveBeenCalledTimes(2);
+    const coreRows = uploadRows.mock.calls[0]![1] as readonly UploadRowSpan[];
+    const shRows = uploadRows.mock.calls[1]![1] as readonly UploadRowSpan[];
+    expect(coreRows).toEqual([
+      { start: 1, count: 4 },
+      { start: 7, count: 1 },
+    ]);
+    expect(shRows).toBe(coreRows);
+    // Four core textures, then one packed-SH texture, with identical rows.
+    expect(destinations).toEqual([1, 1, 1, 1, 7, 7, 7, 7, 1, 7]);
+    expect(internals.pendingUploadRows).toEqual([]);
     mesh.dispose();
   });
 });

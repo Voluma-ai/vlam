@@ -144,6 +144,8 @@ function monotonicallyDecreasing(values: number[]): boolean {
 
 async function run(): Promise<void> {
   const params = new URLSearchParams(location.search);
+  const sortParam = params.get('sort');
+  const sortStrategy = sortParam === 'exact' || sortParam === 'radix' ? sortParam : 'counting';
   const effectsCheck = params.get('effects-check') === '1';
   // requireWebGpu: the harness's pixel gates are meaningless on WebGL2, and an
   // owned device keeps the backend in core mode (three requests none of the
@@ -170,12 +172,17 @@ async function run(): Promise<void> {
     throw new Error('Unified renderer GPU harness requires a WebGPU backend.');
   }
 
+  const exactMerged =
+    sortStrategy === 'exact'
+      ? await (await import('./exact-sort-check')).verifyExactMergedSort(renderer)
+      : undefined;
+
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 10);
   const target = new THREE.RenderTarget(SIZE, SIZE, { type: THREE.UnsignedByteType });
   const red = makeSource([255, 0, 0], 0.1);
   const blue = makeSource([0, 0, 255], -0.1);
-  const unified = new UnifiedSplatMesh(renderer, 2);
+  const unified = new UnifiedSplatMesh(renderer, 2, { sortStrategy });
   unified.addSource(red, { opacity: 0.6 });
   unified.addSource(blue, { opacity: 0.6 });
   scene.add(unified);
@@ -251,7 +258,7 @@ async function run(): Promise<void> {
   unified.addSource(blue, { opacity: 0.6 });
 
   // Overflow eviction and later re-admission.
-  const tiny = new UnifiedSplatMesh(renderer, 1);
+  const tiny = new UnifiedSplatMesh(renderer, 1, { sortStrategy });
   const low = makeSource([255, 0, 0], 0.1);
   const high = makeSource([0, 0, 255], -0.1);
   tiny.addSource(low, { priority: 0 });
@@ -276,7 +283,7 @@ async function run(): Promise<void> {
   const rotated = makeSource([128, 128, 128], 0);
   rotated.rotation.y = Math.PI / 2;
   rotated.updateMatrixWorld();
-  const rotatedUnified = new UnifiedSplatMesh(renderer, 1);
+  const rotatedUnified = new UnifiedSplatMesh(renderer, 1, { sortStrategy });
   rotatedUnified.addSource(rotated);
   const rotatedScene = new THREE.Scene();
   rotatedScene.add(rotatedUnified);
@@ -287,7 +294,7 @@ async function run(): Promise<void> {
   // Streamed + static overlap: order must flip with camera (not "static always front").
   const streamed = makeStreamedSource([255, 0, 0], 0.1);
   const staticOverStreamed = makeSource([0, 0, 255], -0.1);
-  const streamedUnified = new UnifiedSplatMesh(renderer, 2);
+  const streamedUnified = new UnifiedSplatMesh(renderer, 2, { sortStrategy });
   streamedUnified.addSource(streamed, { opacity: 0.6 });
   streamedUnified.addSource(staticOverStreamed, { opacity: 0.6 });
   const streamedScene = new THREE.Scene();
@@ -316,7 +323,7 @@ async function run(): Promise<void> {
 
   // SH under opposite views + rotated source (unified SH direction transform).
   const shMesh = makeShSource();
-  const shUnified = new UnifiedSplatMesh(renderer, 1);
+  const shUnified = new UnifiedSplatMesh(renderer, 1, { sortStrategy });
   shUnified.addSource(shMesh);
   const shScene = new THREE.Scene();
   shScene.add(shUnified);
@@ -335,7 +342,7 @@ async function run(): Promise<void> {
   const edgeX = mid + 12;
   const fadeScene = new THREE.Scene();
   const mergedMesh = makeLodSource(0.8, true);
-  const mergedUnified = new UnifiedSplatMesh(renderer, 1);
+  const mergedUnified = new UnifiedSplatMesh(renderer, 1, { sortStrategy });
   mergedUnified.addSource(mergedMesh);
   fadeScene.add(mergedUnified);
   const mergedCenters: number[] = [];
@@ -363,7 +370,7 @@ async function run(): Promise<void> {
   mergedMesh.dispose();
 
   const leafMesh = makeLodSource(0.35, true);
-  const leafUnified = new UnifiedSplatMesh(renderer, 1);
+  const leafUnified = new UnifiedSplatMesh(renderer, 1, { sortStrategy });
   leafUnified.addSource(leafMesh);
   const leafScene = new THREE.Scene();
   leafScene.add(leafUnified);
@@ -492,6 +499,8 @@ async function run(): Promise<void> {
   overlapLeaf.dispose();
 
   const result = {
+    sortStrategy,
+    exactMerged,
     fromPositiveZ: [...fromPositiveZ],
     fromNegativeZ: [...fromNegativeZ],
     blueHidden: [...blueHidden],
@@ -541,6 +550,7 @@ async function run(): Promise<void> {
   Object.assign(window, { __unifiedHarness: result });
   if (status) status.textContent = JSON.stringify(result, null, 2);
   const required = [
+    exactMerged?.passed ?? true,
     result.flipsOrder,
     result.hidesSource,
     result.fadesSource,

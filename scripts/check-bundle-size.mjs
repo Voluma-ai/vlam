@@ -32,6 +32,7 @@ const BUDGET_GZIP_BYTES = {
   '.': 80_000,
   './loaders': 40_000,
   './static-lod': 80_000,
+  './relighting': 50_000,
   './streaming': 160_000,
   './unified': 80_000,
   './selection': 20_000,
@@ -147,6 +148,7 @@ function mustContain(name, needle, why) {
 mustNotContain('.', 'parseSogDirectory', 'decode-worker/parser payload belongs in /loaders');
 mustNotContain('.', 'rad-chunk', 'chunk decode formats belong in /loaders');
 mustNotContain('.', 'Static LOD build aborted.', 'static LOD belongs in /static-lod');
+mustNotContain('.', 'Proxy-mesh screen-space relighting', 'relighting belongs in /relighting');
 mustNotContain('.', 'StreamedSplatMesh: maxBudget', 'streaming schedulers belong in /streaming');
 mustNotContain(
   '.',
@@ -156,6 +158,16 @@ mustNotContain(
 mustNotContain('.', 'createSelectionVolume', 'selection volumes belong in /selection');
 
 mustNotContain('./loaders', 'Static LOD build aborted.', 'static LOD must not leak into /loaders');
+mustNotContain(
+  './loaders',
+  'Proxy-mesh screen-space relighting',
+  'relighting must not leak into /loaders',
+);
+mustNotContain(
+  './loaders',
+  'StaticLodSplatMesh',
+  'static LOD builder must not enter the default one-shot download',
+);
 mustNotContain(
   './loaders',
   'StreamedSplatMesh: maxBudget',
@@ -178,6 +190,7 @@ mustContain(
   'Static LOD build aborted.',
   'static-lod entry owns StaticLodSplatMesh',
 );
+mustContain('./relighting', 'attachRelighting', 'relighting entry owns the display attachment');
 mustContain(
   './unified',
   'UnifiedSplatMesh requires a WebGPU backend',

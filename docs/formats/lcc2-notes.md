@@ -95,6 +95,32 @@ How VLAM! loads it (`buildLcc2Scene` → `StreamedScene.environment`, applied by
  with the `environmentEnabled: false` load option (the demo's `?env=0`; press
   `v` to toggle). `hasEnvironment` reports whether the scene ships one.
 
+## Diagnosing environment sort flicker
+
+The environment shares the scene's sort even though its data never changes.
+The demo defaults to stable 24-bit radix sorting for LCC/LCC2 in desktop HD.
+Mobile and other fill-constrained devices, SD mode, and `?profile=smooth` keep
+counting sorting; the HD/SD toggle switches sorters without reloading the scene.
+An explicit `?sort=counting|radix|exact|worker` overrides this policy.
+Counting sort may reorder splats that share a quantized depth bucket whenever
+the camera or foreground residency changes. The demo's `?sort=exact` opts into
+stable GPU radix sorting with full Float32 depth keys. Keep `sortMetric: 'depth'`
+for overlapping sources and use one `UnifiedSplatMesh` global draw when mixing
+streamed and fully loaded sources; sorting separate meshes independently cannot
+interleave their splats. `MergedSplatMesh` also honors exact sorting and applies
+each source's live placement before computing its depth.
+
+Exact sorting is an experimental opt-in with additional passes and working
+memory. It removes quantized bucket ties, but center-depth ordering can still
+pop when large overlapping Gaussians exchange order. Validate motion and cost
+on the target scene before changing a host's defaults.
+
+The development harness `/unified-harness.html?sort=exact` exercises merged
+source order readbacks across workgroups, stable ties, placement changes and
+removal, plus unified camera reversal, source visibility, opacity and mixed
+streamed/static draws. These GPU gates passed in Chrome/WebGPU on Windows on
+2026-09-05. They do not replace visual validation of a complete capture.
+
 ## Collision meshes (`data/mesh/*.ply`)
 
 An `.lcc2` capture ships plain triangle meshes beside its splats, the

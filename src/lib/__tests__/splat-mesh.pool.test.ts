@@ -394,6 +394,55 @@ describe('SplatMesh poolFloatTextures float16', () => {
     }
   });
 
+  it('retains dirty rows when an upload fails so the next flush retries them', () => {
+    const mesh = new SplatMesh({ capacity: 4 * WIDTH });
+    meshes.push(mesh);
+    mesh.appendRange(makeSplatData(2));
+    const internals = mesh as unknown as {
+      pendingUploadRows: { start: number; count: number }[];
+      flushPendingUploads(renderer: THREE.WebGPURenderer): void;
+    };
+    const pending = [
+      { start: 2, count: 1 },
+      { start: 0, count: 1 },
+      { start: 1, count: 1 },
+    ];
+    internals.pendingUploadRows = pending;
+    const failingRenderer = {
+      copyTextureToTexture: vi.fn(() => {
+        throw new Error('copy failed');
+      }),
+    } as unknown as THREE.WebGPURenderer;
+
+    expect(() => internals.flushPendingUploads(failingRenderer)).toThrow('copy failed');
+    // Sorting may reorder the list, but merging must not change its spans.
+    expect(internals.pendingUploadRows).toBe(pending);
+    expect(internals.pendingUploadRows).toEqual([
+      { start: 0, count: 1 },
+      { start: 1, count: 1 },
+      { start: 2, count: 1 },
+    ]);
+
+    const destinations: number[] = [];
+    const renderer = {
+      copyTextureToTexture: vi.fn(
+        (
+          _source: THREE.Texture,
+          _destination: THREE.Texture,
+          _region: THREE.Box2 | null,
+          pos: THREE.Vector2,
+        ) => {
+          destinations.push(pos.y);
+        },
+      ),
+    } as unknown as THREE.WebGPURenderer;
+    internals.flushPendingUploads(renderer);
+
+    // Three adjacent rows retry as one span, across the four core textures.
+    expect(destinations).toEqual([0, 0, 0, 0]);
+    expect(internals.pendingUploadRows).toEqual([]);
+  });
+
   it('static constructor packs half images before the initial upload', () => {
     const data = makeSplatData(3, 7);
     const mesh = new SplatMesh(data, { poolFloatTextures: 'float16' });

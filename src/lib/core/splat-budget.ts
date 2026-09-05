@@ -13,6 +13,15 @@
 
 import type { StreamedSplatFormat } from '../loaders/loading';
 import { shCoefficientCount } from './sh-pack';
+import type { SplatSortStrategy } from './splat-mesh-types';
+
+const ESTIMATE_TEXTURE_ROW_WIDTH = 2048;
+const COUNTING_MIN_BUCKETS = 1 << 16;
+const COUNTING_MAX_BUCKETS = 1 << 22;
+const COUNTING_BLOCK_SIZE = 256;
+const RADIX_WORKGROUP_SPLATS = 256 * 8;
+const RADIX_DIGITS = 16;
+const RADIX_MASK_WORDS_PER_GROUP = RADIX_DIGITS * (256 / 32);
 
 /**
  * Desktop GPU capability class for budget / quality defaults.
@@ -592,6 +601,11 @@ export interface SplatPoolBytesOptions {
   /** Per-splat SH bands the pool allocates for. Default `0`. */
   shBands?: 0 | 1 | 2 | 3;
   /**
+   * Sorter allocation to include. Defaults to the production `'counting'`
+   * path; `'worker'` includes the worker's retained mirrors and scratch.
+   */
+  sortStrategy?: SplatSortStrategy;
+  /**
    * Pool capacity as a multiple of `splats`. `StreamedSplatMesh` allocates
    * 1.5× (the default here) so per-run row alignment and the
    * append-before-remove window during LOD swaps have somewhere to go; pass
@@ -629,7 +643,10 @@ export interface SplatPoolBytesOptions {
  *   packs integer IDs.
  * - **Packed SH** 16 B per `RGBA32UI` texture, `ceil(coefficients / 4)` of them
  *   - so 16 / 32 / 64 B at 1 / 2 / 3 bands.
- * - **Sort storage** 16 B - the radix sorter's ping-pong key/value buffers.
+ * - **Sort storage** follows `sortStrategy`: counting allocates a source and
+ *   draw index plus a capacity-sized bucket buffer, while radix adds its
+ *   key/value ping-pong, histogram and masks. The CPU worker includes its
+ *   independent center mirror and retained radix scratch.
  * - **CPU backing** 68 B - the float32/uint8 arrays kept for partial uploads
  *   (always full precision, even under `'float16'`): centers 16, colors 4,
  *   covarianceA 16, covarianceB 16, plus four u32-per-splat arrays - draw-order
@@ -644,8 +661,8 @@ export interface SplatPoolBytesOptions {
  *
  * @param splats - The ceiling in splats (e.g. a mesh's `maxBudget`).
  * @returns Estimated bytes. Indicative, not a device-memory guarantee: driver
- * texture padding, staging allocations and the decoded-chunk CPU cache
- * ({@link resolveCpuCacheBytes}) sit outside it.
+ * texture/driver overhead, transient decoded caches and unified work buffers
+ * sit outside it. CPU values include conservative initialization mirrors.
  * @throws {RangeError} if `splats` is not a positive finite number, or
  * `capacityFactor` is not a finite number `>= 1`.
  */
@@ -667,7 +684,6 @@ export function estimateSplatPoolBytes(
   const centers = float16 ? 8 : 16;
   const covarianceA = float16 ? 8 : 16;
   const poolTextures = centers + 4 /* colors */ + covarianceA + 16 /* covarianceB */ + shBytes;
-  const sortBuffers = 16; // radix ping-pong: keys A/B + values A/B, u32 each
   // Backing arrays are float32/uint32 regardless of the texture precision, and
   // under 'float16' the half-encoded texture images are held *in addition* to
   // them (the constructor keeps both), so that precision saves GPU bytes only.
@@ -686,8 +702,41 @@ export function estimateSplatPoolBytes(
         4 /* picker pool-index template */ +
         halfImages;
 
-  const capacity = Math.ceil(splats * capacityFactor);
-  return capacity * (poolTextures + sortBuffers + cpuBacking);
+  // Pool textures and all sorter buffers use whole texture rows, never the
+  // caller's fractional splat count. This is material around row boundaries.
+  const capacity =
+    Math.ceil((splats * capacityFactor) / ESTIMATE_TEXTURE_ROW_WIDTH) * ESTIMATE_TEXTURE_ROW_WIDTH;
+  const sortStrategy = options.sortStrategy ?? 'counting';
+  const countingBuckets = estimateCountingBuckets(capacity);
+  const countingGpu =
+    capacity * 12 + // draw index + source index + bucket value
+    countingBuckets * 4 +
+    (COUNTING_MAX_BUCKETS / COUNTING_BLOCK_SIZE +
+      COUNTING_MAX_BUCKETS / COUNTING_BLOCK_SIZE / COUNTING_BLOCK_SIZE) *
+      4;
+  const radixGroups = Math.ceil(capacity / RADIX_WORKGROUP_SPLATS);
+  const radixHistogram = RADIX_DIGITS * radixGroups;
+  const radixGpu =
+    capacity * 24 + // draw/source + keys A/B + values A/B
+    (radixHistogram +
+      Math.ceil(radixHistogram / COUNTING_BLOCK_SIZE) +
+      radixGroups * RADIX_MASK_WORDS_PER_GROUP) *
+      4;
+  const workerCpu =
+    capacity * 44 + // center/source mirrors + five retained scratch arrays
+    65536 * 4;
+  const workerGpu = capacity * 4; // rendered draw-order attribute
+  const sortGpu =
+    sortStrategy === 'counting' ? countingGpu : sortStrategy === 'worker' ? workerGpu : radixGpu;
+  const sortCpu =
+    options.includeCpuBacking === false ? 0 : sortStrategy === 'worker' ? workerCpu : 0;
+  return capacity * (poolTextures + cpuBacking) + sortGpu + sortCpu;
+}
+
+/** Allocation equivalent of `ComputeSorter.bucketCountFor`, kept shader-free. */
+function estimateCountingBuckets(capacity: number): number {
+  const rounded = 2 ** Math.ceil(Math.log2(Math.max(1, capacity)));
+  return Math.min(Math.max(rounded, COUNTING_MIN_BUCKETS), COUNTING_MAX_BUCKETS);
 }
 
 /**

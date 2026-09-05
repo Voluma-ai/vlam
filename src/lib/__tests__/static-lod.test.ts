@@ -34,6 +34,20 @@ describe('buildStaticLod', () => {
     expect([...visits]).toEqual([1, 1, 1]);
   });
 
+  it('pairs across multiple bounded work groups without losing an odd remainder', () => {
+    const count = 513;
+    const result = buildStaticLod(
+      source(Array.from({ length: count }, (_, index) => index * 0.01)),
+      count,
+    );
+    expect(result.finestSplatCount).toBe(count);
+    expect(result.data.count).toBe(1_034);
+
+    const visits = new Uint8Array(result.finestSplatCount);
+    leafCoverage(result.data, result.roots[0] as number, visits);
+    expect([...visits].every((visit) => visit === 1)).toBe(true);
+  });
+
   it('moment-matches position, color and covariance for merged Gaussians', () => {
     const result = buildStaticLod(source([-1, 1]), 1);
     expect(result.data.positions[0]).toBeCloseTo(0);
@@ -41,6 +55,65 @@ describe('buildStaticLod', () => {
     expect(result.data.covariances[0]).toBeCloseTo(2);
     expect(result.data.covariances[3]).toBeCloseTo(1);
     expect(result.data.covariances[5]).toBeCloseTo(1);
+  });
+
+  it('pairs compatible nearby splats rather than blending contrasting Morton neighbours', () => {
+    const input: SplatData = {
+      count: 4,
+      positions: Float32Array.from([0, 0, 0, 0.01, 0, 0, 0.02, 0, 0, 0.03, 0, 0]),
+      colors: Uint8Array.from([255, 0, 0, 255, 0, 0, 255, 255, 255, 0, 0, 255, 0, 0, 255, 255]),
+      covariances: Float32Array.from(Array.from({ length: 4 }, () => [1, 0, 0, 1, 0, 1]).flat()),
+    };
+    const first = buildStaticLod(input, 2);
+    const second = buildStaticLod(input, 2);
+    expect(first.data.positions).toEqual(second.data.positions);
+    expect(first.data.colors).toEqual(second.data.colors);
+    const leafColors = Array.from({ length: first.finestSplatCount }, (_, index) => [
+      first.data.colors[index * 4] as number,
+      first.data.colors[index * 4 + 1] as number,
+      first.data.colors[index * 4 + 2] as number,
+    ]).sort((left, right) => (left[0] as number) - (right[0] as number));
+    expect(leafColors).toEqual([
+      [0, 0, 255],
+      [255, 0, 0],
+    ]);
+  });
+
+  it('carries an unmatched retained splat through unchanged', () => {
+    const input = source([0, 0.01, 100]);
+    input.colors.set([255, 0, 0, 255], 0);
+    input.colors.set([255, 0, 0, 255], 4);
+    input.colors.set([1, 2, 3, 4], 8);
+    const result = buildStaticLod(input, 2);
+    const singleton = Array.from({ length: result.finestSplatCount }, (_, index) => index).find(
+      (index) => (result.data.colors[index * 4 + 3] as number) === 4,
+    );
+    expect(singleton).toBeDefined();
+    const index = singleton as number;
+    expect([...result.data.positions.slice(index * 3, index * 3 + 3)]).toEqual([100, 0, 0]);
+    expect([...result.data.colors.slice(index * 4, index * 4 + 4)]).toEqual([1, 2, 3, 4]);
+    expect([...result.data.covariances.slice(index * 6, index * 6 + 6)]).toEqual([
+      1, 0, 0, 1, 0, 1,
+    ]);
+  });
+
+  it('keeps near-degenerate merges finite and positive semidefinite', () => {
+    const input = source([0, 1e-8]);
+    input.covariances.set([0, 0, 0, 0, 0, 0], 0);
+    input.covariances.set([1e-20, 0, 0, 1e-20, 0, 1e-20], 6);
+    const result = buildStaticLod(input, 1);
+    const covariance = [...result.data.covariances.slice(0, 6)];
+    expect(covariance.every(Number.isFinite)).toBe(true);
+    expect(covariance[0]).toBeGreaterThanOrEqual(0);
+    expect(covariance[3]).toBeGreaterThanOrEqual(0);
+    expect(covariance[5]).toBeGreaterThanOrEqual(0);
+    const [xx, xy, xz, yy, yz, zz] = covariance as [number, number, number, number, number, number];
+    expect(xx * yy - xy * xy).toBeGreaterThanOrEqual(-1e-12);
+    expect(xx * zz - xz * xz).toBeGreaterThanOrEqual(-1e-12);
+    expect(yy * zz - yz * yz).toBeGreaterThanOrEqual(-1e-12);
+    expect(
+      xx * (yy * zz - yz * yz) - xy * (xy * zz - yz * xz) + xz * (xy * yz - yy * xz),
+    ).toBeGreaterThanOrEqual(-1e-12);
   });
 
   it('preserves metadata and uses the mass-dominant child for SH data', () => {
@@ -83,6 +156,61 @@ describe('buildStaticLod', () => {
       expect(cut.count).toBeLessThanOrEqual(budget);
       expect(cut.count).toBeGreaterThan(0);
       expect(cut.touched.size).toBe(0);
+    }
+  });
+
+  it('packs every parent child range contiguously and exactly once', () => {
+    const result = buildStaticLod(source([0, 1, 2, 3, 4, 5, 6]), 7);
+    const tree = result.data.radTree;
+    if (!tree) throw new Error('Expected hierarchy.');
+    const references = new Uint8Array(result.data.count);
+    for (let node = 0; node < result.data.count; node++) {
+      const count = tree.childCount[node] as number;
+      if (count === 0) continue;
+      const start = tree.childStart[node] as number;
+      expect(count).toBeLessThanOrEqual(2);
+      expect(start + count).toBeLessThanOrEqual(result.data.count);
+      for (let child = start; child < start + count; child++) {
+        references[child] = (references[child] as number) + 1;
+      }
+    }
+    for (let node = 0; node < result.data.count; node++) {
+      expect(references[node]).toBe(result.roots.includes(node) ? 0 : 1);
+    }
+  });
+
+  it('keeps each reordered internal node attached to its own children', () => {
+    const count = 16;
+    const input: SplatData = {
+      count,
+      positions: Float32Array.from(
+        Array.from({ length: count }, (_, index) => [index, 0, 0]).flat(),
+      ),
+      colors: Uint8Array.from(
+        Array.from({ length: count }, (_, index) =>
+          index % 2 === 0 ? [255, 0, 0, 255] : [0, 0, 255, 255],
+        ).flat(),
+      ),
+      // Broad covariances make color compatibility dominate nearby pair rank,
+      // forcing non-identity permutations at more than one hierarchy level.
+      covariances: Float32Array.from(
+        Array.from({ length: count }, () => [100, 0, 0, 100, 0, 100]).flat(),
+      ),
+    };
+    const result = buildStaticLod(input, count);
+    const tree = result.data.radTree;
+    if (!tree) throw new Error('Expected hierarchy.');
+
+    for (let parent = result.finestSplatCount; parent < result.data.count; parent++) {
+      const childStart = tree.childStart[parent] as number;
+      const childCount = tree.childCount[parent] as number;
+      const parentX = result.data.positions[parent * 3] as number;
+      const childX = Array.from(
+        { length: childCount },
+        (_, offset) => result.data.positions[(childStart + offset) * 3] as number,
+      );
+      expect(parentX).toBeGreaterThanOrEqual(Math.min(...childX) - 1e-6);
+      expect(parentX).toBeLessThanOrEqual(Math.max(...childX) + 1e-6);
     }
   });
 });

@@ -18,6 +18,7 @@ import * as streaming from '../streaming';
 import * as unified from '../unified';
 import * as selection from '../selection';
 import * as effects from '../effects';
+import * as relighting from '../relighting';
 import * as ply from '../formats/ply';
 import * as sog from '../formats/sog';
 import * as rad from '../formats/rad';
@@ -132,11 +133,8 @@ describe('public API surface (vlam)', () => {
     expect(typeof vlam.computeDofCocVariancePx2).toBe('function');
     expect(typeof vlam.computeDofOpacityFade).toBe('function');
     expect(typeof vlam.clampDepthOfFieldSettings).toBe('function');
-    expect(typeof vlam.clampRelightingSettings).toBe('function');
-    expect(typeof vlam.createPlaceholderRelightTexture).toBe('function');
     expect(vlam.MAX_DOF_RADIUS_PX).toBeGreaterThan(0);
     expect(vlam.MAX_DOF_VARIANCE).toBeGreaterThan(0);
-    expect(vlam.DEFAULT_RELIGHT_BRIGHTNESS).toBe(2);
   });
 
   it('instantiates the GPU-free runtime surface', () => {
@@ -155,8 +153,6 @@ describe('public API surface (vlam)', () => {
     expectTypeOf<vlam.SplatSortMetric>().toEqualTypeOf<'depth' | 'radial'>();
     expectTypeOf<vlam.SplatUpdateOptions>().toBeObject();
     expectTypeOf<vlam.DepthOfFieldSettings>().toBeObject();
-    expectTypeOf<vlam.RelightingSettings>().toBeObject();
-    expectTypeOf<vlam.RelightingUniforms>().toBeObject();
     expectTypeOf<vlam.SplatPickOptions>().toBeObject();
     expectTypeOf<vlam.SplatChannelOptions>().toBeObject();
     expectTypeOf<vlam.MergedSplatMeshOptions>().toBeObject();
@@ -327,15 +323,22 @@ describe('public API surface (@voluma/vlam/effects)', () => {
     expect(typeof effects.revealPreset).toBe('function');
     expect(typeof effects.depthOfFieldPreset).toBe('function');
     expect(typeof effects.worldWarpPreset).toBe('function');
-    expect(typeof effects.createRelightingProxy).toBe('function');
-    expect(typeof effects.createRelightingShadowFactorMaterial).toBe('function');
-    expect(typeof effects.renderRelightingFactorMap).toBe('function');
     expectTypeOf<effects.SdfShape>().toBeObject();
     expectTypeOf<effects.SdfShapeKind>().toEqualTypeOf<'sphere' | 'box' | 'cylinder'>();
     expectTypeOf<effects.SdfMode>().toEqualTypeOf<'tint' | 'desaturate' | 'hide' | 'rim'>();
-    expectTypeOf<effects.RelightingProxy>().toBeObject();
-    expectTypeOf<effects.RelightingLightContribution>().toBeObject();
-    expect(effects.MAX_RELIGHTING_SHADOW_LIGHTS).toBe(32);
+  });
+});
+
+describe('public API surface (@voluma/vlam/relighting)', () => {
+  it('exports proxy and attachment helpers outside core and effects', () => {
+    expect(typeof relighting.attachRelighting).toBe('function');
+    expect(typeof relighting.createRelightingProxy).toBe('function');
+    expect(typeof relighting.createRelightingShadowFactorMaterial).toBe('function');
+    expect(typeof relighting.renderRelightingFactorMap).toBe('function');
+    expectTypeOf<relighting.RelightingSettings>().toBeObject();
+    expectTypeOf<relighting.RelightingAttachment>().toBeObject();
+    expect('attachRelighting' in vlam).toBe(false);
+    expect('createRelightingProxy' in effects).toBe(false);
   });
 });
 

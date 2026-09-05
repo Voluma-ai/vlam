@@ -1,12 +1,11 @@
 import * as THREE from 'three/webgpu';
 import { uniform } from 'three/tsl';
 import { describe, expect, it } from 'vitest';
-import { createPlaceholderRelightTexture } from '../core/relighting';
 import { createWorkBufferMaterial } from '../unified/work-buffer-material';
 
 function relightDefaults() {
   return {
-    relightMap: createPlaceholderRelightTexture(),
+    relightMap: new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1),
     relightBlend: uniform(0),
     relightBrightness: uniform(2),
     relightBackground: uniform(1),

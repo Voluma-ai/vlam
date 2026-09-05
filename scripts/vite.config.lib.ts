@@ -82,6 +82,7 @@ export default defineConfig({
         index: 'src/lib/core/index.ts',
         loaders: 'src/lib/loaders/index.ts',
         'static-lod': 'src/lib/static-lod/index.ts',
+        relighting: 'src/lib/relighting/index.ts',
         streaming: 'src/lib/streaming/index.ts',
         unified: 'src/lib/unified/index.ts',
         selection: 'src/lib/selection/index.ts',

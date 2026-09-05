@@ -70,6 +70,21 @@ jobs:
       # Guide samples in docs/guide/samples/ must type-check against the tree.
       - run: npm run docs:samples
 
+  browser:
+    name: browser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-node-ci
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      # Pin browsers to the Playwright package in package-lock and install the
+      # Linux libraries Playwright documents for hosted CI runners.
+      - run: npx playwright install --with-deps chromium
+      # Each project asserts the backend it requested. WebGPU setup failures
+      # therefore fail rather than silently exercising the WebGL2 fallback.
+      - run: npm run test:browser
+
   # Scans the working tree (--no-git), so it blocks new secrets in tracked
   # files regardless of how the history was rewritten.
   secrets:
@@ -90,7 +105,7 @@ jobs:
   build:
     name: build
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test, docs]
+    needs: [lint, typecheck, test, docs, browser]
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-node-ci

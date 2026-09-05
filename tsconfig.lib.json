@@ -25,6 +25,7 @@
     "src/lib/core/index.ts",
     "src/lib/loaders/index.ts",
     "src/lib/static-lod/index.ts",
+    "src/lib/relighting/index.ts",
     "src/lib/streaming/index.ts",
     "src/lib/unified/index.ts",
     "src/lib/selection/index.ts",

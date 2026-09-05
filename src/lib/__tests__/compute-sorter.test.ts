@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ComputeSorter } from '../core/compute-sorter';
 
 interface ComputeSorterInternals {
+  histogramBucketCount: number;
   clearPass: THREE.ComputeNode;
   histogramPass: THREE.ComputeNode;
   scanBlocksPass: THREE.ComputeNode;
@@ -11,6 +12,7 @@ interface ComputeSorterInternals {
   addOffsetsPass: THREE.ComputeNode;
   scatterPass: THREE.ComputeNode;
   sortPasses: THREE.ComputeNode[];
+  workingAttributes: THREE.StorageBufferAttribute[];
   bucketMax: { value: number };
   depthMin: { value: number };
   depthScale: { value: number };
@@ -20,22 +22,24 @@ const CAPACITY = 256;
 const MIN_BUCKETS = 1 << 16;
 const BLOCK_SIZE = 256;
 
-function makeSorter(compute = vi.fn()): ComputeSorter {
+function makeSorter(compute = vi.fn(), capacity = CAPACITY): ComputeSorter {
   const renderer = { compute } as unknown as THREE.WebGPURenderer;
+  const width = Math.min(CAPACITY, capacity);
+  const height = Math.ceil(capacity / width);
   const centersTexture = new THREE.DataTexture(
-    new Float32Array(CAPACITY * 4),
-    CAPACITY,
-    1,
+    new Float32Array(width * height * 4),
+    width,
+    height,
     THREE.RGBAFormat,
     THREE.FloatType,
   );
   return new ComputeSorter({
     renderer,
-    capacity: CAPACITY,
+    capacity,
     centersTexture,
-    dataTextureWidth: CAPACITY,
-    splatIndexAttribute: new THREE.StorageInstancedBufferAttribute(new Float32Array(CAPACITY), 1),
-    sourceIndexAttribute: new THREE.StorageBufferAttribute(new Uint32Array(CAPACITY), 1),
+    dataTextureWidth: width,
+    splatIndexAttribute: new THREE.StorageInstancedBufferAttribute(new Float32Array(capacity), 1),
+    sourceIndexAttribute: new THREE.StorageBufferAttribute(new Uint32Array(capacity), 1),
   });
 }
 
@@ -78,8 +82,7 @@ describe('ComputeSorter', () => {
 
   it('dispatches only the buckets a small scene can reach', () => {
     sorter = makeSorter();
-    // 17 splats round up to 32 buckets, which the floor lifts to 2¹⁶ - far
-    // below the 2²² the histogram is allocated for.
+    // 17 splats round up to 32 buckets, which the floor lifts to 2¹⁶.
     sorter.sort(new THREE.Matrix4(), 17, new THREE.Sphere(new THREE.Vector3(), 1));
 
     const internals = internalsOf(sorter);
@@ -92,29 +95,65 @@ describe('ComputeSorter', () => {
     expect(internals.bucketMax.value).toBe(MIN_BUCKETS - 1);
   });
 
-  it('grows the bucket range with the live splat count, capped at the pool max', () => {
-    sorter = makeSorter();
+  it.each([
+    [1, MIN_BUCKETS],
+    [MIN_BUCKETS, MIN_BUCKETS],
+    [MIN_BUCKETS + 1, MIN_BUCKETS * 2],
+    [(1 << 22) - 1, 1 << 22],
+    [1 << 22, 1 << 22],
+    [(1 << 22) + 1, 1 << 22],
+  ])('allocates %i-capacity pools with %i histogram buckets', (capacity, expectedBuckets) => {
+    const candidate = makeSorter(vi.fn(), capacity);
+    const internals = internalsOf(candidate);
+
+    expect(internals.histogramBucketCount).toBe(expectedBuckets);
+    expect(internals.workingAttributes[0]!.array).toHaveLength(expectedBuckets);
+    // The histogram-consuming passes are built for the pool allocation; sort()
+    // later narrows only their dispatch counts to the active resident set.
+    expect(internals.clearPass.count).toBe(expectedBuckets);
+    expect(internals.scanBlocksPass.count).toBe(expectedBuckets / BLOCK_SIZE);
+    expect(internals.addOffsetsPass.count).toBe(expectedBuckets);
+
+    candidate.dispose();
+  });
+
+  it('grows and shrinks the bucket range without reallocating the histogram', () => {
+    const capacity = MIN_BUCKETS * 2;
+    sorter = makeSorter(vi.fn(), capacity);
     const internals = internalsOf(sorter);
     const bounds = new THREE.Sphere(new THREE.Vector3(), 1);
+    const histogram = internals.workingAttributes[0];
+    const histogramArray = histogram!.array;
 
-    sorter.sort(new THREE.Matrix4(), 3_000_000, bounds);
-    expect(internals.clearPass.count).toBe(1 << 22);
-    expect(internals.bucketMax.value).toBe((1 << 22) - 1);
+    for (const [activeCount, buckets] of [
+      [17, MIN_BUCKETS],
+      [70_000, MIN_BUCKETS * 2],
+      [17, MIN_BUCKETS],
+    ] as const) {
+      sorter.sort(new THREE.Matrix4(), activeCount, bounds);
 
-    // Falls back down as a streamed scene sheds splats - the cost tracks what
-    // is actually resident, in both directions.
-    sorter.sort(new THREE.Matrix4(), 700_000, bounds);
-    expect(internals.clearPass.count).toBe(1 << 20);
-    expect(internals.scanBlocksPass.count).toBe((1 << 20) / BLOCK_SIZE);
-    expect(internals.scanBlockSumsPass.count).toBe((1 << 20) / BLOCK_SIZE / BLOCK_SIZE);
+      expect(internals.histogramPass.count).toBe(activeCount);
+      expect(internals.scatterPass.count).toBe(activeCount);
+      expect(internals.clearPass.count).toBe(buckets);
+      expect(internals.addOffsetsPass.count).toBe(buckets);
+      expect(internals.scanBlocksPass.count).toBe(buckets / BLOCK_SIZE);
+      expect(internals.scanBlockSumsPass.count).toBe(buckets / BLOCK_SIZE / BLOCK_SIZE);
+      expect(internals.addBlockSumOffsetsPass.count).toBe(buckets / BLOCK_SIZE);
+      expect(internals.bucketMax.value).toBe(buckets - 1);
+      expect(internals.depthMin.value).toBe(-1);
+      expect(internals.depthScale.value).toBe((buckets - 1) / 2);
+      expect(internals.workingAttributes[0]).toBe(histogram);
+      expect(histogram!.array).toBe(histogramArray);
+      expect(histogram!.array).toHaveLength(capacity);
+    }
   });
 
   it('keeps at least one bucket per splat, so depth resolution never degrades', () => {
-    sorter = makeSorter();
+    sorter = makeSorter(vi.fn(), 1 << 20);
     const internals = internalsOf(sorter);
-    for (const activeCount of [100_000, 250_000, 1_000_000, 1_500_000, 4_000_000]) {
+    for (const activeCount of [100_000, 250_000, 500_000, 1_000_000]) {
       sorter.sort(new THREE.Matrix4(), activeCount, new THREE.Sphere(new THREE.Vector3(), 1));
-      expect(internals.clearPass.count).toBeGreaterThanOrEqual(Math.min(activeCount, 1 << 22));
+      expect(internals.clearPass.count).toBeGreaterThanOrEqual(activeCount);
     }
   });
 
@@ -176,7 +215,7 @@ describe('ComputeSorter', () => {
 
   it('frees its own working-buffer mirrors and never the mesh-owned ones', () => {
     // The ownership boundary. `histogram`/`blockSums`/`buckets` are GPU-only, so
-    // their JS mirrors are dead weight (16 MiB for the histogram alone). But
+    // their JS mirrors are dead weight (4 B per capacity-sized histogram bucket). But
     // `splatIndex` and `sourceIndex` belong to the mesh and are rewritten from
     // the CPU every frame - releasing those would silently stop the draw order
     // and the active list from reaching the GPU, and nothing else in this suite

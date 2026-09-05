@@ -59,7 +59,7 @@ and [`architecture.md`](architecture.md).
 | Heterogeneous `UnifiedSplatMesh` | ✅ | ❌ | ✅ fully loaded + streamed sources | `unified-splat-mesh.test.ts` · `src/viewer/unified-harness.html` | harness + streamed/SH pixel gates |
 | `revealPreset` / `wgslFn` effects | ✅ | ❌ | ⚠️ per-source modifiers at gather | `effects.test.ts` | WebGPU only |
 | `lightingPreset`, `depthOfFieldPreset`, `worldWarpPreset` | ✅ | ✅ | ⚠️ folded at gather when unified | `effects.test.ts` |, |
-| `setRelighting` (proxy-mesh screen-space) | ✅ | ✅ | ✅ draw-time (no gather) | `relighting.test.ts` | `?effects=relight` |
+| `/relighting` proxy screen-space attachment | ✅ | ✅ | ✅ draw-time (no gather) | `relighting.test.ts` | runnable relight example |
 | `SplatMesh.setDepthOfField` (core projected-2D) | ✅ | ✅ | ✅ draw-time (no gather) | `depth-of-field.test.ts` |, |
 | Collision mesh (format-provided) | ✅ | ✅ |, | `collision-mesh`, `lcc2-collision`, `parse-collision-lci` | LCC / LCC2 drop |
 | Volume selection + separation (M16) | ✅ CPU, backend-independent | ✅ same | ⚠️ halves register as separate sources | `selection-volume`, `splat-partition`, `lcc-collision-partition` | `?separate=1` |

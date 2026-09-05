@@ -4,10 +4,11 @@ PlayCanvas-style **screen-space** relighting for Gaussian splats: render a
 triangle **proxy** into an RGBA target, then multiply that onto baked splat
 color in the display fragment.
 
-When relighting is disabled (the default), VLAM! does not bind or sample a
-relighting texture in the splat display shader. Enabling a map rebuilds the
-display graph once; changing blend, brightness, background, or softness keeps
-the existing live-uniform behavior.
+Relighting is an optional, pre-v1 package: import it from
+`@voluma/vlam/relighting`. The base renderer does not bind or sample a
+relighting texture. `attachRelighting(target, settings)` composes a display
+color callback, rebuilds only when a map or callback changes, and returns
+`update(settings)` / `dispose()`; numeric settings remain live uniforms.
 
 This is **not** a [`SplatModifier`](effects-and-modifiers.md). Modifiers run
 per splat in the vertex / gather stage; coverage is per pixel. Relighting is
@@ -82,10 +83,11 @@ any `THREE.Texture` from your own RT.
 import { SplatMesh, createWebGPURenderer } from '@voluma/vlam';
 import { loadSplatData } from '@voluma/vlam/loaders';
 import {
+  attachRelighting,
   createRelightingProxy,
   createRelightingShadowFactorMaterial,
   renderRelightingFactorMap,
-} from '@voluma/vlam/effects';
+} from '@voluma/vlam/relighting';
 
 const proxy = createRelightingProxy({
   geometries: [new THREE.BoxGeometry(2, 1, 2)],
@@ -108,7 +110,7 @@ proxy.group.traverse((obj) => {
 });
 
 const relightTarget = new THREE.RenderTarget(1, 1, { depthBuffer: true });
-splats.setRelighting({
+const relighting = attachRelighting(splats, {
   map: relightTarget.texture,
   blend: 1,
   brightness: 1,
@@ -134,24 +136,25 @@ reads `contextNode.id`), and restores renderer state afterward. Hand-rolling
 `setRenderTarget` only matches a fresh `createWebGPURenderer()`.
 
 `blend` / `brightness` / `background` / `softness` are live uniforms (no material
-rebuild). Changing the map texture identity rebuilds once. Pass `null` to
-`setRelighting` to disable. The pick pass is not tinted.
+rebuild). Changing the map texture identity rebuilds once. Call
+`relighting.dispose()` to restore the prior callback. The pick pass is not tinted.
 
 Coarse collision proxies leave hard coverage silhouettes. If you use
 `softness`, keep the lighting RT clear at **RGB 1, A 0** and prefer the
 alpha-weighted filter (built in); a black clear turns soft edges into mesh
 outlines. PlayCanvas does not add this blur — proxy quality is the main lever.
 
-On `UnifiedSplatMesh`, the same API modulates the unified draw material
-without invalidating gather caches.
+On `UnifiedSplatMesh`, the attachment modulates the unified draw material
+without invalidating gather caches. Supplied textures and proxy resources stay
+owned by the caller.
 
 A compact runnable copy lives in the docs as
 [Relight a capture](../../site/examples/relight.md).
 
 ## Demo
 
-In the built-in viewer: `?effects=relight` on an LCC / `.lcc2` scene that
-ships collision meshes. The sun orbits. The lighting RT is still a
+The runnable [Relight a capture](../../site/examples/relight.md) example uses
+an LCC / `.lcc2` scene that ships collision meshes. The lighting RT is still a
 **multiplier** (not a gray MeshStandard look): umbra darkens, and a warm
 Lambert boost (`color` `0xffa040`, `diffuse` 0.8) brightens sun-facing
 proxy faces. The directional map covers the proxy ∪ splat bounds
@@ -159,11 +162,8 @@ proxy faces. The directional map covers the proxy ∪ splat bounds
 through mid-range and umbras still reach the far side. Lighting follows
 **proxy triangles** only — splat foliage cannot cast or receive.
 
-Optional `?proxy=/path/to/mesh.glb` loads an external lighting mesh (e.g. a
-splat-transform `.collision.glb`). When set and loaded, it replaces the LCC
-collision tiles for the relight pass only; walk collision is unchanged. If
-`proxy` is omitted (or fails to load), the demo falls back to
-`loadCollisionMeshes()` tiles.
+An external lighting mesh may replace the LCC collision tiles for the relight
+pass only; walk collision remains available for navigation and other consumers.
 
 ## See also
 

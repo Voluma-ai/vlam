@@ -24,8 +24,10 @@ Every multi-line code sample is a real TypeScript file under
 7. [Effects & modifiers](effects-and-modifiers.md): the `@voluma/vlam/effects`
    presets, `ModifierSlots` stacks, the rebuild-vs-uniform-update contract,
    and writing custom TSL modifiers.
-8. [Proxy-mesh relighting](relighting.md): PlayCanvas-style screen-space
-   modulate from a lit proxy RT (`setRelighting`).
+8. [Proxy-mesh relighting](relighting.md): optional screen-space modulate from
+   a lit proxy RT (`attachRelighting`).
+9. [Experimental static LOD](experimental-static-lod.md): whole-capture
+   hierarchy generation outside the v1.0 compatibility guarantee.
 9. [Picking & queries](picking-and-queries.md): GPU picks, CPU spatial
    queries, coordinate spaces, and multi-source pick semantics.
 10. [Troubleshooting](troubleshooting.md): symptom → cause → fix for the

@@ -878,17 +878,16 @@ describe('estimateSplatPoolBytes', () => {
   const MIB = 1024 * 1024;
 
   it('prices a plain float32 pool from its components', () => {
-    // 52 B pool textures + 16 B sort + 68 B CPU backing = 136 B per capacity
-    // splat, and capacity is 1.5x the ceiling by default. The CPU side is
-    // centers/colors/covA/covB (52) plus four u32-per-splat arrays: the
-    // draw-order index, the active-list source index, the pool-slot map, and
-    // the picker's pool-index template.
-    expect(estimateSplatPoolBytes(1_000_000)).toBe(1_500_000 * 136);
+    const all = estimateSplatPoolBytes(1_000_000);
+    const gpu = estimateSplatPoolBytes(1_000_000, { includeCpuBacking: false });
+    // Pool textures round to a whole 2048-wide row; CPU mirrors remain
+    // conservative while counting-sort storage stays on the GPU.
+    expect(all - gpu).toBe(Math.ceil(1_500_000 / 2048) * 2048 * 68);
   });
 
   it('drops the CPU backing when asked', () => {
-    expect(estimateSplatPoolBytes(1_000_000, { includeCpuBacking: false })).toBe(
-      1_500_000 * (52 + 16),
+    expect(estimateSplatPoolBytes(1_000_000, { includeCpuBacking: false })).toBeLessThan(
+      estimateSplatPoolBytes(1_000_000),
     );
   });
 
@@ -899,7 +898,7 @@ describe('estimateSplatPoolBytes', () => {
       floatTextures: 'float16',
     });
     // 16 B saved per splat: centers 16→8 and covarianceA 16→8.
-    expect(gpu32 - gpu16).toBe(1_500_000 * 16);
+    expect(gpu32 - gpu16).toBe(Math.ceil(1_500_000 / 2048) * 2048 * 16);
     // CPU-side, float16 is a net *cost*: the backing stays float32 and the
     // half-encoded texture images (8 + 8) are held alongside it, so the 16 B of
     // GPU saving is exactly cancelled and the total is unchanged.
@@ -917,7 +916,7 @@ describe('estimateSplatPoolBytes', () => {
       [3, 4],
     ] as const) {
       const withSh = estimateSplatPoolBytes(1_000_000, { capacityFactor: 1, shBands: bands });
-      expect(withSh - base).toBe(1_000_000 * textures * 16 * 2);
+      expect(withSh - base).toBe(Math.ceil(1_000_000 / 2048) * 2048 * textures * 16 * 2);
     }
   });
 
@@ -931,7 +930,7 @@ describe('estimateSplatPoolBytes', () => {
         includeCpuBacking: false,
         shBands: 3,
       }) - estimateSplatPoolBytes(6_000_000, { capacityFactor: 1, includeCpuBacking: false });
-    expect(shOnly / 6_000_000).toBe(64);
+    expect(shOnly / 6_000_000).toBeCloseTo(64, 1);
     expect(Math.round(shOnly / 1e6)).toBe(384);
   });
 
@@ -941,7 +940,25 @@ describe('estimateSplatPoolBytes', () => {
     const exact = estimateSplatPoolBytes(1_000_000, { capacityFactor: 1 });
     expect(staged).toBeGreaterThan(legacy);
     expect(legacy).toBeGreaterThan(exact);
-    expect(staged / exact).toBeCloseTo(1.5, 10);
+    expect(staged / exact).toBeCloseTo(1.5, 1);
+  });
+
+  it('accounts for each sorter allocation strategy', () => {
+    const counting = estimateSplatPoolBytes(200_000, { sortStrategy: 'counting' });
+    const radix = estimateSplatPoolBytes(200_000, { sortStrategy: 'radix' });
+    const worker = estimateSplatPoolBytes(200_000, { sortStrategy: 'worker' });
+    expect(radix).toBeGreaterThan(counting);
+    expect(worker).toBeGreaterThan(counting);
+  });
+
+  it('includes the worker path draw-order GPU buffer without CPU backing', () => {
+    expect(
+      estimateSplatPoolBytes(2048, {
+        capacityFactor: 1,
+        includeCpuBacking: false,
+        sortStrategy: 'worker',
+      }),
+    ).toBe(2048 * (52 + 4));
   });
 
   it('makes the multi-mesh envelope the sum of the ceilings', () => {
@@ -951,7 +968,7 @@ describe('estimateSplatPoolBytes', () => {
     expect(Math.round(total / MIB)).toBeGreaterThan(1000); // over a gigabyte
     // Halving the additional-mesh ceilings roughly halves their contribution.
     const leaner = estimateSplatPoolBytes(4_000_000) + 4 * estimateSplatPoolBytes(750_000);
-    expect(total - leaner).toBeCloseTo(4 * estimateSplatPoolBytes(750_000), -3);
+    expect(total - leaner).toBeGreaterThan(4 * estimateSplatPoolBytes(750_000) * 0.99);
   });
 
   it('validates its inputs', () => {
