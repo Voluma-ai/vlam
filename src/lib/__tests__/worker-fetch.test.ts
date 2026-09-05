@@ -7,7 +7,7 @@ const signal = new AbortController().signal;
 describe('worker fetch validation', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('rejects a partial response with no exposed Content-Range', async () => {
+  it('accepts an exact partial response when CORS does not expose Content-Range', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response(new Uint8Array(4), { status: 206 })),
@@ -15,10 +15,27 @@ describe('worker fetch validation', () => {
 
     await expect(
       fetchRange('https://scene.test/data.bin', 4, 4, undefined, signal),
+    ).resolves.toEqual(new Uint8Array(4).buffer);
+  });
+
+  it('rejects an exposed malformed Content-Range', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(new Uint8Array(4), {
+            status: 206,
+            headers: { 'Content-Range': 'invalid' },
+          }),
+      ),
+    );
+
+    await expect(
+      fetchRange('https://scene.test/data.bin', 4, 4, undefined, signal),
     ).rejects.toMatchObject({
       name: 'SplatLoadError',
       phase: 'fetch',
-      message: expect.stringMatching(/Content-Range/),
+      message: expect.stringMatching(/invalid Content-Range/),
     } satisfies Partial<SplatLoadError>);
   });
 

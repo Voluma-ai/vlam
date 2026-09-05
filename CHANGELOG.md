@@ -87,10 +87,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 ### Changed
 
 - Loading now detects streamed formats from URL pathnames, preserves signed
-  queries on requests, validates every partial response's `Content-Range`, and
-  treats compressed `Content-Length` as an allocation hint rather than decoded
-  byte truth. Loading worker construction, message deserialization and posting
-  failures now settle through the terminal `SplatLoadError` worker path.
+  queries on requests, validates exposed partial-response `Content-Range`
+  headers, and treats compressed `Content-Length` as an allocation hint rather
+  than decoded byte truth. Loading worker construction, message deserialization
+  and posting failures now settle through the terminal `SplatLoadError` worker
+  path.
 
 - **Breaking:** `createSplatRenderer()` is now `createWebGPURenderer()`; the old
   name is removed. Its public options and GPU seam types now use the same
@@ -102,6 +103,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- Cross-origin streamed scenes no longer fail when an existing object-storage
+  CORS policy returns a correct `206` response without exposing `Content-Range`.
+  Visible range headers remain strictly validated, while hidden headers fall
+  back to the existing exact response-body length check.
 - The demo defaults to stable radix sorting for LCC/LCC2 in desktop HD;
   mobile, SD and smooth profiles retain counting. HD/SD switches live through
   `SplatMesh.setSortStrategy`, and explicit `?sort=` choices still take precedence.
