@@ -158,7 +158,11 @@ mustNotContain(
 mustNotContain('.', 'createSelectionVolume', 'selection volumes belong in /selection');
 
 mustNotContain('./loaders', 'Static LOD build aborted.', 'static LOD must not leak into /loaders');
-mustNotContain('./loaders', 'Proxy-mesh screen-space relighting', 'relighting must not leak into /loaders');
+mustNotContain(
+  './loaders',
+  'Proxy-mesh screen-space relighting',
+  'relighting must not leak into /loaders',
+);
 mustNotContain(
   './loaders',
   'StaticLodSplatMesh',

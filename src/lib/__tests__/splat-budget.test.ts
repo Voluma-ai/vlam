@@ -951,6 +951,16 @@ describe('estimateSplatPoolBytes', () => {
     expect(worker).toBeGreaterThan(counting);
   });
 
+  it('includes the worker path draw-order GPU buffer without CPU backing', () => {
+    expect(
+      estimateSplatPoolBytes(2048, {
+        capacityFactor: 1,
+        includeCpuBacking: false,
+        sortStrategy: 'worker',
+      }),
+    ).toBe(2048 * (52 + 4));
+  });
+
   it('makes the multi-mesh envelope the sum of the ceilings', () => {
     // The guide's recipe: one main plus four additional meshes, each with headroom to
     // 1.5M - this is what has to fit, whatever the shared budget is set to.

@@ -7,6 +7,9 @@ dist-viewer
 dist-site
 dist-ssr
 coverage
+test-results
+playwright-report
+blob-report
 .claude
 .cursor*
 bundle-visualization.html

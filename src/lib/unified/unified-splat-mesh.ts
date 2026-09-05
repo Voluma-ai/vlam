@@ -9,11 +9,7 @@ import { isFillConstrainedSplatDevice } from '../core/splat-budget';
 import { WebGpuSortScheduler } from '../core/sort-scheduler';
 import { WorkBuffer, WorkBufferGather } from './work-buffer-gather';
 import { createWorkBufferMaterial } from './work-buffer-material';
-import type {
-  DisplayColorModifier,
-  FloatUniform,
-  Vec2Uniform,
-} from '../core/splat-mesh-material';
+import type { DisplayColorModifier, FloatUniform, Vec2Uniform } from '../core/splat-mesh-material';
 import { assertStorageBufferFitsDevice } from '../core/webgpu-limits';
 import { estimateLargestStorageBufferBytes } from './unified-work-buffer';
 import { resolveXrView } from '../core/xr-view';

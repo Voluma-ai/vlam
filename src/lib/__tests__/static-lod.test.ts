@@ -61,12 +61,7 @@ describe('buildStaticLod', () => {
     const input: SplatData = {
       count: 4,
       positions: Float32Array.from([0, 0, 0, 0.01, 0, 0, 0.02, 0, 0, 0.03, 0, 0]),
-      colors: Uint8Array.from([
-        255, 0, 0, 255,
-        0, 0, 255, 255,
-        255, 0, 0, 255,
-        0, 0, 255, 255,
-      ]),
+      colors: Uint8Array.from([255, 0, 0, 255, 0, 0, 255, 255, 255, 0, 0, 255, 0, 0, 255, 255]),
       covariances: Float32Array.from(Array.from({ length: 4 }, () => [1, 0, 0, 1, 0, 1]).flat()),
     };
     const first = buildStaticLod(input, 2);
@@ -97,7 +92,9 @@ describe('buildStaticLod', () => {
     const index = singleton as number;
     expect([...result.data.positions.slice(index * 3, index * 3 + 3)]).toEqual([100, 0, 0]);
     expect([...result.data.colors.slice(index * 4, index * 4 + 4)]).toEqual([1, 2, 3, 4]);
-    expect([...result.data.covariances.slice(index * 6, index * 6 + 6)]).toEqual([1, 0, 0, 1, 0, 1]);
+    expect([...result.data.covariances.slice(index * 6, index * 6 + 6)]).toEqual([
+      1, 0, 0, 1, 0, 1,
+    ]);
   });
 
   it('keeps near-degenerate merges finite and positive semidefinite', () => {
@@ -114,7 +111,9 @@ describe('buildStaticLod', () => {
     expect(xx * yy - xy * xy).toBeGreaterThanOrEqual(-1e-12);
     expect(xx * zz - xz * xz).toBeGreaterThanOrEqual(-1e-12);
     expect(yy * zz - yz * yz).toBeGreaterThanOrEqual(-1e-12);
-    expect(xx * (yy * zz - yz * yz) - xy * (xy * zz - yz * xz) + xz * (xy * yz - yy * xz)).toBeGreaterThanOrEqual(-1e-12);
+    expect(
+      xx * (yy * zz - yz * yz) - xy * (xy * zz - yz * xz) + xz * (xy * yz - yy * xz),
+    ).toBeGreaterThanOrEqual(-1e-12);
   });
 
   it('preserves metadata and uses the mass-dominant child for SH data', () => {
@@ -177,6 +176,41 @@ describe('buildStaticLod', () => {
     }
     for (let node = 0; node < result.data.count; node++) {
       expect(references[node]).toBe(result.roots.includes(node) ? 0 : 1);
+    }
+  });
+
+  it('keeps each reordered internal node attached to its own children', () => {
+    const count = 16;
+    const input: SplatData = {
+      count,
+      positions: Float32Array.from(
+        Array.from({ length: count }, (_, index) => [index, 0, 0]).flat(),
+      ),
+      colors: Uint8Array.from(
+        Array.from({ length: count }, (_, index) =>
+          index % 2 === 0 ? [255, 0, 0, 255] : [0, 0, 255, 255],
+        ).flat(),
+      ),
+      // Broad covariances make color compatibility dominate nearby pair rank,
+      // forcing non-identity permutations at more than one hierarchy level.
+      covariances: Float32Array.from(
+        Array.from({ length: count }, () => [100, 0, 0, 100, 0, 100]).flat(),
+      ),
+    };
+    const result = buildStaticLod(input, count);
+    const tree = result.data.radTree;
+    if (!tree) throw new Error('Expected hierarchy.');
+
+    for (let parent = result.finestSplatCount; parent < result.data.count; parent++) {
+      const childStart = tree.childStart[parent] as number;
+      const childCount = tree.childCount[parent] as number;
+      const parentX = result.data.positions[parent * 3] as number;
+      const childX = Array.from(
+        { length: childCount },
+        (_, offset) => result.data.positions[(childStart + offset) * 3] as number,
+      );
+      expect(parentX).toBeGreaterThanOrEqual(Math.min(...childX) - 1e-6);
+      expect(parentX).toBeLessThanOrEqual(Math.max(...childX) + 1e-6);
     }
   });
 });

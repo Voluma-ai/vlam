@@ -1,9 +1,5 @@
 import * as THREE from 'three/webgpu';
-import type {
-  DisplayColorModifier,
-  FloatUniform,
-  Vec2Uniform,
-} from '../core/splat-mesh-material';
+import type { DisplayColorModifier, FloatUniform, Vec2Uniform } from '../core/splat-mesh-material';
 import {
   capProjectedEigenvaluesToScreenRadius,
   equalizeProjectedEigenvalues,

@@ -163,10 +163,7 @@ class WorkerClient {
   private fail(event: unknown): void {
     if (this.workerFailure) return;
     const detail =
-      event &&
-      typeof event === 'object' &&
-      'message' in event &&
-      typeof event.message === 'string'
+      event && typeof event === 'object' && 'message' in event && typeof event.message === 'string'
         ? event.message
         : event instanceof Error
           ? event.message

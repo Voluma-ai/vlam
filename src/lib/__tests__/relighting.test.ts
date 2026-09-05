@@ -40,7 +40,9 @@ describe('attachRelighting', () => {
   });
 
   it('does not overwrite a callback installed after the attachment', () => {
-    const target: { displayColorModifier: DisplayColorModifier | null } = { displayColorModifier: null };
+    const target: { displayColorModifier: DisplayColorModifier | null } = {
+      displayColorModifier: null,
+    };
     const map = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
     const attachment = attachRelighting(target, { map });
     const replacement: DisplayColorModifier = (rgb) => rgb;

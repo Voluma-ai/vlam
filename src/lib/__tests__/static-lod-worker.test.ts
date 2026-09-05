@@ -63,9 +63,9 @@ describe('static LOD worker packed SH transfer', () => {
     expect(built.data.colors.length).toBe(built.data.count * 4);
     expect(built.data.covariances.length).toBe(built.data.count * 6);
     expect(built.data.shPacked?.packed.length).toBe(built.data.count * stride);
-    const sourceSh = Array.from({ length: source.count }, (_, index) =>
-      [...(source.shPacked?.packed.subarray(index * stride, (index + 1) * stride) ?? [])],
-    );
+    const sourceSh = Array.from({ length: source.count }, (_, index) => [
+      ...(source.shPacked?.packed.subarray(index * stride, (index + 1) * stride) ?? []),
+    ]);
     for (let index = 0; index < built.finestSplatCount; index++) {
       expect(sourceSh).toContainEqual([
         ...(built.data.shPacked?.packed.subarray(index * stride, (index + 1) * stride) ?? []),

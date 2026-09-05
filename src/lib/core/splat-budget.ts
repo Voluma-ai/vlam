@@ -704,7 +704,8 @@ export function estimateSplatPoolBytes(
 
   // Pool textures and all sorter buffers use whole texture rows, never the
   // caller's fractional splat count. This is material around row boundaries.
-  const capacity = Math.ceil((splats * capacityFactor) / ESTIMATE_TEXTURE_ROW_WIDTH) * ESTIMATE_TEXTURE_ROW_WIDTH;
+  const capacity =
+    Math.ceil((splats * capacityFactor) / ESTIMATE_TEXTURE_ROW_WIDTH) * ESTIMATE_TEXTURE_ROW_WIDTH;
   const sortStrategy = options.sortStrategy ?? 'counting';
   const countingBuckets = estimateCountingBuckets(capacity);
   const countingGpu =
@@ -717,13 +718,18 @@ export function estimateSplatPoolBytes(
   const radixHistogram = RADIX_DIGITS * radixGroups;
   const radixGpu =
     capacity * 24 + // draw/source + keys A/B + values A/B
-    (radixHistogram + Math.ceil(radixHistogram / COUNTING_BLOCK_SIZE) + radixGroups * RADIX_MASK_WORDS_PER_GROUP) *
+    (radixHistogram +
+      Math.ceil(radixHistogram / COUNTING_BLOCK_SIZE) +
+      radixGroups * RADIX_MASK_WORDS_PER_GROUP) *
       4;
   const workerCpu =
     capacity * 44 + // center/source mirrors + five retained scratch arrays
     65536 * 4;
-  const sortGpu = sortStrategy === 'counting' ? countingGpu : sortStrategy === 'worker' ? 0 : radixGpu;
-  const sortCpu = options.includeCpuBacking === false ? 0 : sortStrategy === 'worker' ? workerCpu : 0;
+  const workerGpu = capacity * 4; // rendered draw-order attribute
+  const sortGpu =
+    sortStrategy === 'counting' ? countingGpu : sortStrategy === 'worker' ? workerGpu : radixGpu;
+  const sortCpu =
+    options.includeCpuBacking === false ? 0 : sortStrategy === 'worker' ? workerCpu : 0;
   return capacity * (poolTextures + cpuBacking) + sortGpu + sortCpu;
 }
 

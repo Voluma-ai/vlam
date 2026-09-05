@@ -42,6 +42,7 @@ export function vlamPackageAliases(fromRoot: string) {
   const lib = (file: string) => path.join(fromRoot, 'src/lib', file);
   return [
     { find: '@voluma/vlam/static-lod', replacement: lib('static-lod/index.ts') },
+    { find: '@voluma/vlam/relighting', replacement: lib('relighting/index.ts') },
     { find: '@voluma/vlam/streaming', replacement: lib('streaming/index.ts') },
     { find: '@voluma/vlam/selection', replacement: lib('selection/index.ts') },
     { find: '@voluma/vlam/loaders', replacement: lib('loaders/index.ts') },

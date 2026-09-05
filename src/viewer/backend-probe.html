@@ -6,29 +6,51 @@
   <output data-testid="backend"></output>
   <output data-testid="pixel"></output>
   <script type="module">
+    import * as THREE from 'three/webgpu';
+    import { createWebGPURenderer, SplatMesh } from '../lib/core';
+
     const requested = new URLSearchParams(location.search).get('backend');
     const canvas = document.querySelector('#canvas');
     const backend = document.querySelector('[data-testid="backend"]');
     const pixel = document.querySelector('[data-testid="pixel"]');
-    if (requested === 'webgpu') {
-      if (!navigator.gpu) throw new Error('WebGPU is unavailable; refusing a WebGL fallback.');
-      const adapter = await navigator.gpu.requestAdapter();
-      if (!adapter) throw new Error('WebGPU adapter initialization failed.');
-      const device = await adapter.requestDevice();
-      const context = canvas.getContext('webgpu');
-      if (!context) throw new Error('WebGPU canvas context initialization failed.');
-      context.configure({ device, format: navigator.gpu.getPreferredCanvasFormat() });
-    } else if (requested === 'webgl2') {
-      if (!canvas.getContext('webgl2')) throw new Error('WebGL2 initialization failed.');
-    } else {
+    if (requested !== 'webgpu' && requested !== 'webgl2') {
       throw new Error(`Unknown backend: ${requested}`);
     }
-    const raster = document.createElement('canvas');
-    raster.width = raster.height = 1;
-    const ctx = raster.getContext('2d', { willReadFrequently: true });
-    ctx.fillStyle = '#228be6';
-    ctx.fillRect(0, 0, 1, 1);
-    backend.textContent = requested;
-    pixel.textContent = Array.from(ctx.getImageData(0, 0, 1, 1).data).join(',');
+
+    const renderer = await createWebGPURenderer({
+      canvas,
+      antialias: false,
+      forceWebGL: requested === 'webgl2',
+      requireWebGpu: requested === 'webgpu',
+    });
+    renderer.setSize(5, 5, false);
+    await renderer.init();
+    const actual = renderer.backend.isWebGPUBackend ? 'webgpu' : 'webgl2';
+    if (actual !== requested) throw new Error(`Requested ${requested}, initialized ${actual}.`);
+
+    const splats = new SplatMesh({
+      count: 1,
+      positions: new Float32Array([0, 0, 0]),
+      colors: new Uint8Array([255, 255, 255, 255]),
+      covariances: new Float32Array([0.04, 0, 0, 0.04, 0, 0.04]),
+    });
+    const scene = new THREE.Scene();
+    scene.add(splats);
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 10);
+    camera.position.z = 2;
+    camera.updateMatrixWorld();
+    const target = new THREE.RenderTarget(5, 5, { type: THREE.UnsignedByteType });
+    splats.update(camera, renderer);
+    renderer.setRenderTarget(target);
+    renderer.setClearColor(0x000000, 0);
+    renderer.clear();
+    renderer.render(scene, camera);
+    const bytes = await renderer.readRenderTargetPixelsAsync(target, 2, 2, 1, 1);
+    renderer.setRenderTarget(null);
+    backend.textContent = actual;
+    pixel.textContent = Array.from(bytes).join(',');
+    target.dispose();
+    splats.dispose();
+    renderer.dispose();
   </script>
 </html>

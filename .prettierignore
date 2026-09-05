@@ -3,6 +3,9 @@ dist-demo
 .wrangler
 assets
 coverage
+test-results
+playwright-report
+blob-report
 package-lock.json
 .tmp
 

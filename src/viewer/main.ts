@@ -1719,6 +1719,7 @@ async function main(): Promise<void> {
   let suppressStaleRelightOption = false;
   let relightProxy: RelightingProxy | null = null;
   let relightAttachment: RelightingAttachment | null = null;
+  let relightSetupSequence = 0;
   let relightScene: THREE.Scene | null = null;
   let relightTarget: THREE.RenderTarget | null = null;
   let relightSun: THREE.DirectionalLight | null = null;
@@ -1783,6 +1784,7 @@ async function main(): Promise<void> {
   };
 
   const teardownRelight = (): void => {
+    relightSetupSequence++;
     relightAttachment?.dispose();
     relightAttachment = null;
     relightFactorMaterial?.dispose();
@@ -1827,9 +1829,16 @@ async function main(): Promise<void> {
 
   const setupRelight = async (mesh: SplatMesh): Promise<void> => {
     teardownRelight();
+    const sequence = relightSetupSequence;
     const { attachRelighting, createRelightingProxy, createRelightingShadowFactorMaterial } =
       await import('../lib/relighting');
-    if (!mounted || splats !== mesh || effectMode !== 'relight') return;
+    if (
+      sequence !== relightSetupSequence ||
+      !mounted ||
+      splats !== mesh ||
+      effectMode !== 'relight'
+    )
+      return;
     setEffectModifiers([]);
     const useExternal = relightExternalGeometries !== null && relightExternalGeometries.length > 0;
     if (!useExternal && (!collisionTilesForRelight || collisionTilesForRelight.length === 0)) {

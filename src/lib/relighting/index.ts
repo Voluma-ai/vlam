@@ -123,8 +123,6 @@ export function renderRelightingFactorMap(
   }
 }
 
-
-
 /** Defaults match PlayCanvas's 0.5-gray proxy convention. */
 export const DEFAULT_RELIGHT_BLEND = 1;
 export const DEFAULT_RELIGHT_BRIGHTNESS = 2;
@@ -228,13 +226,17 @@ export function attachRelighting(
       const c = texture(map!, uv.add(vec2(0, oy)));
       const d = texture(map!, uv.add(vec2(0, oy.negate())));
       const weight = sample.a.add(a.a).add(b.a).add(c.a).add(d.a).max(1e-4);
-      const softRgb = sample.rgb.mul(sample.a).add(a.rgb.mul(a.a)).add(b.rgb.mul(b.a))
-        .add(c.rgb.mul(c.a)).add(d.rgb.mul(d.a)).div(weight);
+      const softRgb = sample.rgb
+        .mul(sample.a)
+        .add(a.rgb.mul(a.a))
+        .add(b.rgb.mul(b.a))
+        .add(c.rgb.mul(c.a))
+        .add(d.rgb.mul(d.a))
+        .div(weight);
       const softFactor = mix(vec3(background), softRgb.mul(brightness), weight.mul(0.2));
-      return softness.greaterThan(0).select(
-        mix(base, base.mul(softFactor), blend),
-        mix(base, base.mul(factor), blend),
-      );
+      return softness
+        .greaterThan(0)
+        .select(mix(base, base.mul(softFactor), blend), mix(base, base.mul(factor), blend));
     };
     target.displayColorModifier = installed;
   };
@@ -246,7 +248,6 @@ export function attachRelighting(
     },
   };
 }
-
 
 /** Handle returned by {@link createRelightingProxy}. */
 export interface RelightingProxy {

@@ -1118,60 +1118,60 @@ export class StreamedSplatMesh extends SplatMesh {
         budget,
         capacityRows * DATA_TEXTURE_WIDTH,
         {
-        ...options,
-        // Classic `.lcc` and `.lcc2` wait for in-view coverage so first paint
-        // has no empty cells (classic nearby cells at L1, farther at coarsest).
-        // Keep every other format progressive, and let a caller explicitly
-        // request progressive or hold-near-l0.
-        ...((format === 'lcc' || format === 'lcc2') && options.initialReveal === undefined
-          ? { initialReveal: 'hold-coverage' as const }
-          : {}),
-        // The resolved ceiling, not the caller's raw option: it may have been
-        // lifted to a moderate capture's leaf count above.
-        maxBudget: ceiling,
-        // This line overrides `...options` above, so a declined request has to
-        // survive it - that is how `.rad` came to ignore both the `smooth`
-        // profile and an explicit `shBands: 0`. Only *zero* is re-applied here,
-        // never a partial reduction: the builders already honour partial
-        // requests by generating that many bands, whereas forcing a smaller
-        // count past one would mismatch the decoded chunk and degrade to
-        // neutral SH (see `SplatMesh.writePackedSh`).
-        shBands: shBands === 0 ? 0 : (scene.shBands ?? 0),
-        // Spark ships Mip-Splatting antialiasing ON (blurAmount 0.3 *with* opacity
-        // compensation `α·√(detRaw/detBlur)`). Match that default for `.rad`: the
-        // 0.3 low-pass without the compensation makes splats too opaque (uniform
-        // blur) and leaves anisotropic splats bright (needle spikes).
-        antialias: options.antialias ?? (format === 'rad' ? true : undefined),
-        // Older XGRIDS LCC uses a smaller, compensated projected low-pass.
-        ...(format === 'lcc' ? { projectedFilterProfile: 'lcc' as const } : {}),
-        // Match Spark's `.rad` render exactly: the LOD alpha encoding + merged-node
-        // σ-cutoff/super-Gaussian, and the √8 (≈2.83σ) base cutoff Spark defaults to.
-        // An explicit `lodAlpha` (e.g. `?lodAlpha=0`) wins for A/B.
-        //
-        // The √8 cutoff is *desktop only* - see `recommendedRadMaxStdDev`, which
-        // returns undefined on mobile so the `SplatMesh` constructor applies the
-        // same 4 ceiling `.rad` was the only format escaping. An explicit
-        // `maxStdDev` still wins, through `...options` above.
-        ...(format === 'rad'
-          ? {
-              lodAlpha: options.lodAlpha ?? true,
-              ...(options.maxStdDev === undefined && radMaxStdDev !== undefined
-                ? { maxStdDev: radMaxStdDev }
-                : {}),
-            }
-          : {}),
-        // A foveated scene renders whole chunks and picks the LOD cut per splat.
-        // `.rad` defaults to Spark's selected-index page table (only the frontier is
-        // paged to the GPU, so the whole device budget buys on-screen detail); other
-        // foveated formats keep the GPU `frontier` cut. `foveationMode: 'band'` (or
-        // `'frontier'`) forces the legacy paths for A/B. Overrides any caller blob cull.
-        ...(scene.foveation
-          ? {
-              foveationMode: resolvedFoveationMode,
-              minSplatScreenRadius: scene.foveation.minScreenRadiusPx,
-              maxSplatScreenRadius: scene.foveation.maxScreenRadiusPx,
-            }
-          : {}),
+          ...options,
+          // Classic `.lcc` and `.lcc2` wait for in-view coverage so first paint
+          // has no empty cells (classic nearby cells at L1, farther at coarsest).
+          // Keep every other format progressive, and let a caller explicitly
+          // request progressive or hold-near-l0.
+          ...((format === 'lcc' || format === 'lcc2') && options.initialReveal === undefined
+            ? { initialReveal: 'hold-coverage' as const }
+            : {}),
+          // The resolved ceiling, not the caller's raw option: it may have been
+          // lifted to a moderate capture's leaf count above.
+          maxBudget: ceiling,
+          // This line overrides `...options` above, so a declined request has to
+          // survive it - that is how `.rad` came to ignore both the `smooth`
+          // profile and an explicit `shBands: 0`. Only *zero* is re-applied here,
+          // never a partial reduction: the builders already honour partial
+          // requests by generating that many bands, whereas forcing a smaller
+          // count past one would mismatch the decoded chunk and degrade to
+          // neutral SH (see `SplatMesh.writePackedSh`).
+          shBands: shBands === 0 ? 0 : (scene.shBands ?? 0),
+          // Spark ships Mip-Splatting antialiasing ON (blurAmount 0.3 *with* opacity
+          // compensation `α·√(detRaw/detBlur)`). Match that default for `.rad`: the
+          // 0.3 low-pass without the compensation makes splats too opaque (uniform
+          // blur) and leaves anisotropic splats bright (needle spikes).
+          antialias: options.antialias ?? (format === 'rad' ? true : undefined),
+          // Older XGRIDS LCC uses a smaller, compensated projected low-pass.
+          ...(format === 'lcc' ? { projectedFilterProfile: 'lcc' as const } : {}),
+          // Match Spark's `.rad` render exactly: the LOD alpha encoding + merged-node
+          // σ-cutoff/super-Gaussian, and the √8 (≈2.83σ) base cutoff Spark defaults to.
+          // An explicit `lodAlpha` (e.g. `?lodAlpha=0`) wins for A/B.
+          //
+          // The √8 cutoff is *desktop only* - see `recommendedRadMaxStdDev`, which
+          // returns undefined on mobile so the `SplatMesh` constructor applies the
+          // same 4 ceiling `.rad` was the only format escaping. An explicit
+          // `maxStdDev` still wins, through `...options` above.
+          ...(format === 'rad'
+            ? {
+                lodAlpha: options.lodAlpha ?? true,
+                ...(options.maxStdDev === undefined && radMaxStdDev !== undefined
+                  ? { maxStdDev: radMaxStdDev }
+                  : {}),
+              }
+            : {}),
+          // A foveated scene renders whole chunks and picks the LOD cut per splat.
+          // `.rad` defaults to Spark's selected-index page table (only the frontier is
+          // paged to the GPU, so the whole device budget buys on-screen detail); other
+          // foveated formats keep the GPU `frontier` cut. `foveationMode: 'band'` (or
+          // `'frontier'`) forces the legacy paths for A/B. Overrides any caller blob cull.
+          ...(scene.foveation
+            ? {
+                foveationMode: resolvedFoveationMode,
+                minSplatScreenRadius: scene.foveation.minScreenRadiusPx,
+                maxSplatScreenRadius: scene.foveation.maxScreenRadiusPx,
+              }
+            : {}),
         },
         FrontierWorkerCtor,
         format === 'lcc',

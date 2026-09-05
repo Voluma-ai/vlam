@@ -24,6 +24,9 @@ type MutableLevel = {
   covariances: Float32Array;
   masses: Float64Array;
   sizes: Float32Array;
+  childCount: Uint16Array;
+  /** Child index relative to the immediately finer level. */
+  childStart: Uint32Array;
   shLabels?: Uint32Array;
   shPacked?: Uint32Array;
   packedStride?: number;
@@ -192,6 +195,8 @@ const allocateLevel = (count: number, data: SplatData): MutableLevel => ({
   covariances: new Float32Array(count * 6),
   masses: new Float64Array(count),
   sizes: new Float32Array(count),
+  childCount: new Uint16Array(count),
+  childStart: new Uint32Array(count),
   ...(data.sh ? { shLabels: new Uint32Array(count) } : {}),
   ...(data.shPacked
     ? {
@@ -209,6 +214,8 @@ const allocateLikeLevel = (count: number, source: MutableLevel): MutableLevel =>
   covariances: new Float32Array(count * 6),
   masses: new Float64Array(count),
   sizes: new Float32Array(count),
+  childCount: new Uint16Array(count),
+  childStart: new Uint32Array(count),
   ...(source.shLabels ? { shLabels: new Uint32Array(count) } : {}),
   ...(source.shPacked && source.packedStride
     ? { shPacked: new Uint32Array(count * source.packedStride), packedStride: source.packedStride }
@@ -262,6 +269,8 @@ const copyLevelSplat = (
   );
   target.masses[targetIndex] = source.masses[sourceIndex] as number;
   target.sizes[targetIndex] = source.sizes[sourceIndex] as number;
+  target.childCount[targetIndex] = source.childCount[sourceIndex] as number;
+  target.childStart[targetIndex] = source.childStart[sourceIndex] as number;
   target.dominant[targetIndex] = source.dominant[sourceIndex] as number;
   if (target.shLabels && source.shLabels)
     target.shLabels[targetIndex] = source.shLabels[sourceIndex] as number;
@@ -399,13 +408,28 @@ const mergePair = (
 const pairCost = (source: MutableLevel, left: number, right: number): number => {
   const leftBase = left * 6;
   const rightBase = right * 6;
-  const xx = ((source.covariances[leftBase] as number) + (source.covariances[rightBase] as number)) * 0.5 + 1e-12;
-  const xy = ((source.covariances[leftBase + 1] as number) + (source.covariances[rightBase + 1] as number)) * 0.5;
-  const xz = ((source.covariances[leftBase + 2] as number) + (source.covariances[rightBase + 2] as number)) * 0.5;
-  const yy = ((source.covariances[leftBase + 3] as number) + (source.covariances[rightBase + 3] as number)) * 0.5 + 1e-12;
-  const yz = ((source.covariances[leftBase + 4] as number) + (source.covariances[rightBase + 4] as number)) * 0.5;
-  const zz = ((source.covariances[leftBase + 5] as number) + (source.covariances[rightBase + 5] as number)) * 0.5 + 1e-12;
-  const determinantMean = xx * (yy * zz - yz * yz) - xy * (xy * zz - yz * xz) + xz * (xy * yz - yy * xz);
+  const xx =
+    ((source.covariances[leftBase] as number) + (source.covariances[rightBase] as number)) * 0.5 +
+    1e-12;
+  const xy =
+    ((source.covariances[leftBase + 1] as number) + (source.covariances[rightBase + 1] as number)) *
+    0.5;
+  const xz =
+    ((source.covariances[leftBase + 2] as number) + (source.covariances[rightBase + 2] as number)) *
+    0.5;
+  const yy =
+    ((source.covariances[leftBase + 3] as number) + (source.covariances[rightBase + 3] as number)) *
+      0.5 +
+    1e-12;
+  const yz =
+    ((source.covariances[leftBase + 4] as number) + (source.covariances[rightBase + 4] as number)) *
+    0.5;
+  const zz =
+    ((source.covariances[leftBase + 5] as number) + (source.covariances[rightBase + 5] as number)) *
+      0.5 +
+    1e-12;
+  const determinantMean =
+    xx * (yy * zz - yz * yz) - xy * (xy * zz - yz * xz) + xz * (xy * yz - yy * xz);
   if (!Number.isFinite(determinantMean) || determinantMean <= 0) return Number.POSITIVE_INFINITY;
   const inverse = [
     (yy * zz - yz * yz) / determinantMean,
@@ -416,8 +440,10 @@ const pairCost = (source: MutableLevel, left: number, right: number): number => 
     (xx * yy - xy * xy) / determinantMean,
   ];
   const dx = (source.positions[left * 3] as number) - (source.positions[right * 3] as number);
-  const dy = (source.positions[left * 3 + 1] as number) - (source.positions[right * 3 + 1] as number);
-  const dz = (source.positions[left * 3 + 2] as number) - (source.positions[right * 3 + 2] as number);
+  const dy =
+    (source.positions[left * 3 + 1] as number) - (source.positions[right * 3 + 1] as number);
+  const dz =
+    (source.positions[left * 3 + 2] as number) - (source.positions[right * 3 + 2] as number);
   const quadratic =
     dx * (inverse[0] as number) * dx +
     2 * dx * (inverse[1] as number) * dy +
@@ -427,13 +453,19 @@ const pairCost = (source: MutableLevel, left: number, right: number): number => 
     dz * (inverse[5] as number) * dz;
   const leftDeterminant = Math.max(COVARIANCE_EPSILON, determinant(source.covariances, left));
   const rightDeterminant = Math.max(COVARIANCE_EPSILON, determinant(source.covariances, right));
-  const gaussian = 0.125 * Math.max(0, quadratic) + 0.5 * Math.log(determinantMean / Math.sqrt(leftDeterminant * rightDeterminant));
+  const gaussian =
+    0.125 * Math.max(0, quadratic) +
+    0.5 * Math.log(determinantMean / Math.sqrt(leftDeterminant * rightDeterminant));
   const color =
     (Math.abs((source.colors[left * 4] as number) - (source.colors[right * 4] as number)) +
       Math.abs((source.colors[left * 4 + 1] as number) - (source.colors[right * 4 + 1] as number)) +
-      Math.abs((source.colors[left * 4 + 2] as number) - (source.colors[right * 4 + 2] as number))) /
+      Math.abs(
+        (source.colors[left * 4 + 2] as number) - (source.colors[right * 4 + 2] as number),
+      )) /
     (3 * 255);
-  const opacity = Math.abs((source.colors[left * 4 + 3] as number) - (source.colors[right * 4 + 3] as number)) / 255;
+  const opacity =
+    Math.abs((source.colors[left * 4 + 3] as number) - (source.colors[right * 4 + 3] as number)) /
+    255;
   const cost = gaussian + color + opacity;
   return Number.isFinite(cost) ? cost : Number.POSITIVE_INFINITY;
 };
@@ -581,11 +613,7 @@ const selectPairingSmall = (source: MutableLevel, targetCount: number): Pairing[
       const left = candidateLeft[candidateIndex] as number;
       const right = candidateRight[candidateIndex] as number;
       const reverseIndex = candidateIndexByLeft[right] as number;
-      if (
-        left < right &&
-        reverseIndex >= 0 &&
-        (candidateRight[reverseIndex] as number) === left
-      ) {
+      if (left < right && reverseIndex >= 0 && (candidateRight[reverseIndex] as number) === left) {
         mutualCandidates.push(candidateIndex);
       }
     }
@@ -617,7 +645,8 @@ const selectPairingSmall = (source: MutableLevel, targetCount: number): Pairing[
         bestCandidate = candidateIndex;
       }
     }
-    if (bestCandidate < 0) throw new Error('Static LOD pairing could not reach the requested count.');
+    if (bestCandidate < 0)
+      throw new Error('Static LOD pairing could not reach the requested count.');
     const left = candidateLeft[bestCandidate] as number;
     const right = candidateRight[bestCandidate] as number;
     available[left] = 0;
@@ -669,11 +698,16 @@ const selectPairing = (source: MutableLevel, targetCount: number): Pairing[] => 
       });
     }
   }
-  if (pairs.length !== targetCount) throw new Error('Static LOD grouped pairing count is inconsistent.');
+  if (pairs.length !== targetCount)
+    throw new Error('Static LOD grouped pairing count is inconsistent.');
   return pairs;
 };
 
-const populatePairedLevel = (source: MutableLevel, target: MutableLevel, pairing: readonly Pairing[]): void => {
+const populatePairedLevel = (
+  source: MutableLevel,
+  target: MutableLevel,
+  pairing: readonly Pairing[],
+): void => {
   if (pairing.length !== target.count) throw new Error('Static LOD pairing count is inconsistent.');
   for (let index = 0; index < pairing.length; index++) {
     const pair = pairing[index] as Pairing;
@@ -694,6 +728,8 @@ const reorderLevel = (source: MutableLevel, pairing: readonly Pairing[]): void =
   source.covariances.set(ordered.covariances);
   source.masses.set(ordered.masses);
   source.sizes.set(ordered.sizes);
+  source.childCount.set(ordered.childCount);
+  source.childStart.set(ordered.childStart);
   source.dominant.set(ordered.dominant);
   if (source.shLabels && ordered.shLabels) source.shLabels.set(ordered.shLabels);
   if (source.shPacked && ordered.shPacked) source.shPacked.set(ordered.shPacked);
@@ -743,6 +779,13 @@ const populateParentLevel = (child: MutableLevel, parent: MutableLevel): void =>
   // Traversal requires an internal node's children to occupy one contiguous
   // range. Move the selected children into their parent order after sampling.
   reorderLevel(child, pairing);
+  let childCursor = 0;
+  for (let index = 0; index < pairing.length; index++) {
+    const count = pairing[index]?.right === undefined ? 1 : 2;
+    parent.childCount[index] = count;
+    parent.childStart[index] = childCursor;
+    childCursor += count;
+  }
 };
 
 /**
@@ -796,6 +839,8 @@ export function buildStaticLod(
       covariances: covariances.subarray(start * 6, offset * 6),
       masses: masses.subarray(start, offset),
       sizes: size.subarray(start, offset),
+      childCount: childCount.subarray(start, offset),
+      childStart: childStart.subarray(start, offset),
       ...(labels ? { shLabels: labels.subarray(start, offset) } : {}),
       ...(packed
         ? {
@@ -813,13 +858,10 @@ export function buildStaticLod(
   }
   for (let levelIndex = 1; levelIndex < levels.length; levelIndex++) {
     const parent = levels[levelIndex] as MutableLevel;
-    const child = levels[levelIndex - 1] as MutableLevel;
     const parentOffset = offsets[levelIndex] as number;
     const childOffset = offsets[levelIndex - 1] as number;
     for (let index = 0; index < parent.count; index++) {
-      const count = Math.min(2, child.count - index * 2);
-      childCount[parentOffset + index] = count;
-      childStart[parentOffset + index] = childOffset + index * 2;
+      childStart[parentOffset + index] = childOffset + (parent.childStart[index] as number);
     }
   }
   const radTree: RadTreeData = { childCount, childStart, size };
