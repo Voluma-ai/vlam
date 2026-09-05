@@ -18,8 +18,10 @@ our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ```bash
 npm install        # also registers lint + typecheck + docs:check git hooks
+npx playwright install chromium # one-time browser install for render checks
 npm run dev        # Docs site → http://localhost:5170 (viewer at /demo/)
 npm test           # Vitest unit tests
+npm run test:browser # real-splat render checks on WebGPU + forced WebGL2
 npm run typecheck  # tsc --noEmit
 npm run lint       # ESLint + Prettier check
 npm run format     # rewrite with Prettier
@@ -43,6 +45,7 @@ Required jobs (each independently visible; any failure blocks the run):
 | `lint` | `npm run lint` |
 | `typecheck` | `npm run typecheck` |
 | `test` | `npm run test:coverage` (summary in the job log, not stored) |
+| `browser` | `npm run test:browser` (WebGPU + forced-WebGL2 real-splat render checks) |
 | `docs` | `npm run docs:check` + `npm run docs:samples` |
 | `secrets` | `gitleaks detect --no-git` against [`.gitleaks.toml`](.gitleaks.toml) |
 | `build` | `npm run build` + gzip budgets for published entries |
@@ -128,6 +131,10 @@ for repeatable baseline comparisons and the Mac validation procedure.
 
 - `npm test` must pass. Add or update unit tests for logic changes
  (`src/lib/__tests__/`, Vitest, Node environment, no browser, no real GPU).
+- `npm run test:browser` must pass after the one-time
+  `npx playwright install chromium` setup. It renders a real splat through
+  separate WebGPU and forced-WebGL2 projects; failure to initialize the
+  requested backend fails the test instead of accepting a fallback.
 - GPU-facing code is tested against minimal mock renderers: object literals
  with `vi.fn()` stubs cast `as unknown as THREE.WebGPURenderer` (see
   `compute-sorter.test.ts` for the pattern). Some tests reach private members

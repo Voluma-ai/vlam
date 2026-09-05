@@ -25,6 +25,7 @@ directory name and `package.json` disagree, trust `package.json`.
 | `npm run build:lib` | library ES build + `.d.ts` → `dist/` |
 | `npm run build` | site + library |
 | `npm test` | Vitest unit tests (dev-only; not shipped in the package) |
+| `npm run test:browser` | Headless Chromium real-splat render checks for WebGPU and forced WebGL2 (run `npx playwright install chromium` once) |
 
 ## Architecture: the 30-second tour
 
