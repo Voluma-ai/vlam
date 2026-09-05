@@ -3,21 +3,17 @@ import { uniform } from 'three/tsl';
 import { ComputeSorter, releaseRendererAttributes } from '../core/compute-sorter';
 import { RadixSorter } from '../core/radix-sorter';
 import { clampDepthOfFieldSettings, type DepthOfFieldSettings } from '../core/depth-of-field';
-import {
-  clampRelightingSettings,
-  DEFAULT_RELIGHT_BACKGROUND,
-  DEFAULT_RELIGHT_BRIGHTNESS,
-  DEFAULT_RELIGHT_SOFTNESS,
-  type RelightingSettings,
-  type RelightingUniforms,
-} from '../core/relighting';
 import { SplatMesh } from '../core/splat-mesh';
 import type { SplatPickOptions, SplatPickResult, UnifiedSourceView } from '../core/splat-mesh';
 import { isFillConstrainedSplatDevice } from '../core/splat-budget';
 import { WebGpuSortScheduler } from '../core/sort-scheduler';
 import { WorkBuffer, WorkBufferGather } from './work-buffer-gather';
 import { createWorkBufferMaterial } from './work-buffer-material';
-import type { FloatUniform, Vec2Uniform } from '../core/splat-mesh-material';
+import type {
+  DisplayColorModifier,
+  FloatUniform,
+  Vec2Uniform,
+} from '../core/splat-mesh-material';
 import { assertStorageBufferFitsDevice } from '../core/webgpu-limits';
 import { estimateLargestStorageBufferBytes } from './unified-work-buffer';
 import { resolveXrView } from '../core/xr-view';
@@ -190,11 +186,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   private readonly compensateProjectedLowPass: FloatUniform;
   private readonly dofFocusDistance: FloatUniform;
   private readonly dofAperture: FloatUniform;
-  private relightMap: THREE.Texture | null = null;
-  private readonly relightBlend: FloatUniform;
-  private readonly relightBrightness: FloatUniform;
-  private readonly relightBackground: FloatUniform;
-  private readonly relightSoftness: FloatUniform;
+  private displayColorModifierValue: DisplayColorModifier | null = null;
   private readonly srgbOutput: boolean;
   private readonly sortMetric: SplatSortMetric;
   private sourceMaxStdDev: number | null = null;
@@ -228,10 +220,6 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     const compensateProjectedLowPass = uniform(0);
     const dofFocusDistance = uniform(10);
     const dofAperture = uniform(0);
-    const relightBlend = uniform(0);
-    const relightBrightness = uniform(DEFAULT_RELIGHT_BRIGHTNESS);
-    const relightBackground = uniform(DEFAULT_RELIGHT_BACKGROUND);
-    const relightSoftness = uniform(DEFAULT_RELIGHT_SOFTNESS);
     const order = new THREE.StorageInstancedBufferAttribute(new Float32Array(capacity), 1);
     const geometry = new THREE.InstancedBufferGeometry();
     geometry.setIndex([0, 1, 2, 0, 2, 3]);
@@ -260,11 +248,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         compensateProjectedLowPass,
         dofFocusDistance,
         dofAperture,
-        relightMap: null,
-        relightBlend,
-        relightBrightness,
-        relightBackground,
-        relightSoftness,
+        displayColorModifier: null,
       }),
     );
     const indices = new Uint32Array(capacity);
@@ -279,10 +263,6 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.compensateProjectedLowPass = compensateProjectedLowPass;
     this.dofFocusDistance = dofFocusDistance;
     this.dofAperture = dofAperture;
-    this.relightBlend = relightBlend;
-    this.relightBrightness = relightBrightness;
-    this.relightBackground = relightBackground;
-    this.relightSoftness = relightSoftness;
     this.srgbOutput = options.srgbOutput ?? false;
     this.sortMetric = options.sortMetric ?? 'depth';
     this.sortScheduler = new WebGpuSortScheduler(undefined, isFillConstrainedSplatDevice());
@@ -445,39 +425,18 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   }
 
   /**
-   * PlayCanvas-style proxy-mesh relighting on the unified draw pass (not gather).
-   * Live blend/brightness/background; map identity change rebuilds the draw
-   * material. Does not invalidate gather caches. Pass `null` to disable.
+   * Optional RGB transform in the unified display draw. Replacing the callback
+   * rebuilds the draw material only; gathered source data stays valid.
    */
-  setRelighting(options: RelightingSettings | null): void {
-    this.assertNotDisposed('setRelighting');
-    if (options === null) {
-      this.relightBlend.value = 0;
-      if (this.relightMap !== null) {
-        this.relightMap = null;
-        this.rebuildDrawMaterial();
-      }
-      return;
-    }
-    const next = clampRelightingSettings(options, this.getRelighting());
-    this.relightBlend.value = next.blend;
-    this.relightBrightness.value = next.brightness;
-    this.relightBackground.value = next.background;
-    this.relightSoftness.value = next.softness;
-    if (options.map !== this.relightMap) {
-      this.relightMap = options.map;
-      this.rebuildDrawMaterial();
-    }
+  get displayColorModifier(): DisplayColorModifier | null {
+    return this.displayColorModifierValue;
   }
 
-  /** Current relight numeric uniforms (`blend === 0` means off). */
-  getRelighting(): RelightingUniforms {
-    return {
-      blend: this.relightBlend.value,
-      brightness: this.relightBrightness.value,
-      background: this.relightBackground.value,
-      softness: this.relightSoftness.value,
-    };
+  set displayColorModifier(modifier: DisplayColorModifier | null) {
+    this.assertNotDisposed('displayColorModifier');
+    if (modifier === this.displayColorModifierValue) return;
+    this.displayColorModifierValue = modifier;
+    this.rebuildDrawMaterial();
   }
 
   /**
@@ -851,7 +810,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     }
   }
 
-  /** Rebuilds the EWA draw material when the relight map identity changes. */
+  /** Rebuilds the EWA draw material after a display-graph structural change. */
   private rebuildDrawMaterial(): void {
     const previous = this.material as THREE.Material;
     this.material = createWorkBufferMaterial({
@@ -872,11 +831,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       compensateProjectedLowPass: this.compensateProjectedLowPass,
       dofFocusDistance: this.dofFocusDistance,
       dofAperture: this.dofAperture,
-      relightMap: this.relightMap,
-      relightBlend: this.relightBlend,
-      relightBrightness: this.relightBrightness,
-      relightBackground: this.relightBackground,
-      relightSoftness: this.relightSoftness,
+      displayColorModifier: this.displayColorModifierValue,
     });
     previous.dispose();
   }

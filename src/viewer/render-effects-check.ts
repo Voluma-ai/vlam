@@ -2,6 +2,7 @@
 import * as THREE from 'three/webgpu';
 import { SplatMesh, type SplatData } from '../lib/core';
 import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '../lib/unified';
+import { attachRelighting } from '../lib/relighting';
 import { shEvaluationDiagnostics } from './sh-evaluation-diagnostics';
 
 const SIZE = 128;
@@ -110,6 +111,7 @@ export async function verifyRenderEffects(renderer: THREE.WebGPURenderer) {
       const unified = path === 'unified' ? new UnifiedSplatMesh(renderer, 1) : null;
       unified?.addSource(mesh);
       const drawable = unified ?? mesh;
+      let relighting = attachRelighting(drawable, { map, blend: 0 });
       const scene = new THREE.Scene();
       scene.add(drawable);
       const frames = {} as Record<EffectName, Uint8Array>;
@@ -118,10 +120,13 @@ export async function verifyRenderEffects(renderer: THREE.WebGPURenderer) {
       title.textContent = `${path}, SH1, antialias ${antialias}`;
       row.append(title);
       for (const name of names) {
-        if (name === 'blend-zero') drawable.setRelighting({ map, blend: 0, brightness: 1 });
-        if (name === 'hard-light') drawable.setRelighting({ map, blend: 0.8, softness: 0 });
-        if (name === 'soft-light') drawable.setRelighting({ map, blend: 0.8, softness: 4 });
-        if (name === 'light-off') drawable.setRelighting(null);
+        if (name === 'blend-zero') relighting.update({ map, blend: 0, brightness: 1 });
+        if (name === 'hard-light') relighting.update({ map, blend: 0.8, softness: 0 });
+        if (name === 'soft-light') relighting.update({ map, blend: 0.8, softness: 4 });
+        if (name === 'light-off') {
+          relighting.dispose();
+          relighting = attachRelighting(drawable, { map, blend: 0 });
+        }
         if (name === 'dof') drawable.setDepthOfField({ aperture: 0.4, focusDistance: 1 });
         if (name === 'focus') drawable.setDepthOfField({ focusDistance: 2 });
         if (name === 'dof-off') drawable.setDepthOfField({ aperture: 0 });

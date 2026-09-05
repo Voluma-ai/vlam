@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { MergedSplatMesh } from '../core/merged-splat-mesh';
 import { SourceMatrixArray, worldBoundsOf, type SourceBounds } from '../core/source-transform';
 import { writeCovariance, type SplatData } from '../core/splat-data';
+import { RadixSorter } from '../core/radix-sorter';
+import type { SplatSorter } from '../core/sorter';
 
 /** A `count`-splat cloud with all centers at `origin` (+x spread), optional format. */
 function makeData(count: number, format?: SplatData['format'], x = 0): SplatData {
@@ -42,6 +44,34 @@ describe('MergedSplatMesh', () => {
     scenes.push(scene);
     return scene;
   };
+
+  it.each(['radix', 'exact'] as const)(
+    'honors %s sorting for independently placed sources',
+    async (sortStrategy) => {
+      const scene = new MergedSplatMesh({ capacity: 4096, sortStrategy });
+      scenes.push(scene);
+      scene.addSource(makeData(1), new THREE.Matrix4().makeTranslation(0, 0, 2));
+      scene.addSource(makeData(1), new THREE.Matrix4().makeTranslation(0, 0, -2));
+      const state = scene as unknown as {
+        radixSorterLoad: Promise<void>;
+        createSorter(renderer: THREE.WebGPURenderer): SplatSorter;
+      };
+      await state.radixSorterLoad;
+      const sorter = state.createSorter({
+        backend: { isWebGPUBackend: true },
+        compute: vi.fn(),
+      } as unknown as THREE.WebGPURenderer);
+      try {
+        // Regression: source placements used to silently force counting sort.
+        expect(sorter).toBeInstanceOf(RadixSorter);
+        expect((sorter as unknown as { exactDepth: boolean }).exactDepth).toBe(
+          sortStrategy === 'exact',
+        );
+      } finally {
+        sorter.dispose();
+      }
+    },
+  );
 
   it('wires the sourceId channel and the world-depth sorter, with no modifiers of its own', () => {
     const scene = make();

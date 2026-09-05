@@ -18,6 +18,7 @@
       "@voluma/vlam": ["../../../src/lib/core/index.ts"],
       "@voluma/vlam/loaders": ["../../../src/lib/loaders/index.ts"],
       "@voluma/vlam/static-lod": ["../../../src/lib/static-lod/index.ts"],
+      "@voluma/vlam/relighting": ["../../../src/lib/relighting/index.ts"],
       "@voluma/vlam/streaming": ["../../../src/lib/streaming/index.ts"],
       "@voluma/vlam/unified": ["../../../src/lib/unified/index.ts"],
       "@voluma/vlam/selection": ["../../../src/lib/selection/index.ts"],

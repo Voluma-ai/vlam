@@ -22,6 +22,7 @@ function makeInputs(
     },
     sh: null,
     sourcePlacement: null,
+    displayColorModifier: null,
     uniforms: {
       focal: uniform(new THREE.Vector2(1, 1)),
       viewport: uniform(new THREE.Vector2(1, 1)),
@@ -31,11 +32,6 @@ function makeInputs(
       dofAperture: uniform(0),
       screenBandMin: uniform(0),
       screenBandMax: uniform(0),
-      relightMap: new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1),
-      relightBlend: uniform(0),
-      relightBrightness: uniform(2),
-      relightBackground: uniform(1),
-      relightSoftness: uniform(0),
     },
     pick:
       mode === 'pick'

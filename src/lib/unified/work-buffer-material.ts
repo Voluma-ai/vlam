@@ -1,5 +1,9 @@
 import * as THREE from 'three/webgpu';
-import type { FloatUniform, Vec2Uniform } from '../core/splat-mesh-material';
+import type {
+  DisplayColorModifier,
+  FloatUniform,
+  Vec2Uniform,
+} from '../core/splat-mesh-material';
 import {
   capProjectedEigenvaluesToScreenRadius,
   equalizeProjectedEigenvalues,
@@ -21,7 +25,6 @@ import {
   positionGeometry,
   screenUV,
   storage,
-  texture as tslTexture,
   varying,
   vec2,
   vec3,
@@ -57,16 +60,8 @@ export function createWorkBufferMaterial(options: {
   /** Core projected-2D DoF focus plane. Live; `0` aperture disables. */
   dofFocusDistance: FloatUniform;
   dofAperture: FloatUniform;
-  /**
-   * Proxy-mesh relight map (RGB = lit, A = coverage). Display only.
-   * Host swaps the texture object and rebuilds when enabling/changing map.
-   */
-  relightMap: THREE.Texture | null;
-  relightBlend: FloatUniform;
-  relightBrightness: FloatUniform;
-  relightBackground: FloatUniform;
-  /** Coverage soft edge in screen pixels; `0` = hard mask. */
-  relightSoftness: FloatUniform;
+  /** Optional display-only RGB transform; omitted adds no fragment work. */
+  displayColorModifier?: DisplayColorModifier | null;
 }): THREE.NodeMaterial {
   const material = new THREE.NodeMaterial();
   const centers = storage(options.centers, 'vec4', options.capacity);
@@ -242,43 +237,9 @@ export function createWorkBufferMaterial(options: {
     const merged = g.oneMinus().pow(aExp).oneMinus();
     const opacity = workColor.a.greaterThan(1).select(merged, g.mul(workColor.a));
     const alpha = opacity.mul(opacityCompensation).mul(displayOpacity);
-    const rgb = workColor.rgb.toVar();
-    const relightMap = options.relightMap;
-    if (relightMap !== null) {
-      If(options.relightBlend.greaterThan(0), () => {
-        const litCenter = tslTexture(relightMap, screenUV);
-        const factor = mix(
-          vec3(options.relightBackground),
-          litCenter.rgb.mul(options.relightBrightness),
-          litCenter.a,
-        );
-        If(options.relightSoftness.greaterThan(0.5), () => {
-          const ox = options.relightSoftness.div(options.viewport.x.max(1));
-          const oy = options.relightSoftness.div(options.viewport.y.max(1));
-          const s1 = tslTexture(relightMap, screenUV.add(vec2(ox, 0)));
-          const s2 = tslTexture(relightMap, screenUV.add(vec2(ox.negate(), 0)));
-          const s3 = tslTexture(relightMap, screenUV.add(vec2(0, oy)));
-          const s4 = tslTexture(relightMap, screenUV.add(vec2(0, oy.negate())));
-          const wSum = litCenter.a.add(s1.a).add(s2.a).add(s3.a).add(s4.a).max(1e-4);
-          const rgbSoft = litCenter.rgb
-            .mul(litCenter.a)
-            .add(s1.rgb.mul(s1.a))
-            .add(s2.rgb.mul(s2.a))
-            .add(s3.rgb.mul(s3.a))
-            .add(s4.rgb.mul(s4.a))
-            .div(wSum);
-          const softFactor = mix(
-            vec3(options.relightBackground),
-            rgbSoft.mul(options.relightBrightness),
-            wSum.mul(0.2),
-          );
-          rgb.assign(mix(workColor.rgb, workColor.rgb.mul(softFactor), options.relightBlend));
-        });
-        If(options.relightSoftness.lessThanEqual(0.5), () => {
-          rgb.assign(mix(workColor.rgb, workColor.rgb.mul(factor), options.relightBlend));
-        });
-      });
-    }
+    const rgb = (
+      options.displayColorModifier?.(workColor.rgb, screenUV, options.viewport) ?? workColor.rgb
+    ).toVar();
     return vec4(rgb.mul(alpha), alpha);
   })();
   material.transparent = true;

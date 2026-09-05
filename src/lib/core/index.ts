@@ -12,6 +12,7 @@
  *  - `@voluma/vlam/unified` - {@link UnifiedSplatMesh}
  *  - `@voluma/vlam/selection` - volume select and partition
  *  - `@voluma/vlam/effects` - tree-shakeable modifier presets
+ *  - `@voluma/vlam/relighting` - optional proxy-mesh relighting
  *  - `@voluma/vlam/formats/ply` - 3DGS `.ply`, raw and compressed
  *  - `@voluma/vlam/formats/sog` - PlayCanvas SOG, bundled and unbundled
  *  - `@voluma/vlam/formats/rad` - Spark `.rad`
@@ -67,16 +68,6 @@ export {
   type DepthOfFieldSettings,
 } from './depth-of-field';
 export {
-  DEFAULT_RELIGHT_BLEND,
-  DEFAULT_RELIGHT_BRIGHTNESS,
-  DEFAULT_RELIGHT_BACKGROUND,
-  DEFAULT_RELIGHT_SOFTNESS,
-  clampRelightingSettings,
-  createPlaceholderRelightTexture,
-  type RelightingSettings,
-  type RelightingUniforms,
-} from './relighting';
-export {
   type SplatOrientation,
   type OrientableFormat,
   createYUpTransform,
@@ -90,7 +81,7 @@ export {
 export { MAX_MERGED_SPLAT_SOURCES } from './source-transform';
 // Named so embedders can type what `SplatMesh.getUnifiedSourceView` returns
 // (e.g. a custom gather pass); the uniform-node aliases it embeds come along.
-export type { SplatShInputs, Vec3Uniform } from './splat-mesh-material';
+export type { DisplayColorModifier, SplatShInputs, Vec3Uniform } from './splat-mesh-material';
 export {
   resolveSplatBudget,
   detectSplatDeviceProfile,

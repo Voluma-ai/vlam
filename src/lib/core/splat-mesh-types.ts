@@ -119,6 +119,8 @@ export interface SplatMeshOptions {
    * sort cadence. `'radix'` is the 24-bit GPU key path; `'exact'`
    * lazy-loads a 32-bit Float32-depth GPU radix path. The first frames
    * may skip GPU radix sorting until the module resolves.
+   * Merged pools honor the same strategy, applying each source's live
+   * placement before computing its key for the global sort.
    *
    * @experimental Radix strategies may change in a minor release.
    */

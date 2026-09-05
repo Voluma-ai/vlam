@@ -394,7 +394,7 @@ describe('SplatMesh poolFloatTextures float16', () => {
     }
   });
 
-  it('retains normalized dirty rows when an upload fails so the next flush retries them', () => {
+  it('retains dirty rows when an upload fails so the next flush retries them', () => {
     const mesh = new SplatMesh({ capacity: 4 * WIDTH });
     meshes.push(mesh);
     mesh.appendRange(makeSplatData(2));
@@ -415,14 +415,23 @@ describe('SplatMesh poolFloatTextures float16', () => {
     } as unknown as THREE.WebGPURenderer;
 
     expect(() => internals.flushPendingUploads(failingRenderer)).toThrow('copy failed');
-    // The source list is untouched until every core / packed-SH copy succeeds.
+    // Sorting may reorder the list, but merging must not change its spans.
     expect(internals.pendingUploadRows).toBe(pending);
-    expect(internals.pendingUploadRows).toEqual(pending);
+    expect(internals.pendingUploadRows).toEqual([
+      { start: 0, count: 1 },
+      { start: 1, count: 1 },
+      { start: 2, count: 1 },
+    ]);
 
     const destinations: number[] = [];
     const renderer = {
       copyTextureToTexture: vi.fn(
-        (_source: THREE.Texture, _destination: THREE.Texture, _region: THREE.Box2 | null, pos: THREE.Vector2) => {
+        (
+          _source: THREE.Texture,
+          _destination: THREE.Texture,
+          _region: THREE.Box2 | null,
+          pos: THREE.Vector2,
+        ) => {
           destinations.push(pos.y);
         },
       ),

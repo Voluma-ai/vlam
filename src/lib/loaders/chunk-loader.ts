@@ -56,23 +56,32 @@ class WorkerClient {
   /** Terminal worker failure; subsequent loads reject instead of hanging. */
   private workerFailure: SplatLoadError | null = null;
 
-  constructor(private readonly worker: Worker) {
-    this.worker.onmessage = (event: MessageEvent<LoadWorkerResponse>) => {
-      const request = this.pending.get(event.data.id);
-      if (!request) return;
-      if (event.data.type === 'progress') {
-        // Progress does not settle the request; the result still follows.
-        request.onProgress?.(event.data.loaded, event.data.total);
-        return;
-      }
-      this.pending.delete(event.data.id);
-      request.removeAbortListener?.();
-      if (event.data.ok) {
-        request.resolve(event.data.data);
-      } else if (event.data.cancelled) {
-        request.reject(createAbortError('Chunk load was cancelled.'));
-      } else {
-        request.reject(deserializeSplatLoadError(event.data.error));
+  constructor(
+    private readonly worker: Worker | null,
+    initialFailure: SplatLoadError | null = null,
+  ) {
+    this.workerFailure = initialFailure;
+    if (worker === null) return;
+    worker.onmessage = (event: MessageEvent<LoadWorkerResponse>) => {
+      try {
+        const request = this.pending.get(event.data.id);
+        if (!request) return;
+        if (event.data.type === 'progress') {
+          // Progress does not settle the request; the result still follows.
+          request.onProgress?.(event.data.loaded, event.data.total);
+          return;
+        }
+        this.pending.delete(event.data.id);
+        request.removeAbortListener?.();
+        if (event.data.ok) {
+          request.resolve(event.data.data);
+        } else if (event.data.cancelled) {
+          request.reject(createAbortError('Chunk load was cancelled.'));
+        } else {
+          request.reject(deserializeSplatLoadError(event.data.error));
+        }
+      } catch (error) {
+        this.fail(error);
       }
     };
     // A worker-level failure (a CSP that blocks blob: workers is the common
@@ -81,23 +90,8 @@ class WorkerClient {
     // There is no per-request URL here - the worker itself died - so `url` is
     // empty and the failure is not retryable: retrying constructs the same
     // worker under the same policy.
-    this.worker.onerror = (event?: ErrorEvent | Event) => {
-      if (this.workerFailure) return;
-      const detail =
-        event &&
-        typeof event === 'object' &&
-        'message' in event &&
-        typeof event.message === 'string'
-          ? event.message
-          : '';
-      const failure = new SplatLoadError(
-        detail ? `Chunk loading worker failed. ${detail}` : 'Chunk loading worker failed.',
-        { phase: 'worker', url: '', retryable: false },
-      );
-      this.workerFailure = failure;
-      this.worker.terminate();
-      this.rejectAll(failure);
-    };
+    worker.onerror = (event?: ErrorEvent | Event) => this.fail(event);
+    worker.onmessageerror = (event?: MessageEvent) => this.fail(event);
   }
 
   /** Posts one load to this worker and tracks its pending promise. */
@@ -126,7 +120,13 @@ class WorkerClient {
         if (!pending) return;
         this.pending.delete(id);
         const cancel: LoadWorkerRequest = { type: 'cancel', id };
-        if (!this.disposed) this.worker.postMessage(cancel);
+        if (!this.disposed && this.worker) {
+          try {
+            this.worker.postMessage(cancel);
+          } catch (error) {
+            this.fail(error);
+          }
+        }
         pending.reject(createAbortError('Chunk load was cancelled.'));
       };
       signal.addEventListener('abort', onAbort, { once: true });
@@ -135,7 +135,11 @@ class WorkerClient {
     }
 
     const request: LoadWorkerRequest = { ...message, id };
-    this.worker.postMessage(request);
+    try {
+      this.worker?.postMessage(request);
+    } catch (error) {
+      this.fail(error);
+    }
     return promise;
   }
 
@@ -143,7 +147,7 @@ class WorkerClient {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.worker.terminate();
+    this.worker?.terminate();
     this.rejectAll(createAbortError('ChunkLoader has been disposed.'));
   }
 
@@ -153,6 +157,32 @@ class WorkerClient {
       request.reject(error);
     }
     this.pending.clear();
+  }
+
+  /** Moves this client to its one-way terminal failure state. */
+  private fail(event: unknown): void {
+    if (this.workerFailure) return;
+    const detail =
+      event &&
+      typeof event === 'object' &&
+      'message' in event &&
+      typeof event.message === 'string'
+        ? event.message
+        : event instanceof Error
+          ? event.message
+          : '';
+    const failure = new SplatLoadError(
+      detail ? `Chunk loading worker failed. ${detail}` : 'Chunk loading worker failed.',
+      { phase: 'worker', url: '', retryable: false, cause: event },
+    );
+    this.workerFailure = failure;
+    if (this.worker) {
+      this.worker.onmessage = null;
+      this.worker.onerror = null;
+      this.worker.onmessageerror = null;
+      this.worker.terminate();
+    }
+    this.rejectAll(failure);
   }
 }
 
@@ -173,12 +203,28 @@ class WorkerClient {
  * const chunk = await loader.load('/scene/0_0/', { kind: 'directory' });
  */
 export class ChunkLoader {
-  private readonly streaming = new WorkerClient(new LoadWorker());
+  private readonly streaming: WorkerClient;
   /** The in-flight construction; `null` until a one-shot format is requested. */
   private oneShot: Promise<WorkerClient> | null = null;
   /** The constructed one-shot client, so `dispose` does not have to await. */
   private oneShotClient: WorkerClient | null = null;
   private disposed = false;
+
+  constructor() {
+    try {
+      this.streaming = new WorkerClient(new LoadWorker());
+    } catch (error) {
+      this.streaming = new WorkerClient(
+        null,
+        new SplatLoadError('Chunk loading worker could not be constructed.', {
+          phase: 'worker',
+          url: '',
+          retryable: false,
+          cause: error,
+        }),
+      );
+    }
+  }
 
   /**
    * Fetches and decodes one scene file or chunk directory.
@@ -321,16 +367,27 @@ export class ChunkLoader {
   private clientFor(format: ChunkFileFormat): WorkerClient | Promise<WorkerClient> {
     if (!ONE_SHOT_FORMATS.has(format)) return this.streaming;
     if (this.oneShotClient) return this.oneShotClient;
-    this.oneShot ??= import('./one-shot-worker?worker&inline').then(
-      ({ default: OneShotWorker }) => {
+    this.oneShot ??= import('./one-shot-worker?worker&inline')
+      .then(({ default: OneShotWorker }) => {
         const client = new WorkerClient(new OneShotWorker());
         this.oneShotClient = client;
         // `dispose()` may have run while the chunk was in flight; it could not
         // terminate a worker that did not exist yet, so honour it here.
         if (this.disposed) client.dispose();
         return client;
-      },
-    );
+      })
+      .catch(
+        (error: unknown) =>
+          new WorkerClient(
+            null,
+            new SplatLoadError('One-shot loading worker could not be constructed.', {
+              phase: 'worker',
+              url: '',
+              retryable: false,
+              cause: error,
+            }),
+          ),
+      );
     return this.oneShot;
   }
 

@@ -24,7 +24,7 @@ import {
   type SplatPerformanceProfile,
   type SplatSortMetric,
 } from '../lib/core';
-import { loadSplatData, loadSplatDataFile } from '../lib/loaders';
+import { loadSplatData, loadSplatDataFile, SplatLoadError } from '../lib/loaders';
 import {
   StreamedSplatMesh,
   type CollisionMeshTile,
@@ -49,12 +49,10 @@ import {
   sdfEffects,
   revealPreset,
   worldWarpPreset,
-  createRelightingProxy,
-  createRelightingShadowFactorMaterial,
   type SdfShape,
   type WorldWarpPreset,
-  type RelightingProxy,
 } from '../lib/effects';
+import type { RelightingAttachment, RelightingProxy } from '../lib/relighting';
 import { showError, hideError, isErrorVisible, describeLoadError } from './failure';
 import { loadingOverlayText, loadingPill } from './loading-status';
 import { createDropZone, filesFromDirectoryInput } from './drop-zone';
@@ -67,6 +65,7 @@ import {
 } from './scene-url';
 import { createCollisionWorld, type CollisionWorld } from './collision';
 import { createFrameBenchmark, verifyGpuSort } from './sort-benchmark';
+import { demoSortStrategy } from './sort-policy';
 import { createPerfHud, hudBrowserName } from './perf-hud';
 import { createSeparateTool, type SeparateTool } from './separate';
 import { buildToolPicker, parseViewerTool, type ViewerTool } from './tool-picker';
@@ -1363,13 +1362,6 @@ async function main(): Promise<void> {
   };
 
   const sortParam = params.get('sort');
-  const sortStrategy: 'radix' | 'counting' | 'exact' | 'worker' =
-    sortParam === 'radix' ||
-    sortParam === 'counting' ||
-    sortParam === 'exact' ||
-    sortParam === 'worker'
-      ? sortParam
-      : 'counting';
   // WebGPU always uses a GPU sorter unless `?sort=worker` is explicit.
   // Spark comparison is load speed and LOD quality, never Spark's async
   // CPU sort cadence — that made a 2M-splat orbit lag hundreds of ms
@@ -1459,10 +1451,23 @@ async function main(): Promise<void> {
     return perfMode.enabled ? PERF_MODE_MAX_STD_DEV : undefined;
   };
   const qualityMaxStdDev = (): number => (isFillConstrainedSplatDevice(deviceProfile) ? 4 : 3);
-  const meshOptions = (): SplatMeshOptions => {
+  let currentSortScene = '';
+  const sortStrategyFor = (source: string) =>
+    demoSortStrategy(source, {
+      override: sortParam,
+      constrainedDevice: isFillConstrainedSplatDevice(deviceProfile),
+      sd: perfMode.enabled,
+      profile: performanceProfile,
+    });
+  const applySortStrategy = (mesh: SplatMesh): void => {
+    void mesh.setSortStrategy(sortStrategyFor(currentSortScene)).catch((error: unknown) => {
+      console.error('Could not switch the scene sorter.', error);
+    });
+  };
+  const meshOptions = (source = currentSortScene): SplatMeshOptions => {
     const cutoff = resolvedMaxStdDev();
     return {
-      sortStrategy,
+      sortStrategy: sortStrategyFor(source),
       sortMetric,
       shEvaluation,
       orientation,
@@ -1477,7 +1482,7 @@ async function main(): Promise<void> {
   /** Blob culling is opt-in: a coarse prefix node is the coverage fallback. */
   const RAD_BLOB_CULL_PX = 0;
   const radMeshOptions = () => ({
-    ...meshOptions(),
+    ...meshOptions('scene.rad'),
     maxSplatScreenRadius: blobCull ?? RAD_BLOB_CULL_PX,
     ...(foveationMode ? { foveationMode } : {}),
     ...(foveationTargetPx === undefined ? {} : { foveationTargetPx }),
@@ -1592,6 +1597,8 @@ async function main(): Promise<void> {
    * "show the spinner without a bar".
    */
   let loadingProgress: { loaded: number; total: number } | null = null;
+  /** Worker streaming faults are terminal and surfaced only once per scene. */
+  let reportedStreamingError: SplatLoadError | null = null;
   /**
    * Streamed startup hold (classic `.lcc` in-view L1-near / coarsest-far,
    * `.lcc2` in-view coarsest). Library default, unless
@@ -1711,6 +1718,7 @@ async function main(): Promise<void> {
    */
   let suppressStaleRelightOption = false;
   let relightProxy: RelightingProxy | null = null;
+  let relightAttachment: RelightingAttachment | null = null;
   let relightScene: THREE.Scene | null = null;
   let relightTarget: THREE.RenderTarget | null = null;
   let relightSun: THREE.DirectionalLight | null = null;
@@ -1775,7 +1783,8 @@ async function main(): Promise<void> {
   };
 
   const teardownRelight = (): void => {
-    if (mounted) splats.setRelighting(null);
+    relightAttachment?.dispose();
+    relightAttachment = null;
     relightFactorMaterial?.dispose();
     relightFactorMaterial = null;
     relightProxy?.dispose();
@@ -1816,8 +1825,11 @@ async function main(): Promise<void> {
     return relightTarget;
   };
 
-  const setupRelight = (mesh: SplatMesh): void => {
+  const setupRelight = async (mesh: SplatMesh): Promise<void> => {
     teardownRelight();
+    const { attachRelighting, createRelightingProxy, createRelightingShadowFactorMaterial } =
+      await import('../lib/relighting');
+    if (!mounted || splats !== mesh || effectMode !== 'relight') return;
     setEffectModifiers([]);
     const useExternal = relightExternalGeometries !== null && relightExternalGeometries.length > 0;
     if (!useExternal && (!collisionTilesForRelight || collisionTilesForRelight.length === 0)) {
@@ -1976,7 +1988,7 @@ async function main(): Promise<void> {
     applyRelightSun(0);
 
     const target = ensureRelightTarget();
-    mesh.setRelighting({
+    relightAttachment = attachRelighting(mesh, {
       map: target.texture,
       blend: 1,
       brightness: 1,
@@ -2203,6 +2215,8 @@ async function main(): Promise<void> {
     /** Decoded arrays for a static scene; null for a streamed one. */
     readonly data: SplatData | null;
     readonly title: string;
+    /** Manifest name when the display title hides the source extension. */
+    readonly sortScene?: string;
     /** Suffix for the overlay line, e.g. ' (paint)'. */
     readonly note: string;
     readonly paint: PaintTool | null;
@@ -2225,9 +2239,9 @@ async function main(): Promise<void> {
   const buildStaticScene = (data: SplatData, title: string): LoadedScene => {
     const paintable = effectMode === 'paint';
     if (!chunked && !paintable) {
-      return { mesh: new SplatMesh(data, meshOptions()), data, title, note: '', paint: null };
+      return { mesh: new SplatMesh(data, meshOptions(title)), data, title, note: '', paint: null };
     }
-    const mesh = new SplatMesh({ capacity: data.count + 4 * 2048 }, meshOptions()); // row-alignment headroom
+    const mesh = new SplatMesh({ capacity: data.count + 4 * 2048 }, meshOptions(title)); // row-alignment headroom
     // A dynamic-capacity pool has no source format, so SplatMesh cannot
     // self-orient it - apply the same Y-up correction the whole-scene path gets.
     const correction = orientation === 'y-up' ? yUpTransformForFormat(data.format) : null;
@@ -2446,6 +2460,9 @@ async function main(): Promise<void> {
     next: LoadedScene,
     options: { frame?: boolean; sideView?: boolean; keepWelcome?: boolean } = {},
   ): Promise<void> => {
+    const nextSortScene =
+      next.sortScene ?? ((options.frame ?? true) ? next.title : currentSortScene);
+    currentSortScene = nextSortScene;
     if (options.frame ?? true) perfHud?.reset();
     hudSortCount = 0;
     hudSortSince = performance.now();
@@ -2464,6 +2481,9 @@ async function main(): Promise<void> {
       benchmarkGroundY = null;
     }
     splats = next.mesh;
+    // Resolve again at mount: HD/SD may have changed while the scene loaded.
+    // Mount synchronously so subsequent toggles target this mesh immediately.
+    applySortStrategy(splats);
     // A scene can finish loading or be replaced after the XR session starts.
     // Session transitions alone are therefore insufficient to enforce the
     // stereo cap on every live streamed pool.
@@ -2919,6 +2939,7 @@ async function main(): Promise<void> {
 
   /** Mounts a local scene folder. Shared by the drop zone and the folder picker. */
   const loadLocalDirectory = (files: Map<string, File>, name: string): void => {
+    const sortScene = [...files.keys()].find((path) => /\.lcc2?$/i.test(path)) ?? name;
     resetChromeForLocalPick();
     const sequence = ++dropSequence;
     hideError();
@@ -2941,7 +2962,7 @@ async function main(): Promise<void> {
           ? { shBands: 0 as const }
           : {}
         : { shBands: requestedShBands() as 0 | 1 | 2 | 3 }),
-      ...meshOptions(),
+      ...meshOptions(sortScene),
     })
       .then(async (mesh) => {
         if (sequence !== dropSequence) {
@@ -2954,6 +2975,7 @@ async function main(): Promise<void> {
           mesh,
           data: null,
           title: name,
+          sortScene,
           note: '',
           paint: null,
         });
@@ -3124,7 +3146,7 @@ async function main(): Promise<void> {
       ...(swapCap === undefined ? {} : { maxSplatsPerSwap: swapCap }),
       ...(shBands === undefined ? {} : { shBands }),
       // Blob cull applies only to .rad (its coarse LOD nodes are the blobs).
-      ...(sceneName.toLowerCase().endsWith('.rad') ? radMeshOptions() : meshOptions()),
+      ...(sceneName.toLowerCase().endsWith('.rad') ? radMeshOptions() : meshOptions(sceneName)),
       // The HUD subscribes too, not just a benchmark run: these are the only
       // per-update CPU timings a host can see (`getUpdateTimings` is protected),
       // and they are what separates an upload stall from a sort stall when the
@@ -3149,6 +3171,7 @@ async function main(): Promise<void> {
           mesh,
           data: null,
           title: sceneLabel(sceneName),
+          sortScene: sceneName,
           note: '',
           paint: null,
         },
@@ -3922,6 +3945,19 @@ async function main(): Promise<void> {
           !presenting || backendName !== 'WebGL2' || xrSortCadence.shouldAttempt(timestamp);
         splats.update(camera, renderer, sortThisFrame ? undefined : XR_SKIP_SORT_OPTIONS);
       }
+      if (mounted && splats instanceof StreamedSplatMesh) {
+        const streamingError = splats.streamingError;
+        if (streamingError && streamingError !== reportedStreamingError) {
+          reportedStreamingError = streamingError;
+          showError({
+            title: 'Streaming stopped',
+            message:
+              'The scene keeps rendering its last loaded detail, but it cannot stream more. ' +
+              `${describeLoadError(streamingError, sceneTitle).message}`,
+            action: { label: 'Reload', onClick: () => location.reload() },
+          });
+        }
+      }
       if (mounted && splats instanceof StreamedSplatMesh && nearL0HoldActive) {
         const reveal = splats.initialRevealState;
         if (reveal.status === 'pending') {
@@ -4067,7 +4103,7 @@ async function main(): Promise<void> {
               shBands: splats.shBands,
               device: hudDeviceProfile,
             },
-            sortStrategy,
+            sortStrategy: splats.sortStrategy,
             performanceProfile,
             sortIntervalMs: sortIntervalMs ?? 'automatic',
             swapCap: swapCap ?? 32_000,
@@ -4141,8 +4177,6 @@ async function main(): Promise<void> {
     setPointerTool(initialTool);
     syncDofFocusSlider = effectPicker.syncDofFocus;
     syncWarpIntensitySlider = effectPicker.syncWarpIntensity;
-    syncRelightModeVisible = (visible) => effectPicker.setModeVisible('relight', visible);
-    refreshRelightEffectOption();
     if (effectMode === 'dof' && mounted) {
       const bounds = splats.computeSplatBounds();
       const span = bounds.getSize(new THREE.Vector3()).length();
@@ -4174,6 +4208,7 @@ async function main(): Promise<void> {
   if (chrome.perfMode) {
     buildPerformanceToggle(perfMode.enabled, (enabled) => {
       perfMode.set(enabled);
+      applySortStrategy(splats);
       // SD starts at dpr 1 (may adapt down); HD snaps to the quality ceiling.
       // Restart warmup so a compile or resize hitch cannot pin the buffer.
       resetAdaptivePixelRatio();
@@ -4617,7 +4652,7 @@ function buildEffectPicker(
     {
       label: 'relight',
       mode: 'relight',
-      title: 'PlayCanvas-style proxy-mesh relight (needs LCC collision or ?proxy= mesh)',
+      title: 'PlayCanvas-style proxy-mesh relight (uses collision or ?proxy= mesh)',
     },
     { label: 'reveal', mode: 'reveal', title: 'wgslFn noise dissolve - WebGPU only (M7.5)' },
     {
@@ -4653,12 +4688,6 @@ function buildEffectPicker(
     option.value = mode ?? NONE;
     option.textContent = text;
     option.title = title;
-    // Relight needs cast geometry; stay hidden until the host confirms
-    // collision tiles or a `?proxy=` mesh (see refreshRelightEffectOption).
-    if (mode === 'relight') {
-      option.hidden = true;
-      option.disabled = true;
-    }
     select.appendChild(option);
     if (mode !== null) optionByMode.set(mode, option);
   }

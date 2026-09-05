@@ -31,7 +31,6 @@ import {
   positionGeometry,
   screenUV,
   storage,
-  texture as tslTexture,
   textureLoad,
   uint,
   uniform,
@@ -46,6 +45,17 @@ import { foldSplatModifierStack } from './splat-modifier-stack';
 import type { SplatPerformanceProfile } from './splat-mesh';
 import { SPLAT_DATA_TEXTURE_WIDTH } from './splat-mesh-pool';
 import { MAX_DOF_VARIANCE } from './depth-of-field';
+
+/**
+ * Optional display-fragment RGB transform. It receives the unpremultiplied
+ * splat RGB, screen UV, and drawing-buffer viewport nodes. The hook is never
+ * used by picking or the vertex/gather paths.
+ */
+export type DisplayColorModifier = (
+  rgb: THREE.Node<'vec3'>,
+  screenUv: THREE.Node<'vec2'>,
+  viewport: THREE.Node<'vec2'>,
+) => THREE.Node<'vec3'>;
 
 /**
  * Largest on-screen radius a splat quad may reach, in pixels. A splat crossing
@@ -360,6 +370,8 @@ export interface SplatMaterialBuildInputs {
    * evaluated in the source's own frame.
    */
   sourcePlacement: SplatSourcePlacement | null;
+  /** Optional display-only RGB transform; omitted means no extra graph work. */
+  displayColorModifier: DisplayColorModifier | null;
   /**
    * The mesh's uniform *node instances*, not their values: display and pick
    * share them, so a per-frame write reaches both graphs.
@@ -389,23 +401,6 @@ export interface SplatMaterialBuildInputs {
      */
     screenBandMin: FloatUniform;
     screenBandMax: FloatUniform;
-    /**
-     * Proxy-mesh relight map (RGB = lit, A = coverage). Live texture binding -
-     * swap via the TextureNode / rebuild when the mesh updates `setRelighting`.
-     * Display fragment only; pick ignores this.
-     */
-    relightMap: THREE.Texture | null;
-    /** `0` = baked color only; `1` = full modulate. Live uniform. */
-    relightBlend: FloatUniform;
-    /** Scales lit RGB (PlayCanvas default ~2 for 0.5 gray proxy). Live. */
-    relightBrightness: FloatUniform;
-    /** Multiplier where coverage alpha is 0 (sky). Live. */
-    relightBackground: FloatUniform;
-    /**
-     * Coverage soft edge in screen pixels. Live; `0` = hard mask.
-     * See {@link RelightingSettings.softness}.
-     */
-    relightSoftness: FloatUniform;
   };
   /** Pick-only uniforms. Required when building in `'pick'` mode. */
   pick: {
@@ -998,50 +993,9 @@ export function applySplatMaterialGraph(
         opacity = asNode<'float'>(squaredDistance.mul(gaussianExponent).exp().mul(splatColor.a));
       }
       const alpha = opacity.mul(opacityCompensation);
-      // PlayCanvas-style screen-space relight: sample the host's lit proxy RT
-      // at this fragment, then multiply baked RGB. Pick path does not use this.
-      // Softness > 0 box-filters the map. Average RGB **weighted by alpha** so
-      // uncovered clear pixels (A=0) do not pull coverage edges toward black —
-      // that used to draw a dark outline of every collision triangle.
-      const rgb = splatColor.rgb.toVar();
-      const relightMap = uniforms.relightMap;
-      if (relightMap !== null) {
-        // Blend is live, so a host can disable relighting without rebuilding;
-        // the uniform branch also avoids map reads while it is disabled.
-        If(uniforms.relightBlend.greaterThan(0), () => {
-          const litCenter = tslTexture(relightMap, screenUV);
-          const factor = mix(
-            vec3(uniforms.relightBackground),
-            litCenter.rgb.mul(uniforms.relightBrightness),
-            litCenter.a,
-          );
-          If(uniforms.relightSoftness.greaterThan(0.5), () => {
-            const ox = uniforms.relightSoftness.div(uniforms.viewport.x.max(1));
-            const oy = uniforms.relightSoftness.div(uniforms.viewport.y.max(1));
-            const s1 = tslTexture(relightMap, screenUV.add(vec2(ox, 0)));
-            const s2 = tslTexture(relightMap, screenUV.add(vec2(ox.negate(), 0)));
-            const s3 = tslTexture(relightMap, screenUV.add(vec2(0, oy)));
-            const s4 = tslTexture(relightMap, screenUV.add(vec2(0, oy.negate())));
-            const wSum = litCenter.a.add(s1.a).add(s2.a).add(s3.a).add(s4.a).max(1e-4);
-            const rgbSoft = litCenter.rgb
-              .mul(litCenter.a)
-              .add(s1.rgb.mul(s1.a))
-              .add(s2.rgb.mul(s2.a))
-              .add(s3.rgb.mul(s3.a))
-              .add(s4.rgb.mul(s4.a))
-              .div(wSum);
-            const softFactor = mix(
-              vec3(uniforms.relightBackground),
-              rgbSoft.mul(uniforms.relightBrightness),
-              wSum.mul(0.2),
-            );
-            rgb.assign(mix(splatColor.rgb, splatColor.rgb.mul(softFactor), uniforms.relightBlend));
-          });
-          If(uniforms.relightSoftness.lessThanEqual(0.5), () => {
-            rgb.assign(mix(splatColor.rgb, splatColor.rgb.mul(factor), uniforms.relightBlend));
-          });
-        });
-      }
+      const rgb = (
+        inputs.displayColorModifier?.(splatColor.rgb, screenUV, uniforms.viewport) ?? splatColor.rgb
+      ).toVar();
       return vec4(rgb.mul(alpha), alpha); // premultiplied alpha
     })();
 

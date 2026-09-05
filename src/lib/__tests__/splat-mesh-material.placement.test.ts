@@ -70,16 +70,12 @@ function makeInputs(
   sourcePlacement: SplatSourcePlacement | null,
   modifiers: readonly SplatModifier[],
   mode: 'display' | 'pick',
-  relightMap: THREE.Texture | null = new THREE.DataTexture(
-    new Uint8Array([255, 255, 255, 255]),
-    1,
-    1,
-  ),
 ): SplatMaterialBuildInputs {
   return {
     textures: makeTextures(),
     sh: null,
     sourcePlacement,
+    displayColorModifier: null,
     uniforms: {
       focal: uniform(new THREE.Vector2(1, 1)),
       viewport: uniform(new THREE.Vector2(1, 1)),
@@ -91,11 +87,6 @@ function makeInputs(
       // here because this fixture builds no screen-radius cull.
       screenBandMin: uniform(0),
       screenBandMax: uniform(0),
-      relightMap,
-      relightBlend: uniform(0),
-      relightBrightness: uniform(2),
-      relightBackground: uniform(1),
-      relightSoftness: uniform(0),
     },
     pick:
       mode === 'pick'
@@ -166,10 +157,10 @@ describe('material graph - per-source placement', () => {
     expect(material.vertexNode).not.toBeUndefined();
   });
 
-  it('builds the default display graph without a relighting texture', () => {
+  it('builds the default display graph without a color modifier', () => {
     const material = new THREE.NodeMaterial();
     expect(() =>
-      applySplatMaterialGraph(material, 'display', makeInputs(null, [], 'display', null)),
+      applySplatMaterialGraph(material, 'display', makeInputs(null, [], 'display')),
     ).not.toThrow();
     expect(material.forceSinglePass).toBe(true);
     expect(threeTransparentSubmissionCount(material)).toBe(1);

@@ -9,6 +9,7 @@ import type { StaticLodWorkerRequest, StaticLodWorkerResponse } from './static-l
 const BUDGET_GRANULARITY = 4096;
 const CAMERA_RESCHEDULE_INTERVAL_MS = 250;
 
+/** @experimental Excluded from the v1.0 compatibility guarantee. */
 export interface StaticLodSplatMeshOptions extends SplatMeshOptions {
   /** Initial selected-frontier budget. Defaults to the build ceiling. */
   budget?: number;
@@ -20,12 +21,14 @@ export interface StaticLodSplatMeshOptions extends SplatMeshOptions {
   onAutoLodProgress?: (progress: StaticLodLoadProgress) => void;
 }
 
+/** @experimental Excluded from the v1.0 compatibility guarantee. */
 export interface StaticLodLoadProgress {
   readonly phase: 'download' | 'decode' | 'lod-build';
   readonly completed: number;
   readonly total: number;
 }
 
+/** @experimental Excluded from the v1.0 compatibility guarantee. */
 export interface StaticLodSplatMeshLoadOptions
   extends StaticLodSplatMeshOptions, SplatDataLoadOptions {}
 
@@ -116,6 +119,7 @@ const buildInWorker = async (
  * The full hierarchy is uploaded once; camera/budget cuts only remap the
  * active pool indices and never rewrite resident splat attributes.
  */
+/** @experimental Excluded from the v1.0 compatibility guarantee. */
 export class StaticLodSplatMesh extends SplatMesh {
   private readonly worker: Worker;
   private readonly ceilingValue: number;

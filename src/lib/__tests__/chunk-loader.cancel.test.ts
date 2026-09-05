@@ -10,6 +10,7 @@ import type { SplatData } from '../core/splat-data';
 class ManualWorker {
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: ((event?: ErrorEvent) => void) | null = null;
+  onmessageerror: ((event?: MessageEvent) => void) | null = null;
   readonly posted: { type: string; id: number }[] = [];
   terminated = false;
 
@@ -208,6 +209,18 @@ describe('ChunkLoader cancellation and dispose', () => {
       phase: 'worker',
       message: 'Chunk loading worker failed. Refused to create a worker.',
     });
+  });
+
+  it('normalizes message deserialization failure as a terminal worker error', async () => {
+    const { loader, worker } = make();
+    const pending = loader.load('https://x.test/a.ply');
+    worker.onmessageerror?.();
+    await expect(pending).rejects.toMatchObject({
+      name: 'SplatLoadError',
+      phase: 'worker',
+      retryable: false,
+    });
+    expect(worker.terminated).toBe(true);
   });
 
   it('rejects loads started after a worker failure without posting to the dead worker', async () => {

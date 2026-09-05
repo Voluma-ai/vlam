@@ -224,7 +224,12 @@ describe('SplatMesh packed SH storage', () => {
     const destinations: number[] = [];
     const renderer = {
       copyTextureToTexture: vi.fn(
-        (_source: THREE.Texture, _destination: THREE.Texture, _region: THREE.Box2 | null, pos: THREE.Vector2) => {
+        (
+          _source: THREE.Texture,
+          _destination: THREE.Texture,
+          _region: THREE.Box2 | null,
+          pos: THREE.Vector2,
+        ) => {
           destinations.push(pos.y);
         },
       ),

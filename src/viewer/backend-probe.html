@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" />
+  <title>VLAM backend probe</title>
+  <canvas id="canvas" width="4" height="4"></canvas>
+  <output data-testid="backend"></output>
+  <output data-testid="pixel"></output>
+  <script type="module">
+    const requested = new URLSearchParams(location.search).get('backend');
+    const canvas = document.querySelector('#canvas');
+    const backend = document.querySelector('[data-testid="backend"]');
+    const pixel = document.querySelector('[data-testid="pixel"]');
+    if (requested === 'webgpu') {
+      if (!navigator.gpu) throw new Error('WebGPU is unavailable; refusing a WebGL fallback.');
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) throw new Error('WebGPU adapter initialization failed.');
+      const device = await adapter.requestDevice();
+      const context = canvas.getContext('webgpu');
+      if (!context) throw new Error('WebGPU canvas context initialization failed.');
+      context.configure({ device, format: navigator.gpu.getPreferredCanvasFormat() });
+    } else if (requested === 'webgl2') {
+      if (!canvas.getContext('webgl2')) throw new Error('WebGL2 initialization failed.');
+    } else {
+      throw new Error(`Unknown backend: ${requested}`);
+    }
+    const raster = document.createElement('canvas');
+    raster.width = raster.height = 1;
+    const ctx = raster.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#228be6';
+    ctx.fillRect(0, 0, 1, 1);
+    backend.textContent = requested;
+    pixel.textContent = Array.from(ctx.getImageData(0, 0, 1, 1).data).join(',');
+  </script>
+</html>

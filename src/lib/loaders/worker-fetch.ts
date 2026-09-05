@@ -62,6 +62,29 @@ export async function fetchRange(
       { phase: 'fetch', url, status: response.status },
     );
   }
+  const range = response.headers.get('Content-Range');
+  const expectedEnd = start + length - 1;
+  const match = range?.match(/^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i);
+  if (!match) {
+    throw toSplatLoadError(
+      new Error(
+        `${url} returned a partial response without an exposed valid Content-Range header. ` +
+          'For cross-origin streaming, expose Content-Range with Access-Control-Expose-Headers.',
+      ),
+      { phase: 'fetch', url, status: response.status },
+    );
+  }
+  const returnedStart = Number(match[1]);
+  const returnedEnd = Number(match[2]);
+  if (returnedStart !== start || returnedEnd !== expectedEnd) {
+    throw toSplatLoadError(
+      new Error(
+        `${url} returned Content-Range bytes ${returnedStart}-${returnedEnd}, expected bytes ` +
+          `${start}-${expectedEnd}.`,
+      ),
+      { phase: 'fetch', url, status: response.status },
+    );
+  }
   let buffer: ArrayBuffer;
   try {
     buffer = await response.arrayBuffer();
@@ -122,27 +145,38 @@ async function readBodyWithProgress(
   onProgress: SplatProgressCallback,
 ): Promise<ArrayBuffer> {
   const declared = Number(response.headers.get('Content-Length'));
-  const total = Number.isSafeInteger(declared) && declared > 0 ? declared : 0;
+  // Content-Length is the encoded representation's length. It cannot size a
+  // decoded stream when an intermediary applies gzip or Brotli, so use it only
+  // for identity bodies. The accumulation path keeps progress truthful instead
+  // of rejecting a perfectly valid compressed transfer as "short".
+  const encoding = response.headers.get('Content-Encoding');
+  const hasIdentityEncoding = encoding === null || /^identity$/i.test(encoding.trim());
+  const total =
+    hasIdentityEncoding && Number.isSafeInteger(declared) && declared > 0 ? declared : 0;
   const reader = (response.body as ReadableStream<Uint8Array>).getReader();
   const chunks: Uint8Array[] = [];
   const out = total > 0 ? new Uint8Array(total) : null;
   let loaded = 0;
 
   onProgress(0, total);
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (out) {
-      // A body longer than its own Content-Length would overrun the buffer.
-      if (loaded + value.byteLength > total) {
-        throw new Error(`Response body is longer than its Content-Length of ${total} bytes.`);
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (out) {
+        // A body longer than its own Content-Length would overrun the buffer.
+        if (loaded + value.byteLength > total) {
+          throw new Error(`Response body is longer than its Content-Length of ${total} bytes.`);
+        }
+        out.set(value, loaded);
+      } else {
+        chunks.push(value);
       }
-      out.set(value, loaded);
-    } else {
-      chunks.push(value);
+      loaded += value.byteLength;
+      onProgress(loaded, total);
     }
-    loaded += value.byteLength;
-    onProgress(loaded, total);
+  } finally {
+    reader.releaseLock();
   }
 
   if (out) {

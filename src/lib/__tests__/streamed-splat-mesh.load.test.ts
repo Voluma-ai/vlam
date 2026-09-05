@@ -89,6 +89,16 @@ describe('StreamedSplatMesh.load error contract', () => {
     );
   });
 
+  it('detects a streamed format from the URL pathname, not its signed query', async () => {
+    const fetchMock = vi.fn(async () => new Response('nope', { status: 404 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await StreamedSplatMesh.load('https://host.test/scene.lcc?signature=looks-like-rad').catch(() => {});
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://host.test/scene.lcc?signature=looks-like-rad',
+      expect.anything(),
+    );
+  });
+
   it('rejects with AbortError when the signal is already aborted', async () => {
     const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);

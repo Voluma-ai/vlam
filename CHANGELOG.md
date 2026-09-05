@@ -21,6 +21,23 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- Development-only Playwright backend checks (`npm run test:browser`) now run
+  separate forced-WebGL2 and WebGPU projects; WebGPU setup cannot silently
+  pass through a fallback. The CI browser job uses the package-pinned Chromium
+  runtime with SwiftShader arguments.
+
+- **Breaking (pre-1.0):** proxy relighting moved out of core and `/effects` to
+  `@voluma/vlam/relighting`. Use `attachRelighting(target, settings)` and its
+  controller instead of mesh `setRelighting` methods; no compatibility
+  re-exports are provided. The base viewer no longer loads this optional code.
+  The generic `displayColorModifier` hook is available on standalone and
+  unified meshes.
+
+- `/static-lod` remains available but is now explicitly experimental and
+  excluded from the v1.0 compatibility guarantee. It decodes full captures and
+  needs temporary hierarchy/array-copy memory; standard large-scene guidance
+  recommends prebuilt streamed captures.
+
 - Streamed SOG and `.lcc2` enable SH by default when a tile's `meta.json`
   reports `shN`. The loader peeks one chunk (a small JSON GET, or a ranged
   ZIP tail plus `meta.json`) instead of allocating pool textures speculatively.
@@ -35,6 +52,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   [the protocol](docs/render-benchmark.md).
 
 ### Performance
+
+- Experimental static LOD now chooses deterministic Morton-local pairs by
+  Gaussian similarity, color, and opacity before moment matching. This avoids
+  needless blends across nearby but separate surfaces while retaining the
+  existing worker-built, resident hierarchy contract.
+
+- Dirty texture uploads reuse one merged row list for core and packed-SH
+  textures, without copying the pending list or allocating a new span for
+  every overlap.
 
 - Added opt-in `SplatMeshOptions.shEvaluation: 'compute'` for a color-only SH
   cache on fully loaded standalone WebGPU meshes, plus demo/benchmark controls
@@ -60,6 +86,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- Loading now detects streamed formats from URL pathnames, preserves signed
+  queries on requests, validates every partial response's `Content-Range`, and
+  treats compressed `Content-Length` as an allocation hint rather than decoded
+  byte truth. Loading worker construction, message deserialization and posting
+  failures now settle through the terminal `SplatLoadError` worker path.
+
 - **Breaking:** `createSplatRenderer()` is now `createWebGPURenderer()`; the old
   name is removed. Its public options and GPU seam types now use the same
   `WebGPURenderer` terminology. The README, quick-start page, and first-viewer
@@ -69,6 +101,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   copyable equivalent for applications that own WebGPU device creation.
 
 ### Fixed
+
+- The demo defaults to stable radix sorting for LCC/LCC2 in desktop HD;
+  mobile, SD and smooth profiles retain counting. HD/SD switches live through
+  `SplatMesh.setSortStrategy`, and explicit `?sort=` choices still take precedence.
+- `MergedSplatMesh` now honors `sortStrategy: 'radix' | 'exact'` instead of
+  silently using counting sort. Stable radix keys include each source's live
+  transform, preserving one global depth order across overlapping clouds.
+  The exact-sort GPU harness checks permutations, stable ties, camera reversal,
+  source movement, rotation, scaling, removal, and unified streamed/static draws.
 
 - **Prefix-reader `.rad` publish gate no longer freezes first paint or refinement.**
   Speculative `fetchIntent` runs are excluded from the presented cut and no

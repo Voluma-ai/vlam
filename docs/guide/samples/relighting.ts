@@ -4,10 +4,11 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { SplatMesh, createWebGPURenderer } from '@voluma/vlam';
 import { loadSplatData } from '@voluma/vlam/loaders';
 import {
+  attachRelighting,
   createRelightingProxy,
   createRelightingShadowFactorMaterial,
   renderRelightingFactorMap,
-} from '@voluma/vlam/effects';
+} from '@voluma/vlam/relighting';
 
 const renderer = await createWebGPURenderer();
 renderer.setSize(innerWidth, innerHeight);
@@ -54,13 +55,14 @@ proxy.group.traverse((obj) => {
 
 const relightTarget = new THREE.RenderTarget(1, 1, { depthBuffer: true });
 relightTarget.texture.colorSpace = THREE.LinearSRGBColorSpace;
-splats.setRelighting({
+const relighting = attachRelighting(splats, {
   map: relightTarget.texture,
   blend: 1,
   brightness: 1,
   background: 1,
   softness: 3,
 });
+void relighting;
 
 function frame() {
   requestAnimationFrame(frame);

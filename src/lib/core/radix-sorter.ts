@@ -29,7 +29,8 @@ import {
 } from 'three/tsl';
 import type { SplatSorter } from './sorter';
 import type { SplatSortMetric } from './splat-mesh-types';
-import { releaseRendererAttributes } from './compute-sorter';
+import { releaseRendererAttributes, type PerSourceSortTransform } from './compute-sorter';
+import { sourceWorldTransform } from './splat-mesh-material';
 import {
   RADIX_BITS_PER_PASS,
   RADIX_EXACT_KEY_BITS,
@@ -93,6 +94,8 @@ export class RadixSorter implements SplatSorter {
     dataTextureWidth?: number;
     /** Gathered world-space centers for a unified renderer. */
     centersBuffer?: THREE.StorageBufferAttribute;
+    /** Live source placements for a merged pool of local-space centers. */
+    perSource?: PerSourceSortTransform;
     splatIndexAttribute: THREE.StorageInstancedBufferAttribute;
     sourceIndexAttribute: THREE.StorageBufferAttribute;
     /** Keep every Float32 depth bit instead of quantizing to 24 bits. */
@@ -100,12 +103,15 @@ export class RadixSorter implements SplatSorter {
     /** Camera-space ordering key. Default `'depth'`. */
     sortMetric?: SplatSortMetric;
   }) {
-    const { capacity, centersTexture, dataTextureWidth, centersBuffer } = options;
+    const { capacity, centersTexture, dataTextureWidth, centersBuffer, perSource } = options;
     if (!centersTexture && !centersBuffer) {
       throw new Error('RadixSorter: provide centersTexture or centersBuffer.');
     }
     if (centersTexture && dataTextureWidth === undefined) {
       throw new Error('RadixSorter: dataTextureWidth is required with centersTexture.');
+    }
+    if (centersBuffer && perSource) {
+      throw new Error('RadixSorter: work-buffer centers are already in world space.');
     }
     this.renderer = options.renderer;
     this.sortMetric = options.sortMetric ?? 'depth';
@@ -163,14 +169,23 @@ export class RadixSorter implements SplatSorter {
         const center = workCenters
           ? workCenters.element(poolIndex).xyz
           : textureLoad(centersTexture, texel as THREE.Node<'ivec2'>).xyz;
-        const viewZ = this.viewRow2.xyz.dot(center).add(this.viewRow2.w);
+        // Match the draw material's placement before measuring depth, so
+        // independently transformed sources interleave in one global order.
+        const depthPoint = perSource
+          ? sourceWorldTransform(
+              perSource.columns,
+              int(textureLoad(perSource.sourceIdTexture, texel as THREE.Node<'ivec2'>).r),
+              center,
+            ).worldCenter
+          : center;
+        const viewZ = this.viewRow2.xyz.dot(depthPoint).add(this.viewRow2.w);
         const depth =
           this.sortMetric === 'radial'
             ? this.viewRow0.xyz
-                .dot(center)
+                .dot(depthPoint)
                 .add(this.viewRow0.w)
                 .pow2()
-                .add(this.viewRow1.xyz.dot(center).add(this.viewRow1.w).pow2())
+                .add(this.viewRow1.xyz.dot(depthPoint).add(this.viewRow1.w).pow2())
                 .add(viewZ.pow2())
                 .sqrt()
                 .negate()
