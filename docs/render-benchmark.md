@@ -293,6 +293,91 @@ focus at completion despite normal cadence; it is flagged in the local report.
 Driver/clock/power state was not independently recorded. Repeat on the target
 hardware before choosing renderer optimizations.
 
+### Local findings: RTX 3090 / Ubuntu / Chromium 152 WebGPU
+
+A 32-run suite completed on 2026-09-05 on an NVIDIA GeForce RTX 3090, Ubuntu
+26.04.1, driver 595.84, Chromium 152.0.7977.64 snap, AC power, label
+`RTX3090-Ubuntu-Chromium-AC`, commit
+`da461f42d70103417f887f5a0ebd9a8499bc5581`. Spark **2.1.0 / WebGL2** (ANGLE
+Vulkan) versus VLAM WebGPU (nvidia/ampere, vertex SH, counting sort) on the
+same Langenthal interior pose and scene hash as the Windows RTX 3090 suite.
+These results do **not** validate the RTX 4070 Ti/Linux or M4 Max/macOS
+reports. They also do not describe stock snap-Chromium on Wayland: WebGPU
+required `--ozone-platform=x11` plus Vulkan/WebGPU flags. An empty-profile
+Wayland default failed with no WebGPU adapter (`vkCreateInstance: Found no
+drivers`).
+
+The table shows the median of three per-run medians, and the median of three
+observed FPS values. GPU render excludes the separate compute/worker timings.
+
+| Preset / motion | Spark GPU render | VLAM GPU render | Spark observed FPS | VLAM observed FPS |
+| --- | ---: | ---: | ---: | ---: |
+| Defaults / stationary | 6.39 ms | 8.16 ms | 59.92 | 59.92 |
+| Defaults / orbit | 7.12 ms | 8.07 ms | 59.85 | 59.92 |
+| Matched / stationary | 6.39 ms | 7.83 ms | 59.92 | 59.92 |
+| Matched / orbit | 7.24 ms | 7.70 ms | 59.92 | 59.92 |
+
+Both engines sat on the **60 Hz** display cap. GPU render times were a few
+milliseconds below the Windows RTX 3090 table; Spark was slightly cheaper on
+defaults, matched orbit was close. Frame-interval medians were 16.70 ms with
+p95 16.80 ms. All 32 runs stayed focused and visible with no slow-callback
+warning. Do not convert GPU durations into an uncapped FPS claim.
+
+Half-resolution matched probes measured Spark/VLAM **6.35/7.79 ms**
+stationary and **7.04/7.58 ms** orbit. There was no clear reduction from
+quartering pixel count. SH0 measured **6.39/6.32 ms** stationary and
+**6.87/6.45 ms** orbit. VLAM's SH0 change was larger than Spark's (about
+16–19% relative to the matched GPU-render medians). Each diagnostic has one
+repetition.
+
+VLAM orbit compute medians were approximately **2.14–2.29 ms per sorting
+frame**, at roughly six sorts per second, consistent with the native 166.67 ms
+interval for 8.72 million splats. Stationary compute is unavailable. Spark
+worker duration is unavailable.
+
+The local report at `.tmp/benchmark-report-rtx3090-ubuntu/findings.md` links
+all 32 original JSON files and image pairs. Its `summary.json` preserves
+compact run metadata. Suite ID: `c3ff80c1-2f66-4e0f-862c-6b74159e75af`.
+Private scene captures and results remain ignored local artifacts.
+
+Matched screenshots were checked for framing, orientation and completeness.
+Fixed images cannot prove equal sorting latency during motion.
+Driver/clock/thermal state was not independently recorded beyond AC power.
+
+### Local findings: RTX 3090 / Ubuntu / Chromium 152 WebGL fallback
+
+Same machine, Ubuntu, Chromium snap, AC power, Langenthal pose and scene hash
+as the Ubuntu WebGPU suite above. Label
+`RTX3090-Ubuntu-Chromium-AC-webgl-defaults`, empty Chromium profile, no
+`chrome://flags`, `?backend=webgl`. This is the stock-browser path: both
+engines used ANGLE OpenGL ES 3.2, and VLAM used worker sorting
+(`sortStrategy: worker`). A 32-run suite completed on 2026-09-06. Not a
+replacement for the flagged WebGPU baselines; it is the scenario a default
+Ubuntu Chromium user hits when the demo falls back to WebGL.
+
+| Preset / motion | Spark GPU render | VLAM WebGL GPU | Spark observed FPS | VLAM WebGL FPS |
+| --- | ---: | ---: | ---: | ---: |
+| Defaults / stationary | 6.51 ms | 7.86 ms | 59.95 | 59.95 |
+| Defaults / orbit | 6.99 ms | 7.87 ms | 59.48 | 59.88 |
+| Matched / stationary | 6.56 ms | 7.51 ms | 59.88 | 59.88 |
+| Matched / orbit | 7.16 ms | 7.57 ms | 59.42 | 59.88 |
+
+Observed FPS remained vsync-capped near 60. GPU render times were close to
+the flagged WebGPU suite on this GPU. One defaults VLAM stationary run
+measured 8.62 ms and one defaults orbit run 8.75 ms; the other two
+repetitions were ~7.8–7.9 ms. All are retained.
+
+Half-resolution matched probes measured Spark/VLAM **6.59/7.27 ms**
+stationary and **6.97/7.27 ms** orbit. SH0 measured **6.56/6.58 ms**
+stationary and **6.77/6.42 ms** orbit. VLAM's SH0 change was similar in
+direction to the WebGPU suite; Spark barely moved. Each diagnostic has one
+repetition. Worker duration is unavailable. All 32 runs stayed focused and
+visible with no slow-callback warning.
+
+The local report at `.tmp/benchmark-report-rtx3090-ubuntu/findings.md` also
+links these 32 JSON files and image pairs. Suite ID:
+`41d71a6d-ec33-4055-9209-9002d8640f98`.
+
 ### Local findings: M3 Air / macOS / Chrome 151
 
 A 32-run suite completed on 2026-09-04 on an Apple M3 MacBook Air (10-core
