@@ -34,6 +34,7 @@ function renderer() {
           maxStorageBufferBindingSize: 128 * 1024 * 1024,
           maxBufferSize: 256 * 1024 * 1024,
           maxComputeWorkgroupsPerDimension: 65535,
+          maxTextureDimension2D: 8192,
         },
       },
     },
@@ -58,29 +59,30 @@ describe('pool-indexed SH compute cache', () => {
     const texture = new THREE.DataTexture(new Float32Array(4), 1, 1);
     const cache = new ShComputeCache({
       capacity: 513,
-      sourceIndex: new THREE.StorageBufferAttribute(new Uint32Array(513), 1),
       centersTexture: texture,
+      colorsTexture: texture,
       covarianceBTexture: texture,
       dataTextureWidth: 1,
       sh: { mode: 'palette', bands: 1, paletteTexture: texture },
       localCameraPosition: uniform(new THREE.Vector3()),
+      localViewProjection: uniform(new THREE.Matrix4()),
     });
     const camera = new THREE.Vector3(0, 0, 3);
     cache.prepare(r, 17, camera, 0, 0, 0);
-    expect(cache.pass.count).toBe(17);
+    expect(cache.pass.count).toBe(513);
     expect(cache.snapshot()).toMatchObject({
       dispatches: 1,
-      gpuBytes: 513 * 12,
-      peakBytes: 513 * 24,
+      gpuBytes: 513 * 4,
+      peakBytes: 513 * 4,
     });
     cache.prepare(r, 17, camera, 0, 0, 1);
     expect(gpu.compute).toHaveBeenCalledTimes(1);
     expect(cache.enabled.value).toBe(true);
     cache.prepare(r, 17, camera.set(1, 0, 3), 0, 0, 2);
-    expect(cache.enabled.value).toBe(false);
-    expect(gpu.compute).toHaveBeenCalledTimes(1);
+    expect(cache.enabled.value).toBe(true);
+    expect(gpu.compute).toHaveBeenCalledTimes(2);
     cache.prepare(r, 17, camera, 0, 0, 151);
-    expect(gpu.compute).toHaveBeenCalledTimes(1);
+    expect(gpu.compute).toHaveBeenCalledTimes(2);
     cache.prepare(r, 17, camera, 0, 0, 152);
     expect(gpu.compute).toHaveBeenCalledTimes(2);
     expect(cache.enabled.value).toBe(true);
@@ -118,18 +120,51 @@ describe('pool-indexed SH compute cache', () => {
     mesh.dispose();
   });
 
+  it('fills every slot initially, then refreshes newly visible regions without a radial sort', () => {
+    const gpu = renderer();
+    const r = gpu as unknown as THREE.WebGPURenderer;
+    const texture = new THREE.DataTexture(new Float32Array(4), 1, 1);
+    const view = uniform(new THREE.Matrix4());
+    const cache = new ShComputeCache({
+      capacity: 8,
+      centersTexture: texture,
+      colorsTexture: texture,
+      covarianceBTexture: texture,
+      dataTextureWidth: 1,
+      sh: { mode: 'palette', bands: 1, paletteTexture: texture },
+      localCameraPosition: uniform(new THREE.Vector3()),
+      localViewProjection: view,
+    });
+    const camera = new THREE.Vector3(0, 0, 3);
+    cache.prepare(r, 8, camera, 0, 0, 0);
+    view.value.makeRotationY(0.2);
+    cache.prepare(r, 8, camera, 0, 0, 1, false, false, true);
+    expect(gpu.compute).toHaveBeenCalledTimes(1);
+    cache.prepare(r, 8, camera.set(1, 0, 3), 0, 0, 2, false, true, true);
+    view.value.makeRotationY(0.4);
+    cache.prepare(r, 8, camera, 0, 0, 3, false, false, true);
+    expect(gpu.compute).toHaveBeenCalledTimes(2);
+    view.value.makeRotationY(0.6);
+    cache.prepare(r, 8, camera, 0, 0, 153, false, false, true);
+    expect(gpu.compute).toHaveBeenCalledTimes(3);
+    expect(cache.snapshot()).toMatchObject({ viewCadenceRefreshes: 1 });
+    cache.dispose(r);
+    texture.dispose();
+  });
+
   it('reuses moving colors between sorts and refreshes on sort or settling', () => {
     const gpu = renderer();
     const r = gpu as unknown as THREE.WebGPURenderer;
     const texture = new THREE.DataTexture(new Float32Array(4), 1, 1);
     const cache = new ShComputeCache({
       capacity: 8,
-      sourceIndex: new THREE.StorageBufferAttribute(new Uint32Array(8), 1),
       centersTexture: texture,
+      colorsTexture: texture,
       covarianceBTexture: texture,
       dataTextureWidth: 1,
       sh: { mode: 'palette', bands: 1, paletteTexture: texture },
       localCameraPosition: uniform(new THREE.Vector3()),
+      localViewProjection: uniform(new THREE.Matrix4()),
     });
     const camera = new THREE.Vector3(0, 0, 3);
     expect(cache.prepare(r, 8, camera, 0, 0, 0)).toBe('cache');
@@ -141,13 +176,17 @@ describe('pool-indexed SH compute cache', () => {
     expect(cache.prepare(r, 8, camera.set(2, 0, 3), 0, 0, 60, false, true, true)).toBe('cache');
     expect(gpu.compute).toHaveBeenCalledTimes(2);
     cache.prepare(r, 8, camera.set(3, 0, 3), 0, 0, 70, false, false, true);
-    expect(cache.prepare(r, 8, camera, 0, 0, 220, false, false, true)).toBe('cache');
+    expect(cache.prepare(r, 8, camera.set(4, 0, 3), 0, 0, 220, false, false, true)).toBe(
+      'cache-between-sorts',
+    );
+    expect(gpu.compute).toHaveBeenCalledTimes(2);
+    expect(cache.prepare(r, 8, camera, 0, 0, 370, false, false, true)).toBe('cache');
     expect(gpu.compute).toHaveBeenCalledTimes(3);
-    cache.prepare(r, 8, camera, 1, 0, 221, false, false, true);
+    cache.prepare(r, 8, camera, 1, 0, 371, false, false, true);
     expect(gpu.compute).toHaveBeenCalledTimes(4);
     expect(cache.snapshot()).toMatchObject({
       motionFallbacks: 0,
-      sortCadenceDeferrals: 3,
+      sortCadenceDeferrals: 4,
       phase: 'cache',
     });
     cache.dispose(r);
@@ -198,6 +237,7 @@ describe('SH path selection and mesh lifecycle', () => {
     'xr',
     'sh-disabled',
     'device-limits',
+    'workload-limit',
     'unified-source',
     'source-placement',
     'dynamic-or-shared-pool',
@@ -210,7 +250,11 @@ describe('SH path selection and mesh lifecycle', () => {
     internals(mesh).ShCacheCtor = ShComputeCache;
     if (reason === 'webgl') gpu.backend.isWebGPUBackend = false;
     if (reason === 'xr') gpu.xr.isPresenting = true;
-    if (reason === 'device-limits') gpu.backend.device.limits.maxStorageBufferBindingSize = 1;
+    if (reason === 'device-limits') gpu.backend.device.limits.maxTextureDimension2D = 0;
+    if (reason === 'workload-limit') {
+      gpu.backend.device.limits.maxTextureDimension2D = 20_000;
+      Object.defineProperty(mesh, 'capacity', { configurable: true, value: 17_000_000 });
+    }
     if (reason === 'unified-source') mesh.setUnifiedPickVisibility(true);
     if (reason === 'source-placement') internals(mesh).perSourceSort = {};
     // Call just the preparation seam: XR projection has a different camera contract.
@@ -238,14 +282,14 @@ describe('SH path selection and mesh lifecycle', () => {
     expect(cache.snapshot().dispatches).toBe(1);
     camera.position.x = 1;
     update();
-    expect(cache.enabled.value).toBe(false);
-    expect(cache.snapshot().dispatches).toBe(1);
+    expect(cache.enabled.value).toBe(true);
+    expect(cache.snapshot().dispatches).toBe(2);
     now = 150;
     update();
     expect(cache.enabled.value).toBe(true);
     mesh.position.x = 0.5;
     update();
-    expect(cache.enabled.value).toBe(false);
+    expect(cache.enabled.value).toBe(true);
     now = 300;
     update();
     internals(mesh).contentRevision++;

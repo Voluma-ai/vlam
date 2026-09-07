@@ -30,7 +30,7 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
-const splats = await StreamedSplatMesh.load('/remote/jack/v/Dehaar/Dehaar.lcc2');
+const splats = await StreamedSplatMesh.load('/remote/voluma/cultural-heritage/Tempel/Tempel.lcc2');
 scene.add(splats);
 splats.updateWorldMatrix(true, false);
 

@@ -57,8 +57,8 @@ description: One-click Quest XR stability comparisons for the VLAM! viewer.
         <strong>Sandwijck LOD</strong>
         <span>Streamed SOG · recommended stability</span>
       </a>
-      <a class="xr-test-card xr-test-card-primary" href="/demo/?scene=%2Fremote%2Fjack%2Fv%2FDehaar%2FDehaar.lcc2&amp;backend=webgl&amp;xrDiagnostics=1&amp;xrStability=1&amp;xrScale=0.7&amp;xrSortHz=30&amp;xrDepth=off" target="_self">
-        <strong>Dehaar LCC2</strong>
+      <a class="xr-test-card xr-test-card-primary" href="/demo/?scene=%2Fremote%2Fvoluma%2Fcultural-heritage%2FTempel%2FTempel.lcc2&amp;backend=webgl&amp;xrDiagnostics=1&amp;xrStability=1&amp;xrScale=0.7&amp;xrSortHz=30&amp;xrDepth=off" target="_self">
+        <strong>Tempel LCC2</strong>
         <span>Streamed octree · recommended stability</span>
       </a>
     </div>

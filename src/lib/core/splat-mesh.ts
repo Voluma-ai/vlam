@@ -115,6 +115,13 @@ interface ChannelRecord {
  */
 const UPLOAD_STAGING_CACHE_SIZE = 12;
 
+/**
+ * Conservative standalone generated-color ceiling. The successful path
+ * replaces source color/SH bindings with one RGBA8 texture in the display
+ * graph; larger allocations still fall back until tested on physical devices.
+ */
+const SH_COMPUTE_CACHE_VALIDATED_MAX_BYTES = 64 * 1024 * 1024;
+
 /** Next power of two ≥ n (n ≥ 1). Staging GPU textures are immutable-sized. */
 function uploadStagingBucketHeight(height: number): number {
   const h = Math.max(1, height | 0);
@@ -332,6 +339,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private readonly viewport = uniform(new THREE.Vector2());
   /** Camera position in this mesh's local space, for SH view dependence. */
   private readonly localCameraPosition = uniform(new THREE.Vector3());
+  /** Mesh-local center to clip space, for conservative SH generation culling. */
+  private readonly shViewProjection = uniform(new THREE.Matrix4());
   /**
    * Frontier-cut limit for `foveationMode: 'frontier'` - the maximum
    * `own_size / distance` a splat may have and still draw (Spark's
@@ -1980,6 +1989,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.focal.value.set((projection[0] * viewportX) / 2, focalY);
     positionCamera.getWorldPosition(this.localCameraPosition.value);
     this.worldToLocal(this.localCameraPosition.value);
+    this.shViewProjection.value
+      .multiplyMatrices(camera.matrixWorldInverse, this.matrixWorld)
+      .premultiply(camera.projectionMatrix);
     // Frontier cut: a splat draws while its projected node size ≈ target px, i.e.
     // own_size · focalY / distance ≤ targetPx ⇔ own_size / distance ≤ targetPx / focalY.
     // focalY is the vertical focal length in px, matching the view-space depth the
@@ -2472,8 +2484,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     return {
       textures,
       sh,
-      ...(this.shCache ? { shContribution: this.shCache.contribution } : {}),
-      ...(this.shCache ? { shContributionEnabled: this.shCache.enabled } : {}),
+      ...(this.shCache ? { shFinalColor: this.shCache.finalColor } : {}),
       sourcePlacement: this.perSourceSort,
       displayColorModifier: this.displayColorModifierValue,
       // The uniform node instances, shared with the pick graph on purpose: one
@@ -2528,7 +2539,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     (this.material as THREE.Material).needsUpdate = true;
   }
 
-  /** Apple Silicon Macs use the validated hybrid path; every other auto cohort stays vertex. */
+  /** Apple Silicon Macs use generated final color; every other auto cohort stays vertex. */
   private prepareShEvaluation(
     renderer: THREE.WebGPURenderer,
     force = false,
@@ -2545,9 +2556,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           description?: string;
         };
         limits?: {
-          maxStorageBufferBindingSize: number;
-          maxBufferSize: number;
-          maxComputeWorkgroupsPerDimension: number;
+          maxTextureDimension2D?: number;
         };
       };
     };
@@ -2580,7 +2589,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     }
     const sh = this.materialInputs.sh;
     const limits = backend.device?.limits;
-    const bytes = this.capacity * 12;
+    const bytes = this.capacity * 4;
+    const shCacheHeight = Math.ceil(this.capacity / SplatMesh.DATA_TEXTURE_WIDTH);
     const reason =
       backend.isWebGPUBackend !== true
         ? 'webgl'
@@ -2588,21 +2598,22 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           ? 'dynamic-or-shared-pool'
           : this.perSourceSort !== null
             ? 'source-placement'
-            : this.unifiedPickVisibility !== null
-              ? 'unified-source'
-              : renderer.xr?.isPresenting
-                ? 'xr'
-                : sh === null
-                  ? 'sh-disabled'
-                  : !limits ||
-                      !(
-                        bytes <= limits.maxStorageBufferBindingSize && bytes <= limits.maxBufferSize
-                      ) ||
-                      !(this.activeCount <= limits.maxComputeWorkgroupsPerDimension * 256)
-                    ? 'device-limits'
-                    : this.shCacheFailed
-                      ? 'initialization-failed'
-                      : null;
+            : this.modifierList.length > 0
+              ? 'modifiers'
+              : this.unifiedPickVisibility !== null
+                ? 'unified-source'
+                : renderer.xr?.isPresenting
+                  ? 'xr'
+                  : sh === null
+                    ? 'sh-disabled'
+                    : !limits ||
+                        shCacheHeight > (limits.maxTextureDimension2D ?? Number.POSITIVE_INFINITY)
+                      ? 'device-limits'
+                      : bytes > SH_COMPUTE_CACHE_VALIDATED_MAX_BYTES
+                        ? 'workload-limit'
+                        : this.shCacheFailed
+                          ? 'initialization-failed'
+                          : null;
     if (reason !== null || sh === null) {
       this.shEvaluationState.reason = reason ?? 'sh-disabled';
       this.clearShCache();
@@ -2630,12 +2641,13 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       try {
         this.shCache = new this.ShCacheCtor({
           capacity: this.capacity,
-          sourceIndex: this.sourceIndexAttribute,
           centersTexture: this.centersTexture,
+          colorsTexture: this.materialInputs.textures.colorsTexture,
           covarianceBTexture: this.materialInputs.textures.covarianceBTexture,
           dataTextureWidth: SplatMesh.DATA_TEXTURE_WIDTH,
           sh,
           localCameraPosition: this.localCameraPosition,
+          localViewProjection: this.shViewProjection,
         });
         this.shCacheSh = sh;
         this.shCacheRenderer = renderer;
@@ -2661,13 +2673,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       reuseBetweenSorts,
     );
     this.shEvaluationState.reason =
-      phase === 'vertex-motion'
-        ? 'camera-motion-vertex'
-        : phase === 'cache-between-sorts'
-          ? 'camera-motion-cached'
-          : this.shEvaluation === 'auto'
-            ? 'apple-mac-auto'
-            : 'explicit-compute';
+      phase === 'cache-between-sorts'
+        ? 'camera-motion-cached'
+        : this.shEvaluation === 'auto'
+          ? 'apple-mac-auto'
+          : 'explicit-compute';
   }
 
   private requestSortIfNeeded(camera: THREE.Camera, renderer: THREE.WebGPURenderer): boolean {

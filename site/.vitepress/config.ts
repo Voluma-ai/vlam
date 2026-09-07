@@ -74,7 +74,7 @@ export default defineConfig({
       // navigation; `/demo/` is served by Vite, not a VitePress page.
       {
         text: 'Demo',
-        link: '/demo/?scene=/remote/jack/v/Dehaar/Dehaar.lcc2&fallback=goose',
+        link: '/demo/?scene=/remote/voluma/cultural-heritage/Tempel/Tempel.lcc2&fallback=goose',
         target: '_self',
       },
     ],

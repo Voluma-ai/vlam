@@ -80,6 +80,11 @@ whole file, offset 0) and no `count`. So the count is **measured when the tile
 decodes** (`SplatData.count`); `Dehaar`'s `env.sog` holds **29,366** splats.
 `StreamedSplatMesh.environmentSplatCount` reports it once loaded (0 before).
 
+The environment can extend well beyond the LOD root's bounds. Sorting includes
+its decoded centers in a grow-only bound alongside the root bounds, so distant
+sky splats retain distinct depth keys. A different sorting metric is not needed
+to compensate for an environment outside the LOD tree.
+
 How VLAM! loads it (`buildLcc2Scene` → `StreamedScene.environment`, applied by
 `StreamedSplatMesh`):
 

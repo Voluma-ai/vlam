@@ -1,6 +1,6 @@
 # Walk with collision detection
 
-**What you get:** a first-person walk through De Haar with solid floors and
+**What you get:** a first-person walk through Tempel with solid floors and
 walls, gravity, steps, and jumping.
 
 <ExampleEmbed
@@ -15,7 +15,7 @@ press Space to jump, and press Escape when you want the pointer back.
 
 A splat capture is a transparent point cloud, not a watertight surface. Testing
 the camera against every splat would be both expensive and physically vague.
-De Haar's `.lcc2` ships ordinary triangle meshes beside its splats for exactly
+Tempel's `.lcc2` ships ordinary triangle meshes beside its splats for exactly
 this job:
 
 ```ts
@@ -42,7 +42,7 @@ carry an orientation correction, so the helper copies each tile and applies
 `splats.matrixWorld` before building its BVH. Mutating the original buffers would
 break any second consumer, such as collision-based relighting.
 
-A De Haar tile can contain tens of thousands of triangles. Building all 24 BVHs
+A Tempel tile can contain tens of thousands of triangles. Building all BVHs
 in one task would pause the page, so the helper builds one per browser idle
 period. Tiles nearest the starting camera go first. Walking becomes available as
 soon as the first tile is queryable while the rest finish in the background.
@@ -92,5 +92,5 @@ raise it for scrambling over rough reconstruction geometry.
   quality budgets without collision
 - [Surface queries](/examples/surface-queries): lightweight height and nearest
   probes when you do not need solid walls
-- [Relight a capture](/examples/relight): reuse De Haar's collision geometry as
+- [Relight a capture](/examples/relight): reuse Tempel's collision geometry as
   a shadow proxy

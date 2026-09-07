@@ -21,10 +21,18 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- Extended the local Spark/VLAM benchmark with explicit supplied, proposed,
+  controlled, and historical-reference configurations; 720p/1440p five-run
+  primary suites; benchmark-only extent, sorting, SH, MSAA, and timestamp
+  controls; distinct live-harness and packaged-build hashes; and immutable
+  supplied-app workspace setup whose package identities include shipped
+  JavaScript.
 - Development-only Playwright backend checks (`npm run test:browser`) now run
   separate forced-WebGL2 and WebGPU projects; WebGPU setup cannot silently
   pass through a fallback. The CI browser job uses the package-pinned Chromium
-  runtime with SwiftShader arguments.
+  runtime with SwiftShader arguments. A WebGPU cache-motion probe verifies that
+  view-cropped SH refreshes during fixed-position rotation without a radial
+  sort and still produces valid pixels.
 
 - **Breaking (pre-1.0):** proxy relighting moved out of core and `/effects` to
   `@voluma/vlam/relighting`. Use `attachRelighting(target, settings)` and its
@@ -62,12 +70,18 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   textures, without copying the pending list or allocating a new span for
   every overlap.
 
-- Added opt-in `SplatMeshOptions.shEvaluation: 'compute'` for a color-only SH
+- Added opt-in `SplatMeshOptions.shEvaluation: 'compute'` for a final-RGBA8 SH
   cache on fully loaded standalone WebGPU meshes, plus demo/benchmark controls
-  and internal diagnostics. Moving-camera colors refresh with each accepted GPU
-  sort and are reused between sorts, then refresh after settling. On the M3 Air
-  SH3 test this reached 25.14 FPS stationary and a three-run median of 16.10 FPS
-  in orbit, compared with 11.92 and 11.13 on vertex SH.
+  and internal diagnostics. Moving-camera colors refresh for the draw frustum
+  with each accepted GPU sort and are reused between sorts, then refresh after
+  settling. View-only motion also refreshes on a bounded cadence when radial
+  sorting has no reason to submit, preventing newly visible splats from
+  retaining colors generated at an earlier camera position. Five-repeat M3 Air
+  comparisons against Spark met the performance
+  target at both 720p (0.975× stationary, 0.978× orbit mean-frame ratios) and
+  1440p (0.917× stationary, 0.940× orbit). Controlled mean-frame comparisons
+  also passed all four cases; three of four controlled p95 cases passed, with
+  720p stationary cadence variability still above the p95 target.
   `auto` selects it on identified Apple Silicon Macs and retains vertex SH on
   unidentified, mobile and other devices. See
   [the measurements and limitations](docs/render-benchmark.md).
@@ -102,6 +116,20 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   copyable equivalent for applications that own WebGPU device creation.
 
 ### Fixed
+
+- Streamed sort bounds now include decoded environment splats beyond the LOD
+  root bounds. Distant sky splats no longer collapse into one quantized sort
+  bucket, fixing blotchy skies in captures such as Tempel with the normal GPU
+  counting sorter.
+
+- Apple Silicon standalone SH now generates frustum-cropped final RGBA8 color
+  in compute and replaces the source-color/SH bindings in the display shader.
+  On the 8.72M SH3 M3 Air comparison this removed the large-cache blank-frame
+  failure and reduced a focused orbit mean from 118.82 ms to 53.51 ms without
+  changing splat count, SH bands, extent or sorting. Unsupported, modified and
+  above-64-MiB meshes retain vertex SH. The comparison harness also flags blank
+  fixed-pose screenshots, stops sequential suites, and records uncaptured
+  WebGPU errors plus device-loss state.
 
 - Cross-origin streamed scenes no longer fail when an existing object-storage
   CORS policy returns a correct `206` response without exposing `Content-Range`.

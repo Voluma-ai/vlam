@@ -30,7 +30,6 @@ import {
   cameraProjectionMatrix,
   positionGeometry,
   screenUV,
-  storage,
   textureLoad,
   uint,
   uniform,
@@ -358,10 +357,8 @@ export function evaluateSplatSh(
 
 /** Everything the material graph reads, gathered by the mesh. */
 export interface SplatMaterialBuildInputs {
-  /** Display-only RGB contribution cache; pick always evaluates the original graph. */
-  shContribution?: THREE.StorageBufferAttribute;
-  /** Selects cached SH, including bounded reuse between moving-camera sort updates. */
-  shContributionEnabled?: BoolUniform;
+  /** Display-only generated final color; pick always reads the source color. */
+  shFinalColor?: THREE.Texture;
   textures: SplatMaterialTextures;
   sh: SplatShInputs | null;
   /**
@@ -479,7 +476,8 @@ export function applySplatMaterialGraph(
   // With SH data, the view-dependent contribution - the higher SH bands
   // evaluated with the local view direction (Kerbl et al. convention,
   // coefficients read from the SOG palette) - is added to the base color.
-  const baseColor = textureLoad(textures.colorsTexture, splatTexel);
+  const cachedColor = mode === 'display' ? inputs.shFinalColor : undefined;
+  const baseColor = textureLoad(cachedColor ?? textures.colorsTexture, splatTexel);
   /** The splat's center as stored in the pool - its own source's data frame. */
   const poolCenter = textureLoad(textures.centersTexture, splatTexel).xyz;
   // Per-source placement is resolved here, ahead of everything else, so the
@@ -500,12 +498,8 @@ export function applySplatMaterialGraph(
     : null;
   /** Splat center in mesh-local space: the pool texel, or its placed position. */
   const localCenter = placed ? placed.worldCenter : asNode<'vec3'>(poolCenter);
-  const cachedSh = mode === 'display' ? inputs.shContribution : undefined;
-  const cachedRgb = cachedSh ? storage(cachedSh, 'float', cachedSh.count).toReadOnly() : null;
-  const cacheEnabled = inputs.shContributionEnabled;
-  const cachedOffset = splatIndex.mul(3);
   const uncachedShSum =
-    sh === null
+    sh === null || cachedColor
       ? null
       : (() => {
           const direction = (() => {
@@ -521,28 +515,7 @@ export function applySplatMaterialGraph(
           })();
           return evaluateSplatSh(sh, textures, splatTexel, direction);
         })();
-  const shSum =
-    uncachedShSum === null
-      ? null
-      : cachedRgb && cacheEnabled
-        ? Fn(() => {
-            // A value-level select would evaluate both sides and retain the
-            // vertex SH cost even while the cache is active.
-            const selected = vec3(0).toVar();
-            If(cacheEnabled, () => {
-              selected.assign(
-                vec3(
-                  cachedRgb.element(cachedOffset),
-                  cachedRgb.element(cachedOffset.add(1)),
-                  cachedRgb.element(cachedOffset.add(2)),
-                ),
-              );
-            }).Else(() => {
-              selected.assign(uncachedShSum);
-            });
-            return selected;
-          })()
-        : uncachedShSum;
+  const shSum = uncachedShSum;
   const colorAfterSh =
     shSum === null ? baseColor : vec4(baseColor.rgb.add(shSum).clamp(0.0, 1.0), baseColor.a);
   /** Approximate surface normal for lighting hooks: Σ⁻¹ amplifies the

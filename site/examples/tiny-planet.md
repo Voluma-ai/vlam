@@ -15,8 +15,8 @@ curves away from you.
 That is the opposite of a cubemap tiny-planet, where you reproject the *image*.
 Here the 3D capture is still a 3D capture. You can walk around on it.
 
-This example streams the same Dehaar `.lcc2` the
-<a href="/demo/?scene=/remote/jack/v/Dehaar/Dehaar.lcc2&effects=warp&fallback=goose" target="_self">viewer</a>
+This example streams the same Tempel `.lcc2` the
+<a href="/demo/?scene=/remote/voluma/cultural-heritage/Tempel/Tempel.lcc2&effects=warp&fallback=goose" target="_self">viewer</a>
 opens with `?effects=warp`. How streaming itself works is
 [Huge scenes](/examples/big-scenes).
 

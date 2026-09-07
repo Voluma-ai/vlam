@@ -84,7 +84,7 @@ const budget = resolveSplatBudget();
 
 // The `.lcc2` is a small index; splat data arrives in chunks while you look
 // around. `/remote/…` is the docs/demo proxy onto assets.voluma.ai.
-const splats = await StreamedSplatMesh.load('/remote/jack/v/Dehaar/Dehaar.lcc2', {
+const splats = await StreamedSplatMesh.load('/remote/voluma/cultural-heritage/Tempel/Tempel.lcc2', {
   budget,
   lodBaseDistance: 10, // inside this many world units, the finest detail is used
 });

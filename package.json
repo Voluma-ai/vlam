@@ -1,6 +1,6 @@
 {
   "name": "@voluma/vlam",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "VLAM! - A lightweight WebGPU Gaussian splat viewer for three.js, built for high performance, streaming LOD, and fully customizable rendering through an open shader pipeline.",
   "license": "MIT",
   "author": "Voluma",
@@ -103,6 +103,7 @@
   },
   "scripts": {
     "benchmark:cache": "node scripts/cache-benchmark-scene.mjs",
+    "benchmark:prepare-supplied": "node scripts/prepare-supplied-benchmark.mjs",
     "dev": "npm run docs:api:site && vitepress dev site",
     "docs:api:site": "typedoc --options site/typedoc.site.json",
     "build:site": "npm run typecheck && node scripts/build-site.mjs",

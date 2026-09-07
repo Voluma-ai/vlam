@@ -79,15 +79,17 @@ export function resolveSplatPerformanceProfile(
 /** Construction options for {@link SplatMesh}. */
 export interface SplatMeshOptions {
   /**
-   * Where higher-order SH is evaluated. `auto` (default) selects the hybrid
-   * compute cache on identified Apple Silicon Macs and retains vertex
-   * evaluation elsewhere.
-   * `compute` opts fully loaded, standalone WebGPU meshes into an RGB float32
-   * cache (12 bytes per pool slot; initially also mirrored on the CPU). It
-   * refreshes moving-camera colors whenever the GPU sorter accepts a new order,
-   * reuses them between sorts, and refreshes after 150 ms of positional stability.
-   * Pure rotation reuses the cache because SH depends on eye position, not gaze.
-   * Unsupported paths, XR and insufficient device limits retain vertex SH.
+   * Where higher-order SH is evaluated. `auto` (default) selects generated
+   * final color on identified Apple Silicon Macs and retains vertex evaluation
+   * elsewhere.
+   * `compute` opts fully loaded, unmodified standalone WebGPU meshes into an
+   * RGBA8 cache (4 bytes per pool slot, with no CPU mirror). The display shader
+   * reads that final color instead of retaining the source-color and SH-palette
+   * bindings. Moving views refresh the same conservative frustum as the draw
+   * shader whenever the GPU sorter accepts a new order and reuse it between
+   * sorts; the initial full pass keeps pure rotation exact at a fixed eye.
+   * Unsupported paths, modifiers, XR and insufficient device limits retain
+   * vertex SH.
    * Does not change SH bands, visual quality or sorting cadence.
    * @experimental Validate the device, browser and workload before opting in.
    */

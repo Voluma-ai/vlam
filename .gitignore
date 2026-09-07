@@ -10,6 +10,7 @@ coverage
 test-results
 playwright-report
 blob-report
+splatstest
 .claude
 .cursor*
 bundle-visualization.html
