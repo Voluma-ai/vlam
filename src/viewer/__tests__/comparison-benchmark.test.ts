@@ -21,9 +21,10 @@ describe('shared comparison configuration', () => {
       width: 1280,
       height: 720,
       warmup: 5,
-      seconds: 15,
-      preset: 'defaults',
+      seconds: 30,
+      preset: 'proposed',
       shEvaluation: 'auto',
+      msaa: false,
     });
     expect(
       comparisonConfig('/spark-benchmark.html', new URLSearchParams('preset=matched&sh=0')),
@@ -94,13 +95,18 @@ describe('shared comparison configuration', () => {
         .position,
     ).toEqual(pose.position);
   });
-  it('keeps 24 baseline runs and eight isolated probes with alternating order', () => {
+  it('builds five alternating primary repetitions and isolated probes', () => {
     const suite = comparisonSuite();
-    expect(suite).toHaveLength(32);
-    expect(suite.slice(0, 24).every((run) => run.get('probe') === 'baseline')).toBe(true);
+    expect(suite).toHaveLength(92);
+    expect(suite.slice(0, 80).every((run) => run.get('probe') === 'primary')).toBe(true);
     expect(suite[0]!.get('engine')).toBe('spark');
-    expect(suite[8]!.get('engine')).toBe('vlam');
-    expect(suite.slice(24).every((run) => run.get('sh') !== '0' || !run.has('width'))).toBe(true);
+    expect(suite[16]!.get('engine')).toBe('vlam');
+    expect(suite.slice(0, 80).every((run) => run.get('gpuTimestamps') === '0')).toBe(true);
+    expect(suite.slice(80).filter((run) => run.get('probe') === 'timestamps')).toHaveLength(4);
+    const controlled = comparisonSuite('controlled');
+    expect(controlled).toHaveLength(40);
+    expect(controlled.every((run) => run.get('preset') === 'controlled')).toBe(true);
+    expect(controlled.every((run) => run.get('probe') === 'primary')).toBe(true);
     expect(summarize([]).medianMs).toBeNull();
   });
 });

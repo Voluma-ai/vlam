@@ -23,6 +23,10 @@ const status = document.querySelector<HTMLElement>('#status')!;
 const results = document.querySelector<HTMLElement>('#results')!;
 const view = document.querySelector<HTMLElement>('#view')!;
 const links = document.querySelector<HTMLElement>('#links')!;
+const suitePreset = params.get('suitePreset');
+if (suitePreset !== null && suitePreset !== 'proposed' && suitePreset !== 'controlled')
+  throw new Error('Invalid suitePreset.');
+const suiteRuns = comparisonSuite(suitePreset ?? undefined);
 
 function download(name: string, href: string): void {
   const link = document.createElement('a');
@@ -31,10 +35,50 @@ function download(name: string, href: string): void {
   link.click();
 }
 
+async function screenshotSignal(data: string): Promise<{
+  sampledPixels: number;
+  nonBlackPixels: number;
+  maximumChannel: number;
+  blank: boolean;
+}> {
+  const image = new Image();
+  image.src = data;
+  await image.decode();
+  const sample = document.createElement('canvas');
+  sample.width = sample.height = 64;
+  const context = sample.getContext('2d', { willReadFrequently: true });
+  if (!context) throw new Error('Could not create screenshot validation context.');
+  context.drawImage(image, 0, 0, sample.width, sample.height);
+  const pixels = context.getImageData(0, 0, sample.width, sample.height).data;
+  let nonBlackPixels = 0;
+  let maximumChannel = 0;
+  for (let index = 0; index < pixels.length; index += 4) {
+    const value = Math.max(pixels[index]!, pixels[index + 1]!, pixels[index + 2]!);
+    maximumChannel = Math.max(maximumChannel, value);
+    if (value > 1) nonBlackPixels++;
+  }
+  return {
+    sampledPixels: pixels.length / 4,
+    nonBlackPixels,
+    maximumChannel,
+    blank: maximumChannel <= 1,
+  };
+}
+
 function suiteUrl(step: number): string {
-  const run = comparisonSuite()[step]!;
+  const run = suiteRuns[step]!;
   const query = new URLSearchParams(params);
-  for (const key of ['engine', 'preset', 'mode', 'repeat', 'probe', 'sh', 'width', 'height'])
+  for (const key of [
+    'engine',
+    'preset',
+    'mode',
+    'repeat',
+    'probe',
+    'sh',
+    'width',
+    'height',
+    'gpuTimestamps',
+  ])
     query.delete(key);
   run.forEach((value, key) => query.set(key, value));
   query.set('suite', '1');
@@ -79,12 +123,17 @@ async function run(): Promise<void> {
     location.href = url.href;
   };
   const step = Number(params.get('step') ?? 0);
-  if (!Number.isInteger(step) || step < 0 || step >= comparisonSuite().length)
+  if (!Number.isInteger(step) || step < 0 || step >= suiteRuns.length)
     throw new Error('Invalid suite step.');
-  const suiteLabel =
-    params.get('suite') === '1' ? `Run ${step + 1}/${comparisonSuite().length}: ` : '';
+  const suiteLabel = params.get('suite') === '1' ? `Run ${step + 1}/${suiteRuns.length}: ` : '';
   status.textContent = `${suiteLabel}Loading ${config.engine.toUpperCase()} — ${manifest.count.toLocaleString()} splats…`;
-  const camera = new PerspectiveCamera(45, config.width / config.height, 0.01, 10000);
+  const suppliedCamera = config.preset === 'supplied';
+  const camera = new PerspectiveCamera(
+    suppliedCamera ? 60 : 45,
+    config.width / config.height,
+    0.01,
+    suppliedCamera ? 500 : 10000,
+  );
   applyComparisonCamera(camera, pose, 0, false);
   let adapter: ComparisonAdapter | undefined;
   try {
@@ -178,6 +227,15 @@ async function run(): Promise<void> {
         visibility: document.visibilityState,
         focused: document.hasFocus(),
         devicePixelRatio,
+        screen: {
+          width: screen.width,
+          height: screen.height,
+          colorDepth: screen.colorDepth,
+          pixelDepth: screen.pixelDepth,
+          refreshRate: (screen as Screen & { refreshRate?: number }).refreshRate ?? null,
+        },
+        hardwareConcurrency: navigator.hardwareConcurrency,
+        deviceMemory: (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? null,
       },
       pacingAssessment:
         (frameSummary.medianMs ?? 0) > 100
@@ -189,7 +247,7 @@ async function run(): Promise<void> {
       probe: params.get('probe') ?? 'baseline',
       config,
       scene: manifest,
-      camera: { ...pose, fov: 45, near: 0.01, far: 10000 },
+      camera: { ...pose, fov: camera.fov, near: camera.near, far: camera.far },
       renderer: active.metadata,
       diagnostics: active.diagnostics?.() ?? null,
       measuredDispatches: {
@@ -220,6 +278,13 @@ async function run(): Promise<void> {
         gpuCompute: [...gpu.compute],
         dispatchFrames,
       },
+      visualValidation: [] as {
+        name: string;
+        sampledPixels: number;
+        nonBlackPixels: number;
+        maximumChannel: number;
+        blank: boolean;
+      }[],
       caveats: [
         'FPS is observed animation callback cadence, not display presentation or uncapped throughput.',
         'CPU submission excludes asynchronous worker execution and GPU completion.',
@@ -238,6 +303,15 @@ async function run(): Promise<void> {
         data: active.canvas.toDataURL('image/png'),
       });
     }
+    result.visualValidation = await Promise.all(
+      screenshots.map(async (shot) => ({
+        name: shot.name,
+        ...(await screenshotSignal(shot.data)),
+      })),
+    );
+    // Validation errors can be delivered asynchronously after submission; take
+    // a fresh snapshot after the fixed-pose renders, immediately before dispose.
+    result.diagnostics = active.diagnostics?.() ?? null;
     active.dispose();
     adapter = undefined;
     view.replaceChildren(
@@ -257,7 +331,10 @@ async function run(): Promise<void> {
     const saved = (await save.json()) as { directory: string };
     const text = JSON.stringify(result, null, 2);
     results.textContent = text;
-    status.textContent = `${suiteLabel}Complete. ${frameSummary.medianMs?.toFixed(2)} ms frame interval; ${result.gpu.render.medianMs?.toFixed(2) ?? 'unavailable'} ms GPU render. Saved to ${saved.directory}`;
+    const blankPose = result.visualValidation.find((entry) => entry.blank);
+    status.textContent = blankPose
+      ? `${suiteLabel}INVALID: fixed ${blankPose.name} pose is blank. Saved to ${saved.directory}`
+      : `${suiteLabel}Complete. ${frameSummary.medianMs?.toFixed(2)} ms frame interval; ${result.gpu.render.medianMs?.toFixed(2) ?? 'unavailable'} ms GPU render. Saved to ${saved.directory}`;
     const jsonButton = document.querySelector<HTMLButtonElement>('#download-json')!;
     jsonButton.disabled = false;
     jsonButton.onclick = () => {
@@ -268,7 +345,7 @@ async function run(): Promise<void> {
     const shotButton = document.querySelector<HTMLButtonElement>('#download-shot')!;
     shotButton.disabled = false;
     shotButton.onclick = () => download(`${config.engine}-front.png`, screenshots[0]!.data);
-    if (params.get('suite') === '1' && step + 1 < comparisonSuite().length) {
+    if (!blankPose && params.get('suite') === '1' && step + 1 < suiteRuns.length) {
       location.href = suiteUrl(step + 1);
     }
   } finally {

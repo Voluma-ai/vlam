@@ -4,16 +4,20 @@ import { PerspectiveCamera, Vector3 } from 'three';
 export interface ComparisonConfig {
   engine: 'spark' | 'vlam';
   scene: 'Langenthal-Manola4A' | 'goose';
-  preset: 'defaults' | 'matched';
+  preset: 'supplied' | 'proposed' | 'controlled' | 'reference' | 'defaults' | 'matched';
   mode: 'stationary' | 'orbit' | 'rotate' | 'translate' | 'settle';
   shEvaluation: 'auto' | 'vertex' | 'compute';
+  sortMetric: 'depth' | 'radial' | undefined;
+  sortStrategy: 'counting' | 'radix' | 'exact' | 'worker' | undefined;
+  maxStdDev: number | undefined;
   /** VLAM only: `webgpu` (default) or forced `webgl`. Spark is always WebGL2. */
   backend: 'webgpu' | 'webgl';
   width: number;
   height: number;
   warmup: number;
   seconds: number;
-  sh: 0 | undefined;
+  sh: 0 | 1 | 2 | 3 | undefined;
+  msaa: boolean;
   timestamps: boolean;
   position?: [number, number, number];
   target?: [number, number, number];
@@ -45,13 +49,16 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
   if (position && target && position.every((value, axis) => value === target[axis]))
     throw new Error('Camera position must differ from target.');
   for (const [key, allowed] of Object.entries({
-    preset: ['defaults', 'matched'],
+    preset: ['supplied', 'proposed', 'controlled', 'reference', 'defaults', 'matched'],
     scene: ['Langenthal-Manola4A', 'goose'],
-    sh: ['0'],
+    sh: ['0', '1', '2', '3'],
     gpuTimestamps: ['0', '1'],
     backend: ['webgpu', 'webgl'],
     mode: ['stationary', 'orbit', 'rotate', 'translate', 'settle'],
     shEvaluation: ['auto', 'vertex', 'compute'],
+    sortMetric: ['depth', 'radial'],
+    sortStrategy: ['counting', 'radix', 'exact', 'worker'],
+    msaa: ['0', '1'],
   })) {
     if (params.has(key) && !allowed.includes(params.get(key)!)) throw new Error(`Invalid ${key}.`);
   }
@@ -60,18 +67,23 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
   if (engine === 'spark' && params.get('backend') === 'webgpu')
     throw new Error('Spark comparison is WebGL2-only; omit backend or use backend=webgl.');
   const backend = engine === 'spark' || params.get('backend') === 'webgl' ? 'webgl' : 'webgpu';
+  const preset = (params.get('preset') ?? 'proposed') as ComparisonConfig['preset'];
   return {
     engine,
     scene: params.get('scene') === 'goose' ? 'goose' : 'Langenthal-Manola4A',
-    preset: params.get('preset') === 'matched' ? 'matched' : 'defaults',
+    preset,
     mode: (params.get('mode') ?? 'stationary') as ComparisonConfig['mode'],
     shEvaluation: (params.get('shEvaluation') ?? 'auto') as ComparisonConfig['shEvaluation'],
+    sortMetric: params.get('sortMetric') as ComparisonConfig['sortMetric'],
+    sortStrategy: params.get('sortStrategy') as ComparisonConfig['sortStrategy'],
+    maxStdDev: params.has('maxStdDev') ? positive('maxStdDev', 3, 8) : undefined,
     backend,
     width: Math.max(1, Math.floor(positive('width', 1280, 4096))),
     height: Math.max(1, Math.floor(positive('height', 720, 4096))),
     warmup: positive('warmup', 5, 120),
-    seconds: positive('seconds', 15, 600),
-    sh: params.get('sh') === '0' ? 0 : undefined,
+    seconds: positive('seconds', 30, 600),
+    sh: params.has('sh') ? (Number(params.get('sh')) as 0 | 1 | 2 | 3) : undefined,
+    msaa: params.has('msaa') ? params.get('msaa') === '1' : preset === 'supplied',
     timestamps: params.get('gpuTimestamps') !== '0',
     position,
     target,
@@ -126,34 +138,45 @@ export function comparisonUrl(
   return `/${engine}-benchmark.html?${query}`;
 }
 
-/** Alternating renderer order for three baselines and separate one-factor probes. */
-export function comparisonSuite(): URLSearchParams[] {
+/** Five alternating primary repetitions plus separate one-factor probes. */
+export function comparisonSuite(onlyPreset?: 'proposed' | 'controlled'): URLSearchParams[] {
   const runs: URLSearchParams[] = [];
-  for (let repeat = 1; repeat <= 3; repeat++) {
-    for (const preset of ['defaults', 'matched']) {
+  for (let repeat = 1; repeat <= 5; repeat++) {
+    for (const preset of onlyPreset ? [onlyPreset] : ['proposed', 'controlled']) {
       for (const mode of ['stationary', 'orbit']) {
-        for (const engine of repeat % 2 ? ['spark', 'vlam'] : ['vlam', 'spark'])
-          runs.push(
-            new URLSearchParams({
-              engine,
-              preset,
-              mode,
-              repeat: String(repeat),
-              probe: 'baseline',
-            }),
-          );
+        for (const [width, height] of [
+          ['1280', '720'],
+          ['2560', '1440'],
+        ] as const)
+          for (const engine of repeat % 2 ? ['spark', 'vlam'] : ['vlam', 'spark'])
+            runs.push(
+              new URLSearchParams({
+                engine,
+                preset,
+                mode,
+                width,
+                height,
+                repeat: String(repeat),
+                probe: 'primary',
+                gpuTimestamps: '0',
+              }),
+            );
       }
     }
   }
-  for (const probe of ['half-resolution', 'sh0']) {
+  if (onlyPreset) return runs;
+  for (const probe of ['reference', 'sh0', 'timestamps']) {
     for (const mode of ['stationary', 'orbit']) {
       for (const engine of ['spark', 'vlam']) {
-        const run = new URLSearchParams({ engine, preset: 'matched', mode, repeat: '1', probe });
+        const run = new URLSearchParams({
+          engine,
+          preset: probe === 'reference' ? 'reference' : 'controlled',
+          mode,
+          repeat: '1',
+          probe,
+          gpuTimestamps: probe === 'timestamps' ? '1' : '0',
+        });
         if (probe === 'sh0') run.set('sh', '0');
-        else {
-          run.set('width', '640');
-          run.set('height', '360');
-        }
         runs.push(run);
       }
     }

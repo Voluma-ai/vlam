@@ -9,18 +9,26 @@ export async function createComparisonSpark(
   config: ComparisonConfig,
   url: string,
 ): Promise<ComparisonAdapter> {
-  const renderer = new WebGLRenderer({ antialias: false });
+  const renderer = new WebGLRenderer({ antialias: config.msaa });
   renderer.setPixelRatio(1);
   renderer.setClearColor(0x000000, 1);
   renderer.setSize(config.width, config.height, false);
   renderer.toneMapping = NoToneMapping;
-  const matched = config.preset === 'matched';
+  const controlled = config.preset === 'controlled';
+  const reference = config.preset === 'reference' || config.preset === 'matched';
+  const aligned = controlled || reference;
+  const maxStdDev = config.maxStdDev ?? (controlled ? Math.sqrt(8) : reference ? 3 : undefined);
+  const sortRadial = config.sortMetric
+    ? config.sortMetric === 'radial'
+    : controlled
+      ? true
+      : reference
+        ? false
+        : undefined;
   const spark = new SparkRenderer({
     renderer,
-    ...(matched
+    ...(aligned
       ? {
-          maxStdDev: 3,
-          sortRadial: false,
           enableLod: false,
           minPixelRadius: 0,
           preBlurAmount: 0.3,
@@ -28,8 +36,10 @@ export async function createComparisonSpark(
           encodeLinear: false,
         }
       : {}),
+    ...(maxStdDev === undefined ? {} : { maxStdDev }),
+    ...(sortRadial === undefined ? {} : { sortRadial }),
   });
-  const mesh = new SplatMesh({ url, ...(matched ? { lod: false, enableLod: false } : {}) });
+  const mesh = new SplatMesh({ url, ...(aligned ? { lod: false, enableLod: false } : {}) });
   try {
     await mesh.initialized;
   } catch (error) {
@@ -39,7 +49,7 @@ export async function createComparisonSpark(
     renderer.forceContextLoss();
     throw error;
   }
-  if (config.sh === 0) mesh.maxSh = 0;
+  if (config.sh !== undefined) mesh.maxSh = config.sh;
   mesh.rotation.x = Math.PI;
   const scene = new Scene();
   scene.add(spark, mesh);
@@ -76,7 +86,7 @@ export async function createComparisonSpark(
         encodeLinear: spark.encodeLinear,
         clipXY: spark.clipXY,
         outputColorSpace: renderer.outputColorSpace,
-        msaa: 0,
+        msaa: renderer.getContextAttributes()?.antialias === true ? 'enabled' : 0,
       },
       differences: [
         'Asynchronous worker sorting; main-thread and GPU samples exclude worker duration',

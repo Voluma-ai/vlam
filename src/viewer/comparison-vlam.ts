@@ -35,7 +35,7 @@ export async function createComparisonVlam(
   const data = await loadSplatData(url);
   const renderer = await createWebGPURenderer({
     ...(useWebGl ? { forceWebGL: true } : { requireWebGpu: true }),
-    antialias: false,
+    antialias: config.msaa,
     // WebGPU timestamps only; WebGL uses EXT_disjoint_timer_query_webgl2 below.
     trackTimestamp: config.timestamps && !useWebGl,
   });
@@ -43,25 +43,32 @@ export async function createComparisonVlam(
   renderer.setPixelRatio(1);
   renderer.setClearColor(0x000000, 1);
   renderer.setSize(config.width, config.height, false);
-  const matched = config.preset === 'matched';
+  const controlled = config.preset === 'controlled';
+  const reference = config.preset === 'reference' || config.preset === 'matched';
+  const proposed = config.preset === 'proposed';
+  const aligned = controlled || reference;
+  const resolvedMaxStdDev =
+    config.maxStdDev ?? (controlled || proposed ? Math.sqrt(8) : reference ? 3 : undefined);
+  const resolvedSortMetric = config.sortMetric ?? (controlled || proposed ? 'radial' : undefined);
   const mesh = new SplatMesh(data, {
     shEvaluation: config.shEvaluation,
     orientation: 'source',
-    ...(matched
+    ...(aligned
       ? ({
           performanceProfile: 'quality',
           shBands: 3,
-          maxStdDev: 3,
-          sortMetric: 'depth',
           minSplatSizePx: 0,
           antialias: false,
           srgbOutput: true,
         } as const)
       : {}),
-    ...(config.sh === 0 ? { shBands: 0 } : {}),
+    ...(resolvedMaxStdDev === undefined ? {} : { maxStdDev: resolvedMaxStdDev }),
+    ...(resolvedSortMetric === undefined ? {} : { sortMetric: resolvedSortMetric }),
+    ...(config.sortStrategy === undefined ? {} : { sortStrategy: config.sortStrategy }),
+    ...(config.sh === undefined ? {} : { shBands: config.sh }),
   });
   mesh.rotation.x = Math.PI;
-  if (matched) renderer.outputColorSpace = LinearSRGBColorSpace;
+  if (aligned) renderer.outputColorSpace = LinearSRGBColorSpace;
   renderer.toneMapping = NoToneMapping;
   const scene = new Scene();
   scene.add(mesh);
@@ -77,9 +84,37 @@ export async function createComparisonVlam(
         device?: string;
         description?: string;
       };
+      limits?: {
+        maxStorageBufferBindingSize?: number;
+        maxBufferSize?: number;
+        maxComputeWorkgroupsPerDimension?: number;
+        maxStorageBuffersPerShaderStage?: number;
+      };
+      addEventListener?: (
+        type: string,
+        listener: (event: { error?: { message?: string }; preventDefault?: () => void }) => void,
+      ) => void;
+      removeEventListener?: (
+        type: string,
+        listener: (event: { error?: { message?: string }; preventDefault?: () => void }) => void,
+      ) => void;
+      lost?: Promise<{ reason?: string; message?: string }>;
     };
     timestampQueryPool: Partial<Record<'render' | 'compute', ComparisonQueryPool | null>>;
   };
+  const deviceErrors: string[] = [];
+  let deviceLost: { reason?: string; message?: string } | null = null;
+  const onUncapturedError = (event: {
+    error?: { message?: string };
+    preventDefault?: () => void;
+  }): void => {
+    event.preventDefault?.();
+    deviceErrors.push(event.error?.message ?? 'Unknown WebGPU validation error.');
+  };
+  backend.device?.addEventListener?.('uncapturederror', onUncapturedError);
+  void backend.device?.lost?.then((info) => {
+    deviceLost = info;
+  });
   if (useWebGl) {
     if (backend.isWebGPUBackend === true)
       throw new Error('VLAM WebGL comparison received a WebGPU backend.');
@@ -89,7 +124,7 @@ export async function createComparisonVlam(
 
   const view = mesh.getUnifiedSourceView();
   const isMobile = detectSplatDeviceProfile()?.isMobile === true;
-  const sortStrategy = useWebGl ? 'worker' : 'counting';
+  const sortStrategy = useWebGl ? 'worker' : (config.sortStrategy ?? 'counting');
   const baseMetadata = {
     engine: 'vlam' as const,
     version,
@@ -104,7 +139,7 @@ export async function createComparisonVlam(
       minSplatSizePx: view.minSplatSizePx,
       antialias: view.antialias,
       srgbOutput: view.srgbOutput,
-      sortMetric: 'depth',
+      sortMetric: resolvedSortMetric ?? 'depth',
       sortStrategy,
       sortIntervalMs: 'library adaptive default',
       resolvedSortIntervalMs: automaticSortIntervalMs(data.count, isMobile),
@@ -215,7 +250,11 @@ export async function createComparisonVlam(
   const adapterInfo = backend.device?.adapterInfo;
   return {
     canvas: renderer.domElement,
-    diagnostics: () => shEvaluationDiagnostics(mesh),
+    diagnostics: () => ({
+      ...shEvaluationDiagnostics(mesh),
+      deviceErrors: [...deviceErrors],
+      deviceLost,
+    }),
     metadata: {
       ...baseMetadata,
       gpu: adapterInfo
@@ -224,6 +263,16 @@ export async function createComparisonVlam(
             architecture: adapterInfo.architecture,
             device: adapterInfo.device,
             description: adapterInfo.description,
+          }
+        : null,
+      limits: backend.device?.limits
+        ? {
+            maxStorageBufferBindingSize: backend.device.limits.maxStorageBufferBindingSize ?? null,
+            maxBufferSize: backend.device.limits.maxBufferSize ?? null,
+            maxComputeWorkgroupsPerDimension:
+              backend.device.limits.maxComputeWorkgroupsPerDimension ?? null,
+            maxStorageBuffersPerShaderStage:
+              backend.device.limits.maxStorageBuffersPerShaderStage ?? null,
           }
         : null,
     },
@@ -269,6 +318,7 @@ export async function createComparisonVlam(
       };
     },
     dispose() {
+      backend.device?.removeEventListener?.('uncapturederror', onUncapturedError);
       mesh.dispose();
       renderer.dispose();
     },

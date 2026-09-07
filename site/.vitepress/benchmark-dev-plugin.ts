@@ -1,7 +1,7 @@
 import { createReadStream } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Plugin } from 'vite';
@@ -9,6 +9,28 @@ import type { Plugin } from 'vite';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const cache = path.join(root, '.tmp/benchmark-assets');
 const output = path.join(root, '.tmp/benchmark-results');
+
+async function hashFiles(directory: string): Promise<string | null> {
+  try {
+    const hash = createHash('sha256');
+    const visit = async (current: string): Promise<void> => {
+      const entries = await readdir(current, { withFileTypes: true });
+      for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+        const absolute = path.join(current, entry.name);
+        if (entry.isDirectory()) await visit(absolute);
+        else if (entry.isFile()) {
+          hash.update(path.relative(directory, absolute));
+          hash.update(await readFile(absolute));
+        }
+      }
+    };
+    await visit(directory);
+    return hash.digest('hex');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
 
 /** Local-only capture cache and append-only benchmark artifacts; never deployed. */
 export function benchmarkDevPlugin(): Plugin {
@@ -54,6 +76,19 @@ export function benchmarkDevPlugin(): Plugin {
                     'utf8',
                   ),
                 ).version,
+                vlam: JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version,
+                three: JSON.parse(
+                  await readFile(path.join(root, 'node_modules/three/package.json'), 'utf8'),
+                ).version,
+                hashes: {
+                  packageJson: createHash('sha256')
+                    .update(await readFile(path.join(root, 'package.json')))
+                    .digest('hex'),
+                  packageLock: createHash('sha256')
+                    .update(await readFile(path.join(root, 'package-lock.json')))
+                    .digest('hex'),
+                  packagedBuild: await hashFiles(path.join(root, 'dist')),
+                },
               }),
             );
           } catch (error) {

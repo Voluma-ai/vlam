@@ -103,6 +103,7 @@
   },
   "scripts": {
     "benchmark:cache": "node scripts/cache-benchmark-scene.mjs",
+    "benchmark:prepare-supplied": "node scripts/prepare-supplied-benchmark.mjs",
     "dev": "npm run docs:api:site && vitepress dev site",
     "docs:api:site": "typedoc --options site/typedoc.site.json",
     "build:site": "npm run typecheck && node scripts/build-site.mjs",
