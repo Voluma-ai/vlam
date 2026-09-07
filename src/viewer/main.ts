@@ -3195,7 +3195,7 @@ async function main(): Promise<void> {
   // framing or the hold would capture the fitted camera instead.
   const benchmarkCameraPosition = parseVector3Param(params.get('cameraPosition'));
   const benchmarkCameraTarget = parseVector3Param(params.get('cameraTarget'));
-  // The docs CTA camera is framed for Dehaar; skip it if goose had to stand in.
+  // A linked camera pose belongs to its requested scene; skip it if goose had to stand in.
   if (!usedGooseFallback && benchmarkCameraPosition && benchmarkCameraTarget) {
     controls.setLookAt(
       benchmarkCameraPosition.x,

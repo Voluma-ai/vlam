@@ -32,6 +32,12 @@ async function hashFiles(directory: string): Promise<string | null> {
   }
 }
 
+async function hashFile(filename: string): Promise<string> {
+  return createHash('sha256')
+    .update(await readFile(filename))
+    .digest('hex');
+}
+
 /** Local-only capture cache and append-only benchmark artifacts; never deployed. */
 export function benchmarkDevPlugin(): Plugin {
   return {
@@ -88,6 +94,13 @@ export function benchmarkDevPlugin(): Plugin {
                     .update(await readFile(path.join(root, 'package-lock.json')))
                     .digest('hex'),
                   packagedBuild: await hashFiles(path.join(root, 'dist')),
+                  // The dev harness imports this source tree directly through
+                  // Vite; dist alone does not identify the code it executed.
+                  harnessSource: await hashFiles(path.join(root, 'src')),
+                  harnessServer: await hashFile(
+                    path.join(root, 'site/.vitepress/benchmark-dev-plugin.ts'),
+                  ),
+                  harnessConfig: await hashFile(path.join(root, 'site/.vitepress/config.ts')),
                 },
               }),
             );

@@ -15,8 +15,8 @@ curves away from you.
 That is the opposite of a cubemap tiny-planet, where you reproject the *image*.
 Here the 3D capture is still a 3D capture. You can walk around on it.
 
-This example streams the same Dehaar `.lcc2` the
-<a href="/demo/?scene=/remote/jack/v/Dehaar/Dehaar.lcc2&effects=warp&fallback=goose" target="_self">viewer</a>
+This example streams the same Tempel `.lcc2` the
+<a href="/demo/?scene=https%3A%2F%2Fassets.voluma.ai%2Fvoluma%2Fcultural-heritage%2FTempel%2FTempel.lcc2&effects=warp&fallback=goose" target="_self">viewer</a>
 opens with `?effects=warp`. How streaming itself works is
 [Huge scenes](/examples/big-scenes).
 
@@ -81,8 +81,7 @@ field](/examples/depth-of-field): one unit is rarely one metre. A compact
 object like the goose has almost no far field, so the wrap either does
 nothing or throws it out of frame. Use a street.
 
-**The `.lcc2` URL is same-origin.** `/remote/…` is the docs/demo proxy onto
-`assets.voluma.ai`. Point `StreamedSplatMesh.load` at your own manifest when
+**The `.lcc2` URL allows cross-origin access.** Point `StreamedSplatMesh.load` at your own manifest when
 you copy this out.
 
 ## Next

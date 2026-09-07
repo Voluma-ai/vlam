@@ -14,9 +14,9 @@ into chunks at several levels of detail, with a manifest describing each chunk.
 `StreamedSplatMesh` fetches fine detail near the camera and coarser detail
 farther away, so a capture larger than the budget is never resident in full.
 
-This example streams the same Dehaar `.lcc2` the
-<a href="/demo/?scene=/remote/jack/v/Dehaar/Dehaar.lcc2&fallback=goose" target="_self">viewer</a>
-opens. `/remote/…` is the docs/demo proxy onto `assets.voluma.ai`. Point
+This example streams the same Tempel `.lcc2` the
+<a href="/demo/?scene=https%3A%2F%2Fassets.voluma.ai%2Fvoluma%2Fcultural-heritage%2FTempel%2FTempel.lcc2&fallback=goose" target="_self">viewer</a>
+opens. Point
 `StreamedSplatMesh.load` at your own manifest when you copy this out.
 
 ## How the splat budget works

@@ -125,9 +125,17 @@ identify Apple/Metal. Touch-capable desktop-UA devices are excluded so iPadOS
 does not enter the cohort. Caches above a conservative 64 MiB safety ceiling
 also retain vertex evaluation. Unidentified adapters retain vertex evaluation.
 The initial pass fills every slot; moving views refresh only the same
-conservative center frustum the draw shader accepts, synchronized with accepted
-GPU sorts and reused between them. Content changes regenerate every slot and
-stationary measured frames incur no dispatch.
+conservative center frustum the draw shader accepts. Accepted GPU sorts still
+refresh immediately, but a 150 ms cadence also refreshes newly visible regions
+when radial ordering does not change, such as rotation after translation.
+Content changes regenerate every slot and stationary measured frames incur no
+dispatch.
+
+A post-review 15-second M3 Air orbit probe (`cache-review-orbit`) recorded 79
+accepted sorts, 79 SH dispatches and zero independent view-cadence refreshes,
+confirming that continuously translating orbit does not receive duplicate
+cache work. Its mean frame time was 47.67 ms; both fixed captures were valid and
+the device reported no errors.
 
 #### M3 Air SH cache retest, 2026-09-04
 
@@ -375,7 +383,10 @@ Each completed run automatically saves `result.json`, `front.png` and
 offers downloads and retains images after disposing GPU resources. Screenshots
 are captured outside measurement at fixed 0 and 12-second orbit poses, with
 sorting settled first. Results include raw samples, commit/dirty state,
-dependency versions, available GPU identity, source hash, camera and settings.
+dependency versions, available GPU identity, the live harness `src/` and server
+hashes, the packaged `dist/` hash, camera and settings. Package identities in
+the supplied-app manifest include shipped `dist/` JavaScript rather than
+discarding it with application build output.
 Failures stop the suite instead of silently producing fallback measurements.
 The artifact-writing endpoint exists only in the dev server, accepts
 same-origin JSON with bounded size, and never accepts a destination path.

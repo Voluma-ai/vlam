@@ -1,5 +1,5 @@
 // Example: site/examples/collision-walk.md - first-person walking against the
-// collision meshes shipped beside a streamed De Haar capture.
+// collision meshes shipped beside a streamed Tempel capture.
 import * as THREE from 'three/webgpu';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { createWebGPURenderer } from '@voluma/vlam';
@@ -67,7 +67,9 @@ controls.addEventListener('unlock', () => {
   instructions.textContent = 'Click to capture the mouse';
 });
 
-const splats = await StreamedSplatMesh.load('/remote/jack/v/Dehaar/Dehaar.lcc2');
+const splats = await StreamedSplatMesh.load(
+  'https://assets.voluma.ai/voluma/cultural-heritage/Tempel/Tempel.lcc2',
+);
 scene.add(splats);
 splats.updateWorldMatrix(true, false);
 

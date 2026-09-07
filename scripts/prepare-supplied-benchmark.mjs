@@ -11,26 +11,27 @@ const locked = path.join(output, 'locked');
 const candidate = path.join(output, 'candidate');
 const artifacts = path.join(output, 'artifacts');
 const ignored = new Set(['.git', '.DS_Store', 'dist', 'node_modules']);
+const packageIgnored = new Set(['.DS_Store', 'node_modules']);
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-async function files(root, directory = root) {
+async function files(root, directory = root, ignoredNames = ignored) {
   const result = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
-    if (ignored.has(entry.name)) continue;
+    if (ignoredNames.has(entry.name)) continue;
     const absolute = path.join(directory, entry.name);
-    if (entry.isDirectory()) result.push(...(await files(root, absolute)));
+    if (entry.isDirectory()) result.push(...(await files(root, absolute, ignoredNames)));
     else if (entry.isFile()) result.push(path.relative(root, absolute));
   }
   return result.sort();
 }
 
-async function hashes(root) {
+async function hashes(root, ignoredNames = ignored) {
   return Object.fromEntries(
     await Promise.all(
-      (await files(root)).map(async (relative) => [
+      (await files(root, root, ignoredNames)).map(async (relative) => [
         relative,
         sha256(await readFile(path.join(root, relative))),
       ]),
@@ -48,7 +49,9 @@ function run(command, args, cwd) {
 async function packageIdentity(workspace, name) {
   const root = path.join(workspace, 'node_modules', ...name.split('/'));
   const metadata = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-  const entries = await hashes(root);
+  // Package identity must include dist/ and other shipped JavaScript. Only a
+  // package's private dependency tree and Finder metadata are irrelevant.
+  const entries = await hashes(root, packageIgnored);
   return {
     name,
     version: metadata.version,

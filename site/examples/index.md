@@ -13,7 +13,7 @@ the same source file shown below.
 4. **[Click on the world](/examples/click-the-world)**: find and mark the point beneath the cursor.
 5. **[Mix splats with ordinary 3D objects](/examples/splats-and-objects)**: use a capture and ordinary three.js geometry in one scene.
 6. **[Several captures in one scene](/examples/many-captures)**: sort and blend overlapping captures as one.
-7. **[Walk with collision detection](/examples/collision-walk)**: use De Haar's triangle meshes for solid floors, walls, gravity, and jumping.
+7. **[Walk with collision detection](/examples/collision-walk)**: use Tempel's triangle meshes for solid floors, walls, gravity, and jumping.
 
 ## Going further
 

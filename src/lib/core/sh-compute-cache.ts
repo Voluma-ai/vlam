@@ -22,10 +22,8 @@ export class ShComputeCache {
   private readonly previousCamera = new THREE.Vector3();
   private readonly observedCamera = new THREE.Vector3();
   private readonly previousViewProjection = new THREE.Matrix4();
-  private readonly observedViewProjection = new THREE.Matrix4();
   private observedCameraValid = false;
-  private observedViewValid = false;
-  private lastMotionAt = Number.NEGATIVE_INFINITY;
+  private lastRefreshAt = Number.NEGATIVE_INFINITY;
   private previousContent = -1;
   private previousGraph = -1;
   private previousCount = -1;
@@ -37,6 +35,7 @@ export class ShComputeCache {
     invalidations: 0,
     motionFallbacks: 0,
     sortCadenceDeferrals: 0,
+    viewCadenceRefreshes: 0,
     lastInvalidation: 'initial',
     phase: 'unprepared',
   };
@@ -104,16 +103,9 @@ export class ShComputeCache {
     reuseBetweenSorts = false,
   ): 'cache' | 'cache-between-sorts' | 'idle' {
     if (this.disposed || activeCount === 0) return 'idle';
-    const cameraMoved = this.observedCameraValid && !this.observedCamera.equals(camera);
-    const viewMoved =
-      this.observedViewValid && !this.observedViewProjection.equals(this.localViewProjection.value);
+    const cameraMovedThisFrame = this.observedCameraValid && !this.observedCamera.equals(camera);
     this.observedCamera.copy(camera);
-    this.observedViewProjection.copy(this.localViewProjection.value);
     this.observedCameraValid = true;
-    this.observedViewValid = true;
-    if (cameraMoved || viewMoved) {
-      this.lastMotionAt = now;
-    }
     const contentChanged =
       this.previousContent !== contentRevision || this.previousCount !== activeCount;
     const graphChanged = this.previousGraph !== graphRevision;
@@ -146,7 +138,7 @@ export class ShComputeCache {
       !refreshForSort &&
       reuseBetweenSorts &&
       this.valid &&
-      now - this.lastMotionAt < SH_CACHE_SETTLE_MS
+      (cameraMovedThisFrame || now - this.lastRefreshAt < SH_CACHE_SETTLE_MS)
     ) {
       this.enabled.value = true;
       this.diagnostics.sortCadenceDeferrals++;
@@ -156,6 +148,10 @@ export class ShComputeCache {
     }
     this.cullToView.value = reason === 'camera-or-view';
     renderer.compute(this.pass);
+    if (reason === 'camera-or-view' && !refreshForSort) {
+      this.diagnostics.viewCadenceRefreshes++;
+    }
+    this.lastRefreshAt = now;
     this.previousCamera.copy(camera);
     this.previousViewProjection.copy(this.localViewProjection.value);
     this.previousContent = contentRevision;

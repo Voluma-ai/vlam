@@ -2038,10 +2038,13 @@ export class StreamedSplatMesh extends SplatMesh {
    * accumulated bound can describe only the staged cut when the first sort
    * runs. Centers outside that temporary range then clamp into an end bucket
    * and look exactly like an unsorted patch.
+   * Include decoded centers too: an LCC environment tile is outside the LOD
+   * tree and can extend far beyond its root bounds. The accumulated bound is
+   * grow-only, so unloading a range cannot shrink the quantization interval.
    */
   protected override refreshSortBounds(): void {
     if (!this.boundsDirty) return;
-    this.scene.bounds.getBoundingSphere(this.boundingSphereLocal);
+    this.localBounds.union(this.scene.bounds).getBoundingSphere(this.boundingSphereLocal);
     this.boundsDirty = false;
   }
 

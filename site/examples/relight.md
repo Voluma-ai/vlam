@@ -16,8 +16,8 @@ This path is different. You render a **triangle proxy** of the scene into a
 screen-space map, then multiply that map onto the baked splat colour. Umbra
 follows those triangles. Splat foliage cannot cast.
 
-This example streams the same Dehaar `.lcc2` the
-<a href="/demo/?scene=/remote/jack/v/Dehaar/Dehaar.lcc2&effects=relight&fallback=goose" target="_self">viewer</a>
+This example streams the same Tempel `.lcc2` the
+<a href="/demo/?scene=https%3A%2F%2Fassets.voluma.ai%2Fvoluma%2Fcultural-heritage%2FTempel%2FTempel.lcc2&effects=relight&fallback=goose" target="_self">viewer</a>
 opens with `?effects=relight`. How streaming itself works is
 [Huge scenes](/examples/big-scenes).
 
@@ -64,7 +64,7 @@ around every proxy triangle once softness samples the coverage edge.
 
 ## What to use as the proxy
 
-Dehaar ships LCC collision tiles, so the sample passes those through
+Tempel ships LCC collision tiles, so the sample passes those through
 `createRelightingProxy({ tiles, matrixWorld })`. Collision geometry is
 source-local; bake `splats.matrixWorld` or the shadows sit in the wrong place.
 
@@ -90,7 +90,7 @@ it off.
 **Fit the shadow camera to the proxy.** The default directional-light box is
 about ±5 units, which clips a street immediately. The sample sizes
 `sun.shadow.camera` to the collision bounds. The
-<a href="/demo/?scene=/remote/jack/v/Dehaar/Dehaar.lcc2&effects=relight&fallback=goose" target="_self">demo</a>
+<a href="/demo/?scene=https%3A%2F%2Fassets.voluma.ai%2Fvoluma%2Fcultural-heritage%2FTempel%2FTempel.lcc2&effects=relight&fallback=goose" target="_self">demo</a>
 goes further: four texel-snapped cascades so close trees stay stable without
 clipping distant umbras.
 
@@ -102,8 +102,7 @@ edges become a dark stamp of the mesh.
 a layer the splat camera does not draw. Otherwise you will see gray triangles
 on top of the capture.
 
-**The `.lcc2` URL is same-origin.** `/remote/…` is the docs/demo proxy onto
-`assets.voluma.ai`. Point `StreamedSplatMesh.load` at your own manifest when
+**The `.lcc2` URL allows cross-origin access.** Point `StreamedSplatMesh.load` at your own manifest when
 you copy this out.
 
 ## Next

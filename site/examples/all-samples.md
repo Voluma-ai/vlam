@@ -18,7 +18,7 @@ Each is a standalone program. Follow the link for the explanation and a live run
 <<< ../../docs/examples/samples/open-local-file.ts
 :::
 
-::: details big-scenes.ts, Dehaar `.lcc2`, `StreamedSplatMesh.load`, `setBudget` · [walkthrough](/examples/big-scenes)
+::: details big-scenes.ts, Tempel `.lcc2`, `StreamedSplatMesh.load`, `setBudget` · [walkthrough](/examples/big-scenes)
 <<< ../../docs/examples/samples/big-scenes.ts
 :::
 
@@ -34,7 +34,7 @@ Each is a standalone program. Follow the link for the explanation and a live run
 <<< ../../docs/examples/samples/many-captures.ts
 :::
 
-::: details collision-walk.ts + collision-world.ts, De Haar first-person movement against format collision meshes · [walkthrough](/examples/collision-walk)
+::: details collision-walk.ts + collision-world.ts, Tempel first-person movement against format collision meshes · [walkthrough](/examples/collision-walk)
 <<< ../../docs/examples/samples/collision-walk.ts
 
 <<< ../../docs/examples/samples/collision-world.ts
@@ -62,11 +62,11 @@ Each is a standalone program. Follow the link for the explanation and a live run
 <<< ../../docs/examples/samples/depth-of-field.ts
 :::
 
-::: details relight.ts, Dehaar `.lcc2`, collision-proxy `setRelighting` · [walkthrough](/examples/relight)
+::: details relight.ts, Tempel `.lcc2`, collision-proxy `setRelighting` · [walkthrough](/examples/relight)
 <<< ../../docs/examples/samples/relight.ts
 :::
 
-::: details tiny-planet.ts, Dehaar `.lcc2`, `worldWarpPreset` planet / bowl · [walkthrough](/examples/tiny-planet)
+::: details tiny-planet.ts, Tempel `.lcc2`, `worldWarpPreset` planet / bowl · [walkthrough](/examples/tiny-planet)
 <<< ../../docs/examples/samples/tiny-planet.ts
 :::
 

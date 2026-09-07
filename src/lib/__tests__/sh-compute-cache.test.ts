@@ -120,7 +120,7 @@ describe('pool-indexed SH compute cache', () => {
     mesh.dispose();
   });
 
-  it('fills every slot initially, then refreshes newly visible regions after camera motion', () => {
+  it('fills every slot initially, then refreshes newly visible regions without a radial sort', () => {
     const gpu = renderer();
     const r = gpu as unknown as THREE.WebGPURenderer;
     const texture = new THREE.DataTexture(new Float32Array(4), 1, 1);
@@ -138,12 +138,16 @@ describe('pool-indexed SH compute cache', () => {
     const camera = new THREE.Vector3(0, 0, 3);
     cache.prepare(r, 8, camera, 0, 0, 0);
     view.value.makeRotationY(0.2);
-    cache.prepare(r, 8, camera, 0, 0, 1);
+    cache.prepare(r, 8, camera, 0, 0, 1, false, false, true);
     expect(gpu.compute).toHaveBeenCalledTimes(1);
-    cache.prepare(r, 8, camera.set(1, 0, 3), 0, 0, 2);
+    cache.prepare(r, 8, camera.set(1, 0, 3), 0, 0, 2, false, true, true);
     view.value.makeRotationY(0.4);
-    cache.prepare(r, 8, camera, 0, 0, 3);
+    cache.prepare(r, 8, camera, 0, 0, 3, false, false, true);
+    expect(gpu.compute).toHaveBeenCalledTimes(2);
+    view.value.makeRotationY(0.6);
+    cache.prepare(r, 8, camera, 0, 0, 153, false, false, true);
     expect(gpu.compute).toHaveBeenCalledTimes(3);
+    expect(cache.snapshot()).toMatchObject({ viewCadenceRefreshes: 1 });
     cache.dispose(r);
     texture.dispose();
   });
@@ -172,13 +176,17 @@ describe('pool-indexed SH compute cache', () => {
     expect(cache.prepare(r, 8, camera.set(2, 0, 3), 0, 0, 60, false, true, true)).toBe('cache');
     expect(gpu.compute).toHaveBeenCalledTimes(2);
     cache.prepare(r, 8, camera.set(3, 0, 3), 0, 0, 70, false, false, true);
-    expect(cache.prepare(r, 8, camera, 0, 0, 220, false, false, true)).toBe('cache');
+    expect(cache.prepare(r, 8, camera.set(4, 0, 3), 0, 0, 220, false, false, true)).toBe(
+      'cache-between-sorts',
+    );
+    expect(gpu.compute).toHaveBeenCalledTimes(2);
+    expect(cache.prepare(r, 8, camera, 0, 0, 370, false, false, true)).toBe('cache');
     expect(gpu.compute).toHaveBeenCalledTimes(3);
-    cache.prepare(r, 8, camera, 1, 0, 221, false, false, true);
+    cache.prepare(r, 8, camera, 1, 0, 371, false, false, true);
     expect(gpu.compute).toHaveBeenCalledTimes(4);
     expect(cache.snapshot()).toMatchObject({
       motionFallbacks: 0,
-      sortCadenceDeferrals: 3,
+      sortCadenceDeferrals: 4,
       phase: 'cache',
     });
     cache.dispose(r);

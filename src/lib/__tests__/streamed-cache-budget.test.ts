@@ -206,6 +206,28 @@ describe('StreamedSplatMesh chunk cache budget', () => {
     expect(state.boundingSphereLocal.radius).toBeCloseTo(Math.sqrt(3 * 50 ** 2));
   });
 
+  it('includes distant environment centers without shrinking the scene sort bounds', () => {
+    const mesh = track(makeClassicMesh());
+    const state = inner(mesh);
+    state.refreshSortBounds();
+    const sceneBounds = mesh.computeSplatBounds();
+    const range = mesh.appendRange({
+      count: 2,
+      positions: new Float32Array([0, 0, -600, 0, 0, -900]),
+      colors: new Uint8Array([50, 100, 200, 255, 50, 100, 200, 255]),
+      covariances: new Float32Array([1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 1]),
+    });
+    state.refreshSortBounds();
+    expect(state.boundingSphereLocal.containsPoint(new THREE.Vector3(0, 0, -900))).toBe(true);
+    expect(state.boundingSphereLocal.containsPoint(sceneBounds.max)).toBe(true);
+    expect(mesh.computeSplatBounds()).toEqual(sceneBounds);
+
+    const withEnvironment = state.boundingSphereLocal.clone();
+    mesh.removeRange(range);
+    state.refreshSortBounds();
+    expect(state.boundingSphereLocal).toEqual(withEnvironment);
+  });
+
   it('caps the worker at the scene allowance instead, when one is shared', () => {
     const cacheBudget = new ChunkCacheBudget({ totalBytes: 128 * MIB, perMeshFloorBytes: 8 * MIB });
     const mesh = track(makeMesh({ cacheBudget, fetchWeight: () => 1 }));

@@ -11,6 +11,7 @@ export function shEvaluationDiagnostics(mesh: SplatMesh) {
         invalidations: number;
         motionFallbacks: number;
         sortCadenceDeferrals: number;
+        viewCadenceRefreshes: number;
         lastInvalidation: string;
         phase: string;
         gpuBytes: number;
@@ -30,6 +31,7 @@ export function shEvaluationDiagnostics(mesh: SplatMesh) {
       invalidations: 0,
       motionFallbacks: 0,
       sortCadenceDeferrals: 0,
+      viewCadenceRefreshes: 0,
       lastInvalidation: null,
       phase: 'vertex',
       gpuBytes: 0,
