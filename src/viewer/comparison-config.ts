@@ -3,7 +3,7 @@ import { PerspectiveCamera, Vector3 } from 'three';
 /** Parameters shared by the two standalone comparison pages. */
 export interface ComparisonConfig {
   engine: 'spark' | 'vlam';
-  scene: 'Langenthal-Manola4A' | 'goose';
+  scene: 'Tempel' | 'goose';
   preset: 'supplied' | 'proposed' | 'controlled' | 'reference' | 'defaults' | 'matched';
   mode: 'stationary' | 'orbit' | 'rotate' | 'translate' | 'settle';
   shEvaluation: 'auto' | 'vertex' | 'compute';
@@ -50,7 +50,7 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
     throw new Error('Camera position must differ from target.');
   for (const [key, allowed] of Object.entries({
     preset: ['supplied', 'proposed', 'controlled', 'reference', 'defaults', 'matched'],
-    scene: ['Langenthal-Manola4A', 'goose'],
+    scene: ['Tempel', 'goose'],
     sh: ['0', '1', '2', '3'],
     gpuTimestamps: ['0', '1'],
     backend: ['webgpu', 'webgl'],
@@ -70,7 +70,7 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
   const preset = (params.get('preset') ?? 'proposed') as ComparisonConfig['preset'];
   return {
     engine,
-    scene: params.get('scene') === 'goose' ? 'goose' : 'Langenthal-Manola4A',
+    scene: params.get('scene') === 'goose' ? 'goose' : 'Tempel',
     preset,
     mode: (params.get('mode') ?? 'stationary') as ComparisonConfig['mode'],
     shEvaluation: (params.get('shEvaluation') ?? 'auto') as ComparisonConfig['shEvaluation'],
@@ -138,47 +138,44 @@ export function comparisonUrl(
   return `/${engine}-benchmark.html?${query}`;
 }
 
-/** Five alternating primary repetitions plus separate one-factor probes. */
+/** Three 720p repetitions plus one QHD pass. Diagnostic probes stay URL-only. */
 export function comparisonSuite(onlyPreset?: 'proposed' | 'controlled'): URLSearchParams[] {
   const runs: URLSearchParams[] = [];
-  for (let repeat = 1; repeat <= 5; repeat++) {
-    for (const preset of onlyPreset ? [onlyPreset] : ['proposed', 'controlled']) {
+  const presets = onlyPreset ? [onlyPreset] : ['proposed', 'controlled'];
+  for (let repeat = 1; repeat <= 3; repeat++) {
+    for (const preset of presets) {
       for (const mode of ['stationary', 'orbit']) {
-        for (const [width, height] of [
-          ['1280', '720'],
-          ['2560', '1440'],
-        ] as const)
-          for (const engine of repeat % 2 ? ['spark', 'vlam'] : ['vlam', 'spark'])
-            runs.push(
-              new URLSearchParams({
-                engine,
-                preset,
-                mode,
-                width,
-                height,
-                repeat: String(repeat),
-                probe: 'primary',
-                gpuTimestamps: '0',
-              }),
-            );
+        for (const engine of repeat % 2 ? ['spark', 'vlam'] : ['vlam', 'spark'])
+          runs.push(
+            new URLSearchParams({
+              engine,
+              preset,
+              mode,
+              width: '1280',
+              height: '720',
+              repeat: String(repeat),
+              probe: 'primary',
+              gpuTimestamps: '0',
+            }),
+          );
       }
     }
   }
-  if (onlyPreset) return runs;
-  for (const probe of ['reference', 'sh0', 'timestamps']) {
+  for (const preset of presets) {
     for (const mode of ['stationary', 'orbit']) {
-      for (const engine of ['spark', 'vlam']) {
-        const run = new URLSearchParams({
-          engine,
-          preset: probe === 'reference' ? 'reference' : 'controlled',
-          mode,
-          repeat: '1',
-          probe,
-          gpuTimestamps: probe === 'timestamps' ? '1' : '0',
-        });
-        if (probe === 'sh0') run.set('sh', '0');
-        runs.push(run);
-      }
+      for (const engine of ['spark', 'vlam'])
+        runs.push(
+          new URLSearchParams({
+            engine,
+            preset,
+            mode,
+            width: '2560',
+            height: '1440',
+            repeat: '1',
+            probe: 'qhd',
+            gpuTimestamps: '0',
+          }),
+        );
     }
   }
   return runs;

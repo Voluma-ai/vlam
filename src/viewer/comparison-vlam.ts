@@ -8,6 +8,7 @@ import {
 import { createWebGPURenderer, detectSplatDeviceProfile, SplatMesh } from '../lib/core';
 import { automaticSortIntervalMs } from '../lib/core/sort-scheduler';
 import { loadSplatData } from '../lib/loaders';
+import { StreamedSplatMesh } from '../lib/streaming';
 import { version } from '../../package.json';
 import type { ComparisonAdapter } from './comparison-adapter';
 import type { ComparisonConfig } from './comparison-config';
@@ -25,24 +26,17 @@ interface WorkerSortSnapshot {
   completedCount: number;
 }
 
-/** Construct only the plain full-file VLAM mesh and its renderer. */
+function isLcc2Url(url: string): boolean {
+  return /\.lcc2(?:$|\?)/i.test(url);
+}
+
+/** Construct the VLAM mesh (streamed `.lcc2` or a full-file SOG) and its renderer. */
 export async function createComparisonVlam(
   config: ComparisonConfig,
   url: string,
 ): Promise<ComparisonAdapter> {
   const useWebGl = config.backend === 'webgl';
-  // Decode before allocating a GPU device so a fetch/decode failure leaves no renderer alive.
-  const data = await loadSplatData(url);
-  const renderer = await createWebGPURenderer({
-    ...(useWebGl ? { forceWebGL: true } : { requireWebGpu: true }),
-    antialias: config.msaa,
-    // WebGPU timestamps only; WebGL uses EXT_disjoint_timer_query_webgl2 below.
-    trackTimestamp: config.timestamps && !useWebGl,
-  });
-  await renderer.init();
-  renderer.setPixelRatio(1);
-  renderer.setClearColor(0x000000, 1);
-  renderer.setSize(config.width, config.height, false);
+  const streamed = isLcc2Url(url);
   const controlled = config.preset === 'controlled';
   const reference = config.preset === 'reference' || config.preset === 'matched';
   const proposed = config.preset === 'proposed';
@@ -50,13 +44,13 @@ export async function createComparisonVlam(
   const resolvedMaxStdDev =
     config.maxStdDev ?? (controlled || proposed ? Math.sqrt(8) : reference ? 3 : undefined);
   const resolvedSortMetric = config.sortMetric ?? (controlled || proposed ? 'radial' : undefined);
-  const mesh = new SplatMesh(data, {
+  const meshOptions = {
     shEvaluation: config.shEvaluation,
-    orientation: 'source',
+    orientation: 'source' as const,
     ...(aligned
       ? ({
-          performanceProfile: 'quality',
-          shBands: 3,
+          performanceProfile: 'quality' as const,
+          shBands: 3 as const,
           minSplatSizePx: 0,
           antialias: false,
           srgbOutput: true,
@@ -66,8 +60,33 @@ export async function createComparisonVlam(
     ...(resolvedSortMetric === undefined ? {} : { sortMetric: resolvedSortMetric }),
     ...(config.sortStrategy === undefined ? {} : { sortStrategy: config.sortStrategy }),
     ...(config.sh === undefined ? {} : { shBands: config.sh }),
-  });
-  mesh.rotation.x = Math.PI;
+  };
+  // Decode / open the manifest before allocating a GPU device so a fetch failure
+  // leaves no renderer alive.
+  const mesh = streamed
+    ? await StreamedSplatMesh.load(url, { ...meshOptions, lodBaseDistance: 10 })
+    : new SplatMesh(await loadSplatData(url), meshOptions);
+  if (!streamed) mesh.rotation.x = Math.PI;
+  const sourceSplats =
+    mesh instanceof StreamedSplatMesh
+      ? (mesh.contentSplatCount ?? mesh.maxBudget)
+      : mesh.activeSplatCount;
+  let renderer;
+  try {
+    renderer = await createWebGPURenderer({
+      ...(useWebGl ? { forceWebGL: true } : { requireWebGpu: true }),
+      antialias: config.msaa,
+      // WebGPU timestamps only; WebGL uses EXT_disjoint_timer_query_webgl2 below.
+      trackTimestamp: config.timestamps && !useWebGl,
+    });
+    await renderer.init();
+  } catch (error) {
+    mesh.dispose();
+    throw error;
+  }
+  renderer.setPixelRatio(1);
+  renderer.setClearColor(0x000000, 1);
+  renderer.setSize(config.width, config.height, false);
   if (aligned) renderer.outputColorSpace = LinearSRGBColorSpace;
   renderer.toneMapping = NoToneMapping;
   const scene = new Scene();
@@ -130,7 +149,7 @@ export async function createComparisonVlam(
     version,
     threeRevision: REVISION,
     backend: useWebGl ? ('WebGL2' as const) : ('WebGPU' as const),
-    sourceSplats: data.count,
+    sourceSplats,
     shBands: mesh.shBands,
     activeSplats: mesh.activeSplatCount,
     settings: {
@@ -142,28 +161,45 @@ export async function createComparisonVlam(
       sortMetric: resolvedSortMetric ?? 'depth',
       sortStrategy,
       sortIntervalMs: 'library adaptive default',
-      resolvedSortIntervalMs: automaticSortIntervalMs(data.count, isMobile),
-      lod: false,
+      resolvedSortIntervalMs: automaticSortIntervalMs(sourceSplats, isMobile),
+      lod: streamed,
       outputColorSpace: renderer.outputColorSpace,
       msaa: renderer.samples,
       shEvaluation: config.shEvaluation,
       requestedBackend: config.backend,
     },
-    differences: useWebGl
-      ? [
-          'WebGL2 fallback with asynchronous CPU worker sorting; GPU samples exclude worker duration',
-          'Float32 centers/covariances with SOG SH palette (same draw path as WebGPU)',
-          'Native VLAM clipping and alpha thresholds; matched preset does not promise identical pixels',
-        ]
-      : [
-          'GPU counting sort; adaptive cadence',
-          'Float32 centers/covariances with SOG SH palette',
-          'Native VLAM clipping and alpha thresholds; matched preset does not promise identical pixels',
-        ],
+    differences: [
+      ...(streamed
+        ? ['Streamed LCC2 octree cut with a device splat budget; not a fully decoded mesh']
+        : []),
+      ...(useWebGl
+        ? [
+            'WebGL2 fallback with asynchronous CPU worker sorting; GPU samples exclude worker duration',
+            'Float32 centers/covariances with SOG SH palette (same draw path as WebGPU)',
+            'Native VLAM clipping and alpha thresholds; matched preset does not promise identical pixels',
+          ]
+        : [
+            'GPU counting sort; adaptive cadence',
+            'Float32 centers/covariances with SOG SH palette',
+            'Native VLAM clipping and alpha thresholds; matched preset does not promise identical pixels',
+          ]),
+    ],
+  };
+
+  const awaitCoverage = async (camera: PerspectiveCamera): Promise<void> => {
+    if (!(mesh instanceof StreamedSplatMesh)) return;
+    const deadline = performance.now() + 120000;
+    while (mesh.initialRevealState.status === 'pending') {
+      if (performance.now() > deadline) throw new Error('VLAM LCC2 coverage hold timed out.');
+      mesh.update(camera, renderer);
+      renderer.render(scene, camera);
+      await new Promise((resolve) => setTimeout(resolve, 16));
+    }
   };
 
   /** Wait until the WebGL worker has applied the settle camera's order. */
   const settleWorkerSort = async (camera: PerspectiveCamera): Promise<void> => {
+    await awaitCoverage(camera);
     const host = mesh as unknown as {
       sorter?: { kind?: string; snapshot?: () => WorkerSortSnapshot };
     };
@@ -277,6 +313,7 @@ export async function createComparisonVlam(
         : null,
     },
     async settle(camera) {
+      await awaitCoverage(camera);
       mesh.update(camera, renderer);
       // Lazy module loading must finish before timed warm-up starts. A fallback
       // remains explicit in diagnostics instead of masquerading as compute SH.

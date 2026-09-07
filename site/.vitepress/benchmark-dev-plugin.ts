@@ -45,18 +45,27 @@ export function benchmarkDevPlugin(): Plugin {
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
-        const asset = /^\/benchmark-assets\/(Langenthal-Manola4A|goose)\.(sog|json)$/.exec(
-          pathname,
-        );
+        const asset = /^\/benchmark-assets\/(.+)$/.exec(pathname);
         if (asset && req.method === 'GET') {
-          const stream = createReadStream(path.join(cache, `${asset[1]}.${asset[2]}`));
+          const relative = decodeURIComponent(asset[1]);
+          const file = path.resolve(cache, relative);
+          const fromCache = path.relative(cache, file);
+          if (fromCache.startsWith('..') || path.isAbsolute(fromCache)) {
+            res.statusCode = 404;
+            res.end('Run npm run benchmark:cache first.');
+            return;
+          }
+          const stream = createReadStream(file);
           stream.on('error', () => {
             res.statusCode = 404;
             res.end('Run npm run benchmark:cache first.');
           });
+          const extension = path.extname(file);
           res.setHeader(
             'Content-Type',
-            asset[2] === 'json' ? 'application/json' : 'application/octet-stream',
+            extension === '.json' || extension === '.lcc2'
+              ? 'application/json'
+              : 'application/octet-stream',
           );
           stream.pipe(res);
           return;

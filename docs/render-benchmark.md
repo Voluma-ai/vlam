@@ -24,20 +24,23 @@ Open these paths on the dev server printed by the last command:
 /vlam-benchmark.html?preset=reference&mode=stationary&backend=webgl
 ```
 
-The cache command downloads Langenthal-Manola4A once to the ignored
-`.tmp/benchmark-assets/` directory and records its SHA-256, byte size, splat
+The cache command downloads Tempel (`.lcc2` plus its SOG tiles) once to the
+ignored `.tmp/benchmark-assets/` directory and records SHA-256, byte size, splat
 count, SH bands and canonical camera in a JSON manifest. Both viewers fetch
-that same local copy. This avoids the remote host's missing CORS headers.
-It also prepares the repository's small `goose.sog` fixture (`?scene=goose`).
+that same local copy so tile URLs resolve without remote CORS. It also prepares
+the repository's small `goose.sog` fixture (`?scene=goose`).
 Re-running the command verifies/recreates metadata from the cached bytes;
 it does not silently replace the capture with a newer remote asset.
 
-The downloaded Langenthal capture has **8,724,225 splats**, **SH3** and
-**121,633,146 bytes**. Langenthal starts at the verified interior origin view,
-looking down world -Z; goose is framed from its source center bounds.
-A 180° X rotation is applied identically to both meshes. For other views,
-set both `position=x,y,z` and `target=x,y,z` in world coordinates. The page's
-renderer links preserve the resolved camera, so a pose can be shared exactly.
+The downloaded Tempel capture has **12,847,768 splats** across five LOD levels
+(**6,635,642** at finest) and **SH3**. VLAM streams the `.lcc2` octree cut.
+Spark 2.1.0 has no LCC2 reader, so it fully decodes every listed SOG tile (all
+LOD levels plus the environment tile). Tempel starts at the docs-example
+interior view, already in the LCC2→Three basis both engines use; goose is
+framed from its source center bounds. Goose (SOG) gets a 180° X rotation on
+both meshes. For other views, set both `position=x,y,z` and `target=x,y,z` in
+world coordinates. The page's renderer links preserve the resolved camera, so a
+pose can be shared exactly.
 The standalone harness normally uses a 45° vertical field of view and near/far
 0.01/10000. `preset=supplied` uses the supplied application's 60° and
 0.01/500 camera plus renderer MSAA. All configurations use a black background,
@@ -51,7 +54,7 @@ Canvas CSS can shrink the displayed image without changing GPU resolution.
 | `preset` | `proposed` | `supplied`, `proposed`, `controlled`, or `reference`; legacy `defaults` and `matched` remain accepted |
 | `mode` | `stationary` | `stationary`, `orbit`, position-preserving `rotate`, `translate`, or five seconds of orbit then `settle` |
 | `shEvaluation` | `auto` | VLAM SH evaluation: `vertex` or generated final `compute`; `auto` selects the latter on identified Apple Silicon Macs |
-| `scene` | `Langenthal-Manola4A` | Cached capture, or `goose` |
+| `scene` | `Tempel` | Cached `.lcc2` capture, or `goose` |
 | `width`, `height` | `1280`, `720` | Drawing-buffer pixels, at pixel ratio 1 |
 | `warmup`, `seconds` | `5`, `30` | Warm-up and measured seconds after initial load/sort |
 | `sh=0..3` | source | Benchmark-only SH band cap; `0` is the suite's disabled diagnostic |
@@ -63,8 +66,8 @@ Canvas CSS can shrink the displayed image without changing GPU resolution.
 | `gpuTimestamps=0` | enabled | Disable timestamp instrumentation; primary suite runs set this to `0` |
 | `position`, `target` | cached scene pose | Paired comma-separated world-space vectors |
 | `label` | empty | Device, power state or experiment note |
-| `suite=1` | off | Sequential 92-run suite with local archiving |
-| `suitePreset` | all | With `suite=1`, run only the 40 proposed or controlled primary cases |
+| `suite=1` | off | Sequential 32-run suite with local archiving |
+| `suitePreset` | all | With `suite=1`, run only the 16 proposed or controlled cases |
 
 The four named configurations are deliberately separate:
 
@@ -107,7 +110,7 @@ controls and render loops remain present.
 For the experimental standalone WebGPU generated-color path, compare
 `?preset=matched&shEvaluation=vertex&gpuTimestamps=0` with
 `?preset=matched&shEvaluation=compute&gpuTimestamps=0`. Repeat each three times,
-alternating order, for stationary and orbit modes. The 92-run suite does not
+alternating order, for stationary and orbit modes. The sequential suite does not
 perform this explicit SH-path comparison automatically. Reports include the
 resolved path and fallback reason, SH/sort dispatch counts, invalidations and
 cache bytes; `measuredDispatches` excludes initial preparation and warm-up.
@@ -250,7 +253,7 @@ Replacing that storage texture with an ordinary RGBA8 render target, populated
 by a full-screen fragment pass and sampled once per splat by the vertex graph,
 was also rejected: the enabled cache again produced blank live and fixed-pose
 output with no reported validation error or device loss. Its invalid artifact is
-`.tmp/benchmark-results/2026-09-07T13-43-18.787Z-e3801584-8fe3-460b-9fb1-120528336bc5`.
+`.tmp/benchmark-results-old/2026-09-07T13-43-18.787Z-e3801584-8fe3-460b-9fb1-120528336bc5`.
 This narrows the failure to the large auxiliary resource consumed by Three's
 vertex graph rather than compute-versus-render production of that resource.
 The additive experiments are not retained. A further independent implementation
@@ -359,14 +362,13 @@ Default recommendations remain separate from the benchmark configuration:
 /spark-benchmark.html?suite=1&label=M4Max-macOS-Chrome-AC
 ```
 
-The suite runs five repetitions of each proposed/controlled ×
-stationary/orbit × 1280×720/2560×1440 × renderer case, alternating renderer
-order and disabling timestamp instrumentation (80 primary runs). It then runs
-single reference, SH0 and timestamped stationary/orbit probes on both renderers
-(12 diagnostic runs). These probes do not replace the repeated baselines. Each
-run gets a fresh page; no pair of renderers runs concurrently. A browser lock
-prevents another comparison page in the same origin from measuring at the same
-time. Loading time is excluded.
+The suite runs three repetitions of each proposed/controlled ×
+stationary/orbit × renderer case at 1280×720, then one QHD pass (2560×1440)
+of the same matrix (32 runs). Renderer order alternates by repetition.
+Timestamp instrumentation stays off. Reference, SH0 and timestamped probes
+remain available as standalone URLs. Each run gets a fresh page; no pair of
+renderers runs concurrently. A browser lock prevents another comparison page
+in the same origin from measuring at the same time. Loading time is excluded.
 
 Keep the Chrome window in front and visible, close other GPU-heavy pages,
 use AC power and the same power mode, and avoid resizing or interaction.
@@ -450,7 +452,7 @@ at roughly six sorts per second, consistent with the native 166.67 ms interval
 for 8.72 million splats. Stationary compute is unavailable. Spark worker
 duration is unavailable. These are materially different sorting schedules.
 
-The local report at `.tmp/benchmark-report-rtx3090/findings.md` links all 32
+The local report at `.tmp/benchmark-report-rtx3090-old/findings.md` links all 32
 original JSON files and image pairs, including per-run median/p95/p99, CPU
 timings and timing coverage. Its `summary.json` preserves compact run metadata.
 Suite ID: `97e0fe93-bf08-4ff3-b7eb-a92ffdf5a1b5`. The scene hash is
@@ -473,7 +475,7 @@ A 32-run suite completed on 2026-09-05 on an NVIDIA GeForce RTX 3090, Ubuntu
 `RTX3090-Ubuntu-Chromium-AC`, commit
 `da461f42d70103417f887f5a0ebd9a8499bc5581`. Spark **2.1.0 / WebGL2** (ANGLE
 Vulkan) versus VLAM WebGPU (nvidia/ampere, vertex SH, counting sort) on the
-same Langenthal interior pose and scene hash as the Windows RTX 3090 suite.
+same cached-capture pose and scene hash as the Windows RTX 3090 suite.
 These results do **not** validate the RTX 4070 Ti/Linux or M4 Max/macOS
 reports. They also do not describe stock snap-Chromium on Wayland: WebGPU
 required `--ozone-platform=x11` plus Vulkan/WebGPU flags. An empty-profile
@@ -519,7 +521,7 @@ Driver/clock/thermal state was not independently recorded beyond AC power.
 
 ### Local findings: RTX 3090 / Ubuntu / Chromium 152 WebGL fallback
 
-Same machine, Ubuntu, Chromium snap, AC power, Langenthal pose and scene hash
+Same machine, Ubuntu, Chromium snap, AC power, cached-capture pose and scene hash
 as the Ubuntu WebGPU suite above. Label
 `RTX3090-Ubuntu-Chromium-AC-webgl-defaults`, empty Chromium profile, no
 `chrome://flags`, `?backend=webgl`. This is the stock-browser path: both
@@ -556,7 +558,7 @@ links these 32 JSON files and image pairs. Suite ID:
 A 32-run suite completed on 2026-09-04 on an Apple M3 MacBook Air (10-core
 GPU, 16 GB), macOS 26.3.1, Chrome 151.0.7922.174, AC power, label
 `M3Air-macOS-Chrome-AC`, commit `2d721bcc91329bcd2d50dec1a06319d850b09997`.
-Spark **2.1.0 / WebGL2** versus VLAM WebGPU on the same Langenthal interior
+Spark **2.1.0 / WebGL2** versus VLAM WebGPU on the same cached-capture interior
 pose and scene hash as above. These results do **not** validate the RTX
 4070 Ti/Linux or M4 Max/macOS reports; M3 Air also does not establish Pro /
 Max performance.
@@ -601,7 +603,7 @@ Driver/clock/thermal state was not independently recorded beyond AC power.
 
 ### Local findings: M3 Air WebGL diagnostic (one repetition)
 
-Same machine, Chrome, AC power, Langenthal pose and scene hash as the M3 Air
+Same machine, Chrome, AC power, cached-capture pose and scene hash as the M3 Air
 suite above. Label `M3Air-macOS-Chrome-AC-webgl-probe`. Eight single-repetition
 runs compare Spark WebGL2 with VLAM `backend=webgl` (Three WebGL2 fallback +
 CPU worker sort). Not a replacement for the repeated WebGPU baselines.
@@ -624,7 +626,7 @@ disabling SH.
 Treat GPU-render milliseconds cautiously: both engines use
 `EXT_disjoint_timer_query_webgl2` on every eighth frame and exclude worker
 time. Artifacts: `.tmp/benchmark-report-m3air/webgl-probe-summary.json` and
-the eight run directories under `.tmp/benchmark-results/`.
+the eight run directories under `.tmp/benchmark-results-old/`.
 
 ## Existing VLAM settled benchmark
 

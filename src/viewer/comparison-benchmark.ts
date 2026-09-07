@@ -12,6 +12,7 @@ import type { ComparisonAdapter } from './comparison-adapter';
 
 interface Manifest {
   source: string;
+  file: string;
   sha256: string;
   bytes: number;
   count: number;
@@ -97,6 +98,8 @@ async function run(): Promise<void> {
   const response = await fetch(`/benchmark-assets/${config.scene}.json`);
   if (!response.ok) throw new Error('Scene cache is missing. Run npm run benchmark:cache first.');
   const manifest = (await response.json()) as Manifest;
+  if (typeof manifest.file !== 'string')
+    throw new Error('Scene cache is stale. Run npm run benchmark:cache first.');
   const environmentResponse = await fetch('/__benchmark/environment');
   if (!environmentResponse.ok)
     throw new Error('Benchmark requires the repository development server.');
@@ -141,10 +144,10 @@ async function run(): Promise<void> {
       config.engine === 'spark'
         ? await (
             await import('./comparison-spark')
-          ).createComparisonSpark(config, `/benchmark-assets/${config.scene}.sog`)
+          ).createComparisonSpark(config, `/benchmark-assets/${manifest.file}`)
         : await (
             await import('./comparison-vlam')
-          ).createComparisonVlam(config, `/benchmark-assets/${config.scene}.sog`);
+          ).createComparisonVlam(config, `/benchmark-assets/${manifest.file}`);
     const active = adapter;
     view.replaceChildren(active.canvas);
     status.textContent = `${suiteLabel}Waiting for the initial sort…`;

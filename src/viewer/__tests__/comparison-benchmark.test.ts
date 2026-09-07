@@ -17,6 +17,7 @@ describe('shared comparison configuration', () => {
   it('pins resolution, timing and actual renderer selection', () => {
     expect(comparisonConfig('/vlam-benchmark.html', new URLSearchParams())).toMatchObject({
       engine: 'vlam',
+      scene: 'Tempel',
       backend: 'webgpu',
       width: 1280,
       height: 720,
@@ -26,6 +27,9 @@ describe('shared comparison configuration', () => {
       shEvaluation: 'auto',
       msaa: false,
     });
+    expect(
+      comparisonConfig('/vlam-benchmark.html', new URLSearchParams('scene=goose')),
+    ).toMatchObject({ scene: 'goose' });
     expect(
       comparisonConfig('/spark-benchmark.html', new URLSearchParams('preset=matched&sh=0')),
     ).toMatchObject({ engine: 'spark', preset: 'matched', sh: 0, backend: 'webgl' });
@@ -41,6 +45,7 @@ describe('shared comparison configuration', () => {
       'position=1,2,3&target=1,2,3',
       'position=a,2,3&target=0,0,0',
       'preset=unknown',
+      'scene=unknown',
       'backend=metal',
       'shEvaluation=unknown',
       'mode=unknown',
@@ -95,18 +100,20 @@ describe('shared comparison configuration', () => {
         .position,
     ).toEqual(pose.position);
   });
-  it('builds five alternating primary repetitions and isolated probes', () => {
+  it('builds three 720p repetitions plus one QHD pass', () => {
     const suite = comparisonSuite();
-    expect(suite).toHaveLength(92);
-    expect(suite.slice(0, 80).every((run) => run.get('probe') === 'primary')).toBe(true);
+    expect(suite).toHaveLength(32);
+    expect(suite.slice(0, 24).every((run) => run.get('probe') === 'primary')).toBe(true);
+    expect(suite.slice(0, 24).every((run) => run.get('width') === '1280')).toBe(true);
+    expect(suite.slice(24).every((run) => run.get('probe') === 'qhd')).toBe(true);
+    expect(suite.slice(24).every((run) => run.get('width') === '2560')).toBe(true);
     expect(suite[0]!.get('engine')).toBe('spark');
-    expect(suite[16]!.get('engine')).toBe('vlam');
-    expect(suite.slice(0, 80).every((run) => run.get('gpuTimestamps') === '0')).toBe(true);
-    expect(suite.slice(80).filter((run) => run.get('probe') === 'timestamps')).toHaveLength(4);
+    expect(suite[8]!.get('engine')).toBe('vlam');
+    expect(suite.every((run) => run.get('gpuTimestamps') === '0')).toBe(true);
     const controlled = comparisonSuite('controlled');
-    expect(controlled).toHaveLength(40);
+    expect(controlled).toHaveLength(16);
     expect(controlled.every((run) => run.get('preset') === 'controlled')).toBe(true);
-    expect(controlled.every((run) => run.get('probe') === 'primary')).toBe(true);
+    expect(controlled.filter((run) => run.get('probe') === 'qhd')).toHaveLength(4);
     expect(summarize([]).medianMs).toBeNull();
   });
 });
