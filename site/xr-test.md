@@ -57,7 +57,7 @@ description: One-click Quest XR stability comparisons for the VLAM! viewer.
         <strong>Sandwijck LOD</strong>
         <span>Streamed SOG · recommended stability</span>
       </a>
-      <a class="xr-test-card xr-test-card-primary" href="/demo/?scene=https%3A%2F%2Fassets.voluma.ai%2Fvoluma%2Fcultural-heritage%2FTempel%2FTempel.lcc2&amp;backend=webgl&amp;xrDiagnostics=1&amp;xrStability=1&amp;xrScale=0.7&amp;xrSortHz=30&amp;xrDepth=off" target="_self">
+      <a class="xr-test-card xr-test-card-primary" href="/demo/?scene=%2Fremote%2Fvoluma%2Fcultural-heritage%2FTempel%2FTempel.lcc2&amp;backend=webgl&amp;xrDiagnostics=1&amp;xrStability=1&amp;xrScale=0.7&amp;xrSortHz=30&amp;xrDepth=off" target="_self">
         <strong>Tempel LCC2</strong>
         <span>Streamed octree · recommended stability</span>
       </a>

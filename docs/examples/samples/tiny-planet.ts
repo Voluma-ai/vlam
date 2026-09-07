@@ -23,9 +23,7 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
-const splats = await StreamedSplatMesh.load(
-  'https://assets.voluma.ai/voluma/cultural-heritage/Tempel/Tempel.lcc2',
-);
+const splats = await StreamedSplatMesh.load('/remote/voluma/cultural-heritage/Tempel/Tempel.lcc2');
 scene.add(splats);
 
 // Nearby splats stay put so orbit still reads as moving through the scene.

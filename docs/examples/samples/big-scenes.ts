@@ -83,14 +83,11 @@ let lastT = performance.now();
 const budget = resolveSplatBudget();
 
 // The `.lcc2` is a small index; splat data arrives in chunks while you look
-// around.
-const splats = await StreamedSplatMesh.load(
-  'https://assets.voluma.ai/voluma/cultural-heritage/Tempel/Tempel.lcc2',
-  {
-    budget,
-    lodBaseDistance: 10, // inside this many world units, the finest detail is used
-  },
-);
+// around. `/remote/…` is the docs/demo proxy onto assets.voluma.ai.
+const splats = await StreamedSplatMesh.load('/remote/voluma/cultural-heritage/Tempel/Tempel.lcc2', {
+  budget,
+  lodBaseDistance: 10, // inside this many world units, the finest detail is used
+});
 scene.add(splats);
 
 addEventListener('resize', () => {

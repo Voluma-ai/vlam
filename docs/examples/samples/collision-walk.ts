@@ -67,9 +67,7 @@ controls.addEventListener('unlock', () => {
   instructions.textContent = 'Click to capture the mouse';
 });
 
-const splats = await StreamedSplatMesh.load(
-  'https://assets.voluma.ai/voluma/cultural-heritage/Tempel/Tempel.lcc2',
-);
+const splats = await StreamedSplatMesh.load('/remote/voluma/cultural-heritage/Tempel/Tempel.lcc2');
 scene.add(splats);
 splats.updateWorldMatrix(true, false);
 
