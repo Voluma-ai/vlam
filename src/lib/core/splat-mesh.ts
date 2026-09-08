@@ -56,6 +56,7 @@ import {
 import { UniformGrid } from './splat-query';
 import { resolveXrView } from './xr-view';
 import { cameraVisibleSortRange } from './splat-sort-bounds';
+import { updateSplatFrustumMargin } from './splat-frustum';
 import {
   SPLAT_DATA_TEXTURE_WIDTH,
   SplatPool,
@@ -337,6 +338,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private readonly focal = uniform(new THREE.Vector2());
   /** Drawing-buffer size in pixels; updated every frame. */
   private readonly viewport = uniform(new THREE.Vector2());
+  private readonly frustumMargin = uniform(new THREE.Vector2());
   /** Camera position in this mesh's local space, for SH view dependence. */
   private readonly localCameraPosition = uniform(new THREE.Vector3());
   /** Mesh-local center to clip space, for conservative SH generation culling. */
@@ -1984,6 +1986,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     positionCamera: THREE.Camera = camera,
   ): void {
     this.viewport.value.set(viewportX, viewportY);
+    updateSplatFrustumMargin(this.viewport.value, this.frustumMargin.value, this.minSplatSizePx);
     const projection = camera.projectionMatrix.elements;
     const focalY = (projection[5] * viewportY) / 2;
     this.focal.value.set((projection[0] * viewportX) / 2, focalY);
@@ -2492,6 +2495,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       uniforms: {
         focal: this.focal,
         viewport: this.viewport,
+        frustumMargin: this.frustumMargin,
         localCameraPosition: this.localCameraPosition,
         pixelScaleLimit: this.pixelScaleLimit,
         dofFocusDistance: this.dofFocusDistance,
@@ -2648,6 +2652,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           sh,
           localCameraPosition: this.localCameraPosition,
           localViewProjection: this.shViewProjection,
+          frustumMargin: this.frustumMargin,
         });
         this.shCacheSh = sh;
         this.shCacheRenderer = renderer;

@@ -6,7 +6,9 @@ import {
   evaluateSplatSh,
   type SplatShInputs,
   type Vec3Uniform,
+  type Vec2Uniform,
 } from './splat-mesh-material';
+import { isSplatCenterInFrustum } from './splat-frustum';
 
 /** One final-color RGBA8 storage-texture texel per pool splat. */
 export const SH_CACHE_BYTES_PER_SPLAT = 4;
@@ -22,6 +24,8 @@ export class ShComputeCache {
   private readonly previousCamera = new THREE.Vector3();
   private readonly observedCamera = new THREE.Vector3();
   private readonly previousViewProjection = new THREE.Matrix4();
+  private readonly frustumMargin: Vec2Uniform;
+  private readonly previousFrustumMargin = new THREE.Vector2();
   private observedCameraValid = false;
   private lastRefreshAt = Number.NEGATIVE_INFINITY;
   private previousContent = -1;
@@ -49,9 +53,11 @@ export class ShComputeCache {
     sh: SplatShInputs;
     localCameraPosition: Vec3Uniform;
     localViewProjection: THREE.UniformNode<'mat4', THREE.Matrix4>;
+    frustumMargin: Vec2Uniform;
   }) {
     this.bytes = options.capacity * SH_CACHE_BYTES_PER_SPLAT;
     this.localViewProjection = options.localViewProjection;
+    this.frustumMargin = options.frustumMargin;
     const height = Math.ceil(options.capacity / options.dataTextureWidth);
     const output = new THREE.StorageTexture(options.dataTextureWidth, height);
     output.name = 'vlam-sh-final-color';
@@ -71,12 +77,9 @@ export class ShComputeCache {
       const base = textureLoad(options.colorsTexture, pixel);
       const center = textureLoad(options.centersTexture, pixel).xyz;
       const clipCenter = options.localViewProjection.mul(vec4(center, 1));
-      const margin = clipCenter.w.mul(1.2);
-      const visible = clipCenter.z
-        .greaterThan(margin.negate())
-        .and(clipCenter.z.lessThan(clipCenter.w))
-        .and(clipCenter.x.abs().lessThan(margin))
-        .and(clipCenter.y.abs().lessThan(margin));
+      // Use the display's cap-aware broad bound: a center outside the screen
+      // can still contribute a large visible splat whose SH must be refreshed.
+      const visible = isSplatCenterInFrustum(clipCenter, options.frustumMargin);
       If(this.cullToView.not().or(visible), () => {
         const rgb = evaluateSplatSh(
           options.sh,
@@ -110,9 +113,11 @@ export class ShComputeCache {
       this.previousContent !== contentRevision || this.previousCount !== activeCount;
     const graphChanged = this.previousGraph !== graphRevision;
     const cameraChangedSinceCache = !this.previousCamera.equals(camera);
-    const viewChangedSinceCache = !this.previousViewProjection.equals(
-      this.localViewProjection.value,
-    );
+    // A smaller render target widens the cap's NDC coverage even when camera
+    // pose, aspect and projection are unchanged (e.g. adaptive pixel ratio).
+    const viewChangedSinceCache =
+      !this.previousViewProjection.equals(this.localViewProjection.value) ||
+      !this.previousFrustumMargin.equals(this.frustumMargin.value);
     const reason = !this.valid
       ? 'initial-or-view'
       : contentChanged
@@ -154,6 +159,7 @@ export class ShComputeCache {
     this.lastRefreshAt = now;
     this.previousCamera.copy(camera);
     this.previousViewProjection.copy(this.localViewProjection.value);
+    this.previousFrustumMargin.copy(this.frustumMargin.value);
     this.previousContent = contentRevision;
     this.previousGraph = graphRevision;
     this.previousCount = activeCount;

@@ -53,6 +53,38 @@ function internals(mesh: SplatMesh) {
 }
 
 describe('pool-indexed SH compute cache', () => {
+  it('refreshes a cropped cache when only the viewport coverage expands', () => {
+    const gpu = renderer();
+    const r = gpu as unknown as THREE.WebGPURenderer;
+    const texture = new THREE.DataTexture(new Float32Array(4), 1, 1);
+    const margin = uniform(new THREE.Vector2(3, 3));
+    const cache = new ShComputeCache({
+      capacity: 1,
+      centersTexture: texture,
+      colorsTexture: texture,
+      covarianceBTexture: texture,
+      dataTextureWidth: 1,
+      sh: { mode: 'palette', bands: 1, paletteTexture: texture },
+      localCameraPosition: uniform(new THREE.Vector3()),
+      localViewProjection: uniform(new THREE.Matrix4()),
+      frustumMargin: margin,
+    });
+    const camera = new THREE.Vector3(0, 0, 3);
+    cache.prepare(r, 1, camera, 0, 0, 0);
+    cache.prepare(r, 1, camera.set(1, 0, 3), 0, 0, 10, false, true, true);
+    expect(gpu.compute).toHaveBeenCalledTimes(2);
+    // Same aspect/projection and position, but fewer drawing-buffer pixels
+    // let the 512px cap reach centers outside the previous cache coverage.
+    margin.value.set(5, 5);
+    cache.prepare(r, 1, camera, 0, 0, 200, false, false, true);
+    expect(gpu.compute).toHaveBeenCalledTimes(3);
+    expect(cache.snapshot().viewCadenceRefreshes).toBe(1);
+    cache.prepare(r, 1, camera, 0, 0, 400, false, false, true);
+    expect(gpu.compute).toHaveBeenCalledTimes(3);
+    cache.dispose(r);
+    texture.dispose();
+  });
+
   it('invalidates on content, graph, camera and explicit view changes, not idle frames', () => {
     const gpu = renderer();
     const r = gpu as unknown as THREE.WebGPURenderer;
@@ -66,6 +98,7 @@ describe('pool-indexed SH compute cache', () => {
       sh: { mode: 'palette', bands: 1, paletteTexture: texture },
       localCameraPosition: uniform(new THREE.Vector3()),
       localViewProjection: uniform(new THREE.Matrix4()),
+      frustumMargin: uniform(new THREE.Vector2(3, 3)),
     });
     const camera = new THREE.Vector3(0, 0, 3);
     cache.prepare(r, 17, camera, 0, 0, 0);
@@ -134,6 +167,7 @@ describe('pool-indexed SH compute cache', () => {
       sh: { mode: 'palette', bands: 1, paletteTexture: texture },
       localCameraPosition: uniform(new THREE.Vector3()),
       localViewProjection: view,
+      frustumMargin: uniform(new THREE.Vector2(3, 3)),
     });
     const camera = new THREE.Vector3(0, 0, 3);
     cache.prepare(r, 8, camera, 0, 0, 0);
@@ -165,6 +199,7 @@ describe('pool-indexed SH compute cache', () => {
       sh: { mode: 'palette', bands: 1, paletteTexture: texture },
       localCameraPosition: uniform(new THREE.Vector3()),
       localViewProjection: uniform(new THREE.Matrix4()),
+      frustumMargin: uniform(new THREE.Vector2(3, 3)),
     });
     const camera = new THREE.Vector3(0, 0, 3);
     expect(cache.prepare(r, 8, camera, 0, 0, 0)).toBe('cache');
