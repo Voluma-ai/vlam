@@ -244,7 +244,7 @@ describe('per-format mobile budgets', () => {
     // iOS exposes no `deviceMemory`, so this is the memory-less branch - the
     // one the measurements above were actually taken on.
     for (const format of ['rad', 'lcc', 'lcc2'] as const) {
-      expect(resolveSplatBudget(undefined, ios, { format })).toBe(600_000);
+      expect(resolveSplatBudget(undefined, ios, { format })).toBe(750_000);
     }
   });
 
@@ -255,7 +255,7 @@ describe('per-format mobile budgets', () => {
   it('applies the class to the memory-derived ceiling too, not just iOS', () => {
     // An Android flagship reporting the privacy-capped 8 GiB has no more fill
     // rate for wide discs than an iPhone that reports nothing.
-    expect(resolveSplatBudget(undefined, android, { format: 'rad' })).toBe(600_000);
+    expect(resolveSplatBudget(undefined, android, { format: 'rad' })).toBe(750_000);
     expect(resolveSplatBudget(undefined, android, { format: 'streamed-sog' })).toBe(1_000_000);
   });
 
@@ -323,7 +323,7 @@ describe('resolveSplatBudget cap', () => {
   });
 
   it('composes with the format tier, taking whichever is tighter', () => {
-    expect(resolveSplatBudget(undefined, ios, { format: 'rad', cap: 1_000_000 })).toBe(600_000);
+    expect(resolveSplatBudget(undefined, ios, { format: 'rad', cap: 1_000_000 })).toBe(750_000);
     expect(resolveSplatBudget(undefined, ios, { format: 'rad', cap: 400_000 })).toBe(400_000);
   });
 

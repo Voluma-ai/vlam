@@ -159,6 +159,13 @@ describe('sogShBandsFromZip', () => {
     expect(reads.some(([, length]) => length > 70_000)).toBe(false);
     expect(reads.some(([start]) => start === 0)).toBe(true);
   });
+
+  it('keeps its fallback when the archive declares ZIP64 sentinel values', async () => {
+    const bytes = buildZip({ 'meta.json': JSON.stringify({ shN: { bands: 3 } }) });
+    new DataView(bytes.buffer).setUint16(bytes.byteLength - 22 + 10, 0xffff, true);
+    const { read } = zipReader(bytes);
+    await expect(sogShBandsFromZip(read, bytes.byteLength)).resolves.toBe(0);
+  });
 });
 
 describe('resolvePaletteShBands', () => {

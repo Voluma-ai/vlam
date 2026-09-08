@@ -42,18 +42,18 @@ and [`architecture.md`](architecture.md).
 
 ## Renderer & platform
 
-| Capability | WebGPU | WebGL2 | Unified (M15) | Auto tests | Manual / device |
+| Capability | WebGPU | WebGL2 | Unified | Auto tests | Manual / device |
 | --- | --- | --- | --- | --- | --- |
 | Core splat draw (EWA, ±3σ, premul α) | ✅ | ✅ |, | material tests | demo orbit |
 | Depth sort (counting / radix adaptive) | ✅ GPU | ✅ CPU worker | ✅ work-buffer sort | `compute-sorter`, `sort-worker` | `?verifySort=1` |
-| Sort within-bucket inversions | ⚠️ expected | ⚠️ radix stable; GPU counting may tie | ⚠️ same | ROADMAP M6 notes | invisible if &lt; bucket width |
+| Sort within-bucket inversions | ⚠️ expected | ⚠️ radix stable; GPU counting may tie | ⚠️ same | sorter tests | invisible if &lt; bucket width |
 | Streamed LOD / budget | ✅ | ✅ | ✅ per-source cut gathered | streamed-splat-mesh.* | `?budget=` |
 | Shared budget across meshes (`BudgetGovernor`) | ✅ weighted split via `setBudget`; flat-leaf, octree-cut and RAD page-table paths | ✅ same | ⚠️ per-source meshes registrable | `budget-governor.test.ts` |, |
 | Float16 pool textures | ⚠️ opt-in `poolFloatTextures: 'float16'` (centers + covA) | ⚠️ same |, | `half-float`, `splat-mesh.pool` | `?poolFloat=float16` |
 | Adaptive pixel ratio | ⚠️ policy `suggestAdaptivePixelRatio`; application applies | ⚠️ same |, | `splat-budget.test.ts` | `?adaptiveDpr=1` |
 | Raised WebGPU storage buffer limits | ✅ `createWebGPURenderer()`; applications owning device creation pass `recommendedWebGpuRequiredLimits(adapter)` |, | ✅ early throw if pool exceeds device bind limit | `webgpu-limits.test.ts` | large LCC2 / unified capacity >8M |
 | `SplatMesh.pick` (GPU depth) | ✅ | ✅ |, | `splat-mesh.pick` | click focus |
-| Position queries (`queryNearest`, `queryHeight`) | ✅ | ✅ |, (per-source mesh) | `splat-mesh.query`, `streamed-splat-mesh.query` | M9 |
+| Position queries (`queryNearest`, `queryHeight`) | ✅ | ✅ |, (per-source mesh) | `splat-mesh.query`, `streamed-splat-mesh.query` | query harness |
 | Multi-view exact sort (`renderView`) | ✅ | ⚠️ async worker; sequential views | ⚠️ WebGPU: per-view gather+sort | `splat-mesh.render-view` | `?mirror=1` |
 | Fully loaded multi-cloud (`MergedSplatMesh`) | ✅ | ✅ inter-sort |, (fast path) | `merged-splat-mesh.test.ts` | overlap readback |
 | Heterogeneous `UnifiedSplatMesh` | ✅ | ❌ | ✅ fully loaded + streamed sources | `unified-splat-mesh.test.ts` · `src/viewer/unified-harness.html` | harness + streamed/SH pixel gates |
@@ -62,7 +62,7 @@ and [`architecture.md`](architecture.md).
 | `/relighting` proxy screen-space attachment | ✅ | ✅ | ✅ draw-time (no gather) | `relighting.test.ts` | runnable relight example |
 | `SplatMesh.setDepthOfField` (core projected-2D) | ✅ | ✅ | ✅ draw-time (no gather) | `depth-of-field.test.ts` |, |
 | Collision mesh (format-provided) | ✅ | ✅ |, | `collision-mesh`, `lcc2-collision`, `parse-collision-lci` | LCC / LCC2 drop |
-| Volume selection + separation (M16) | ✅ CPU, backend-independent | ✅ same | ⚠️ halves register as separate sources | `selection-volume`, `splat-partition`, `lcc-collision-partition` | `?separate=1` |
+| Volume selection + separation | ✅ CPU, backend-independent | ✅ same | ⚠️ halves register as separate sources | `selection-volume`, `splat-partition`, `lcc-collision-partition` | `?separate=1` |
 | Orientation normalization (`orientation`) | ✅ | ✅ |, (per-source meshes) | `orientation`, `*.orientation` |, |
 | Display-space compositing (`srgbOutput`) | ✅ | ✅ | ✅ must agree across sources | material / unified tests | color A/B |
 | WebXR stereo ([`xr.md`](xr.md)) | ✅ | ✅ (the shipping Quest path) | ✅ per-eye viewport, head sort | `xr-view`, `*.xr.test.ts` | headset / Immersive Web Emulator |
@@ -155,9 +155,9 @@ requirements met; not exercised here) · ❓ unverified, no device/report
 
 | Platform | Backend | State | Notes |
 | --- | --- | --- | --- |
-| Chrome / Edge, Windows & Linux desktop | WebGPU | ✅ | Primary development target (M6 sort readbacks). Discrete Windows NVIDIA Ampere classified `gpuClass: 'discrete'` on 2026-08-21; see below. |
-| Chrome / Edge desktop, WebGPU disabled or unavailable | WebGL2 | ✅ | Full-path fallback audit (M4.1). Force it in the demo with `?backend=webgl`. |
-| Safari, iOS, iPhone 15 Pro | WebGPU | ✅ | Verified during M4.2 / M6.8 (core rendering + `.rad` mobile defaults). |
+| Chrome / Edge, Windows & Linux desktop | WebGPU | ✅ | Primary development target. Discrete Windows NVIDIA Ampere is classified `gpuClass: 'discrete'`; see below. |
+| Chrome / Edge desktop, WebGPU disabled or unavailable | WebGL2 | ✅ | Full-path fallback. Force it in the demo with `?backend=webgl`. |
+| Safari, iOS, iPhone 15 Pro | WebGPU | ✅ | Core rendering and `.rad` mobile defaults are verified. |
 | Safari, iOS, iPhone 15 (non-Pro) | WebGPU | ❓ | **Open gate, ROADMAP N4.** Same A-series generation as Pro; not separately run. |
 | Safari, macOS | WebGPU | ✅ | MacBook Air M3, 8 GB. Classified 2026-08-21 (`mem - desktop integrated`, no `deviceMemory`). Demo SD/HD measured 2026-08-25 in Safari and Chrome; default stays fill-constrained. |
 | Chrome, Android, Galaxy S7 (Mali, no WebGPU) | WebGL2 | 🔎 | Smoke only for the no-WebGPU budget tier (ROADMAP N4). Runs, low fps expected. Not a support claim. |
@@ -303,7 +303,7 @@ dpr 2.625, drawing buffer 411×783 at dpr 1. Chrome privacy-caps
 `deviceMemory` at 8, so extra Ultra RAM is invisible to
 `resolveSplatBudget`. Snapdragon Adreno 750 has no Apple/Intel/AMD cue, so
 `classifySplatGpuClass` returns `discrete`. `isMobile` still selects the
-phone caps (1M sampled, 600k LCC) and fill-constrained SD. Do not read
+phone caps (1M sampled, 750k LCC) and fill-constrained SD. Do not read
 `discrete` as the 8M workstation path.
 
 Goose (`goose.sog`, 149,120), SD (`msaa off`, 3σ, `smooth`): 60 rAF (16.6

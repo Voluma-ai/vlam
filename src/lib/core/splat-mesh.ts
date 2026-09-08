@@ -268,7 +268,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   /**
    * True when the shared depth-order buffer holds a *secondary* view's order
    * (left by {@link renderView}), so the next primary {@link update} must
-   * re-sort even if its camera has not moved. See {@link renderView} (M10).
+   * re-sort even if its camera has not moved. See {@link renderView}.
    */
   private orderIsForeign = false;
   /**
@@ -352,7 +352,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private readonly pixelScaleLimit = uniform(0);
   /**
    * Core projected-2D depth of field (live uniforms). Aperture `0` disables.
-   * Prefer this over the M13 `depthOfFieldPreset` modifier for camera DoF.
+   * Prefer this over the `depthOfFieldPreset` modifier for camera DoF.
    */
   private readonly dofFocusDistance = uniform(10);
   private readonly dofAperture = uniform(0);
@@ -941,7 +941,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (source && source.bands === this.packedShBands) {
       this.applyShRange(source);
       // A chunk quantized against a different range than the scene's (a SOG
-      // chunk measures its own extent - M11) is requantized into the scene
+      // chunk measures its own extent) is requantized into the scene
       // range word-by-word, so every splat decodes through the one pool
       // uniform. When the ranges already match (LCC/`.rad`, or the range-setting
       // first chunk) this is a verbatim copy.
@@ -1425,7 +1425,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /**
    * Core projected-2D depth of field. Adds an isotropic screen-space CoC disc
-   * after EWA projection (not the stylized M13 scale modifier). Live uniforms
+   * after EWA projection (not the stylized scale modifier). Live uniforms
    * - no material rebuild. Pass `aperture: 0` to disable.
    */
   setDepthOfField(settings: Partial<DepthOfFieldSettings>): void {
@@ -1661,7 +1661,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * The resident splat center nearest a world point, within `radius` (world
    * units), or `null` if none. A synchronous CPU query over the pool's decoded
    * centers - no GPU round-trip - backed by a uniform grid rebuilt only when
-   * the resident set changes (M9). The primitive behind measurement markers and
+   * the resident set changes. The primitive behind measurement markers and
    * proximity tests.
    *
    * **Resident-only:** a {@link StreamedSplatMesh} searches only the splats
@@ -1752,7 +1752,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * that lies no more than `maxDrop` below it (world −Y) and within `radius`
    * horizontally, or `null` if none. A downward probe over splat centers - the
    * primitive behind floor-following and teleport validation - without a GPU
-   * pick or a collision mesh (M9), so it works for every format, not only the
+   * pick or a collision mesh, so it works for every format, not only the
    * `.lcc2` captures that ship collision geometry.
    *
    * `radius` (default `maxDrop / 2`) is the horizontal tolerance: splats are
@@ -1801,7 +1801,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   /**
    * Renders this mesh from a second camera - into `target`, or the canvas when
    * omitted - with depth order **and** projection correct for *that* camera
-   * (M10). The primitive behind mirrors, portals, split panes, and thumbnails.
+   * The primitive behind mirrors, portals, split panes, and thumbnails.
    *
    * Depth order is view-dependent, but a mesh keeps one sorted order buffer:
    * `update()` sorts it for the single camera it is given, so a second view

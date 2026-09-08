@@ -5,6 +5,7 @@ import {
   toSplatLoadError,
   type SplatRequestOptions,
 } from '../../loaders/loading';
+import { readZipEntries } from './zip';
 
 /**
  * Decoder for PlayCanvas's SOG format (v2), Voluma's canonical delivery
@@ -44,8 +45,8 @@ interface DecodedImage {
 
 /**
  * Upper bound on `meta.count` before any allocation happens. The renderer
- * cannot draw more anyway: 2048-wide pool textures cap at ~16.7M splats
- * (ROADMAP M4.2) and the float32 `splatIndex` is exact only up to 2²⁴, so
+ * cannot draw more anyway: 2048-wide pool textures cap at ~16.7M splats and
+ * the float32 `splatIndex` is exact only up to 2²⁴, so
  * anything larger in an untrusted meta.json is rejected rather than
  * ballooning into a multi-gigabyte allocation.
  */
@@ -69,7 +70,7 @@ export async function parseSog(
   buffer: ArrayBuffer,
   options: { signal?: AbortSignal } = {},
 ): Promise<SplatData> {
-  const archive = readZip(buffer);
+  const archive = readZipEntries(buffer);
   return parseSogFromEntries(async (name) => {
     const entry = archive.get(name);
     if (!entry) throw new Error(`SOG bundle is missing "${name}".`);
@@ -363,83 +364,6 @@ async function decodeShN(
     paletteWidth: centroids.width,
     paletteHeight: centroids.height,
   };
-}
-
-/**
- * Minimal ZIP reader: returns a map from entry name to a function that
- * produces the entry's bytes. Supports the two methods that occur in
- * practice - STORE (SOG bundles are stored; WebP is already compressed)
- * and DEFLATE via the browser's native DecompressionStream.
- */
-function readZip(buffer: ArrayBuffer): Map<string, () => Promise<Uint8Array>> {
-  const view = new DataView(buffer);
-  const bytes = new Uint8Array(buffer);
-
-  // Find the End Of Central Directory record (its signature, scanned
-  // backwards past the variable-length archive comment).
-  let eocd = -1;
-  const scanEnd = Math.max(0, buffer.byteLength - 65557);
-  for (let offset = buffer.byteLength - 22; offset >= scanEnd; offset--) {
-    if (offset < 0) break;
-    if (view.getUint32(offset, true) === 0x06054b50) {
-      eocd = offset;
-      break;
-    }
-  }
-  if (eocd < 0) throw new Error('Not a ZIP archive (no end-of-central-directory record).');
-
-  const entryCount = view.getUint16(eocd + 10, true);
-  let cursor = view.getUint32(eocd + 16, true); // Central directory offset.
-
-  const entries = new Map<string, () => Promise<Uint8Array>>();
-  for (let i = 0; i < entryCount; i++) {
-    // Range-check the untrusted cursor before every DataView read, so a
-    // hostile central-directory offset fails as the corrupt ZIP it is
-    // instead of surfacing a bare RangeError.
-    if (cursor < 0 || cursor + 46 > buffer.byteLength) {
-      throw new Error('Corrupt ZIP central directory.');
-    }
-    if (view.getUint32(cursor, true) !== 0x02014b50) {
-      throw new Error('Corrupt ZIP central directory.');
-    }
-    const method = view.getUint16(cursor + 10, true);
-    const compressedSize = view.getUint32(cursor + 20, true);
-    const nameLength = view.getUint16(cursor + 28, true);
-    const extraLength = view.getUint16(cursor + 30, true);
-    const commentLength = view.getUint16(cursor + 32, true);
-    const localHeaderOffset = view.getUint32(cursor + 42, true);
-    if (cursor + 46 + nameLength > buffer.byteLength) {
-      throw new Error('Corrupt ZIP central directory.');
-    }
-    const name = new TextDecoder().decode(bytes.subarray(cursor + 46, cursor + 46 + nameLength));
-    cursor += 46 + nameLength + extraLength + commentLength;
-
-    entries.set(name, async () => {
-      // The local header repeats name/extra with possibly different sizes.
-      if (localHeaderOffset + 30 > buffer.byteLength) {
-        throw new Error(`Corrupt ZIP entry "${name}": local header extends past the archive.`);
-      }
-      const localNameLength = view.getUint16(localHeaderOffset + 26, true);
-      const localExtraLength = view.getUint16(localHeaderOffset + 28, true);
-      const dataStart = localHeaderOffset + 30 + localNameLength + localExtraLength;
-      if (dataStart + compressedSize > buffer.byteLength) {
-        throw new Error(`Corrupt ZIP entry "${name}": data extends past the archive.`);
-      }
-      const compressed = bytes.subarray(dataStart, dataStart + compressedSize);
-
-      if (method === 0) return compressed; // STORE
-      if (method === 8) {
-        // DEFLATE
-        // Blob copies the viewed byte range itself; no defensive slice needed.
-        const stream = new Blob([compressed])
-          .stream()
-          .pipeThrough(new DecompressionStream('deflate-raw'));
-        return new Uint8Array(await new Response(stream).arrayBuffer());
-      }
-      throw new Error(`Unsupported ZIP compression method ${method} for "${name}".`);
-    });
-  }
-  return entries;
 }
 
 let webpReadbackContext: WebGL2RenderingContext | undefined;

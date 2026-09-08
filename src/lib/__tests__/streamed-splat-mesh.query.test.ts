@@ -1,3 +1,4 @@
+import { createStreamedMeshFixture } from './helpers/streamed-mesh-fixture';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { StreamedSplatMesh } from '../streaming/streamed-splat-mesh';
@@ -46,13 +47,7 @@ function makeStreamedMesh(): StreamedSplatMesh {
     pinnedFiles: new Set<number>(),
     maxResidentSplats: 4 * WIDTH,
   };
-  const Ctor = StreamedSplatMesh as unknown as new (
-    scene: unknown,
-    budget: number,
-    capacity: number,
-    options: unknown,
-  ) => StreamedSplatMesh;
-  return new Ctor(scene, 4 * WIDTH, 4 * WIDTH, {});
+  return createStreamedMeshFixture(scene, 4 * WIDTH, 4 * WIDTH, {});
 }
 
 type Internals = {

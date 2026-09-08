@@ -60,19 +60,23 @@
 
     // The cache module is loaded lazily. Drive frames until its initial full
     // dispatch has completed, then translate once to create a cropped cache.
-    for (let attempt = 0; attempt < 20; attempt++) {
-      draw();
-      if (shEvaluationDiagnostics(mesh).dispatches > 0) break;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+    const waitForFrames = async (ready, stage) => {
+      const deadline = performance.now() + 10_000;
+      do {
+        draw();
+        if (ready(shEvaluationDiagnostics(mesh))) return;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      } while (performance.now() < deadline);
+      throw new Error(`SH probe did not reach ${stage}`);
+    };
+    await waitForFrames((state) => state.dispatches > 0, 'initial cache');
     const initial = shEvaluationDiagnostics(mesh);
     camera.position.x = 0.2;
     camera.lookAt(0, 0, 0);
-    for (let attempt = 0; attempt < 30; attempt++) {
-      draw();
-      if (shEvaluationDiagnostics(mesh).dispatches > initial.dispatches) break;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+    await waitForFrames(
+      (state) => state.dispatches > initial.dispatches,
+      'cropped cache after translation',
+    );
     const beforeRotation = shEvaluationDiagnostics(mesh);
 
     // Radial order depends on camera position, not orientation. Rotate for

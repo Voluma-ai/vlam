@@ -1,3 +1,4 @@
+import { updateMesh } from './helpers/mesh-update';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { vec4, float } from 'three/tsl';
@@ -23,14 +24,11 @@ function makeSplatData(count: number): {
   return { count, positions, colors, covariances };
 }
 
-/** Reaches a channel's private CPU backing array for assertions. */
+/** Reads the texture exposed to unified rendering. */
 function channelBacking(mesh: SplatMesh, name: string): Uint8Array | Float32Array {
-  const channels = (
-    mesh as unknown as { channels: Map<string, { backing: Uint8Array | Float32Array }> }
-  ).channels;
-  const record = channels.get(name);
-  if (!record) throw new Error(`no channel ${name}`);
-  return record.backing;
+  const texture = mesh.getUnifiedSourceView().channels.get(name)?.texture;
+  if (!texture) throw new Error(`no channel ${name}`);
+  return texture.image.data as Uint8Array | Float32Array;
 }
 
 function channelPendingRows(mesh: SplatMesh, name: string): { start: number; count: number }[] {
@@ -192,15 +190,13 @@ describe('SplatMesh per-splat channels', () => {
     expect(channelPendingRows(mesh, 'mask')).toContainEqual({ start: 0, count: 1 });
   });
 
-  it('flushPendingUploads uploads channel dirty rows and clears them', () => {
+  it('update uploads channel dirty rows and clears them', () => {
     const mesh = dynamicMesh();
     const range = mesh.appendRange(makeSplatData(2));
     mesh.defineChannel('mask', { type: 'byte' });
     mesh.writeChannel(range, 'mask', new Uint8Array([255, 255]));
 
-    const channelTexture = (
-      mesh as unknown as { channels: Map<string, { texture: THREE.DataTexture }> }
-    ).channels.get('mask')!.texture;
+    const channelTexture = mesh.getUnifiedSourceView().channels.get('mask')!.texture;
 
     const copies: { dst: THREE.Texture; y: number }[] = [];
     const renderer = {
@@ -211,9 +207,7 @@ describe('SplatMesh per-splat channels', () => {
       ),
     } as unknown as THREE.WebGPURenderer;
 
-    (mesh as unknown as { flushPendingUploads(r: THREE.WebGPURenderer): void }).flushPendingUploads(
-      renderer,
-    );
+    updateMesh(mesh, renderer.copyTextureToTexture);
 
     // The channel texture was among the upload targets, at row 0.
     expect(copies.some((c) => c.dst === channelTexture && c.y === 0)).toBe(true);
@@ -223,9 +217,7 @@ describe('SplatMesh per-splat channels', () => {
   it('dispose frees channel textures', () => {
     const mesh = new SplatMesh({ capacity: WIDTH });
     mesh.defineChannel('mask', { type: 'byte' });
-    const texture = (
-      mesh as unknown as { channels: Map<string, { texture: THREE.DataTexture }> }
-    ).channels.get('mask')!.texture;
+    const texture = mesh.getUnifiedSourceView().channels.get('mask')!.texture;
     const spy = vi.spyOn(texture, 'dispose');
     mesh.dispose();
     expect(spy).toHaveBeenCalled();

@@ -66,11 +66,13 @@ src/
  splat-mesh.ts SplatMesh: the pool, range lifecycle, active list, sort wiring
  splat-mesh-types.ts its public options, result types, and profile defaults
  splat-mesh-material.ts its TSL graph (display + pick), as free functions
+ splat-render-math.ts shared projection, filtering/DoF, ellipse, and Gaussian/RAD math
+ splat-material-types.ts shared shader inputs and uniform constructors
  splat-mesh-picking.ts SplatPicker: the GPU pick pass and its resources
  splat-mesh-pool.ts pool data textures + the row-span allocator
  merged-splat-mesh.ts MergedSplatMesh: several fully decoded sources, one pool
  splat-data.ts SplatData arrays + shared covariance/SH math
- splat-modifier.ts M7 TSL hook types (SplatContext/SplatOutputs)
+ splat-modifier.ts TSL hook types (SplatContext/SplatOutputs)
  splat-budget.ts device profiling + per-device default splat budget
  webgpu-limits.ts application requiredLimits helper + storage-buffer size checks
  splat-depth-pack.ts depth pack/unpack + view-depth (un)projection for picking
@@ -115,15 +117,21 @@ src/
 ```
 
 The `splat-mesh-*.ts` modules are internal: they are reached through
-`SplatMesh`, never exported from `core/index.ts`. Two things to know before moving
-code between them. The material graph must be handed the mesh's uniform *node
-instances* and its **live** channels map, not copies, display and pick share
-the uniforms, and a rebuild after `defineChannel` has to see the new entry. And
-several tests reach into private members **by name** through
-`as unknown as` casts (`rebuildActiveList`, `acquireUploadStaging`,
-`flushPendingUploads`, `sorter`, `channels`, and on `StreamedSplatMesh` the
-private constructor plus `reschedule`/`stageGroup`/`cache`/`resident`), so
-those must stay instance members even when the work moves out.
+`SplatMesh`, never exported from `core/index.ts`. The material graph must be
+handed the mesh's uniform *node instances* and its **live** channels map, not
+copies; display and pick share the uniforms, and a rebuild after
+`defineChannel` has to see the new entry. Internal structure is free to change
+with its tests. Prefer public lifecycle operations and mocked renderer, worker,
+and loader boundaries; keep any unavoidable GPU bookkeeping inspection in a
+narrow test-local adapter.
+
+Standalone display/picking and unified rendering share `splat-render-math.ts`.
+The builders retain storage reads, source transforms/modifiers, SH, visibility
+policy, color conversion, and output encoding. The math helpers preserve live
+uniform nodes; boolean filter settings specialize the standalone graph while
+unified rendering keeps its live compensation weight. Zero-aperture DoF remains
+a shader branch. New rendering rules belong in the callers unless they are
+mathematically identical across paths.
 
 `SplatMesh` has two modes: fully loaded (`new SplatMesh(data)`) and
 dynamic-capacity (`new SplatMesh({ capacity })`, an empty pool filled with
