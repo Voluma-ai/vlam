@@ -150,44 +150,82 @@ export function comparisonUrl(
   return `/${engine}-benchmark.html?${query}`;
 }
 
-/** Three 720p repetitions plus one QHD pass. Diagnostic probes stay URL-only. */
-export function comparisonSuite(onlyPreset?: 'proposed' | 'controlled'): URLSearchParams[] {
+/** Compact default, or the historical 32-run matrix. */
+export type ComparisonSuiteDensity = 'compact' | 'full';
+
+export interface ComparisonSuiteOptions {
+  /** `undefined` means both proposed and controlled when density is `full`. */
+  preset?: 'proposed' | 'controlled';
+  density?: ComparisonSuiteDensity;
+  /** Compact default is Tempel then hotel so one click covers both captures. */
+  scenes?: readonly ComparisonScene[];
+}
+
+/** Sequential comparison matrix. Compact is the default; `density: 'full'` is the old 32-run protocol. */
+export function comparisonSuite(
+  presetOrOptions?: 'proposed' | 'controlled' | ComparisonSuiteOptions,
+): URLSearchParams[] {
+  const options: ComparisonSuiteOptions =
+    typeof presetOrOptions === 'object' && presetOrOptions !== null
+      ? presetOrOptions
+      : {
+          preset: presetOrOptions,
+          // A bare preset argument is the historical 16-run half-matrix.
+          density: presetOrOptions ? 'full' : 'compact',
+        };
+  const density = options.density ?? 'compact';
+  const presets = options.preset
+    ? [options.preset]
+    : density === 'compact'
+      ? ['proposed']
+      : ['proposed', 'controlled'];
+  const scenes =
+    options.scenes ??
+    (density === 'compact' ? (['Tempel', 'hotel'] as const) : (['Tempel'] as const));
+  const repeats = density === 'full' ? 3 : 1;
+  const seconds = density === 'compact' ? '15' : undefined;
   const runs: URLSearchParams[] = [];
-  const presets = onlyPreset ? [onlyPreset] : ['proposed', 'controlled'];
-  for (let repeat = 1; repeat <= 3; repeat++) {
-    for (const preset of presets) {
-      for (const mode of ['stationary', 'orbit']) {
-        for (const engine of repeat % 2 ? ['spark', 'vlam'] : ['vlam', 'spark'])
-          runs.push(
-            new URLSearchParams({
-              engine,
-              preset,
-              mode,
-              width: '1280',
-              height: '720',
-              repeat: String(repeat),
-              probe: 'primary',
-              gpuTimestamps: '0',
-            }),
-          );
+  const push = (
+    scene: ComparisonScene,
+    preset: string,
+    mode: string,
+    engine: string,
+    probe: 'primary' | 'qhd',
+    repeat: number,
+  ): void => {
+    const width = probe === 'qhd' ? '2560' : '1280';
+    const height = probe === 'qhd' ? '1440' : '720';
+    runs.push(
+      new URLSearchParams({
+        engine,
+        preset,
+        mode,
+        scene,
+        width,
+        height,
+        repeat: String(repeat),
+        probe,
+        gpuTimestamps: '0',
+        ...(seconds === undefined ? {} : { seconds }),
+      }),
+    );
+  };
+  for (const scene of scenes) {
+    const includeQhd = density === 'full' || scene === 'Tempel';
+    for (let repeat = 1; repeat <= repeats; repeat++) {
+      for (const preset of presets) {
+        for (const mode of ['stationary', 'orbit']) {
+          const engines =
+            density === 'full' && repeat % 2 === 0 ? ['vlam', 'spark'] : ['spark', 'vlam'];
+          for (const engine of engines) push(scene, preset, mode, engine, 'primary', repeat);
+        }
       }
     }
-  }
-  for (const preset of presets) {
-    for (const mode of ['stationary', 'orbit']) {
-      for (const engine of ['spark', 'vlam'])
-        runs.push(
-          new URLSearchParams({
-            engine,
-            preset,
-            mode,
-            width: '2560',
-            height: '1440',
-            repeat: '1',
-            probe: 'qhd',
-            gpuTimestamps: '0',
-          }),
-        );
+    if (!includeQhd) continue;
+    for (const preset of presets) {
+      for (const mode of ['stationary', 'orbit']) {
+        for (const engine of ['spark', 'vlam']) push(scene, preset, mode, engine, 'qhd', 1);
+      }
     }
   }
   return runs;

@@ -27,7 +27,18 @@ const links = document.querySelector<HTMLElement>('#links')!;
 const suitePreset = params.get('suitePreset');
 if (suitePreset !== null && suitePreset !== 'proposed' && suitePreset !== 'controlled')
   throw new Error('Invalid suitePreset.');
-const suiteRuns = comparisonSuite(suitePreset ?? undefined);
+const suiteDensity = params.get('suiteDensity');
+if (suiteDensity !== null && suiteDensity !== 'compact' && suiteDensity !== 'full')
+  throw new Error('Invalid suiteDensity.');
+const density = suiteDensity === 'full' ? 'full' : 'compact';
+const sceneFilter = params.get('scene');
+if (sceneFilter !== null && !['Tempel', 'goose', 'hotel'].includes(sceneFilter))
+  throw new Error('Invalid scene.');
+const suiteRuns = comparisonSuite({
+  preset: suitePreset ?? undefined,
+  density,
+  ...(sceneFilter === null ? {} : { scenes: [sceneFilter as 'Tempel' | 'goose' | 'hotel'] }),
+});
 
 function download(name: string, href: string): void {
   const link = document.createElement('a');
@@ -79,6 +90,8 @@ function suiteUrl(step: number): string {
     'width',
     'height',
     'gpuTimestamps',
+    'scene',
+    'seconds',
   ])
     query.delete(key);
   run.forEach((value, key) => query.set(key, value));
@@ -120,6 +133,7 @@ async function run(): Promise<void> {
     links.append(link);
   }
   const suite = document.querySelector<HTMLButtonElement>('#suite')!;
+  suite.textContent = `Run ${density} sequential suite (${suiteRuns.length} runs)`;
   suite.onclick = () => {
     const url = new URL(suiteUrl(0), location.href);
     url.searchParams.set('suiteId', crypto.randomUUID());

@@ -107,16 +107,28 @@ describe('shared comparison configuration', () => {
         .position,
     ).toEqual(pose.position);
   });
-  it('builds three 720p repetitions plus one QHD pass', () => {
+  it('builds a compact Tempel+hotel matrix and keeps the 32-run protocol opt-in', () => {
     const suite = comparisonSuite();
-    expect(suite).toHaveLength(32);
-    expect(suite.slice(0, 24).every((run) => run.get('probe') === 'primary')).toBe(true);
-    expect(suite.slice(0, 24).every((run) => run.get('width') === '1280')).toBe(true);
-    expect(suite.slice(24).every((run) => run.get('probe') === 'qhd')).toBe(true);
-    expect(suite.slice(24).every((run) => run.get('width') === '2560')).toBe(true);
-    expect(suite[0]!.get('engine')).toBe('spark');
-    expect(suite[8]!.get('engine')).toBe('vlam');
+    expect(suite).toHaveLength(12);
+    expect(suite.filter((run) => run.get('scene') === 'Tempel')).toHaveLength(8);
+    expect(suite.filter((run) => run.get('scene') === 'hotel')).toHaveLength(4);
+    expect(
+      suite
+        .filter((run) => run.get('scene') === 'hotel')
+        .every((run) => run.get('probe') === 'primary'),
+    ).toBe(true);
+    expect(suite.filter((run) => run.get('probe') === 'qhd')).toHaveLength(4);
+    expect(suite.every((run) => run.get('preset') === 'proposed')).toBe(true);
+    expect(suite.every((run) => run.get('seconds') === '15')).toBe(true);
     expect(suite.every((run) => run.get('gpuTimestamps') === '0')).toBe(true);
+    expect(suite[0]!.get('engine')).toBe('spark');
+    const hotelOnly = comparisonSuite({ density: 'compact', scenes: ['hotel'] });
+    expect(hotelOnly).toHaveLength(4);
+    const full = comparisonSuite({ density: 'full' });
+    expect(full).toHaveLength(32);
+    expect(full.slice(0, 24).every((run) => run.get('probe') === 'primary')).toBe(true);
+    expect(full.slice(24).every((run) => run.get('width') === '2560')).toBe(true);
+    expect(full[8]!.get('engine')).toBe('vlam');
     const controlled = comparisonSuite('controlled');
     expect(controlled).toHaveLength(16);
     expect(controlled.every((run) => run.get('preset') === 'controlled')).toBe(true);

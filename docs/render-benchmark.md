@@ -75,8 +75,9 @@ Canvas CSS can shrink the displayed image without changing GPU resolution.
 | `gpuTimestamps=0` | enabled | Disable timestamp instrumentation; primary suite runs set this to `0` |
 | `position`, `target` | cached scene pose | Paired comma-separated world-space vectors |
 | `label` | empty | Device, power state or experiment note |
-| `suite=1` | off | Sequential 32-run suite with local archiving |
-| `suitePreset` | all | With `suite=1`, run only the 16 proposed or controlled cases |
+| `suite=1` | off | Sequential suite with local archiving. Compact default is 12 runs (Tempel 720p+QHD plus hotel 720p, proposed, 15 s). `suiteDensity=full` restores the 32-run matrix for the current scene |
+| `suitePreset` | proposed (compact) / all (full) | With `suite=1`, run only the proposed or controlled cases |
+| `suiteDensity` | `compact` | `full` restores three 720p repetitions of proposed+controlled plus QHD |
 
 The four named configurations are deliberately separate:
 
@@ -368,16 +369,23 @@ Default recommendations remain separate from the benchmark configuration:
 
 ```text
 /spark-benchmark.html?suite=1&label=RTX4070Ti-Linux-Chrome-AC
-/spark-benchmark.html?suite=1&label=M4Max-macOS-Chrome-AC
+/spark-benchmark.html?suite=1&suiteDensity=full&label=M4Max-macOS-Chrome-AC
 ```
 
-The suite runs three repetitions of each proposed/controlled ×
-stationary/orbit × renderer case at 1280×720, then one QHD pass (2560×1440)
-of the same matrix (32 runs). Renderer order alternates by repetition.
-Timestamp instrumentation stays off. Reference, SH0 and timestamped probes
-remain available as standalone URLs. Each run gets a fresh page; no pair of
-renderers runs concurrently. A browser lock prevents another comparison page
-in the same origin from measuring at the same time. Loading time is excluded.
+The **compact** suite (the page button, `?suite=1`) is 12 runs: Tempel
+proposed stationary/orbit × both engines at 720p and QHD (8), then hotel
+proposed stationary/orbit × both engines at 720p only (4). Each compact run
+measures 15 seconds. RTX 3090 results showed extra 720p repetitions,
+`controlled`, and hotel QHD sitting on the same 16.7 ms vsync floor, so they
+are omitted here. `?scene=hotel&suite=1` is the four-run hotel slice alone.
+`?suite=1&suiteDensity=full` is the historical 32-run matrix (three 720p
+repetitions of proposed/controlled × stationary/orbit × renderer, then QHD)
+for the current scene. Renderer order alternates by repetition in the full
+matrix. Timestamp instrumentation stays off. Reference, SH0 and timestamped
+probes remain available as standalone URLs. Each run gets a fresh page; no
+pair of renderers runs concurrently. A browser lock prevents another
+comparison page in the same origin from measuring at the same time. Loading
+time is excluded.
 
 Keep the Chrome window in front and visible, close other GPU-heavy pages,
 use AC power and the same power mode, and avoid resizing or interaction.
