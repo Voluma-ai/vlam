@@ -44,6 +44,8 @@ import { foldSplatModifierStack } from './splat-modifier-stack';
 import type { SplatPerformanceProfile } from './splat-mesh';
 import { SPLAT_DATA_TEXTURE_WIDTH } from './splat-mesh-pool';
 import { MAX_DOF_VARIANCE } from './depth-of-field';
+import { isSplatCenterInFrustum, MAX_SPLAT_RADIUS_PX } from './splat-frustum';
+export { MAX_SPLAT_RADIUS_PX } from './splat-frustum';
 
 /**
  * Optional display-fragment RGB transform. It receives the unpremultiplied
@@ -55,13 +57,6 @@ export type DisplayColorModifier = (
   screenUv: THREE.Node<'vec2'>,
   viewport: THREE.Node<'vec2'>,
 ) => THREE.Node<'vec3'>;
-
-/**
- * Largest on-screen radius a splat quad may reach, in pixels. A splat crossing
- * the near plane projects to an unbounded size; clamping keeps one degenerate
- * splat from covering the screen and stalling the rasterizer.
- */
-export const MAX_SPLAT_RADIUS_PX = 512;
 
 /**
  * Tests whether a capped ellipse can cover any viewport pixel. The lateral
@@ -76,7 +71,7 @@ export function isSplatFootprintInFrustum(
 ): THREE.Node<'bool'> {
   const nearMargin = clipCenter.w.mul(1.2);
   const ndcCenter = clipCenter.xy.div(clipCenter.w);
-  // A rotated ellipse reaches |major| + |minor| on each screen axis.
+  // The enclosing quad reaches |major| + |minor| on each screen axis.
   const footprint = vec2(
     majorAxis.x.abs().add(minorAxis.x.abs()),
     majorAxis.y.abs().add(minorAxis.y.abs()),
@@ -405,6 +400,8 @@ export interface SplatMaterialBuildInputs {
   uniforms: {
     focal: Vec2Uniform;
     viewport: Vec2Uniform;
+    /** Conservative cap-aware center bound, shared with the SH cache. */
+    frustumMargin: Vec2Uniform;
     localCameraPosition: Vec3Uniform;
     /** Frontier-cut limit on `own_size / distance` (`foveationMode: 'frontier'`). */
     pixelScaleLimit: FloatUniform;
@@ -642,16 +639,11 @@ export function applySplatMaterialGraph(
     // Default: outside clip space, so culled splats emit no fragments.
     const clipPosition = vec4(0.0, 0.0, 2.0, 1.0).toVar();
 
-    // Keep the existing behind-camera and far-plane rejection before the
-    // covariance work. Lateral rejection happens below once the capped
-    // projected footprint is available.
-    const inDepthRange = clipCenter.z
-      .greaterThan(clipCenter.w.mul(1.2).negate())
-      // Match Spark's explicit far-plane rejection. Without this upper bound,
-      // extreme capture outliers beyond `camera.far` still projected giant
-      // translucent quads and polluted both the image and motion stability.
-      .and(clipCenter.z.lessThan(clipCenter.w));
-    const isVisible = stack.visible === null ? inDepthRange : inDepthRange.and(stack.visible);
+    // Reject centers too far away for even the largest capped quad to reach
+    // the viewport before fetching/projecting covariance. The exact footprint
+    // test below remains authoritative for centers inside this broad bound.
+    const inFrustum = isSplatCenterInFrustum(clipCenter, uniforms.frustumMargin);
+    const isVisible = stack.visible === null ? inFrustum : inFrustum.and(stack.visible);
 
     If(isVisible, () => {
       if (viewDepthVarying) viewDepthVarying.assign(viewCenter.z.negate());

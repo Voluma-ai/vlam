@@ -26,6 +26,7 @@ function makeInputs(
     uniforms: {
       focal: uniform(new THREE.Vector2(1, 1)),
       viewport: uniform(new THREE.Vector2(1, 1)),
+      frustumMargin: uniform(new THREE.Vector2(3, 3)),
       localCameraPosition: uniform(new THREE.Vector3()),
       pixelScaleLimit: uniform(0),
       dofFocusDistance: uniform(1),
