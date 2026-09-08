@@ -11,7 +11,7 @@ A WebGPU Gaussian Splat viewer for three.js.
 
 **Docs and demo:** [https://vlam.voluma.ai](https://vlam.voluma.ai) · [get started](site/get-started.md) · [guides](docs/guide/README.md)
 
-Local site and generated API: `npm run dev` (http://localhost:5170, viewer at `/demo/`).
+Local site and generated API: `npm run dev` [http://localhost:5170](http://localhost:5170)
 
 ## Warning
 

@@ -750,7 +750,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
             viewInverse,
             offset,
             this.bounds,
-            cameraVisibleSortRange(projectionCamera, this.sortMetric),
+            cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
           )
         ) {
           this.lastSortedState.copy(sortState);

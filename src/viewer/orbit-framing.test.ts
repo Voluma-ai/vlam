@@ -4,6 +4,7 @@ import {
   classifyOrbitFraming,
   heightSamplesFromStreamedMesh,
   overviewPositionsFromStreamedMesh,
+  recommendedCameraFar,
 } from './orbit-framing';
 
 function boundsFromPoints(points: Float32Array): THREE.Box3 {
@@ -244,6 +245,36 @@ describe('classifyOrbitFraming', () => {
     expect(result.spanHeights).toBe(true);
     expect(result.center.y).toBeGreaterThan(-14);
     expect(result.center.y).toBeLessThan(-8);
+  });
+
+  it('keeps the previous 1000-unit far plane for compact captures', () => {
+    const bounds = new THREE.Box3(new THREE.Vector3(-2, -1, -2), new THREE.Vector3(2, 1, 2));
+    expect(recommendedCameraFar(bounds, { maxDistance: 16, hd: true })).toBe(1000);
+    expect(recommendedCameraFar(bounds, { maxDistance: 16, hd: false })).toBe(1000);
+    expect(recommendedCameraFar(new THREE.Box3())).toBe(1000);
+  });
+
+  it('sizes the far plane from the full AABB so landscape stays in view', () => {
+    const bounds = new THREE.Box3(
+      new THREE.Vector3(-2000, -20, -2000),
+      new THREE.Vector3(2000, 40, 2000),
+    );
+    const radius = bounds.getBoundingSphere(new THREE.Sphere()).radius;
+    // Focused orbit (subject radius ≪ landscape) still has to see the horizon.
+    expect(recommendedCameraFar(bounds, { maxDistance: 400, hd: true })).toBeCloseTo(
+      400 + radius * 4,
+    );
+    expect(recommendedCameraFar(bounds, { maxDistance: 400, hd: false })).toBeCloseTo(
+      400 + radius * 2,
+    );
+  });
+
+  it('caps an outlier envelope that would collapse depth precision', () => {
+    const bounds = new THREE.Box3(
+      new THREE.Vector3(-1e6, -1e6, -1e6),
+      new THREE.Vector3(1e6, 1e6, 1e6),
+    );
+    expect(recommendedCameraFar(bounds, { maxDistance: 8e6, hd: true })).toBe(100_000);
   });
 
   it('reads .rad overview centers through the Y-up correction', () => {

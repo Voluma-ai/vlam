@@ -1,13 +1,12 @@
 import * as THREE from 'three/webgpu';
 import type { DisplayColorModifier, FloatUniform, Vec2Uniform } from '../core/splat-mesh-material';
 import {
+  MAX_SPLAT_RADIUS_PX,
   capProjectedEigenvaluesToScreenRadius,
   equalizeProjectedEigenvalues,
+  isSplatFootprintInFrustum,
 } from '../core/splat-mesh-material';
 import { MAX_DOF_VARIANCE } from '../core/depth-of-field';
-
-/** Reject corrupt covariance outliers before they become screen-filling quads. */
-const MAX_UNIFIED_SPLAT_RADIUS_PX = 256;
 import {
   Discard,
   Fn,
@@ -185,11 +184,11 @@ export function createWorkBufferMaterial(options: {
     // Screen-space minimum on each axis: a splat below the floor grows to it so
     // its Gaussian tiles with neighbours instead of leaving dark gaps between
     // sparse zoomed-out splats; already-large splats are untouched. Mirrors
-    // `applySplatMaterialGraph`. `.max` after `.min(1024)` keeps the order valid.
+    // `applySplatMaterialGraph`. Both render paths share the 512 px axis cap.
     const minSplat = options.minSplatSizePx;
-    const major = eigenvector.mul(projectedRadius.min(1024).max(minSplat));
+    const major = eigenvector.mul(projectedRadius.min(MAX_SPLAT_RADIUS_PX).max(minSplat));
     const minor = vec2(eigenvector.y, eigenvector.x.negate()).mul(
-      lambda2.sqrt().mul(stdDev).min(1024).max(minSplat),
+      lambda2.sqrt().mul(stdDev).min(MAX_SPLAT_RADIUS_PX).max(minSplat),
     );
     const pixelOffset = major.mul(positionGeometry.x).add(minor.mul(positionGeometry.y));
     const ndcCenter = clipCenter.xy.div(clipCenter.w);
@@ -198,22 +197,13 @@ export function createWorkBufferMaterial(options: {
       clipCenter.z.div(clipCenter.w),
       1,
     );
-    // Match SplatMesh's conservative center-frustum rejection. Without the
+    // Match SplatMesh's conservative footprint-frustum rejection. Without the
     // near/behind and far-plane checks, extreme RAD outliers can project
     // mirrored or screen-filling quads into the unified main + marker draw.
     // Modifier-hidden / zero-opacity entries (displayOpacity=0) share the
     // clipped destination so they generate no fragments while keeping a stable sort slot.
-    const margin = clipCenter.w.mul(1.2);
-    const inFrustum = clipCenter.z
-      .greaterThan(margin.negate())
-      .and(clipCenter.z.lessThan(clipCenter.w))
-      .and(clipCenter.x.abs().lessThan(margin))
-      .and(clipCenter.y.abs().lessThan(margin));
-    const isReasonablySized = projectedRadius.lessThanEqual(MAX_UNIFIED_SPLAT_RADIUS_PX);
-    return inFrustum
-      .and(drawable)
-      .and(isReasonablySized)
-      .select(clipPosition, vec4(0, 0, 2, 1));
+    const inFrustum = isSplatFootprintInFrustum(clipCenter, options.viewport, major, minor);
+    return inFrustum.and(drawable).select(clipPosition, vec4(0, 0, 2, 1));
   })();
   material.fragmentNode = Fn(() => {
     const squaredDistance = quadPosition.dot(quadPosition);

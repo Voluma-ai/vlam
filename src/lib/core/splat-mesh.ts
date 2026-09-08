@@ -2734,7 +2734,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         this.currentModelView,
         this.activeCount,
         this.boundingSphereLocal,
-        cameraVisibleSortRange(camera, this.sortMetric),
+        cameraVisibleSortRange(camera, this.sortMetric, this.viewport.value),
       )
     ) {
       this.lastSortedState.copy(this.currentSortState);
