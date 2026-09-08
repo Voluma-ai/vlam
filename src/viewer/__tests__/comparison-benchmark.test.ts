@@ -2,8 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { PerspectiveCamera } from 'three';
 import {
   applyComparisonCamera,
+  comparisonAssetKind,
   comparisonConfig,
   comparisonSuite,
+  comparisonSuiteOptions,
+  comparisonSuiteUrl,
   comparisonUrl,
   summarize,
 } from '../comparison-config';
@@ -14,6 +17,25 @@ import {
 } from '../comparison-gpu';
 
 describe('shared comparison configuration', () => {
+  it.each([
+    ['', 12, ['Tempel', 'hotel']],
+    ['scene=hotel', 4, ['hotel']],
+    ['suiteDensity=full', 32, ['Tempel']],
+  ] as const)('preserves suite scope through every navigation: %s', (query, count, scenes) => {
+    let params = new URLSearchParams(query);
+    const visited = new Set<string>();
+    for (let step = 0; step < count; step++) {
+      expect(comparisonSuite(comparisonSuiteOptions(params))).toHaveLength(count);
+      const next = new URL(comparisonSuiteUrl(params, step, 'test-suite'), 'http://localhost');
+      params = next.searchParams;
+      visited.add(params.get('scene')!);
+      expect(params.get('step')).toBe(String(step));
+      expect(params.get('suiteId')).toBe('test-suite');
+    }
+    expect([...visited]).toEqual(scenes);
+    expect(() => comparisonSuiteUrl(params, count, 'test-suite')).toThrow('Invalid suite step');
+  });
+
   it('pins resolution, timing and actual renderer selection', () => {
     expect(comparisonConfig('/vlam-benchmark.html', new URLSearchParams())).toMatchObject({
       engine: 'vlam',
@@ -30,6 +52,12 @@ describe('shared comparison configuration', () => {
     expect(
       comparisonConfig('/vlam-benchmark.html', new URLSearchParams('scene=goose')),
     ).toMatchObject({ scene: 'goose' });
+    expect(
+      comparisonConfig('/vlam-benchmark.html', new URLSearchParams('scene=hotel')),
+    ).toMatchObject({ scene: 'hotel' });
+    expect(comparisonAssetKind('/benchmark-assets/Tempel/Tempel.lcc2')).toBe('lcc2');
+    expect(comparisonAssetKind('/benchmark-assets/hotel/HOTEL.clean.comp-lod.rad')).toBe('rad');
+    expect(comparisonAssetKind('/benchmark-assets/goose.sog')).toBe('file');
     expect(
       comparisonConfig('/spark-benchmark.html', new URLSearchParams('preset=matched&sh=0')),
     ).toMatchObject({ engine: 'spark', preset: 'matched', sh: 0, backend: 'webgl' });
@@ -100,16 +128,28 @@ describe('shared comparison configuration', () => {
         .position,
     ).toEqual(pose.position);
   });
-  it('builds three 720p repetitions plus one QHD pass', () => {
+  it('builds a compact Tempel+hotel matrix and keeps the 32-run protocol opt-in', () => {
     const suite = comparisonSuite();
-    expect(suite).toHaveLength(32);
-    expect(suite.slice(0, 24).every((run) => run.get('probe') === 'primary')).toBe(true);
-    expect(suite.slice(0, 24).every((run) => run.get('width') === '1280')).toBe(true);
-    expect(suite.slice(24).every((run) => run.get('probe') === 'qhd')).toBe(true);
-    expect(suite.slice(24).every((run) => run.get('width') === '2560')).toBe(true);
-    expect(suite[0]!.get('engine')).toBe('spark');
-    expect(suite[8]!.get('engine')).toBe('vlam');
+    expect(suite).toHaveLength(12);
+    expect(suite.filter((run) => run.get('scene') === 'Tempel')).toHaveLength(8);
+    expect(suite.filter((run) => run.get('scene') === 'hotel')).toHaveLength(4);
+    expect(
+      suite
+        .filter((run) => run.get('scene') === 'hotel')
+        .every((run) => run.get('probe') === 'primary'),
+    ).toBe(true);
+    expect(suite.filter((run) => run.get('probe') === 'qhd')).toHaveLength(4);
+    expect(suite.every((run) => run.get('preset') === 'proposed')).toBe(true);
+    expect(suite.every((run) => run.get('seconds') === '15')).toBe(true);
     expect(suite.every((run) => run.get('gpuTimestamps') === '0')).toBe(true);
+    expect(suite[0]!.get('engine')).toBe('spark');
+    const hotelOnly = comparisonSuite({ density: 'compact', scenes: ['hotel'] });
+    expect(hotelOnly).toHaveLength(4);
+    const full = comparisonSuite({ density: 'full' });
+    expect(full).toHaveLength(32);
+    expect(full.slice(0, 24).every((run) => run.get('probe') === 'primary')).toBe(true);
+    expect(full.slice(24).every((run) => run.get('width') === '2560')).toBe(true);
+    expect(full[8]!.get('engine')).toBe('vlam');
     const controlled = comparisonSuite('controlled');
     expect(controlled).toHaveLength(16);
     expect(controlled.every((run) => run.get('preset') === 'controlled')).toBe(true);

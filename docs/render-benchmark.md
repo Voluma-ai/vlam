@@ -22,13 +22,16 @@ Open these paths on the dev server printed by the last command:
 /spark-benchmark.html?preset=controlled&mode=orbit
 /vlam-benchmark.html?preset=controlled&mode=orbit
 /vlam-benchmark.html?preset=reference&mode=stationary&backend=webgl
+/spark-benchmark.html?scene=hotel&mode=orbit
+/vlam-benchmark.html?scene=hotel&mode=orbit
 ```
 
-The cache command downloads Tempel (`.lcc2` plus its SOG tiles) once to the
-ignored `.tmp/benchmark-assets/` directory and records SHA-256, byte size, splat
-count, SH bands and canonical camera in a JSON manifest. Both viewers fetch
-that same local copy so tile URLs resolve without remote CORS. It also prepares
-the repository's small `goose.sog` fixture (`?scene=goose`).
+The cache command downloads Tempel (`.lcc2` plus its SOG tiles) and the
+hotel-core Spark `.rad` once to the ignored `.tmp/benchmark-assets/` directory
+and records SHA-256, byte size, splat count, SH bands and canonical camera in
+a JSON manifest. Both viewers fetch that same local copy so tile URLs and
+`.rad` byte ranges resolve without remote CORS. It also prepares the
+repository's small `goose.sog` fixture (`?scene=goose`).
 Re-running the command verifies/recreates metadata from the cached bytes;
 it does not silently replace the capture with a newer remote asset.
 
@@ -38,9 +41,15 @@ Spark 2.1.0 has no LCC2 reader, so it fully decodes every listed SOG tile (all
 LOD levels plus the environment tile). Tempel starts at the docs-example
 interior view, already in the LCC2→Three basis both engines use; goose is
 framed from its source center bounds. Goose (SOG) gets a 180° X rotation on
-both meshes. For other views, set both `position=x,y,z` and `target=x,y,z` in
-world coordinates. The page's renderer links preserve the resolved camera, so a
-pose can be shared exactly.
+both meshes. Hotel (`?scene=hotel`) is `HOTEL.clean.comp-lod.rad` from
+[assets.voluma.ai](https://assets.voluma.ai/voluma/veersetoren/HOTEL.clean.comp-lod.rad),
+the headed hotel-core orbit (~4.2M tree nodes). VLAM opens it with
+`StreamedSplatMesh`; Spark uses its native paged `.rad` loader. Both keep LOD
+enabled (controlled/reference must not flatten this tree). The local
+benchmark server answers HTTP Range so neither engine downloads the file
+whole. Goose and hotel both get a 180° X rotation. For other views, set both
+`position=x,y,z` and `target=x,y,z` in world coordinates. The page's renderer
+links preserve the resolved camera, so a pose can be shared exactly.
 The standalone harness normally uses a 45° vertical field of view and near/far
 0.01/10000. `preset=supplied` uses the supplied application's 60° and
 0.01/500 camera plus renderer MSAA. All configurations use a black background,
@@ -54,7 +63,7 @@ Canvas CSS can shrink the displayed image without changing GPU resolution.
 | `preset` | `proposed` | `supplied`, `proposed`, `controlled`, or `reference`; legacy `defaults` and `matched` remain accepted |
 | `mode` | `stationary` | `stationary`, `orbit`, position-preserving `rotate`, `translate`, or five seconds of orbit then `settle` |
 | `shEvaluation` | `auto` | VLAM SH evaluation: `vertex` or generated final `compute`; `auto` selects the latter on identified Apple Silicon Macs |
-| `scene` | `Tempel` | Cached `.lcc2` capture, or `goose` |
+| `scene` | `Tempel` | Cached `.lcc2` capture, `goose`, or streamed `hotel` (`.rad`) |
 | `width`, `height` | `1280`, `720` | Drawing-buffer pixels, at pixel ratio 1 |
 | `warmup`, `seconds` | `5`, `30` | Warm-up and measured seconds after initial load/sort |
 | `sh=0..3` | source | Benchmark-only SH band cap; `0` is the suite's disabled diagnostic |
@@ -66,8 +75,9 @@ Canvas CSS can shrink the displayed image without changing GPU resolution.
 | `gpuTimestamps=0` | enabled | Disable timestamp instrumentation; primary suite runs set this to `0` |
 | `position`, `target` | cached scene pose | Paired comma-separated world-space vectors |
 | `label` | empty | Device, power state or experiment note |
-| `suite=1` | off | Sequential 32-run suite with local archiving |
-| `suitePreset` | all | With `suite=1`, run only the 16 proposed or controlled cases |
+| `suite=1` | off | Sequential suite with local archiving. Compact default is 12 runs (Tempel 720p+QHD plus hotel 720p, proposed, 15 s). `suiteDensity=full` restores the 32-run matrix for the current scene |
+| `suitePreset` | proposed (compact) / all (full) | With `suite=1`, run only the proposed or controlled cases |
+| `suiteDensity` | `compact` | `full` restores three 720p repetitions of proposed+controlled plus QHD |
 
 The four named configurations are deliberately separate:
 
@@ -359,16 +369,23 @@ Default recommendations remain separate from the benchmark configuration:
 
 ```text
 /spark-benchmark.html?suite=1&label=RTX4070Ti-Linux-Chrome-AC
-/spark-benchmark.html?suite=1&label=M4Max-macOS-Chrome-AC
+/spark-benchmark.html?suite=1&suiteDensity=full&label=M4Max-macOS-Chrome-AC
 ```
 
-The suite runs three repetitions of each proposed/controlled ×
-stationary/orbit × renderer case at 1280×720, then one QHD pass (2560×1440)
-of the same matrix (32 runs). Renderer order alternates by repetition.
-Timestamp instrumentation stays off. Reference, SH0 and timestamped probes
-remain available as standalone URLs. Each run gets a fresh page; no pair of
-renderers runs concurrently. A browser lock prevents another comparison page
-in the same origin from measuring at the same time. Loading time is excluded.
+The **compact** suite (the page button, `?suite=1`) is 12 runs: Tempel
+proposed stationary/orbit × both engines at 720p and QHD (8), then hotel
+proposed stationary/orbit × both engines at 720p only (4). Each compact run
+measures 15 seconds. RTX 3090 results showed extra 720p repetitions,
+`controlled`, and hotel QHD sitting on the same 16.7 ms vsync floor, so they
+are omitted here. `?scene=hotel&suite=1` is the four-run hotel slice alone.
+`?suite=1&suiteDensity=full` is the historical 32-run matrix (three 720p
+repetitions of proposed/controlled × stationary/orbit × renderer, then QHD)
+for the current scene. Renderer order alternates by repetition in the full
+matrix. Timestamp instrumentation stays off. Reference, SH0 and timestamped
+probes remain available as standalone URLs. Each run gets a fresh page; no
+pair of renderers runs concurrently. A browser lock prevents another
+comparison page in the same origin from measuring at the same time. Loading
+time is excluded.
 
 Keep the Chrome window in front and visible, close other GPU-heavy pages,
 use AC power and the same power mode, and avoid resizing or interaction.

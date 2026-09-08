@@ -26,7 +26,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   primary suites; benchmark-only extent, sorting, SH, MSAA, and timestamp
   controls; distinct live-harness and packaged-build hashes; and immutable
   supplied-app workspace setup whose package identities include shipped
-  JavaScript.
+  JavaScript. The cache/harness also run the hotel-core `.rad`
+  (`HOTEL.clean.comp-lod.rad`) via `?scene=hotel`, with HTTP Range on the
+  local asset server so both engines can stream the capture. The default
+  sequential suite is a 12-run compact matrix (Tempel 720p+QHD and hotel 720p,
+  proposed, 15 s); `suiteDensity=full` restores the previous 32-run protocol.
 - Development-only Playwright backend checks (`npm run test:browser`) now run
   separate forced-WebGL2 and WebGPU projects; WebGPU setup cannot silently
   pass through a fallback. The CI browser job uses the package-pinned Chromium

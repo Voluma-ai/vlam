@@ -57,7 +57,11 @@ automatic WebGL2 fallback). For large streamed or unified scenes,
 device limits and preserves MSAA where supported.
 
 
-Supported formats: `.sog`, `.ply`, `.spz`, `.splat`, `.ksplat`, `.lcc`, `.lcc2`, `.rad`. 
+Supported formats: `.sog`, `.ply`, `.spz`, `.splat`, `.ksplat`, `.lcc`, `.lcc2`, `.rad`.
+Optional proxy-mesh relighting is available from `@voluma/vlam/relighting`;
+see the [relighting guide](docs/guide/relighting.md). Support and remaining
+device-validation gates are tracked separately in the
+[capability matrix](docs/capabilities.md) and [roadmap](ROADMAP.md).
 
 
 ## Contributing

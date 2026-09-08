@@ -1,9 +1,20 @@
 import { PerspectiveCamera, Vector3 } from 'three';
 
+/** Cached captures the standalone comparison pages can load. */
+export const COMPARISON_SCENES = ['Tempel', 'goose', 'hotel'] as const;
+export type ComparisonScene = (typeof COMPARISON_SCENES)[number];
+
+/** How the comparison adapters open a cached asset URL. */
+export function comparisonAssetKind(url: string): 'lcc2' | 'rad' | 'file' {
+  if (/\.lcc2(?:$|\?)/i.test(url)) return 'lcc2';
+  if (/\.rad(?:$|\?)/i.test(url)) return 'rad';
+  return 'file';
+}
+
 /** Parameters shared by the two standalone comparison pages. */
 export interface ComparisonConfig {
   engine: 'spark' | 'vlam';
-  scene: 'Tempel' | 'goose';
+  scene: ComparisonScene;
   preset: 'supplied' | 'proposed' | 'controlled' | 'reference' | 'defaults' | 'matched';
   mode: 'stationary' | 'orbit' | 'rotate' | 'translate' | 'settle';
   shEvaluation: 'auto' | 'vertex' | 'compute';
@@ -50,7 +61,7 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
     throw new Error('Camera position must differ from target.');
   for (const [key, allowed] of Object.entries({
     preset: ['supplied', 'proposed', 'controlled', 'reference', 'defaults', 'matched'],
-    scene: ['Tempel', 'goose'],
+    scene: [...COMPARISON_SCENES],
     sh: ['0', '1', '2', '3'],
     gpuTimestamps: ['0', '1'],
     backend: ['webgpu', 'webgl'],
@@ -60,7 +71,8 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
     sortStrategy: ['counting', 'radix', 'exact', 'worker'],
     msaa: ['0', '1'],
   })) {
-    if (params.has(key) && !allowed.includes(params.get(key)!)) throw new Error(`Invalid ${key}.`);
+    if (params.has(key) && !(allowed as readonly string[]).includes(params.get(key)!))
+      throw new Error(`Invalid ${key}.`);
   }
   const engine = path.includes('spark-benchmark') ? 'spark' : 'vlam';
   // Spark's comparison page is WebGL2-only; rejecting webgpu avoids a silent no-op.
@@ -70,7 +82,7 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
   const preset = (params.get('preset') ?? 'proposed') as ComparisonConfig['preset'];
   return {
     engine,
-    scene: params.get('scene') === 'goose' ? 'goose' : 'Tempel',
+    scene: (params.get('scene') ?? 'Tempel') as ComparisonScene,
     preset,
     mode: (params.get('mode') ?? 'stationary') as ComparisonConfig['mode'],
     shEvaluation: (params.get('shEvaluation') ?? 'auto') as ComparisonConfig['shEvaluation'],
@@ -138,44 +150,128 @@ export function comparisonUrl(
   return `/${engine}-benchmark.html?${query}`;
 }
 
-/** Three 720p repetitions plus one QHD pass. Diagnostic probes stay URL-only. */
-export function comparisonSuite(onlyPreset?: 'proposed' | 'controlled'): URLSearchParams[] {
+/** Compact default, or the historical 32-run matrix. */
+export type ComparisonSuiteDensity = 'compact' | 'full';
+
+export interface ComparisonSuiteOptions {
+  /** `undefined` means both proposed and controlled when density is `full`. */
+  preset?: 'proposed' | 'controlled';
+  density?: ComparisonSuiteDensity;
+  /** Compact default is Tempel then hotel so one click covers both captures. */
+  scenes?: readonly ComparisonScene[];
+}
+
+/** Preserve the requested suite scope independently of each run's scene. */
+export function comparisonSuiteOptions(params: URLSearchParams): ComparisonSuiteOptions {
+  const preset = params.get('suitePreset');
+  if (preset !== null && preset !== 'proposed' && preset !== 'controlled')
+    throw new Error('Invalid suitePreset.');
+  const density = params.get('suiteDensity') ?? 'compact';
+  if (density !== 'compact' && density !== 'full') throw new Error('Invalid suiteDensity.');
+  const scene = params.get('suiteScene') ?? params.get('scene');
+  if (scene !== null && scene !== 'all' && !COMPARISON_SCENES.includes(scene as ComparisonScene))
+    throw new Error('Invalid suite scene.');
+  return {
+    preset: preset ?? undefined,
+    density,
+    ...(scene === null || scene === 'all' ? {} : { scenes: [scene as ComparisonScene] }),
+  };
+}
+
+/** Build a navigation URL without changing the matrix on the next page load. */
+export function comparisonSuiteUrl(params: URLSearchParams, step: number, suiteId: string): string {
+  const options = comparisonSuiteOptions(params);
+  const runs = comparisonSuite(options);
+  const run = runs[step];
+  if (!Number.isInteger(step) || !run) throw new Error('Invalid suite step.');
+  const query = new URLSearchParams(params);
+  for (const key of [
+    'engine',
+    'preset',
+    'mode',
+    'repeat',
+    'probe',
+    'sh',
+    'width',
+    'height',
+    'gpuTimestamps',
+    'scene',
+    'seconds',
+  ])
+    query.delete(key);
+  run.forEach((value, key) => query.set(key, value));
+  query.set('suiteScene', options.scenes?.[0] ?? 'all');
+  query.set('suite', '1');
+  query.set('step', String(step));
+  query.set('suiteId', params.get('suiteId') ?? suiteId);
+  return `/${run.get('engine')}-benchmark.html?${query}`;
+}
+
+/** Sequential comparison matrix. Compact is the default; `density: 'full'` is the old 32-run protocol. */
+export function comparisonSuite(
+  presetOrOptions?: 'proposed' | 'controlled' | ComparisonSuiteOptions,
+): URLSearchParams[] {
+  const options: ComparisonSuiteOptions =
+    typeof presetOrOptions === 'object' && presetOrOptions !== null
+      ? presetOrOptions
+      : {
+          preset: presetOrOptions,
+          // A bare preset argument is the historical 16-run half-matrix.
+          density: presetOrOptions ? 'full' : 'compact',
+        };
+  const density = options.density ?? 'compact';
+  const presets = options.preset
+    ? [options.preset]
+    : density === 'compact'
+      ? ['proposed']
+      : ['proposed', 'controlled'];
+  const scenes =
+    options.scenes ??
+    (density === 'compact' ? (['Tempel', 'hotel'] as const) : (['Tempel'] as const));
+  const repeats = density === 'full' ? 3 : 1;
+  const seconds = density === 'compact' ? '15' : undefined;
   const runs: URLSearchParams[] = [];
-  const presets = onlyPreset ? [onlyPreset] : ['proposed', 'controlled'];
-  for (let repeat = 1; repeat <= 3; repeat++) {
-    for (const preset of presets) {
-      for (const mode of ['stationary', 'orbit']) {
-        for (const engine of repeat % 2 ? ['spark', 'vlam'] : ['vlam', 'spark'])
-          runs.push(
-            new URLSearchParams({
-              engine,
-              preset,
-              mode,
-              width: '1280',
-              height: '720',
-              repeat: String(repeat),
-              probe: 'primary',
-              gpuTimestamps: '0',
-            }),
-          );
+  const push = (
+    scene: ComparisonScene,
+    preset: string,
+    mode: string,
+    engine: string,
+    probe: 'primary' | 'qhd',
+    repeat: number,
+  ): void => {
+    const width = probe === 'qhd' ? '2560' : '1280';
+    const height = probe === 'qhd' ? '1440' : '720';
+    runs.push(
+      new URLSearchParams({
+        engine,
+        preset,
+        mode,
+        scene,
+        width,
+        height,
+        repeat: String(repeat),
+        probe,
+        gpuTimestamps: '0',
+        ...(seconds === undefined ? {} : { seconds }),
+      }),
+    );
+  };
+  for (const scene of scenes) {
+    const includeQhd = density === 'full' || scene === 'Tempel';
+    for (let repeat = 1; repeat <= repeats; repeat++) {
+      for (const preset of presets) {
+        for (const mode of ['stationary', 'orbit']) {
+          const engines =
+            density === 'full' && repeat % 2 === 0 ? ['vlam', 'spark'] : ['spark', 'vlam'];
+          for (const engine of engines) push(scene, preset, mode, engine, 'primary', repeat);
+        }
       }
     }
-  }
-  for (const preset of presets) {
-    for (const mode of ['stationary', 'orbit']) {
-      for (const engine of ['spark', 'vlam'])
-        runs.push(
-          new URLSearchParams({
-            engine,
-            preset,
-            mode,
-            width: '2560',
-            height: '1440',
-            repeat: '1',
-            probe: 'qhd',
-            gpuTimestamps: '0',
-          }),
-        );
+    if (!includeQhd) continue;
+    for (const preset of presets) {
+      for (const mode of ['stationary', 'orbit']) {
+        for (const engine of ['spark', 'vlam']) push(scene, preset, mode, engine, 'qhd', 1);
+      }
     }
   }
   return runs;

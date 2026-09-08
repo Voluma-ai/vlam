@@ -6,6 +6,7 @@
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { markdownAnchors } from './docs-check-anchors.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const errors = [];
@@ -27,15 +28,20 @@ function withoutHtmlComments(text) {
   return text.replace(/<!--[\s\S]*?-->/g, (block) => block.replace(/[^\n]/g, ' '));
 }
 
-/** Markdown links [text](url) excluding images and http(s)/mailto/# anchors. */
+/** Markdown links [text](url) excluding images and http(s)/mailto URLs. */
 function localLinks(text) {
   const out = [];
   const re = /(?<!!)\[([^\]]*)\]\(([^)\s]+)\)/g;
   let m;
   while ((m = re.exec(withoutHtmlComments(text)))) {
     const url = m[2];
-    if (/^(https?:|mailto:|#|data:|\/)/i.test(url)) continue;
-    out.push({ url: url.split('#')[0], index: m.index });
+    if (/^(https?:|mailto:|data:|\/)/i.test(url)) continue;
+    const [target, fragment] = url.split('#', 2);
+    out.push({
+      target,
+      fragment: fragment ? decodeURIComponent(fragment) : undefined,
+      index: m.index,
+    });
   }
   return out;
 }
@@ -125,15 +131,29 @@ function walkMarkdown(dir, acc = []) {
 {
   const mdFiles = walkMarkdown(root).filter((p) => {
     const rel = relative(root, p).replaceAll('\\', '/');
-    return !rel.startsWith('node_modules/') && !rel.startsWith('.cursor/');
+    return (
+      !rel.startsWith('node_modules/') &&
+      !rel.startsWith('.cursor/') &&
+      !rel.startsWith('site/api/')
+    );
   });
   for (const file of mdFiles) {
     const text = readFileSync(file, 'utf8');
-    for (const { url, index } of localLinks(text)) {
-      if (!url) continue;
-      const target = resolve(dirname(file), decodeURIComponent(url));
+    for (const { target: url, fragment, index } of localLinks(text)) {
+      const target = url ? resolve(dirname(file), decodeURIComponent(url)) : file;
       if (!existsSync(target)) {
         fail(file, lineAt(text, index), `broken local link → ${url}`);
+        continue;
+      }
+      if (fragment && target.endsWith('.md')) {
+        const anchors = markdownAnchors(readFileSync(target, 'utf8'));
+        if (!anchors.has(fragment)) {
+          fail(
+            file,
+            lineAt(text, index),
+            `broken Markdown heading link → ${url || '.'}#${fragment}`,
+          );
+        }
       }
     }
   }

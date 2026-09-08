@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = new URL('../.tmp/benchmark-assets/', import.meta.url);
 const tempelSource = 'https://assets.voluma.ai/voluma/cultural-heritage/Tempel/Tempel.lcc2';
+const hotelSource = 'https://assets.voluma.ai/voluma/veersetoren/HOTEL.clean.comp-lod.rad';
 await mkdir(root, { recursive: true });
 
 function metadata(bytes) {
@@ -45,6 +46,31 @@ function hashFiles(entries) {
     hash.update(bytes);
   }
   return hash.digest('hex');
+}
+
+function radHeader(bytes) {
+  if (bytes.length < 8 || bytes.readUInt32LE(0) !== 0x30444152)
+    throw new Error('Not a RAD file (missing RAD0 magic)');
+  const length = bytes.readUInt32LE(4);
+  if (bytes.length < 8 + length) throw new Error('Truncated RAD header');
+  const meta = JSON.parse(bytes.subarray(8, 8 + length).toString('utf8'));
+  if (meta.version !== 1) throw new Error(`Unsupported RAD version ${meta.version}`);
+  if (!Array.isArray(meta.chunks) || meta.chunks.some((chunk) => chunk?.filename))
+    throw new Error('Hotel RAD must be a single-file capture (no external .radc chunks)');
+  let leafCount;
+  if (typeof meta.comment === 'string') {
+    try {
+      const value = JSON.parse(meta.comment).input_splat_count;
+      if (typeof value === 'number' && Number.isFinite(value) && value > 0) leafCount = value;
+    } catch {
+      /* build-info comment is optional */
+    }
+  }
+  return {
+    count: typeof meta.count === 'number' ? meta.count : 0,
+    leafCount: leafCount ?? meta.count,
+    shBands: typeof meta.maxSh === 'number' ? meta.maxSh : 0,
+  };
 }
 
 {
@@ -118,6 +144,28 @@ function hashFiles(entries) {
   };
   await writeFile(new URL('Tempel.json', root), `${JSON.stringify(manifest, null, 2)}\n`);
   console.log(`Tempel: ${manifest.count} splats, SHA-256 ${manifest.sha256}`);
+  console.log(`Camera: ${JSON.stringify(manifest.camera)}`);
+}
+
+{
+  const file = new URL('hotel/HOTEL.clean.comp-lod.rad', root);
+  const bytes = await cachedOrDownload(file, hotelSource, hotelSource);
+  const header = radHeader(bytes);
+  const manifest = {
+    source: hotelSource,
+    file: 'hotel/HOTEL.clean.comp-lod.rad',
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    bytes: bytes.length,
+    count: header.leafCount,
+    nodes: header.count,
+    shBands: header.shBands,
+    // Headed hotel-core orbit (Y-up / 180°-X), matching docs/formats/rad-notes.md.
+    camera: { position: [56.68, 14.91, 0.48], target: [-33.32, -5.1, 0.48] },
+  };
+  await writeFile(new URL('hotel.json', root), `${JSON.stringify(manifest, null, 2)}\n`);
+  console.log(
+    `hotel: ${manifest.count} leaves / ${manifest.nodes} nodes, SHA-256 ${manifest.sha256}`,
+  );
   console.log(`Camera: ${JSON.stringify(manifest.camera)}`);
 }
 

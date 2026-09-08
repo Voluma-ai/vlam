@@ -140,8 +140,9 @@ dynamic-capacity (`new SplatMesh({ capacity })`, an empty pool filled with
 splat budget from any streamed source: a Streamed SOG (`lod-meta.json`)
 manifest, XGRIDS LCC (`.lcc`, manifest v3–v5), `.lcc2`, or Spark `.rad`. Both
 modes work on both backends: the WebGL2 fallback's CPU sort worker mirrors the
-pool centers and sorts the active spans. shN is dropped on appended ranges
-(per-chunk palettes cannot be merged in the shared pool).
+pool centers and sorts the active spans. Packed per-splat shN survives streamed
+appends; only callers that append palette-backed `SplatData` directly to a
+dynamic shared pool lose shN, because per-file palettes cannot be merged there.
 
 The demo consumes the library through the published entries (`src/lib/core/index.ts`
 and the optional subpaths) - if the demo needs something those entries do not

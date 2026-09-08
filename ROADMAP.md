@@ -7,10 +7,14 @@ Git history, not in this queue.
 
 ## Next
 
-- **Standalone WebGPU SH cache** — validate SH/PLY/reference/lifecycle
-  behavior across workloads and discrete GPUs, then compare thermals before
-  expanding the current opt-in path. See the
-  [benchmark protocol](docs/render-benchmark.md#m3-air-sh-cache-retest-2026-09-04).
+- **Automatic Apple Silicon SH cache** — implemented and unit-tested. The
+  default `auto` path selects compute evaluation only for the identified Apple
+  cohort; it is not a completed device-validation claim. **Evidence:** targeted
+  browser probes and the retained benchmark protocol. **Acceptance:** inspect
+  SH-bearing PLY captures at medium and large sizes through camera motion,
+  lifecycle and fallback paths, then run a thermal comparison. **Open issue:**
+  stationary p95 remains unresolved. **Blocker:** physical Apple devices and
+  representative captures. See the [protocol](docs/render-benchmark.md).
 
 ## Later
 

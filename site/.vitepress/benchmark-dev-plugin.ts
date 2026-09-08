@@ -1,5 +1,5 @@
-import { createReadStream } from 'node:fs';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { createReadStream, type Stats } from 'node:fs';
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -38,6 +38,63 @@ async function hashFile(filename: string): Promise<string> {
     .digest('hex');
 }
 
+/** Inclusive byte range from a single `bytes=` Range, or `null` for the whole file. */
+function assetByteRange(
+  header: string | undefined,
+  size: number,
+): { start: number; end: number } | null | 'invalid' {
+  if (!header) return null;
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(header.trim());
+  if (!match) return 'invalid';
+  const suffix = match[1] === '';
+  const start = suffix ? size - Number(match[2]) : Number(match[1]);
+  const requestedEnd = match[2] === '' || suffix ? size - 1 : Number(match[2]);
+  const end = Math.min(requestedEnd, size - 1);
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end >= size || start > end)
+    return 'invalid';
+  return { start, end };
+}
+
+function assetContentType(file: string): string {
+  const extension = path.extname(file);
+  return extension === '.json' || extension === '.lcc2'
+    ? 'application/json'
+    : 'application/octet-stream';
+}
+
+function sendAsset(
+  res: {
+    statusCode: number;
+    setHeader(name: string, value: string | number): void;
+    end(body?: string): void;
+  },
+  file: string,
+  info: Stats,
+  range: { start: number; end: number } | null,
+): void {
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Content-Type', assetContentType(file));
+  if (range) {
+    res.statusCode = 206;
+    res.setHeader('Content-Range', `bytes ${range.start}-${range.end}/${info.size}`);
+    res.setHeader('Content-Length', range.end - range.start + 1);
+    createReadStream(file, { start: range.start, end: range.end })
+      .on('error', () => {
+        res.statusCode = 404;
+        res.end('Run npm run benchmark:cache first.');
+      })
+      .pipe(res as NodeJS.WritableStream);
+    return;
+  }
+  res.setHeader('Content-Length', info.size);
+  createReadStream(file)
+    .on('error', () => {
+      res.statusCode = 404;
+      res.end('Run npm run benchmark:cache first.');
+    })
+    .pipe(res as NodeJS.WritableStream);
+}
+
 /** Local-only capture cache and append-only benchmark artifacts; never deployed. */
 export function benchmarkDevPlugin(): Plugin {
   return {
@@ -55,19 +112,26 @@ export function benchmarkDevPlugin(): Plugin {
             res.end('Run npm run benchmark:cache first.');
             return;
           }
-          const stream = createReadStream(file);
-          stream.on('error', () => {
+          const info = await stat(file).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== 'ENOENT') throw error;
+            return null;
+          });
+          if (!info?.isFile()) {
             res.statusCode = 404;
             res.end('Run npm run benchmark:cache first.');
-          });
-          const extension = path.extname(file);
-          res.setHeader(
-            'Content-Type',
-            extension === '.json' || extension === '.lcc2'
-              ? 'application/json'
-              : 'application/octet-stream',
+            return;
+          }
+          const range = assetByteRange(
+            typeof req.headers.range === 'string' ? req.headers.range : undefined,
+            info.size,
           );
-          stream.pipe(res);
+          if (range === 'invalid') {
+            res.statusCode = 416;
+            res.setHeader('Content-Range', `bytes */${info.size}`);
+            res.end();
+            return;
+          }
+          sendAsset(res, file, info, range);
           return;
         }
         if (pathname === '/__benchmark/environment' && req.method === 'GET') {
