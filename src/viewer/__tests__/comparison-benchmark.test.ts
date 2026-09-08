@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { PerspectiveCamera } from 'three';
 import {
   applyComparisonCamera,
+  comparisonAssetKind,
   comparisonConfig,
   comparisonSuite,
   comparisonUrl,
@@ -30,6 +31,12 @@ describe('shared comparison configuration', () => {
     expect(
       comparisonConfig('/vlam-benchmark.html', new URLSearchParams('scene=goose')),
     ).toMatchObject({ scene: 'goose' });
+    expect(
+      comparisonConfig('/vlam-benchmark.html', new URLSearchParams('scene=hotel')),
+    ).toMatchObject({ scene: 'hotel' });
+    expect(comparisonAssetKind('/benchmark-assets/Tempel/Tempel.lcc2')).toBe('lcc2');
+    expect(comparisonAssetKind('/benchmark-assets/hotel/HOTEL.clean.comp-lod.rad')).toBe('rad');
+    expect(comparisonAssetKind('/benchmark-assets/goose.sog')).toBe('file');
     expect(
       comparisonConfig('/spark-benchmark.html', new URLSearchParams('preset=matched&sh=0')),
     ).toMatchObject({ engine: 'spark', preset: 'matched', sh: 0, backend: 'webgl' });

@@ -98,7 +98,9 @@ benchmark uses a fixed 800×600 canvas and reports settled frame percentiles, CP
 render-submit time, sampled GPU timestamps, and separate total/splat draw
 submissions as downloadable JSON. Its screenshot remains available after GPU
 resources are released. See [render benchmark instructions](docs/render-benchmark.md)
-for repeatable baseline comparisons and the Mac validation procedure.
+for repeatable baseline comparisons and the Mac validation procedure. The Spark
+versus VLAM pages (`/spark-benchmark.html`, `/vlam-benchmark.html`) need
+`npm run benchmark:cache` first; `?scene=hotel` streams the cached hotel `.rad`.
 
 ## Ground rules (the non-negotiables)
 

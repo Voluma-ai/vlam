@@ -1,9 +1,20 @@
 import { PerspectiveCamera, Vector3 } from 'three';
 
+/** Cached captures the standalone comparison pages can load. */
+export const COMPARISON_SCENES = ['Tempel', 'goose', 'hotel'] as const;
+export type ComparisonScene = (typeof COMPARISON_SCENES)[number];
+
+/** How the comparison adapters open a cached asset URL. */
+export function comparisonAssetKind(url: string): 'lcc2' | 'rad' | 'file' {
+  if (/\.lcc2(?:$|\?)/i.test(url)) return 'lcc2';
+  if (/\.rad(?:$|\?)/i.test(url)) return 'rad';
+  return 'file';
+}
+
 /** Parameters shared by the two standalone comparison pages. */
 export interface ComparisonConfig {
   engine: 'spark' | 'vlam';
-  scene: 'Tempel' | 'goose';
+  scene: ComparisonScene;
   preset: 'supplied' | 'proposed' | 'controlled' | 'reference' | 'defaults' | 'matched';
   mode: 'stationary' | 'orbit' | 'rotate' | 'translate' | 'settle';
   shEvaluation: 'auto' | 'vertex' | 'compute';
@@ -50,7 +61,7 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
     throw new Error('Camera position must differ from target.');
   for (const [key, allowed] of Object.entries({
     preset: ['supplied', 'proposed', 'controlled', 'reference', 'defaults', 'matched'],
-    scene: ['Tempel', 'goose'],
+    scene: [...COMPARISON_SCENES],
     sh: ['0', '1', '2', '3'],
     gpuTimestamps: ['0', '1'],
     backend: ['webgpu', 'webgl'],
@@ -60,7 +71,8 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
     sortStrategy: ['counting', 'radix', 'exact', 'worker'],
     msaa: ['0', '1'],
   })) {
-    if (params.has(key) && !allowed.includes(params.get(key)!)) throw new Error(`Invalid ${key}.`);
+    if (params.has(key) && !(allowed as readonly string[]).includes(params.get(key)!))
+      throw new Error(`Invalid ${key}.`);
   }
   const engine = path.includes('spark-benchmark') ? 'spark' : 'vlam';
   // Spark's comparison page is WebGL2-only; rejecting webgpu avoids a silent no-op.
@@ -70,7 +82,7 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
   const preset = (params.get('preset') ?? 'proposed') as ComparisonConfig['preset'];
   return {
     engine,
-    scene: params.get('scene') === 'goose' ? 'goose' : 'Tempel',
+    scene: (params.get('scene') ?? 'Tempel') as ComparisonScene,
     preset,
     mode: (params.get('mode') ?? 'stationary') as ComparisonConfig['mode'],
     shEvaluation: (params.get('shEvaluation') ?? 'auto') as ComparisonConfig['shEvaluation'],

@@ -1,12 +1,8 @@
 import { Group, NoToneMapping, Scene, WebGLRenderer, REVISION, type Object3D } from 'three';
 import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
 import type { ComparisonAdapter } from './comparison-adapter';
-import type { ComparisonConfig } from './comparison-config';
+import { comparisonAssetKind, type ComparisonConfig } from './comparison-config';
 import { ComparisonWebGlTimer, type DisjointTimerExtension } from './comparison-gpu';
-
-function isLcc2Url(url: string): boolean {
-  return /\.lcc2(?:$|\?)/i.test(url);
-}
 
 /** Same LCC2→Three basis StreamedSplatMesh applies; Spark has no LCC2 loader. */
 function applyLcc2ToThree(target: Object3D): void {
@@ -20,6 +16,7 @@ export async function createComparisonSpark(
   config: ComparisonConfig,
   url: string,
 ): Promise<ComparisonAdapter> {
+  const kind = comparisonAssetKind(url);
   const renderer = new WebGLRenderer({ antialias: config.msaa });
   renderer.setPixelRatio(1);
   renderer.setClearColor(0x000000, 1);
@@ -40,7 +37,7 @@ export async function createComparisonSpark(
     renderer,
     ...(aligned
       ? {
-          enableLod: false,
+          ...(kind === 'rad' ? {} : { enableLod: false }),
           minPixelRadius: 0,
           preBlurAmount: 0.3,
           blurAmount: 0,
@@ -50,12 +47,12 @@ export async function createComparisonSpark(
     ...(maxStdDev === undefined ? {} : { maxStdDev }),
     ...(sortRadial === undefined ? {} : { sortRadial }),
   });
-  const streamed = isLcc2Url(url);
   const root = new Group();
   const meshes: SplatMesh[] = [];
-  const meshOptions = aligned ? { lod: false, enableLod: false } : {};
+  // Hotel `.rad` must keep Spark's paged LOD; disabling it tries to decode the tree whole.
+  const meshOptions = aligned && kind !== 'rad' ? { lod: false, enableLod: false } : {};
   try {
-    if (streamed) {
+    if (kind === 'lcc2') {
       const response = await fetch(url);
       if (!response.ok) throw new Error(`Spark LCC2 manifest failed: HTTP ${response.status}.`);
       const manifest: unknown = await response.json();
@@ -126,9 +123,12 @@ export async function createComparisonSpark(
         sortRadial: spark.sortRadial,
         minSortIntervalMs: spark.minSortIntervalMs,
         enableLod: spark.enableLod,
-        meshEnableLod: streamed
-          ? 'per-tile SOG (Spark has no LCC2 octree cut)'
-          : (meshes[0]?.enableLod ?? 'automatic (no tree requested)'),
+        meshEnableLod:
+          kind === 'lcc2'
+            ? 'per-tile SOG (Spark has no LCC2 octree cut)'
+            : kind === 'rad'
+              ? 'native Spark `.rad` page table'
+              : (meshes[0]?.enableLod ?? 'automatic (no tree requested)'),
         minPixelRadius: spark.minPixelRadius,
         maxPixelRadius: spark.maxPixelRadius,
         minAlpha: spark.minAlpha,
@@ -140,10 +140,13 @@ export async function createComparisonSpark(
         msaa: renderer.getContextAttributes()?.antialias === true ? 'enabled' : 0,
       },
       differences: [
-        ...(streamed
+        ...(kind === 'lcc2'
           ? [
               'Spark has no LCC2 reader; every listed SOG tile is fully decoded (all LOD levels plus env)',
             ]
+          : []),
+        ...(kind === 'rad'
+          ? ['Native Spark `.rad` pager (needs HTTP Range); not a fully decoded mesh']
           : []),
         'Asynchronous worker sorting; main-thread and GPU samples exclude worker duration',
         'Spark packed splats and native clipping/alpha thresholds',
@@ -156,7 +159,7 @@ export async function createComparisonSpark(
       try {
         // update() can return while an older worker sort is still running.
         // Drain it first, then explicitly generate and sort the final camera.
-        const deadline = performance.now() + (streamed ? 120000 : 30000);
+        const deadline = performance.now() + (kind === 'file' ? 30000 : 120000);
         const waitForSort = async (includeQueued: boolean): Promise<void> => {
           while (spark.sorting || (includeQueued && spark.sortDirty)) {
             if (performance.now() > deadline)
@@ -167,6 +170,12 @@ export async function createComparisonSpark(
         await waitForSort(false);
         scene.updateMatrixWorld(true);
         await spark.update({ scene, camera });
+        while (kind === 'rad' && spark.activeSplats === 0) {
+          if (performance.now() > deadline) throw new Error('Spark RAD pager timed out.');
+          await new Promise((resolve) => setTimeout(resolve, 16));
+          scene.updateMatrixWorld(true);
+          await spark.update({ scene, camera });
+        }
         await waitForSort(true);
         renderer.render(scene, camera);
       } finally {

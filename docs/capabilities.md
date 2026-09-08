@@ -30,7 +30,7 @@ and [`architecture.md`](architecture.md).
   carries on **streamed SOG**, LCC `Quality`, **LCC2**, and **`.rad`**, declined
   on the `smooth` profile. SOG/LCC2 peek one tile's `meta.json` because those
   manifests omit `shN`; palette shN is re-quantized into the shared pool at
-  decode (`formats/streamed-shn-notes.md`).
+  decode ([streamed SH notes](formats/streamed-shn-notes.md)).
 - **LCC manifest versions:** `.lcc` / `meta.lcc` v3.x, 4.x and 5.x share one
   binary layout; v3 often omits `fileType` (inferred). See `formats/lcc-notes.md`.
 - **RAD paging:** large captures default `foveationMode: 'page-table'`
@@ -63,7 +63,7 @@ and [`architecture.md`](architecture.md).
 | `SplatMesh.setDepthOfField` (core projected-2D) | ✅ | ✅ | ✅ draw-time (no gather) | `depth-of-field.test.ts` |, |
 | Collision mesh (format-provided) | ✅ | ✅ |, | `collision-mesh`, `lcc2-collision`, `parse-collision-lci` | LCC / LCC2 drop |
 | Volume selection + separation (M16) | ✅ CPU, backend-independent | ✅ same | ⚠️ halves register as separate sources | `selection-volume`, `splat-partition`, `lcc-collision-partition` | `?separate=1` |
-| Orientation normalization (`orientation`) | ✅ | ✅ |, (per-source meshes) | `orientation`, `*.orientation` |, |
+| Orientation normalization (`orientation`) | ✅ | ✅ | N/A (per-source meshes) | `orientation`, `*.orientation` | manual capture pending |
 | Display-space compositing (`srgbOutput`) | ✅ | ✅ | ✅ must agree across sources | material / unified tests | color A/B |
 | WebXR stereo ([`xr.md`](xr.md)) | ✅ | ✅ (the shipping Quest path) | ✅ per-eye viewport, head sort | `xr-view`, `*.xr.test.ts` | headset / Immersive Web Emulator |
 

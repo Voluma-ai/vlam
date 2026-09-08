@@ -11,7 +11,7 @@ import { loadSplatData } from '../lib/loaders';
 import { StreamedSplatMesh } from '../lib/streaming';
 import { version } from '../../package.json';
 import type { ComparisonAdapter } from './comparison-adapter';
-import type { ComparisonConfig } from './comparison-config';
+import { comparisonAssetKind, type ComparisonConfig } from './comparison-config';
 import { shEvaluationDiagnostics } from './sh-evaluation-diagnostics';
 import {
   ComparisonWebGlTimer,
@@ -26,17 +26,14 @@ interface WorkerSortSnapshot {
   completedCount: number;
 }
 
-function isLcc2Url(url: string): boolean {
-  return /\.lcc2(?:$|\?)/i.test(url);
-}
-
-/** Construct the VLAM mesh (streamed `.lcc2` or a full-file SOG) and its renderer. */
+/** Construct the VLAM mesh (streamed `.lcc2` / `.rad`, or a full-file SOG) and its renderer. */
 export async function createComparisonVlam(
   config: ComparisonConfig,
   url: string,
 ): Promise<ComparisonAdapter> {
   const useWebGl = config.backend === 'webgl';
-  const streamed = isLcc2Url(url);
+  const kind = comparisonAssetKind(url);
+  const streamed = kind !== 'file';
   const controlled = config.preset === 'controlled';
   const reference = config.preset === 'reference' || config.preset === 'matched';
   const proposed = config.preset === 'proposed';
@@ -64,9 +61,13 @@ export async function createComparisonVlam(
   // Decode / open the manifest before allocating a GPU device so a fetch failure
   // leaves no renderer alive.
   const mesh = streamed
-    ? await StreamedSplatMesh.load(url, { ...meshOptions, lodBaseDistance: 10 })
+    ? await StreamedSplatMesh.load(url, {
+        ...meshOptions,
+        ...(kind === 'lcc2' ? { lodBaseDistance: 10 } : {}),
+      })
     : new SplatMesh(await loadSplatData(url), meshOptions);
-  if (!streamed) mesh.rotation.x = Math.PI;
+  // Goose and hotel are Y-down captures; LCC2 already stands up via formatTransform.
+  if (kind !== 'lcc2') mesh.rotation.x = Math.PI;
   const sourceSplats =
     mesh instanceof StreamedSplatMesh
       ? (mesh.contentSplatCount ?? mesh.maxBudget)
@@ -163,14 +164,20 @@ export async function createComparisonVlam(
       sortIntervalMs: 'library adaptive default',
       resolvedSortIntervalMs: automaticSortIntervalMs(sourceSplats, isMobile),
       lod: streamed,
+      radStrategy: mesh instanceof StreamedSplatMesh ? mesh.radStrategy : null,
       outputColorSpace: renderer.outputColorSpace,
       msaa: renderer.samples,
       shEvaluation: config.shEvaluation,
       requestedBackend: config.backend,
     },
     differences: [
-      ...(streamed
+      ...(kind === 'lcc2'
         ? ['Streamed LCC2 octree cut with a device splat budget; not a fully decoded mesh']
+        : []),
+      ...(kind === 'rad'
+        ? [
+            'Streamed Spark `.rad` with a device splat budget (prefix or page-table); not a fully decoded mesh',
+          ]
         : []),
       ...(useWebGl
         ? [
@@ -189,8 +196,20 @@ export async function createComparisonVlam(
   const awaitCoverage = async (camera: PerspectiveCamera): Promise<void> => {
     if (!(mesh instanceof StreamedSplatMesh)) return;
     const deadline = performance.now() + 120000;
+    const timedOut = (label: string): Error => {
+      throw new Error(`VLAM ${label} timed out.`);
+    };
     while (mesh.initialRevealState.status === 'pending') {
-      if (performance.now() > deadline) throw new Error('VLAM LCC2 coverage hold timed out.');
+      if (performance.now() > deadline) timedOut('LCC2 coverage hold');
+      mesh.update(camera, renderer);
+      renderer.render(scene, camera);
+      await new Promise((resolve) => setTimeout(resolve, 16));
+    }
+    if (kind !== 'rad') return;
+    // Page-table `.rad` does not arm the LCC coverage hold. Wait until the
+    // frontier has something to draw and reports a complete first cut.
+    while (mesh.activeSplatCount === 0 || !mesh.frontierState.frontierConverged) {
+      if (performance.now() > deadline) timedOut('RAD frontier settle');
       mesh.update(camera, renderer);
       renderer.render(scene, camera);
       await new Promise((resolve) => setTimeout(resolve, 16));
