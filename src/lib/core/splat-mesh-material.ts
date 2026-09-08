@@ -25,17 +25,14 @@ import {
   int,
   ivec2,
   mat3,
-  mix,
   modelViewMatrix,
   cameraProjectionMatrix,
   positionGeometry,
   screenUV,
   textureLoad,
   uint,
-  uniform,
   uniformArray,
   varying,
-  vec2,
   vec3,
   vec4,
 } from 'three/tsl';
@@ -43,140 +40,53 @@ import type { SplatModifier } from './splat-modifier';
 import { foldSplatModifierStack } from './splat-modifier-stack';
 import type { SplatPerformanceProfile } from './splat-mesh';
 import { SPLAT_DATA_TEXTURE_WIDTH } from './splat-mesh-pool';
-import { MAX_DOF_VARIANCE } from './depth-of-field';
+import {
+  asNode,
+  type Vec3Uniform,
+  type Vec2Uniform,
+  type FloatUniform,
+  type DisplayColorModifier,
+  type SplatShInputs,
+} from './splat-material-types';
+export {
+  asNode,
+  vec3Uniform,
+  boolUniform,
+  type Vec3Uniform,
+  type BoolUniform,
+  type Vec2Uniform,
+  type FloatUniform,
+  type DisplayColorModifier,
+  type SplatShInputs,
+} from './splat-material-types';
+import {
+  isSplatFootprintInFrustum,
+  applyIsotropicCovarianceOverride,
+  DEFAULT_ISOTROPIC_VARIANCE_SCALE,
+  equalizeProjectedEigenvalues,
+  capProjectedEigenvaluesToScreenRadius,
+  projectSplatCovariance,
+  filterSplatCovariance,
+  projectedSplatEigenvalues,
+  projectedSplatEigenvector,
+  projectedSplatAxes,
+  radSplatStdDev,
+  radSplatOpacity,
+  gaussianSplatOpacity,
+} from './splat-render-math';
+export {
+  isSplatFootprintInFrustum,
+  applyIsotropicCovarianceOverride,
+  DEFAULT_ISOTROPIC_VARIANCE_SCALE,
+  DEFAULT_ISOTROPIC_SCREEN_RADIUS_PX,
+  equalizeProjectedEigenvalues,
+  capProjectedEigenvaluesToScreenRadius,
+} from './splat-render-math';
 import { isSplatCenterInFrustum, MAX_SPLAT_RADIUS_PX } from './splat-frustum';
 export { MAX_SPLAT_RADIUS_PX } from './splat-frustum';
 
-/**
- * Optional display-fragment RGB transform. It receives the unpremultiplied
- * splat RGB, screen UV, and drawing-buffer viewport nodes. The hook is never
- * used by picking or the vertex/gather paths.
- */
-export type DisplayColorModifier = (
-  rgb: THREE.Node<'vec3'>,
-  screenUv: THREE.Node<'vec2'>,
-  viewport: THREE.Node<'vec2'>,
-) => THREE.Node<'vec3'>;
-
-/**
- * Tests whether a capped ellipse can cover any viewport pixel. The lateral
- * test uses the complete projected footprint, not merely its center, so a
- * large sky splat remains drawable while crossing a screen edge.
- */
-export function isSplatFootprintInFrustum(
-  clipCenter: THREE.Node<'vec4'>,
-  viewport: THREE.Node<'vec2'>,
-  majorAxis: THREE.Node<'vec2'>,
-  minorAxis: THREE.Node<'vec2'>,
-): THREE.Node<'bool'> {
-  const nearMargin = clipCenter.w.mul(1.2);
-  const ndcCenter = clipCenter.xy.div(clipCenter.w);
-  // The enclosing quad reaches |major| + |minor| on each screen axis.
-  const footprint = vec2(
-    majorAxis.x.abs().add(minorAxis.x.abs()),
-    majorAxis.y.abs().add(minorAxis.y.abs()),
-  )
-    .mul(2)
-    .div(viewport);
-  return asNode<'bool'>(
-    clipCenter.z
-      .greaterThan(nearMargin.negate())
-      .and(clipCenter.z.lessThan(clipCenter.w))
-      .and(ndcCenter.x.abs().lessThanEqual(float(1).add(footprint.x)))
-      .and(ndcCenter.y.abs().lessThanEqual(float(1).add(footprint.y))),
-  );
-}
-
-/**
- * Stand-in for an infinite `parent_size` (a root LOD node, or a splat whose
- * parent has not decoded yet) in the frontier cut: any finite `limit·distance`
- * is below it, so the node always passes the "parent too big" half of the test.
- * A large finite value avoids `Infinity` arithmetic in the shader.
- */
+// Finite stand-in for an unavailable frontier parent size.
 const FRONTIER_ROOT_SIZE = 1e30;
-
-/** Default variance scale for isotropic point mode: (0.35 × min-axis)². */
-export const DEFAULT_ISOTROPIC_VARIANCE_SCALE = 0.35 * 0.35;
-/** Default isotropic screen-space sigma radius (px); only used when a modifier opts in. */
-export const DEFAULT_ISOTROPIC_SCREEN_RADIUS_PX = 1.0;
-
-/**
- * Blends `Σ` toward σ²·I where σ² = λ_min(Σ) · varianceScale. Spark point
- * mode sets every scale axis to min(scale)·0.35; since λ_min(Σ) = min(scale)²,
- * that is exactly σ² = (min·0.35)².
- *
- * λ_min is estimated without `Σ⁻¹` (near-singular on flat Gaussians, which
- * made n·Σ·n blow up into large blobs): take the min of the three axis
- * Rayleigh quotients and the Rayleigh along the longest row-cross of Σ (a
- * stable thin-axis hint when Σ is rank-deficient). The `normal` argument is
- * kept for call-site compatibility and ignored.
- */
-export function applyIsotropicCovarianceOverride(
-  covariance: THREE.Node<'mat3'>,
-  _normal: THREE.Node<'vec3'>,
-  mixFactor: THREE.Node<'float'>,
-  varianceScale: THREE.Node<'float'>,
-): THREE.Node<'mat3'> {
-  const e0 = vec3(1, 0, 0);
-  const e1 = vec3(0, 1, 0);
-  const e2 = vec3(0, 0, 1);
-  const row0 = covariance.mul(e0);
-  const row1 = covariance.mul(e1);
-  const row2 = covariance.mul(e2);
-  const r0 = asNode<'float'>(row0.x);
-  const r1 = asNode<'float'>(row1.y);
-  const r2 = asNode<'float'>(row2.z);
-  const crossA = row0.cross(row1);
-  const crossB = row1.cross(row2);
-  const crossC = row2.cross(row0);
-  const lenA = crossA.length();
-  const lenB = crossB.length();
-  const lenC = crossC.length();
-  const useA = lenA.greaterThanEqual(lenB).and(lenA.greaterThanEqual(lenC));
-  const useB = lenB.greaterThan(lenA).and(lenB.greaterThanEqual(lenC));
-  const axis = useA.select(crossA, useB.select(crossB, crossC));
-  const thin = axis.div(axis.length().max(1e-12));
-  const rThin = asNode<'float'>(thin.dot(covariance.mul(thin)));
-  const minVar = asNode<'float'>(r0.min(r1).min(r2).min(rThin).max(1e-12));
-  const isoVar = minVar.mul(varianceScale);
-  const isoCov = mat3(vec3(isoVar, 0, 0), vec3(0, isoVar, 0), vec3(0, 0, isoVar));
-  return asNode<'mat3'>(covariance.mul(float(1).sub(mixFactor)).add(isoCov.mul(mixFactor)));
-}
-
-/** Sets both screen-space eigenvalues to min(λ1, λ2) for a circular footprint. */
-export function equalizeProjectedEigenvalues(
-  lambda1: THREE.Node<'float'>,
-  lambda2: THREE.Node<'float'>,
-  mixFactor: THREE.Node<'float'>,
-): { lambda1: THREE.Node<'float'>; lambda2: THREE.Node<'float'> } {
-  const circle = lambda1.min(lambda2);
-  return {
-    lambda1: asNode<'float'>(mix(lambda1, circle, mixFactor)),
-    lambda2: asNode<'float'>(mix(lambda2, circle, mixFactor)),
-  };
-}
-
-/**
- * Caps isotropic λ to a screen-space sigma radius while blending by mix.
- * `screenRadiusPx ≤ 0` is a no-op (opt-in only; 0 must not shrink λ toward zero).
- */
-export function capProjectedEigenvaluesToScreenRadius(
-  lambda1: THREE.Node<'float'>,
-  lambda2: THREE.Node<'float'>,
-  mixFactor: THREE.Node<'float'>,
-  screenRadiusPx: THREE.Node<'float'>,
-  maxStdDev: THREE.Node<'float'>,
-): { lambda1: THREE.Node<'float'>; lambda2: THREE.Node<'float'> } {
-  const targetVariance = screenRadiusPx.div(maxStdDev).pow(2);
-  const circle = lambda1.min(lambda2).min(targetVariance);
-  const capped1 = asNode<'float'>(mix(lambda1, circle, mixFactor));
-  const capped2 = asNode<'float'>(mix(lambda2, circle, mixFactor));
-  const enabled = screenRadiusPx.greaterThan(0);
-  return {
-    lambda1: asNode<'float'>(enabled.select(capped1, lambda1)),
-    lambda2: asNode<'float'>(enabled.select(capped2, lambda2)),
-  };
-}
 
 /** The pool data textures a graph samples per splat. */
 export interface SplatMaterialTextures {
@@ -185,56 +95,6 @@ export interface SplatMaterialTextures {
   covarianceATexture: THREE.DataTexture;
   covarianceBTexture: THREE.DataTexture;
 }
-
-/** Narrow a TSL expression to the typed {@link THREE.Node} our hook contract
- * expects. Identity at runtime - satisfies TypeScript only. */
-export function asNode<T extends string>(node: unknown): THREE.Node<T> {
-  return node as THREE.Node<T>;
-}
-
-/** A `vec3` uniform, named so its type can be referred to in field decls. */
-export function vec3Uniform() {
-  return uniform(new THREE.Vector3());
-}
-export type Vec3Uniform = ReturnType<typeof vec3Uniform>;
-
-/** A boolean uniform, named for optional graph inputs. */
-export function boolUniform() {
-  return uniform(false);
-}
-export type BoolUniform = ReturnType<typeof boolUniform>;
-
-function vec2Uniform() {
-  return uniform(new THREE.Vector2());
-}
-/** A `vec2` uniform (focal, viewport). */
-export type Vec2Uniform = ReturnType<typeof vec2Uniform>;
-
-function floatUniform() {
-  return uniform(0);
-}
-/** A scalar uniform (pick thresholds and planes). */
-export type FloatUniform = ReturnType<typeof floatUniform>;
-
-/**
- * How the material reads a splat's higher-order SH coefficients. The two
- * sources differ only in where a coefficient comes from - the band
- * accumulation and view-direction math are shared:
- *
- *  - `palette`: SOG/`.lcc2` shN. Coefficients live in a per-file codebook and
- *    each splat stores a label; only a static mesh can use it, because two
- *    files' palettes cannot be merged into one pool.
- *  - `packed`: LCC `Quality`, `.rad`, etc. Each splat carries its own coefficients as packed
- *    words in pool-shaped textures, so appended ranges keep their SH.
- */
-export type SplatShInputs =
-  | { mode: 'palette'; bands: number; paletteTexture: THREE.DataTexture }
-  | {
-      mode: 'packed';
-      bands: 1 | 2 | 3;
-      textures: readonly THREE.DataTexture[];
-      range: { min: Vec3Uniform; max: Vec3Uniform };
-    };
 
 /**
  * Per-source placement inputs for a unified pool ({@link MergedSplatMesh}): the
@@ -679,100 +539,42 @@ export function applySplatMaterialGraph(
         );
       }
 
-      // EWA splatting: project Σ to screen space, Σ' = J·W·Σ·Wᵀ·Jᵀ, with
-      // J the Jacobian of the perspective projection. Written as dot
-      // products: Σ'ₐᵦ = uₐᵀ·Σ·uᵦ where uₐ = Wᵀ·jₐ and jₐ are J's rows.
-      const invZ = float(1.0).div(viewCenter.z);
-      const invZ2 = invZ.mul(invZ);
-      const j1 = vec3(
-        uniforms.focal.x.mul(invZ),
-        0.0,
-        uniforms.focal.x.negate().mul(viewCenter.x).mul(invZ2),
+      const projected = projectSplatCovariance(
+        covariance3d,
+        viewCenter,
+        uniforms.focal,
+        modelViewMatrix.toMat3().transpose(),
       );
-      const j2 = vec3(
-        0.0,
-        uniforms.focal.y.mul(invZ),
-        uniforms.focal.y.negate().mul(viewCenter.y).mul(invZ2),
-      );
-      const viewRotationT = modelViewMatrix.toMat3().transpose();
-      const u1 = viewRotationT.mul(j1);
-      const u2 = viewRotationT.mul(j2);
 
       // 2×2 screen covariance [[a, b], [b, d]], low-pass filtered so every
       // splat covers at least about one pixel (3DGS paper). Uniform splat
       // scaling factors out of the quadratic form: Σ' = s²·Σ.
-      const aQ = u1.dot(covariance3d.mul(u1));
-      const dQ = u2.dot(covariance3d.mul(u2));
-      const bQ = u1.dot(covariance3d.mul(u2));
+      const aQ = projected.a;
+      const dQ = projected.d;
+      const bQ = projected.b;
       const aRaw = stack.scaleSquared === null ? aQ : aQ.mul(stack.scaleSquared);
       const dRaw = stack.scaleSquared === null ? dQ : dQ.mul(stack.scaleSquared);
       const bRaw = stack.scaleSquared === null ? bQ : bQ.mul(stack.scaleSquared);
 
-      // XGRIDS classic LCC uses a 0.1 px² low-pass with integral-preserving
-      // opacity compensation. Other formats retain the 3DGS 0.3 px² path.
-      const lowPassVariance = settings.projectedFilterProfile === 'lcc' ? 0.1 : 0.3;
-      const a = aRaw.add(lowPassVariance).toVar();
-      const d = dRaw.add(lowPassVariance).toVar();
-      const b = bRaw;
-
-      // Mass conservation: √(det Σ / det(Σ + dilation)). Classic LCC always
-      // compensates its low-pass; the standard path retains the existing
-      // antialias-controlled compatibility behavior. Screen-capped isotropic
-      // points skip the fade.
-      const detBlur = a.mul(d).sub(b.mul(b)).max(1e-9).toVar();
-      if (settings.antialias || settings.projectedFilterProfile === 'lcc') {
-        const detForFade = aRaw.mul(dRaw).sub(bRaw.mul(bRaw)).max(0.0);
-        const mipFade = detForFade.div(detBlur).sqrt();
-        opacityCompensation.assign(
-          stack.isotropicCovarianceMix === null
-            ? mipFade
-            : mix(mipFade, float(1), stack.isotropicCovarianceMix),
-        );
-      }
-
-      // Aperture is a live uniform, so this remains a shader branch. With the
-      // default zero aperture, depth/atan/CoC work is absent from the hot path
-      // while the low-pass behavior above remains unchanged.
-      If(uniforms.dofAperture.greaterThan(0), () => {
-        // Core projected-2D DoF (Spark splatVertex.glsl). Aperture maps through
-        // the live focus plane, so pulling focus toward the camera widens the
-        // angle and softens the whole scene - the authored effect.
-        const depth = viewCenter.z.negate().max(1e-4);
-        const focus = uniforms.dofFocusDistance.max(1e-4);
-        const halfApertureAngle = uniforms.dofAperture.mul(0.5).div(focus).atan();
-        // Spark's falloff (`/depth`). Unbounded near the camera; MAX_DOF_VARIANCE
-        // below is the fill-rate guard, exactly as Spark's maxPixelRadius is.
-        const focusBlur = depth.sub(focus).abs().div(depth);
-        const apertureRadius = uniforms.focal.x.mul(halfApertureAngle.tan());
-        const cocRadiusPx = focusBlur.mul(apertureRadius);
-        const cocVar = cocRadiusPx.mul(cocRadiusPx).min(float(MAX_DOF_VARIANCE));
-        a.assign(aRaw.add(lowPassVariance).add(cocVar));
-        d.assign(dRaw.add(lowPassVariance).add(cocVar));
-        detBlur.assign(a.mul(d).sub(b.mul(b)).max(1e-9));
-        const detForFade =
-          settings.antialias || settings.projectedFilterProfile === 'lcc'
-            ? aRaw.mul(dRaw).sub(bRaw.mul(bRaw)).max(0.0)
-            : aRaw
-                .add(lowPassVariance)
-                .mul(dRaw.add(lowPassVariance))
-                .sub(bRaw.mul(bRaw))
-                .max(1e-9);
-        const fade = detForFade.div(detBlur).sqrt();
-        opacityCompensation.assign(
-          stack.isotropicCovarianceMix === null
-            ? fade
-            : mix(fade, float(1), stack.isotropicCovarianceMix),
-        );
-      });
+      const { a, b, d } = filterSplatCovariance(
+        { a: aRaw, b: bRaw, d: dRaw },
+        {
+          lowPassVariance: settings.projectedFilterProfile === 'lcc' ? 0.1 : 0.3,
+          compensate: settings.antialias || settings.projectedFilterProfile === 'lcc',
+          isotropicMix: stack.isotropicCovarianceMix,
+          viewZ: viewCenter.z,
+          focalX: uniforms.focal.x,
+          focusDistance: uniforms.dofFocusDistance,
+          aperture: uniforms.dofAperture,
+        },
+        opacityCompensation,
+      );
 
       // Eigen-decomposition of the 2×2 covariance gives the ellipse axes.
       // λ is variance in px², so √λ is the standard deviation in pixels;
       // the quad reaches `maxStdDev` σ per axis (3 = the reference 3DGS
       // rasterizer). The epsilon keeps the axis-aligned case finite.
-      const mid = a.add(d).mul(0.5);
-      const radius = vec2(a.sub(d).mul(0.5), b).length();
-      let lambda1 = mid.add(radius);
-      let lambda2 = mid.sub(radius).max(0.0);
+      let { lambda1, lambda2 } = projectedSplatEigenvalues(a, b, d);
       if (stack.isotropicCovarianceMix !== null) {
         const equalized = equalizeProjectedEigenvalues(
           lambda1,
@@ -795,7 +597,7 @@ export function applySplatMaterialGraph(
           lambda2 = capped.lambda2;
         }
       }
-      const eigenvector1 = vec2(b, lambda1.sub(a)).add(vec2(1e-6, 0.0)).normalize();
+      const eigenvector1 = projectedSplatEigenvector(a, b, lambda1);
       // Spark's LOD alpha: recover `alpha ∈ [0,2]` from the *original* texture
       // channel (stored ÷2), never from modifier-resolved opacity. A merged node
       // (`alpha > 1`) grows the σ-cutoff `maxStdDev + 0.7·(remap−1)` (remap maps
@@ -805,15 +607,7 @@ export function applySplatMaterialGraph(
       if (settings.lodAlpha && vAdjustedStdDev && vAlpha2 && vVisualOpacity) {
         const encodedOriginal = asNode<'float'>(colorAfterSh.a);
         const alpha2 = asNode<'float'>(encodedOriginal.mul(2.0));
-        const remap = alpha2.mul(4.0).sub(3.0).min(5.0);
-        stdDev = asNode<'float'>(
-          alpha2
-            .greaterThan(1.0)
-            .select(
-              float(settings.maxStdDev).add(remap.sub(1.0).mul(0.7)),
-              float(settings.maxStdDev),
-            ),
-        );
+        stdDev = radSplatStdDev(alpha2, float(settings.maxStdDev));
         vAdjustedStdDev.assign(stdDev);
         vAlpha2.assign(alpha2);
         vVisualOpacity.assign(
@@ -838,11 +632,13 @@ export function applySplatMaterialGraph(
       // clamp order well-defined. Composes with the isotropic-point screen cap
       // above as long as the floor stays below it.
       const minSplat = float(settings.minSplatSizePx ?? 0);
-      const majorAxis = eigenvector1.mul(
-        majorLambda.sqrt().mul(stdDev).min(maxRadius).max(minSplat),
-      );
-      const minorAxis = vec2(eigenvector1.y, eigenvector1.x.negate()).mul(
-        lambda2.sqrt().mul(stdDev).min(maxRadius).max(minSplat),
+      const { major: majorAxis, minor: minorAxis } = projectedSplatAxes(
+        eigenvector1,
+        majorLambda,
+        lambda2,
+        stdDev,
+        maxRadius,
+        minSplat,
       );
       const footprintVisible = isSplatFootprintInFrustum(
         clipCenter,
@@ -966,26 +762,12 @@ export function applySplatMaterialGraph(
       Discard(squaredDistance.greaterThan(1.0));
       let opacity: THREE.Node<'float'>;
       if (settings.lodAlpha && vAdjustedStdDev && vAlpha2 && vVisualOpacity) {
-        // Spark's LOD falloff. `g = exp(-½·adjustedStdDev²·|q|²)` is the Gaussian
-        // at this fragment. A leaf composites `g · alpha`. A merged node
-        // (`alpha > 1`) uses a super-Gaussian plateau `1 − (1 − g)^a`,
-        // `a = exp((remap² − 1)/e)`, so a single coarse splat fills the footprint
-        // of the subtree it stands in for - no covariance inflation.
-        // Visual opacity (fade / alpha modifiers) scales the completed falloff.
-        const g = squaredDistance.mul(vAdjustedStdDev.mul(vAdjustedStdDev).mul(-0.5)).exp();
-        const remap = vAlpha2.mul(4.0).sub(3.0).min(5.0);
-        const aExp = remap
-          .mul(remap)
-          .sub(1.0)
-          .mul(1 / Math.E)
-          .exp();
-        const merged = g.oneMinus().pow(aExp).oneMinus();
         opacity = asNode<'float'>(
-          vAlpha2.greaterThan(1.0).select(merged, g.mul(vAlpha2)).mul(vVisualOpacity),
+          radSplatOpacity(squaredDistance, vAdjustedStdDev, vAlpha2).mul(vVisualOpacity),
         );
       } else {
         // True Gaussian falloff. |quadPosition| = 1 is `maxStdDev` σ from center.
-        opacity = asNode<'float'>(squaredDistance.mul(gaussianExponent).exp().mul(splatColor.a));
+        opacity = gaussianSplatOpacity(squaredDistance, gaussianExponent, splatColor.a);
       }
       const alpha = opacity.mul(opacityCompensation);
       const rgb = (
@@ -1019,21 +801,11 @@ export function applySplatMaterialGraph(
       Discard(squaredDistance.greaterThan(1.0));
       let gaussian: THREE.Node<'float'>;
       if (settings.lodAlpha && vAdjustedStdDev && vAlpha2 && vVisualOpacity) {
-        // Same LOD classification as display (original alpha); modifiers still
-        // scale the hit threshold through the visual-opacity multiplier.
-        const g = squaredDistance.mul(vAdjustedStdDev.mul(vAdjustedStdDev).mul(-0.5)).exp();
-        const remap = vAlpha2.mul(4.0).sub(3.0).min(5.0);
-        const aExp = remap
-          .mul(remap)
-          .sub(1.0)
-          .mul(1 / Math.E)
-          .exp();
-        const merged = g.oneMinus().pow(aExp).oneMinus();
         gaussian = asNode<'float'>(
-          vAlpha2.greaterThan(1.0).select(merged, g.mul(vAlpha2)).mul(vVisualOpacity),
+          radSplatOpacity(squaredDistance, vAdjustedStdDev, vAlpha2).mul(vVisualOpacity),
         );
       } else {
-        gaussian = asNode<'float'>(squaredDistance.mul(gaussianExponent).exp().mul(splatColor.a));
+        gaussian = gaussianSplatOpacity(squaredDistance, gaussianExponent, splatColor.a);
       }
       const alpha = gaussian.mul(opacityCompensation);
       Discard(alpha.lessThan(pick.alphaThreshold));

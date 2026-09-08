@@ -1,3 +1,4 @@
+import { createStreamedMeshFixture } from './helpers/streamed-mesh-fixture';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
 import {
@@ -500,13 +501,7 @@ function makeMesh(desired: LodRun[], coarsest: LodRun[]): StreamedSplatMesh {
   const maxFile = Math.max(0, ...desired.map((r) => r.file), ...coarsest.map((r) => r.file));
   scene.chunkUrls = Array.from({ length: maxFile + 1 }, (_, f) => `https://host/data.bin#${f}`);
 
-  const Ctor = StreamedSplatMesh as unknown as new (
-    scene: unknown,
-    budget: number,
-    capacity: number,
-    options: unknown,
-  ) => StreamedSplatMesh;
-  return new Ctor(scene, 4 * WIDTH, 4 * WIDTH, {});
+  return createStreamedMeshFixture(scene, 4 * WIDTH, 4 * WIDTH, {});
 }
 
 describe('StreamedSplatMesh near-first classic path', () => {

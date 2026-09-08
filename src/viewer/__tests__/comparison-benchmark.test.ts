@@ -5,6 +5,8 @@ import {
   comparisonAssetKind,
   comparisonConfig,
   comparisonSuite,
+  comparisonSuiteOptions,
+  comparisonSuiteUrl,
   comparisonUrl,
   summarize,
 } from '../comparison-config';
@@ -15,6 +17,25 @@ import {
 } from '../comparison-gpu';
 
 describe('shared comparison configuration', () => {
+  it.each([
+    ['', 12, ['Tempel', 'hotel']],
+    ['scene=hotel', 4, ['hotel']],
+    ['suiteDensity=full', 32, ['Tempel']],
+  ] as const)('preserves suite scope through every navigation: %s', (query, count, scenes) => {
+    let params = new URLSearchParams(query);
+    const visited = new Set<string>();
+    for (let step = 0; step < count; step++) {
+      expect(comparisonSuite(comparisonSuiteOptions(params))).toHaveLength(count);
+      const next = new URL(comparisonSuiteUrl(params, step, 'test-suite'), 'http://localhost');
+      params = next.searchParams;
+      visited.add(params.get('scene')!);
+      expect(params.get('step')).toBe(String(step));
+      expect(params.get('suiteId')).toBe('test-suite');
+    }
+    expect([...visited]).toEqual(scenes);
+    expect(() => comparisonSuiteUrl(params, count, 'test-suite')).toThrow('Invalid suite step');
+  });
+
   it('pins resolution, timing and actual renderer selection', () => {
     expect(comparisonConfig('/vlam-benchmark.html', new URLSearchParams())).toMatchObject({
       engine: 'vlam',

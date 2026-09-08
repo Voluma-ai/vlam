@@ -4,6 +4,8 @@ import {
   applyComparisonCamera,
   comparisonConfig,
   comparisonSuite,
+  comparisonSuiteOptions,
+  comparisonSuiteUrl,
   comparisonUrl,
   summarize,
   type ComparisonPose,
@@ -24,21 +26,9 @@ const status = document.querySelector<HTMLElement>('#status')!;
 const results = document.querySelector<HTMLElement>('#results')!;
 const view = document.querySelector<HTMLElement>('#view')!;
 const links = document.querySelector<HTMLElement>('#links')!;
-const suitePreset = params.get('suitePreset');
-if (suitePreset !== null && suitePreset !== 'proposed' && suitePreset !== 'controlled')
-  throw new Error('Invalid suitePreset.');
-const suiteDensity = params.get('suiteDensity');
-if (suiteDensity !== null && suiteDensity !== 'compact' && suiteDensity !== 'full')
-  throw new Error('Invalid suiteDensity.');
-const density = suiteDensity === 'full' ? 'full' : 'compact';
-const sceneFilter = params.get('scene');
-if (sceneFilter !== null && !['Tempel', 'goose', 'hotel'].includes(sceneFilter))
-  throw new Error('Invalid scene.');
-const suiteRuns = comparisonSuite({
-  preset: suitePreset ?? undefined,
-  density,
-  ...(sceneFilter === null ? {} : { scenes: [sceneFilter as 'Tempel' | 'goose' | 'hotel'] }),
-});
+const suiteOptions = comparisonSuiteOptions(params);
+const density = suiteOptions.density;
+const suiteRuns = comparisonSuite(suiteOptions);
 
 function download(name: string, href: string): void {
   const link = document.createElement('a');
@@ -78,27 +68,7 @@ async function screenshotSignal(data: string): Promise<{
 }
 
 function suiteUrl(step: number): string {
-  const run = suiteRuns[step]!;
-  const query = new URLSearchParams(params);
-  for (const key of [
-    'engine',
-    'preset',
-    'mode',
-    'repeat',
-    'probe',
-    'sh',
-    'width',
-    'height',
-    'gpuTimestamps',
-    'scene',
-    'seconds',
-  ])
-    query.delete(key);
-  run.forEach((value, key) => query.set(key, value));
-  query.set('suite', '1');
-  query.set('step', String(step));
-  query.set('suiteId', params.get('suiteId') ?? crypto.randomUUID());
-  return `/${run.get('engine')}-benchmark.html?${query}`;
+  return comparisonSuiteUrl(params, step, params.get('suiteId') ?? crypto.randomUUID());
 }
 
 async function run(): Promise<void> {

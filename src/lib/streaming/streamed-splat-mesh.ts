@@ -394,7 +394,7 @@ export interface StreamedSplatMeshOptions extends SplatMeshOptions {
    * whether SH is fetched/decoded at all. Sources that carry SH are a `Quality`
    * LCC (`.lcc`) capture, which stores coefficients per splat, and Streamed
    * SOG / `.lcc2` tiles, whose per-file palette shN is converted to that same
-   * packed form at decode (M11; see `docs/formats/streamed-shn-notes.md`).
+   * packed form at decode (see `docs/formats/streamed-shn-notes.md`).
    *
    * **Unset (the default) means every band the capture carries**, so a Quality
    * LCC scene and a Streamed SOG / `.lcc2` tile with `shN` in `meta.json` show
@@ -543,7 +543,7 @@ interface PersistentChannel {
  * WebGPU only (inherited from the dynamic-capacity pool). View-dependent color
  * (higher-order SH) works for every streamed format: LCC `Quality` captures store it per
  * splat, and a SOG scene's per-file palette shN is converted to that same
- * per-splat packed form at decode so it too survives the shared pool (M11, opt
+ * per-splat packed form at decode so it too survives the shared pool (opt
  * in via {@link StreamedSplatMeshOptions.shBands}; see
  * `docs/formats/streamed-shn-notes.md`).
  */
@@ -764,7 +764,7 @@ export class StreamedSplatMesh extends SplatMesh {
    */
   private pageTableCacheAtLimit = false;
 
-  /** Per-splat channels whose edits survive chunk eviction/reload (M7.6). */
+  /** Per-splat channels whose edits survive chunk eviction/reload. */
   private readonly persistentChannels = new Map<string, PersistentChannel>();
 
   /** Chunk-file index of the always-resident environment tile, if the scene ships one. */
@@ -2123,7 +2123,7 @@ export class StreamedSplatMesh extends SplatMesh {
    * edits are stored sparsely keyed by `(chunk file, local index)` - a stable
    * splat identity in the streaming design - and re-applied whenever a chunk
    * is (re)appended. Paint a region with {@link paintPersistent}, orbit away
-   * until it is evicted, come back, and the values return. See M7.6.
+   * until it is evicted, come back, and the values return.
    *
    * Wraps {@link SplatMesh.defineChannel}; read it from a modifier with
    * `ctx.channel(name)` as usual.

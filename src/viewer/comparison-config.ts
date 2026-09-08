@@ -161,6 +161,52 @@ export interface ComparisonSuiteOptions {
   scenes?: readonly ComparisonScene[];
 }
 
+/** Preserve the requested suite scope independently of each run's scene. */
+export function comparisonSuiteOptions(params: URLSearchParams): ComparisonSuiteOptions {
+  const preset = params.get('suitePreset');
+  if (preset !== null && preset !== 'proposed' && preset !== 'controlled')
+    throw new Error('Invalid suitePreset.');
+  const density = params.get('suiteDensity') ?? 'compact';
+  if (density !== 'compact' && density !== 'full') throw new Error('Invalid suiteDensity.');
+  const scene = params.get('suiteScene') ?? params.get('scene');
+  if (scene !== null && scene !== 'all' && !COMPARISON_SCENES.includes(scene as ComparisonScene))
+    throw new Error('Invalid suite scene.');
+  return {
+    preset: preset ?? undefined,
+    density,
+    ...(scene === null || scene === 'all' ? {} : { scenes: [scene as ComparisonScene] }),
+  };
+}
+
+/** Build a navigation URL without changing the matrix on the next page load. */
+export function comparisonSuiteUrl(params: URLSearchParams, step: number, suiteId: string): string {
+  const options = comparisonSuiteOptions(params);
+  const runs = comparisonSuite(options);
+  const run = runs[step];
+  if (!Number.isInteger(step) || !run) throw new Error('Invalid suite step.');
+  const query = new URLSearchParams(params);
+  for (const key of [
+    'engine',
+    'preset',
+    'mode',
+    'repeat',
+    'probe',
+    'sh',
+    'width',
+    'height',
+    'gpuTimestamps',
+    'scene',
+    'seconds',
+  ])
+    query.delete(key);
+  run.forEach((value, key) => query.set(key, value));
+  query.set('suiteScene', options.scenes?.[0] ?? 'all');
+  query.set('suite', '1');
+  query.set('step', String(step));
+  query.set('suiteId', params.get('suiteId') ?? suiteId);
+  return `/${run.get('engine')}-benchmark.html?${query}`;
+}
+
 /** Sequential comparison matrix. Compact is the default; `density: 'full'` is the old 32-run protocol. */
 export function comparisonSuite(
   presetOrOptions?: 'proposed' | 'controlled' | ComparisonSuiteOptions,

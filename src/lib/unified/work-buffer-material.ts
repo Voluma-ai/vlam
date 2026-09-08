@@ -1,27 +1,30 @@
 import * as THREE from 'three/webgpu';
-import type { DisplayColorModifier, FloatUniform, Vec2Uniform } from '../core/splat-mesh-material';
+import type { DisplayColorModifier, FloatUniform, Vec2Uniform } from '../core/splat-material-types';
 import {
-  MAX_SPLAT_RADIUS_PX,
   capProjectedEigenvaluesToScreenRadius,
   equalizeProjectedEigenvalues,
   isSplatFootprintInFrustum,
-} from '../core/splat-mesh-material';
-import { MAX_DOF_VARIANCE } from '../core/depth-of-field';
+  projectSplatCovariance,
+  filterSplatCovariance,
+  projectedSplatEigenvalues,
+  projectedSplatEigenvector,
+  projectedSplatAxes,
+  radSplatStdDev,
+  radSplatOpacity,
+} from '../core/splat-render-math';
+import { MAX_SPLAT_RADIUS_PX } from '../core/splat-frustum';
 import {
   Discard,
   Fn,
-  If,
   cameraProjectionMatrix,
   float,
   instanceIndex,
   mat3,
-  mix,
   modelViewMatrix,
   positionGeometry,
   screenUV,
   storage,
   varying,
-  vec2,
   vec3,
   vec4,
 } from 'three/tsl';
@@ -94,70 +97,27 @@ export function createWorkBufferMaterial(options: {
       vec3(covA.y, covA.w, covB.x),
       vec3(covA.z, covB.x, covB.y),
     );
-    const invZ = float(1).div(viewCenter.z);
-    const invZ2 = invZ.mul(invZ);
-    const j1 = vec3(
-      options.focal.x.mul(invZ),
-      0,
-      options.focal.x.negate().mul(viewCenter.x).mul(invZ2),
+    const raw = projectSplatCovariance(
+      covariance,
+      viewCenter,
+      options.focal,
+      modelViewMatrix.toMat3().transpose(),
     );
-    const j2 = vec3(
-      0,
-      options.focal.y.mul(invZ),
-      options.focal.y.negate().mul(viewCenter.y).mul(invZ2),
-    );
-    const viewRotationT = modelViewMatrix.toMat3().transpose();
-    const u1 = viewRotationT.mul(j1);
-    const u2 = viewRotationT.mul(j2);
-    const aRaw = u1.dot(covariance.mul(u1));
-    const dRaw = u2.dot(covariance.mul(u2));
-    const bRaw = u1.dot(covariance.mul(u2));
-
-    const a = aRaw.add(options.projectedLowPassVariance).toVar();
-    const d = dRaw.add(options.projectedLowPassVariance).toVar();
-    const b = bRaw;
     const isoMix = isotropicMix.element(workIndex);
-    const detBlur = a.mul(d).sub(b.mul(b)).max(1e-9).toVar();
-    // Classic LCC always compensates its 0.1 px² low-pass. Standard sources
-    // retain their antialias-controlled 0.3 px² compatibility behavior.
-    const detRaw = aRaw.mul(dRaw).sub(bRaw.mul(bRaw)).max(0);
-    const detBase = aRaw
-      .add(options.projectedLowPassVariance)
-      .mul(dRaw.add(options.projectedLowPassVariance))
-      .sub(bRaw.mul(bRaw))
-      .max(1e-9);
-    const compensate = options.antialias.max(options.compensateProjectedLowPass);
-    // With both compensation controls at zero this result is identically one;
-    // keep that default path free of determinant/square-root work.
-    opacityCompensation.assign(float(1));
-    If(compensate.greaterThan(0), () => {
-      const mipFade = detRaw.div(detBlur).sqrt();
-      const fade = mix(float(1), mipFade, compensate);
-      opacityCompensation.assign(mix(fade, float(1), isoMix));
-    });
-    // Aperture is live, so this shader branch preserves animated setters while
-    // keeping the default zero-aperture path free of depth/atan/CoC math.
-    If(options.dofAperture.greaterThan(0), () => {
-      const depth = viewCenter.z.negate().max(1e-4);
-      const focus = options.dofFocusDistance.max(1e-4);
-      // Aperture maps through the live focus plane (Spark host-helper parity).
-      const halfApertureAngle = options.dofAperture.mul(0.5).div(focus).atan();
-      const focusBlur = depth.sub(focus).abs().div(depth);
-      const apertureRadius = options.focal.x.mul(halfApertureAngle.tan());
-      const cocRadiusPx = focusBlur.mul(apertureRadius);
-      const cocVar = cocRadiusPx.mul(cocRadiusPx).min(float(MAX_DOF_VARIANCE));
-      a.assign(aRaw.add(options.projectedLowPassVariance).add(cocVar));
-      d.assign(dRaw.add(options.projectedLowPassVariance).add(cocVar));
-      detBlur.assign(a.mul(d).sub(b.mul(b)).max(1e-9));
-      const dofOnlyFade = detBase.div(detBlur).sqrt();
-      const mipFade = detRaw.div(detBlur).sqrt();
-      const fade = mix(dofOnlyFade, mipFade, compensate);
-      opacityCompensation.assign(mix(fade, float(1), isoMix));
-    });
-    const mid = a.add(d).mul(0.5);
-    const radius = vec2(a.sub(d).mul(0.5), b).length();
-    let lambda1 = mid.add(radius);
-    let lambda2 = mid.sub(radius).max(0);
+    const { a, b, d } = filterSplatCovariance(
+      raw,
+      {
+        lowPassVariance: options.projectedLowPassVariance,
+        compensate: options.antialias.max(options.compensateProjectedLowPass),
+        isotropicMix: isoMix,
+        viewZ: viewCenter.z,
+        focalX: options.focal.x,
+        focusDistance: options.dofFocusDistance,
+        aperture: options.dofAperture,
+      },
+      opacityCompensation,
+    );
+    let { lambda1, lambda2 } = projectedSplatEigenvalues(a, b, d);
     const equalized = equalizeProjectedEigenvalues(lambda1, lambda2, isoMix);
     lambda1 = equalized.lambda1;
     lambda2 = equalized.lambda2;
@@ -174,21 +134,21 @@ export function createWorkBufferMaterial(options: {
     // so one coarse splat covers the subtree it stands in for; the covariance is
     // untouched. A leaf keeps the base cutoff. `SplatMesh` does the same at
     // `applySplatMaterialGraph`'s `lodAlpha` branch.
-    const remap = workColor.a.mul(4).sub(3).min(5);
-    const stdDev = workColor.a
-      .greaterThan(1)
-      .select(options.maxStdDev.add(remap.sub(1).mul(0.7)), options.maxStdDev);
+    const stdDev = radSplatStdDev(workColor.a, options.maxStdDev);
     adjustedStdDev.assign(stdDev);
-    const eigenvector = vec2(b, lambda1.sub(a)).add(vec2(1e-6, 0)).normalize();
-    const projectedRadius = lambda1.sqrt().mul(stdDev);
+    const eigenvector = projectedSplatEigenvector(a, b, lambda1);
     // Screen-space minimum on each axis: a splat below the floor grows to it so
     // its Gaussian tiles with neighbours instead of leaving dark gaps between
     // sparse zoomed-out splats; already-large splats are untouched. Mirrors
     // `applySplatMaterialGraph`. Both render paths share the 512 px axis cap.
     const minSplat = options.minSplatSizePx;
-    const major = eigenvector.mul(projectedRadius.min(MAX_SPLAT_RADIUS_PX).max(minSplat));
-    const minor = vec2(eigenvector.y, eigenvector.x.negate()).mul(
-      lambda2.sqrt().mul(stdDev).min(MAX_SPLAT_RADIUS_PX).max(minSplat),
+    const { major, minor } = projectedSplatAxes(
+      eigenvector,
+      lambda1,
+      lambda2,
+      stdDev,
+      MAX_SPLAT_RADIUS_PX,
+      minSplat,
     );
     const pixelOffset = major.mul(positionGeometry.x).add(minor.mul(positionGeometry.y));
     const ndcCenter = clipCenter.xy.div(clipCenter.w);
@@ -208,20 +168,7 @@ export function createWorkBufferMaterial(options: {
   material.fragmentNode = Fn(() => {
     const squaredDistance = quadPosition.dot(quadPosition);
     Discard(squaredDistance.greaterThan(1));
-    // Spark's LOD falloff, mirroring `SplatMesh`'s display fragment.
-    // `g = exp(-½·adjustedStdDev²·|q|²)` is the Gaussian at this fragment. A leaf
-    // (`alpha ≤ 1`, and every non-`.rad` source) composites `g · alpha`. A merged
-    // node uses the super-Gaussian plateau `1 − (1 − g)^a`, `a = exp((remap²−1)/e)`,
-    // so a coarse splat fills its subtree's footprint without inflating Σ.
-    const g = squaredDistance.mul(adjustedStdDev.mul(adjustedStdDev).mul(-0.5)).exp();
-    const remap = workColor.a.mul(4).sub(3).min(5);
-    const aExp = remap
-      .mul(remap)
-      .sub(1)
-      .mul(1 / Math.E)
-      .exp();
-    const merged = g.oneMinus().pow(aExp).oneMinus();
-    const opacity = workColor.a.greaterThan(1).select(merged, g.mul(workColor.a));
+    const opacity = radSplatOpacity(squaredDistance, adjustedStdDev, workColor.a);
     const alpha = opacity.mul(opacityCompensation).mul(displayOpacity);
     const rgb = (
       options.displayColorModifier?.(workColor.rgb, screenUV, options.viewport) ?? workColor.rgb

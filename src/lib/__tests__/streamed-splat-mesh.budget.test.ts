@@ -1,3 +1,4 @@
+import { createStreamedMeshFixture } from './helpers/streamed-mesh-fixture';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { StreamedSplatMesh, type StreamedSplatMeshOptions } from '../streaming/streamed-splat-mesh';
@@ -81,14 +82,13 @@ function makeMesh({
     chunkSize: 65536,
     ...(foveated ? { foveation: { minScreenRadiusPx: 1.6, maxScreenRadiusPx: 4 } } : {}),
   };
-  const Ctor = StreamedSplatMesh as unknown as new (
-    scene: unknown,
-    budget: number,
-    capacity: number,
-    options: unknown,
-    FrontierWorkerCtor?: unknown,
-  ) => StreamedSplatMesh;
-  return new Ctor(scene, budget, capacity, options, foveated ? RecordingWorker : undefined);
+  return createStreamedMeshFixture(
+    scene,
+    budget,
+    capacity,
+    options,
+    foveated ? RecordingWorker : undefined,
+  );
 }
 
 /** Drives one page-table reschedule, which is what posts to the worker. */

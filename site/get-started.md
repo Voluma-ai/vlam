@@ -1,6 +1,9 @@
 # Get started
 
-Install VLAM! and render a splat scene in a three.js app.
+Install VLAM! and render a splat scene in a three.js app. The
+[getting-started guide](/guide/getting-started) is the authoritative walkthrough
+for renderer setup, loading, resizing, and disposal; its samples are compiled
+against the current package.
 
 ## Install
 
@@ -12,65 +15,13 @@ npm install @voluma/vlam three
 
 ## Minimal example
 
-```ts
-import * as THREE from 'three/webgpu';
-import { SplatMesh } from '@voluma/vlam';
-import { loadSplatData } from '@voluma/vlam/loaders';
-
-const renderer = new THREE.WebGPURenderer({ antialias: true });
-renderer.setSize(innerWidth, innerHeight);
-document.body.appendChild(renderer.domElement);
-
-const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 100);
-camera.position.set(1, 0.5, 1.4);
-camera.lookAt(0, 0, 0);
-
-const splats = new SplatMesh(await loadSplatData('/scene.sog'));
-scene.add(splats);
-
-renderer.setAnimationLoop(() => {
- splats.update(camera, renderer);
- renderer.render(scene, camera);
-});
-```
-
-This is the regular three.js `WebGPURenderer`; VLAM! does not require a
-special renderer. The next walkthrough explains the optional
-[`createWebGPURenderer()` helper](/examples/open-local-file#why-this-example-uses-createwebgpurenderer).
+<<< ../docs/guide/samples/getting-started-basic.ts
 
 Call `splats.update(camera, renderer)` every frame before `renderer.render`.
+For the reasoning behind the helper, loading alternatives, resize handling,
+and cleanup, continue with the [full guide](/guide/getting-started).
 
-## Camera controls
-
-The example above renders a still image. VLAM! only draws the scene, it does not
-handle input. To orbit, pan, or zoom you add camera controls yourself, the same way
-you would in any three.js app. `OrbitControls` ships with three.js:
-
-```ts
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.target.set(0, 0, 0);
-
-renderer.setAnimationLoop(() => {
- controls.update();
- splats.update(camera, renderer);
- renderer.render(scene, camera);
-});
-```
-
-Update controls before `splats.update` so sorting uses the camera pose for the
-current frame.
-
-## Formats
-
-`loadSplatData` accepts `.sog`, `.ply`, `.spz`, `.splat`, `.ksplat`, and `.rad`.
-
-For large streamed scenes, use `StreamedSplatMesh.load` (Streamed SOG, `.lcc` /
-`.lcc2`, `.rad`). A `--rad-chunked` capture is still opened via the `.rad` file;
-its `.radc` siblings are chunks that file points at.
+For an interactive camera-controls version, see [Your first viewer](/examples/first-viewer).
 
 ## Next
 

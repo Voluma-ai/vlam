@@ -1,3 +1,4 @@
+import { updateMesh } from './helpers/mesh-update';
 import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { SplatMesh } from '../core/splat-mesh';
@@ -60,7 +61,6 @@ interface UploadRowSpan {
 
 interface UploadInternals {
   pendingUploadRows: UploadRowSpan[];
-  flushPendingUploads(renderer: THREE.WebGPURenderer): void;
   uploadRows(...args: unknown[]): void;
 }
 
@@ -235,7 +235,7 @@ describe('SplatMesh packed SH storage', () => {
       ),
     } as unknown as THREE.WebGPURenderer;
 
-    internals.flushPendingUploads(renderer);
+    updateMesh(mesh, renderer.copyTextureToTexture);
 
     expect(uploadRows).toHaveBeenCalledTimes(2);
     const coreRows = uploadRows.mock.calls[0]![1] as readonly UploadRowSpan[];

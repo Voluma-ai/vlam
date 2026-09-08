@@ -6,10 +6,8 @@ import { writeCovariance } from '../core/splat-data';
 /**
  * Tests for the dynamic-capacity pool's row allocator: free-list reuse,
  * capacity exhaustion, row-alignment fragmentation, and compaction.
- * Everything goes through the public pool API (appendRange / removeRange /
- * compact / freeSplatCapacity / activeSplatCount); the private active-list
- * rebuild is invoked directly because its public trigger, update(), needs a
- * live renderer (same internal-reach style as splat-mesh.channels.test.ts).
+ * Pool lifecycle is exercised through public operations. Staging-cache tests
+ * retain a local adapter to inspect allocation reuse without a GPU.
  */
 
 const WIDTH = 2048; // SplatMesh.DATA_TEXTURE_WIDTH
@@ -34,22 +32,15 @@ function makeSplatData(
   return { count, positions, colors, covariances };
 }
 
-/** Rebuilds the active list the way update() does once per frame. */
-function refreshActiveList(mesh: SplatMesh): void {
-  (mesh as unknown as { rebuildActiveList(): void }).rebuildActiveList();
-}
-
 /** The first `count` active pool indices, in active-list order. */
 function activeIndices(mesh: SplatMesh, count: number): number[] {
-  const attr = (mesh as unknown as { sourceIndexAttribute: { array: Uint32Array } })
-    .sourceIndexAttribute;
+  const attr = mesh.getUnifiedSourceView().sourceIndex;
   return Array.from(attr.array.subarray(0, count));
 }
 
 /** The source-index attribute API needed to verify partial active-list uploads. */
 function sourceIndexAttribute(mesh: SplatMesh): THREE.StorageBufferAttribute {
-  return (mesh as unknown as { sourceIndexAttribute: THREE.StorageBufferAttribute })
-    .sourceIndexAttribute;
+  return mesh.getUnifiedSourceView().sourceIndex;
 }
 
 /** The pool's CPU centers backing (x at stride 4), for relocation checks. */
@@ -164,7 +155,7 @@ describe('SplatMesh pool row allocator', () => {
     mesh.removeRange(ranges[1]!);
     mesh.removeRange(ranges[3]!);
     mesh.removeRange(ranges[5]!);
-    refreshActiveList(mesh);
+
     expect(mesh.activeSplatCount).toBe(3 * WIDTH);
     expect(mesh.freeSplatCapacity).toBe(3 * WIDTH);
 
@@ -180,7 +171,6 @@ describe('SplatMesh pool row allocator', () => {
       }
     }
 
-    refreshActiveList(mesh);
     expect(mesh.activeSplatCount).toBe(3 * WIDTH);
 
     // The three former holes are now one contiguous span.
@@ -193,17 +183,17 @@ describe('SplatMesh pool row allocator', () => {
     const a = mesh.appendRange(makeSplatData(100));
     const b = mesh.appendRange(makeSplatData(300));
     const c = mesh.appendRange(makeSplatData(50));
-    refreshActiveList(mesh);
+
     expect(mesh.activeSplatCount).toBe(450);
 
     mesh.removeRange(b);
-    refreshActiveList(mesh);
+
     expect(mesh.activeSplatCount).toBe(150);
 
     // D reuses B's freed row (first-fit), but appends after A and C in the
     // active list - pool position and append order are independent.
     const d = mesh.appendRange(makeSplatData(70));
-    refreshActiveList(mesh);
+
     expect(mesh.activeSplatCount).toBe(220);
 
     const expected = [
@@ -216,7 +206,7 @@ describe('SplatMesh pool row allocator', () => {
     mesh.removeRange(a);
     mesh.removeRange(c);
     mesh.removeRange(d);
-    refreshActiveList(mesh);
+
     expect(mesh.activeSplatCount).toBe(0);
     expect(mesh.freeSplatCapacity).toBe(4 * WIDTH);
   });
