@@ -378,6 +378,20 @@ describe('parseSog', () => {
     await expect(parseSog(archive.buffer)).rejects.toThrow(/data extends past the archive/);
   });
 
+  it('rejects ZIP64 records instead of interpreting sentinel offsets as data', async () => {
+    const archive = new Uint8Array(buildZip({ 'meta.json': '{}' }).slice(0));
+    const view = new DataView(archive.buffer);
+    view.setUint16(archive.byteLength - 22 + 10, 0xffff, true);
+    await expect(parseSog(archive.buffer)).rejects.toThrow(/Unsupported or corrupt ZIP/);
+  });
+
+  it('validates the local header against the central-directory entry', async () => {
+    const archive = new Uint8Array(buildZip({ 'meta.json': '{}' }).slice(0));
+    const view = new DataView(archive.buffer);
+    view.setUint16(8, 8, true); // local method differs from the central STORE method
+    await expect(parseSog(archive.buffer)).rejects.toThrow(/local header mismatch/);
+  });
+
   it('rejects a codebook shorter than 256 entries', async () => {
     const meta = makeMeta(0, { scales: { codebook: [0, 1, 2], files: ['scales.webp'] } });
     await expect(parseSog(buildZip({ 'meta.json': JSON.stringify(meta) }))).rejects.toThrow(

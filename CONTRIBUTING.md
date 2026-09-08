@@ -137,9 +137,10 @@ for repeatable baseline comparisons and the Mac validation procedure.
   requested backend fails the test instead of accepting a fallback.
 - GPU-facing code is tested against minimal mock renderers: object literals
  with `vi.fn()` stubs cast `as unknown as THREE.WebGPURenderer` (see
-  `compute-sorter.test.ts` for the pattern). Some tests reach private members
-  by name through `as unknown as` casts, keep those members as instance
-  members (list in [`docs/architecture.md`](docs/architecture.md)).
+  `compute-sorter.test.ts` for the pattern). Test lifecycle through public
+ operations where possible. When GPU bookkeeping cannot be observed otherwise,
+ isolate the inspection behind a small test-local adapter; it must not turn an
+ internal name into a production architectural constraint.
 - `npm run build` (type-check + bundle) must pass.
 - For renderer changes, follow the visual verification workflow in
   [`docs/architecture.md`](docs/architecture.md#verification-workflow), orbit

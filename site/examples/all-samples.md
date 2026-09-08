@@ -122,6 +122,10 @@ Short reference snippets from `docs/guide/samples/`, mostly exported functions r
 <<< ../../docs/guide/samples/getting-started-dispose.ts
 :::
 
+::: details getting-started-resize.ts, update renderer and camera projection on resize
+<<< ../../docs/guide/samples/getting-started-resize.ts
+:::
+
 ::: details getting-started-nonuniform-scale.ts, per-axis `scale.set(...)`
 <<< ../../docs/guide/samples/getting-started-nonuniform-scale.ts
 :::

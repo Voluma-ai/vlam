@@ -80,6 +80,27 @@ A real app will add camera controls, the demo uses
 `controls.update(delta)` at the top of the same loop; VLAM! deliberately
 ships no controls of its own.
 
+## Resizing
+
+Update both the drawing buffer and camera projection when the viewport changes:
+
+```ts
+export function resizeRenderer(
+  renderer: THREE.WebGPURenderer,
+  camera: THREE.PerspectiveCamera,
+): void {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+}
+```
+
+<!-- full file: docs/guide/samples/getting-started-resize.ts -->
+
+Call it once after creating the renderer and from your application's resize
+handler. Keep the animation loop running normally; `splats.update` reads the
+new camera projection on its next frame.
+
 ## Loading a local file
 
 `loadSplatDataFile` decodes a `File` from a drop or `<input type="file">` in a

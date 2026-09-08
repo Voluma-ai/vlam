@@ -2,6 +2,10 @@
 
 **What you get:** a full-window Gaussian splat viewer with mouse controls.
 
+For installation, renderer creation, loading choices, resizing, and cleanup,
+start with [Get started](/guide/getting-started). This page stays focused on
+the interactive camera-controls example.
+
 <ExampleEmbed slug="first-viewer" hint="Drag to orbit · scroll to zoom · right-drag to pan" />
 
 ## What a splat scene actually is
@@ -13,19 +17,6 @@ images.
 
 Splats must be drawn back to front from the current camera position. `SplatMesh`
 sorts them on the GPU; call `splats.update(camera, renderer)` before rendering.
-
-## The four things in the file
-
-Every three.js app has these parts; VLAM! adds the last one:
-
-| | |
-| --- | --- |
-| **Renderer** | The regular three.js `WebGPURenderer` that paints pixels into a `<canvas>` on your page. |
-| **Scene** | A container. Anything you `add` to it can be drawn. |
-| **Camera** | Where you are standing and which way you are looking. |
-| **SplatMesh** | The capture, as an object the scene can hold. |
-
-Each frame, update the camera controls, update the splats, then render.
 
 ## The code
 
@@ -78,12 +69,6 @@ final camera pose.
 
 **It is slow on a phone.** Large captures are demanding on mobile GPUs. Streamed
 formats load detail only where it is needed; see [Huge scenes](/examples/big-scenes).
-
-## Cleaning up
-
-When you tear the page or component down, release the GPU memory:
-
-<<< ../../docs/guide/samples/getting-started-dispose.ts
 
 ## Next
 

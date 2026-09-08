@@ -1,6 +1,14 @@
 import { warn } from '../../core/logging';
 import { isAbortError, toRequestInit, type SplatRequestOptions } from '../../loaders/loading';
 import type { SplatDatasetSource } from '../../streaming/dataset-source';
+import {
+  decodeZipPayload,
+  findZipEndOfCentralDirectory,
+  parseZipCentralDirectory,
+  validateZipLocalFileHeader,
+  zipLocalHeaderSize,
+  type ZipCentralDirectoryEntry,
+} from './zip';
 
 /**
  * Streamed SOG / `.lcc2` do not declare SH in the scene manifest. The pool
@@ -12,9 +20,6 @@ import type { SplatDatasetSource } from '../../streaming/dataset-source';
 
 const MAX_ZIP_COMMENT_PLUS_EOCD = 65557;
 const MAX_PEEK_BYTES = 1_048_576;
-const EOCD_SIGNATURE = 0x06054b50;
-const CENTRAL_SIGNATURE = 0x02014b50;
-const LOCAL_SIGNATURE = 0x04034b50;
 
 export type PaletteShBands = 0 | 1 | 2 | 3;
 
@@ -134,14 +139,16 @@ export async function sogShBandsFromZip(
   const resolvedStart = tail?.start ?? tailStart;
   const entry = await zipMetaEntry(tailBytes, resolvedStart, fileSize, read);
   if (entry === null) return 0;
-  const header = await read(entry.localOffset, 30);
-  if (header.byteLength < 30 || view32(header, 0) !== LOCAL_SIGNATURE) return 0;
-  const nameLength = view16(header, 26);
-  const extraLength = view16(header, 28);
-  const dataStart = entry.localOffset + 30 + nameLength + extraLength;
+  const prefix = await read(entry.localOffset, 30);
+  const headerSize = zipLocalHeaderSize(prefix, entry);
+  if (headerSize === null || headerSize > MAX_PEEK_BYTES) return 0;
+  const header = await read(entry.localOffset, headerSize);
+  const local = validateZipLocalFileHeader(header, entry);
+  if (local === null) return 0;
+  const dataStart = entry.localOffset + local.dataOffset;
   if (entry.compressedSize > MAX_PEEK_BYTES) return 0;
   const compressed = await read(dataStart, entry.compressedSize);
-  const payload = await inflateZipPayload(compressed, entry.method);
+  const payload = await decodeZipPayload(compressed, entry.method, entry.name);
   try {
     return sogShBandsFromMeta(JSON.parse(new TextDecoder().decode(payload)));
   } catch {
@@ -149,67 +156,25 @@ export async function sogShBandsFromZip(
   }
 }
 
-interface ZipMetaEntry {
-  readonly localOffset: number;
-  readonly compressedSize: number;
-  readonly method: number;
-}
-
 async function zipMetaEntry(
   tail: Uint8Array,
   tailStart: number,
   fileSize: number,
   read: (start: number, length: number) => Promise<Uint8Array>,
-): Promise<ZipMetaEntry | null> {
-  const eocd = findEocd(tail);
-  if (eocd < 0) return null;
-  const cdOffset = view32(tail, eocd + 16);
-  const cdSize = view32(tail, eocd + 12);
-  const entryCount = view16(tail, eocd + 10);
-  if (cdOffset === 0xffffffff || cdSize === 0xffffffff) return null;
+): Promise<ZipCentralDirectoryEntry | null> {
+  const eocd = findZipEndOfCentralDirectory(tail);
+  if (eocd === null) return null;
+  const { centralDirectoryOffset: cdOffset, centralDirectorySize: cdSize, entryCount } = eocd;
   if (cdSize > MAX_PEEK_BYTES || cdOffset + cdSize > fileSize) return null;
   const directory =
     cdOffset >= tailStart && cdOffset + cdSize <= tailStart + tail.byteLength
       ? tail.subarray(cdOffset - tailStart, cdOffset + cdSize - tailStart)
       : await read(cdOffset, cdSize);
-  if (directory.byteLength < cdSize) return null;
-  let cursor = 0;
-  for (let i = 0; i < entryCount; i++) {
-    if (cursor + 46 > directory.byteLength || view32(directory, cursor) !== CENTRAL_SIGNATURE) {
-      return null;
-    }
-    const method = view16(directory, cursor + 10);
-    const compressedSize = view32(directory, cursor + 20);
-    const nameLength = view16(directory, cursor + 28);
-    const extraLength = view16(directory, cursor + 30);
-    const commentLength = view16(directory, cursor + 32);
-    const localOffset = view32(directory, cursor + 42);
-    if (cursor + 46 + nameLength > directory.byteLength) return null;
-    const name = new TextDecoder().decode(
-      directory.subarray(cursor + 46, cursor + 46 + nameLength),
-    );
-    cursor += 46 + nameLength + extraLength + commentLength;
-    if (name === 'meta.json' && (method === 0 || method === 8)) {
-      return { localOffset, compressedSize, method };
-    }
-  }
-  return null;
-}
-
-function findEocd(bytes: Uint8Array): number {
-  const scanEnd = Math.max(0, bytes.byteLength - MAX_ZIP_COMMENT_PLUS_EOCD);
-  for (let offset = bytes.byteLength - 22; offset >= scanEnd; offset--) {
-    if (view32(bytes, offset) === EOCD_SIGNATURE) return offset;
-  }
-  return -1;
-}
-
-async function inflateZipPayload(compressed: Uint8Array, method: number): Promise<Uint8Array> {
-  if (method === 0) return compressed;
-  const stream = new Blob([compressed as Uint8Array<ArrayBuffer>])
-    .stream()
-    .pipeThrough(new DecompressionStream('deflate-raw'));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+  if (directory.byteLength !== cdSize) return null;
+  const entry = parseZipCentralDirectory(directory, entryCount)?.find(
+    ({ name }) => name === 'meta.json',
+  );
+  return entry === undefined || (entry.method !== 0 && entry.method !== 8) ? null : entry;
 }
 
 async function fetchJson(
@@ -283,18 +248,4 @@ async function cancelBody(response: Response): Promise<void> {
   } catch {
     // Already consumed or locked: the peek still must not throw.
   }
-}
-
-function view16(bytes: Uint8Array, offset: number): number {
-  return bytes[offset]! | (bytes[offset + 1]! << 8);
-}
-
-function view32(bytes: Uint8Array, offset: number): number {
-  return (
-    (bytes[offset]! |
-      (bytes[offset + 1]! << 8) |
-      (bytes[offset + 2]! << 16) |
-      (bytes[offset + 3]! << 24)) >>>
-    0
-  );
 }
