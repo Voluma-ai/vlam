@@ -116,6 +116,7 @@ import {
   classifyOrbitFraming,
   heightSamplesFromStreamedMesh,
   overviewPositionsFromStreamedMesh,
+  recommendedCameraFar,
 } from './orbit-framing';
 
 /**
@@ -657,6 +658,19 @@ async function main(): Promise<void> {
     0.01,
     1000,
   );
+  // Far is refit from each scene's full AABB (not the cinematic focus box) so
+  // outdoor captures keep their horizon. Compact scenes stay at 1000.
+  const cameraFarBounds = new THREE.Box3();
+  let cameraFarMaxDistance = 0;
+  let cameraFarBoundsReady = false;
+  const applyCameraFar = (): void => {
+    if (!cameraFarBoundsReady) return;
+    camera.far = recommendedCameraFar(cameraFarBounds, {
+      maxDistance: cameraFarMaxDistance,
+      hd: !perfMode.enabled,
+    });
+    camera.updateProjectionMatrix();
+  };
   const controls = new CameraControls(camera, renderer.domElement);
   controls.mouseButtons.left = CameraControls.ACTION.NONE;
   controls.mouseButtons.right = CameraControls.ACTION.NONE;
@@ -2664,6 +2678,12 @@ async function main(): Promise<void> {
     const interactionRadius = interactionBounds.getBoundingSphere(new THREE.Sphere()).radius || 1;
     controls.minDistance = Math.max(interactionRadius * 0.001, 1e-4);
     controls.maxDistance = Math.max(interactionRadius * 8, controls.minDistance * 2);
+    // Clip against the full capture, including distant landscape the orbit
+    // framing ignored. HD pads the far plane further; SD still covers the AABB.
+    cameraFarBounds.copy(bounds);
+    cameraFarMaxDistance = controls.maxDistance;
+    cameraFarBoundsReady = !bounds.isEmpty();
+    applyCameraFar();
     movementSpeed =
       interactionRadius *
       (framing?.focusBounds
@@ -4237,6 +4257,7 @@ async function main(): Promise<void> {
       if (pinnedMaxStdDev === undefined) {
         splats.setMaxStdDev(enabled ? PERF_MODE_MAX_STD_DEV : qualityMaxStdDev());
       }
+      applyCameraFar();
     });
   }
 

@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import type { SplatSortMetric } from './splat-mesh-types';
+import { MAX_SPLAT_RADIUS_PX } from './splat-mesh-material';
 
 /** Inclusive ordering-key range used by the quantized sort implementations. */
 export interface SplatSortRange {
@@ -92,6 +93,7 @@ export function sceneSortRange(
 export function cameraVisibleSortRange(
   camera: THREE.Camera,
   sortMetric: SplatSortMetric,
+  viewport?: THREE.Vector2,
 ): SplatSortRange | null {
   const far = (camera as { far?: unknown }).far;
   if (typeof far !== 'number' || !Number.isFinite(far) || far <= 0) return null;
@@ -101,8 +103,18 @@ export function cameraVisibleSortRange(
   // projections, unlike deriving the corner from PerspectiveCamera.fov/aspect.
   const inverse = camera.projectionMatrixInverse;
   let farCornerDistance = 0;
-  for (const x of [-FRUSTUM_NDC_MARGIN, FRUSTUM_NDC_MARGIN]) {
-    for (const y of [-FRUSTUM_NDC_MARGIN, FRUSTUM_NDC_MARGIN]) {
+  // A capped ellipse can extend one capped major and minor axis beyond its
+  // center. Keep radial quantization wide enough for that lateral coverage.
+  const xMargin =
+    viewport && viewport.x > 0
+      ? FRUSTUM_NDC_MARGIN + (4 * MAX_SPLAT_RADIUS_PX) / viewport.x
+      : FRUSTUM_NDC_MARGIN;
+  const yMargin =
+    viewport && viewport.y > 0
+      ? FRUSTUM_NDC_MARGIN + (4 * MAX_SPLAT_RADIUS_PX) / viewport.y
+      : FRUSTUM_NDC_MARGIN;
+  for (const x of [-xMargin, xMargin]) {
+    for (const y of [-yMargin, yMargin]) {
       farCornerDistance = Math.max(
         farCornerDistance,
         farCornerScratch.set(x, y, 1).applyMatrix4(inverse).length(),

@@ -61,7 +61,36 @@ export type DisplayColorModifier = (
  * the near plane projects to an unbounded size; clamping keeps one degenerate
  * splat from covering the screen and stalling the rasterizer.
  */
-const MAX_SPLAT_RADIUS_PX = 512;
+export const MAX_SPLAT_RADIUS_PX = 512;
+
+/**
+ * Tests whether a capped ellipse can cover any viewport pixel. The lateral
+ * test uses the complete projected footprint, not merely its center, so a
+ * large sky splat remains drawable while crossing a screen edge.
+ */
+export function isSplatFootprintInFrustum(
+  clipCenter: THREE.Node<'vec4'>,
+  viewport: THREE.Node<'vec2'>,
+  majorAxis: THREE.Node<'vec2'>,
+  minorAxis: THREE.Node<'vec2'>,
+): THREE.Node<'bool'> {
+  const nearMargin = clipCenter.w.mul(1.2);
+  const ndcCenter = clipCenter.xy.div(clipCenter.w);
+  // A rotated ellipse reaches |major| + |minor| on each screen axis.
+  const footprint = vec2(
+    majorAxis.x.abs().add(minorAxis.x.abs()),
+    majorAxis.y.abs().add(minorAxis.y.abs()),
+  )
+    .mul(2)
+    .div(viewport);
+  return asNode<'bool'>(
+    clipCenter.z
+      .greaterThan(nearMargin.negate())
+      .and(clipCenter.z.lessThan(clipCenter.w))
+      .and(ndcCenter.x.abs().lessThanEqual(float(1).add(footprint.x)))
+      .and(ndcCenter.y.abs().lessThanEqual(float(1).add(footprint.y))),
+  );
+}
 
 /**
  * Stand-in for an infinite `parent_size` (a root LOD node, or a splat whose
@@ -613,23 +642,16 @@ export function applySplatMaterialGraph(
     // Default: outside clip space, so culled splats emit no fragments.
     const clipPosition = vec4(0.0, 0.0, 2.0, 1.0).toVar();
 
-    // Skip splats behind the camera or far outside the frustum - and
-    // splats a modifier hides. Display uses a 1.2 NDC pad around the
-    // center. Pick crops one source pixel onto the full NDC cube (1 px =
-    // 2 NDC), so the same pad would keep only centers inside ~0.6 px of
-    // the cursor. Expand by the screen-radius cap so a splat that covers
-    // the clicked pixel still emits a quad.
-    const frustumNdc = mode === 'pick' ? 1.2 + 2 * MAX_SPLAT_RADIUS_PX : 1.2;
-    const margin = clipCenter.w.mul(frustumNdc);
-    const inFrustum = clipCenter.z
-      .greaterThan(margin.negate())
+    // Keep the existing behind-camera and far-plane rejection before the
+    // covariance work. Lateral rejection happens below once the capped
+    // projected footprint is available.
+    const inDepthRange = clipCenter.z
+      .greaterThan(clipCenter.w.mul(1.2).negate())
       // Match Spark's explicit far-plane rejection. Without this upper bound,
       // extreme capture outliers beyond `camera.far` still projected giant
       // translucent quads and polluted both the image and motion stability.
-      .and(clipCenter.z.lessThan(clipCenter.w))
-      .and(clipCenter.x.abs().lessThan(margin))
-      .and(clipCenter.y.abs().lessThan(margin));
-    const isVisible = stack.visible === null ? inFrustum : inFrustum.and(stack.visible);
+      .and(clipCenter.z.lessThan(clipCenter.w));
+    const isVisible = stack.visible === null ? inDepthRange : inDepthRange.and(stack.visible);
 
     If(isVisible, () => {
       if (viewDepthVarying) viewDepthVarying.assign(viewCenter.z.negate());
@@ -830,19 +852,27 @@ export function applySplatMaterialGraph(
       const minorAxis = vec2(eigenvector1.y, eigenvector1.x.negate()).mul(
         lambda2.sqrt().mul(stdDev).min(maxRadius).max(minSplat),
       );
+      const footprintVisible = isSplatFootprintInFrustum(
+        clipCenter,
+        uniforms.viewport,
+        majorAxis,
+        minorAxis,
+      );
 
       const writePosition = (): void => {
-        const pixelOffset = majorAxis
-          .mul(positionGeometry.x)
-          .add(minorAxis.mul(positionGeometry.y));
-        const ndcCenter = clipCenter.xy.div(clipCenter.w);
-        clipPosition.assign(
-          vec4(
-            ndcCenter.add(pixelOffset.mul(2.0).div(uniforms.viewport)),
-            clipCenter.z.div(clipCenter.w),
-            1.0,
-          ),
-        );
+        If(footprintVisible, () => {
+          const pixelOffset = majorAxis
+            .mul(positionGeometry.x)
+            .add(minorAxis.mul(positionGeometry.y));
+          const ndcCenter = clipCenter.xy.div(clipCenter.w);
+          clipPosition.assign(
+            vec4(
+              ndcCenter.add(pixelOffset.mul(2.0).div(uniforms.viewport)),
+              clipCenter.z.div(clipCenter.w),
+              1.0,
+            ),
+          );
+        });
       };
       // Per-splat LOD cut. `notBlob` is the "keep this splat" predicate (named
       // for the historical blob cull); null means "no cull, always draw".

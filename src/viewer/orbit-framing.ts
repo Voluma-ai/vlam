@@ -87,6 +87,38 @@ export interface OrbitFramingResult {
   focusBounds: THREE.Box3 | null;
 }
 
+/** Previous demo far plane. Compact captures stay here so depth precision does not regress. */
+const MIN_CAMERA_FAR = 1000;
+/** Safety cap so a single kilometre-scale floater cannot collapse the depth buffer. */
+const MAX_CAMERA_FAR = 100_000;
+/** Extra far-plane slack past the last AABB corner / orbit distance, as a radius multiple. */
+const HD_CAMERA_FAR_PAD = 4;
+const SD_CAMERA_FAR_PAD = 2;
+
+/**
+ * Demo camera far plane from the capture AABB.
+ *
+ * Uses the full splat / manifest bounds, not the tight cinematic focus box:
+ * distant landscape must stay in view even when the orbit is framed on the
+ * reconstructed subject. `maxDistance` covers dollying out; the radius term
+ * covers standing inside the volume looking through it.
+ *
+ * Compact captures stay at the previous 1000-unit floor. HD pads further so
+ * large outdoor `.rad` scans do not hard-clip at the horizon.
+ */
+export function recommendedCameraFar(
+  bounds: THREE.Box3,
+  options: { maxDistance?: number; hd?: boolean } = {},
+): number {
+  if (bounds.isEmpty()) return MIN_CAMERA_FAR;
+  const radius = bounds.getBoundingSphere(new THREE.Sphere()).radius;
+  if (!Number.isFinite(radius) || radius <= 0) return MIN_CAMERA_FAR;
+  const requested = options.maxDistance ?? 0;
+  const maxDistance = Number.isFinite(requested) ? Math.max(requested, 0) : 0;
+  const pad = options.hd === false ? SD_CAMERA_FAR_PAD : HD_CAMERA_FAR_PAD;
+  return THREE.MathUtils.clamp(maxDistance + radius * pad, MIN_CAMERA_FAR, MAX_CAMERA_FAR);
+}
+
 /**
  * Picks object vs landscape framing from world-space bounds and optional
  * splat centers. Safe to call with only an AABB (streamed scenes before any

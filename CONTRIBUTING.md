@@ -19,7 +19,7 @@ our [Code of Conduct](CODE_OF_CONDUCT.md).
 ```bash
 npm install        # also registers lint + typecheck + docs:check git hooks
 npx playwright install chromium # one-time browser install for render checks
-npm run dev        # Docs site → http://localhost:5170 (viewer at /demo/)
+npm run dev        # Docs site → http://localhost:5170 
 npm test           # Vitest unit tests
 npm run test:browser # real-splat render checks on WebGPU + forced WebGL2
 npm run typecheck  # tsc --noEmit

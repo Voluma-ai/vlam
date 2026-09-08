@@ -18,6 +18,16 @@ describe('cameraVisibleSortRange', () => {
     expect(range?.max).toBe(0);
   });
 
+  it('expands radial bounds for a capped large-splat footprint', () => {
+    const camera = new THREE.PerspectiveCamera(90, 1, 0.1, 100);
+    const centerOnly = cameraVisibleSortRange(camera, 'radial');
+    const footprintAware = cameraVisibleSortRange(camera, 'radial', new THREE.Vector2(1024, 1024));
+    expect(footprintAware).not.toBeNull();
+    // A capped major and minor axis can both contribute laterally. The sorter
+    // must retain centers whose footprint reaches the viewport from outside.
+    expect(-(footprintAware?.min as number)).toBeGreaterThan(-(centerOnly?.min as number));
+  });
+
   it('falls back to scene bounds when far is infinite or invalid', () => {
     const camera = new THREE.PerspectiveCamera();
     camera.far = Infinity;
