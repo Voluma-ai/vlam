@@ -42,7 +42,10 @@ export function zipLocalHeaderSize(
 
 /** Finds a non-ZIP64 end-of-central-directory record in the supplied tail bytes. */
 export function findZipEndOfCentralDirectory(bytes: Uint8Array): ZipEndOfCentralDirectory | null {
-  for (let offset = bytes.byteLength - 22; offset >= 0; offset--) {
+  // A ZIP footer is 22 bytes plus at most a uint16-sized archive comment.
+  // Whole-file callers must not scan gigabytes of malformed payload data.
+  const scanEnd = Math.max(0, bytes.byteLength - 22 - 0xffff);
+  for (let offset = bytes.byteLength - 22; offset >= scanEnd; offset--) {
     if (readUint32(bytes, offset) !== EOCD_SIGNATURE) continue;
     const disk = readUint16(bytes, offset + 4);
     const directoryDisk = readUint16(bytes, offset + 6);

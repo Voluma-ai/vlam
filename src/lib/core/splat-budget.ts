@@ -135,11 +135,11 @@ interface MobileClassBudget {
 }
 
 const MOBILE_BUDGETS: Readonly<Record<SplatCostClass, MobileClassBudget>> = {
-  // Both measured: 600k held 45-50 fps where 750k managed 31-39. The ceiling
-  // matches the default because the evidence is about the class, not the RAM -
-  // an Android flagship reporting 8 GiB has no more fill rate for wide discs
-  // than an iPhone that reports nothing.
-  lcc: { ceiling: 600_000, withoutMemorySignal: 600_000 },
+  // Both measured: 600k held 45-50 fps where 750k managed 31-39. The default
+  // now accepts the sharper 750k trade on current phones. Keep the ceiling and
+  // memory-less default aligned: an Android flagship reporting 8 GiB has no
+  // more fill rate for wide discs than an iPhone that reports nothing.
+  lcc: { ceiling: 750_000, withoutMemorySignal: 750_000 },
   // Today's numbers, unchanged. `sandwijck` on iPhone had visible headroom
   // (52-57 fps while losing centre detail). Galaxy S24 Ultra SD at ~827k was still
   // streaming (164k holes); do not raise this ceiling from that capture.

@@ -66,6 +66,8 @@ src/
  splat-mesh.ts SplatMesh: the pool, range lifecycle, active list, sort wiring
  splat-mesh-types.ts its public options, result types, and profile defaults
  splat-mesh-material.ts its TSL graph (display + pick), as free functions
+ splat-render-math.ts shared projection, filtering/DoF, ellipse, and Gaussian/RAD math
+ splat-material-types.ts shared shader inputs and uniform constructors
  splat-mesh-picking.ts SplatPicker: the GPU pick pass and its resources
  splat-mesh-pool.ts pool data textures + the row-span allocator
  merged-splat-mesh.ts MergedSplatMesh: several fully decoded sources, one pool
@@ -122,6 +124,14 @@ copies; display and pick share the uniforms, and a rebuild after
 with its tests. Prefer public lifecycle operations and mocked renderer, worker,
 and loader boundaries; keep any unavoidable GPU bookkeeping inspection in a
 narrow test-local adapter.
+
+Standalone display/picking and unified rendering share `splat-render-math.ts`.
+The builders retain storage reads, source transforms/modifiers, SH, visibility
+policy, color conversion, and output encoding. The math helpers preserve live
+uniform nodes; boolean filter settings specialize the standalone graph while
+unified rendering keeps its live compensation weight. Zero-aperture DoF remains
+a shader branch. New rendering rules belong in the callers unless they are
+mathematically identical across paths.
 
 `SplatMesh` has two modes: fully loaded (`new SplatMesh(data)`) and
 dynamic-capacity (`new SplatMesh({ capacity })`, an empty pool filled with

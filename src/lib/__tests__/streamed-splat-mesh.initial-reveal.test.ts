@@ -1,3 +1,4 @@
+import { createStreamedMeshFixture } from './helpers/streamed-mesh-fixture';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { StreamedSplatMesh } from '../streaming/streamed-splat-mesh';
@@ -140,15 +141,7 @@ function makeMesh(config: MeshConfig): StreamedSplatMesh {
   );
   scene.chunkUrls = Array.from({ length: maxFile + 1 }, (_, f) => `https://host/data.bin#${f}`);
 
-  const Ctor = StreamedSplatMesh as unknown as new (
-    scene: unknown,
-    budget: number,
-    capacity: number,
-    options: unknown,
-    worker: unknown,
-    neverRetireCoverageEarly: boolean,
-  ) => StreamedSplatMesh;
-  return new Ctor(
+  return createStreamedMeshFixture(
     scene,
     capacity,
     capacity,
@@ -1102,15 +1095,7 @@ describe('StreamedSplatMesh initial reveal (hold-coverage)', () => {
       maxResidentSplats: 4 * WIDTH,
       chunkUrls: Array.from({ length: maxFile + 1 }, (_, f) => `https://host/data.bin#${f}`),
     };
-    const Ctor = StreamedSplatMesh as unknown as new (
-      scene: unknown,
-      budget: number,
-      capacity: number,
-      options: unknown,
-      worker: unknown,
-      neverRetireCoverageEarly: boolean,
-    ) => StreamedSplatMesh;
-    const mesh = new Ctor(
+    const mesh = createStreamedMeshFixture(
       scene,
       4 * WIDTH,
       4 * WIDTH,
@@ -1203,15 +1188,7 @@ describe('StreamedSplatMesh initial reveal (hold-coverage)', () => {
       maxResidentSplats: 4 * WIDTH,
       chunkUrls: Array.from({ length: maxFile + 1 }, (_, f) => `https://host/data.bin#${f}`),
     };
-    const Ctor = StreamedSplatMesh as unknown as new (
-      scene: unknown,
-      budget: number,
-      capacity: number,
-      options: unknown,
-      worker: unknown,
-      neverRetireCoverageEarly: boolean,
-    ) => StreamedSplatMesh;
-    const mesh = new Ctor(
+    const mesh = createStreamedMeshFixture(
       scene,
       4 * WIDTH,
       4 * WIDTH,

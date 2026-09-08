@@ -1,3 +1,4 @@
+import { createStreamedMeshFixture } from './helpers/streamed-mesh-fixture';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { StreamedSplatMesh, type StreamedSplatMeshOptions } from '../streaming/streamed-splat-mesh';
@@ -53,13 +54,7 @@ function makeEnvMesh(options: StreamedSplatMeshOptions = {}, withEnv = true): St
     maxResidentSplats: 4 * WIDTH,
     ...(withEnv ? { environment: { file: 0 } } : {}),
   };
-  const Ctor = StreamedSplatMesh as unknown as new (
-    scene: unknown,
-    budget: number,
-    capacity: number,
-    options: unknown,
-  ) => StreamedSplatMesh;
-  return new Ctor(scene, 4 * WIDTH, 4 * WIDTH, options);
+  return createStreamedMeshFixture(scene, 4 * WIDTH, 4 * WIDTH, options);
 }
 
 type Internals = {

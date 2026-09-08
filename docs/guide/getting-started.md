@@ -5,7 +5,7 @@ minutes: install, set up the WebGPU renderer, load a scene, and drive the
 per-frame update loop.
 
 Every multi-line snippet in these guides is a real, compile-verified file
-under [`samples/`](samples/), copy from there if you want the full imports.
+under [`samples/`](https://github.com/Voluma-ai/vlam/tree/main/docs/guide/samples), copy from there if you want the full imports.
 
 ## Install
 
@@ -156,7 +156,7 @@ export function squashForTabletop(splats: SplatMesh): void {
 
 Animating scale per frame is cheap, it flows through matrix uniforms, never
 a data re-upload. See the "Non-uniform scale" section in
-[`capabilities.md`](../capabilities.md) for exactness notes (view-dependent SH
+[`capabilities.md`](https://github.com/Voluma-ai/vlam/blob/main/docs/capabilities.md) for exactness notes (view-dependent SH
 under strong anisotropy is a documented approximation), and try
 `?scale=2,0.5,1` in the demo.
 
@@ -167,12 +167,12 @@ graph compiles to WGSL on WebGPU and GLSL on WebGL2, and
 `THREE.WebGPURenderer` falls back automatically where WebGPU is unavailable.
 Static and streamed rendering, picking, and spatial queries all work on the
 fallback; the exceptions are `UnifiedSplatMesh` (gate it with
-`supportsUnifiedSplatMesh`, see [Unified rendering](unified-rendering.md))
+`supportsUnifiedSplatMesh`, see [Unified rendering](https://github.com/Voluma-ai/vlam/blob/main/docs/guide/unified-rendering.md))
 and `wgslFn`-based effect presets like `revealPreset`. Details:
-[WebGL2 scope statement](../capabilities.md#webgl2-scope-statement).
+[WebGL2 scope statement](https://github.com/Voluma-ai/vlam/blob/main/docs/capabilities.md#webgl2-scope-statement).
 
 ## Next
 
-- [Terminology](terminology.md), capture vs data vs mesh vs source.
-- [Loading captures](loading-scenes.md), formats, errors, progress, cancellation.
-- [Streaming & LOD](streaming-and-lod.md), captures larger than GPU memory.
+- [Terminology](https://github.com/Voluma-ai/vlam/blob/main/docs/guide/terminology.md), capture vs data vs mesh vs source.
+- [Loading captures](https://github.com/Voluma-ai/vlam/blob/main/docs/guide/loading-scenes.md), formats, errors, progress, cancellation.
+- [Streaming & LOD](https://github.com/Voluma-ai/vlam/blob/main/docs/guide/streaming-and-lod.md), captures larger than GPU memory.

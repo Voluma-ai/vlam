@@ -303,7 +303,7 @@ dpr 2.625, drawing buffer 411×783 at dpr 1. Chrome privacy-caps
 `deviceMemory` at 8, so extra Ultra RAM is invisible to
 `resolveSplatBudget`. Snapdragon Adreno 750 has no Apple/Intel/AMD cue, so
 `classifySplatGpuClass` returns `discrete`. `isMobile` still selects the
-phone caps (1M sampled, 600k LCC) and fill-constrained SD. Do not read
+phone caps (1M sampled, 750k LCC) and fill-constrained SD. Do not read
 `discrete` as the 8M workstation path.
 
 Goose (`goose.sog`, 149,120), SD (`msaa off`, 3σ, `smooth`): 60 rAF (16.6

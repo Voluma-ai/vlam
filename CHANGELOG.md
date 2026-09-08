@@ -100,6 +100,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- The default mobile budget for streamed `.rad`, `.lcc`, and `.lcc2` scenes is
+  now 750k splats, up from 600k. Explicit budgets and the 600k immersive-XR cap
+  are unchanged.
+
 - Loading now detects streamed formats from URL pathnames, preserves signed
   queries on requests, validates exposed partial-response `Content-Range`
   headers, and treats compressed `Content-Length` as an allocation hint rather
