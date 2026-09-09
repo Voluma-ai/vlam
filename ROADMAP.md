@@ -18,8 +18,6 @@ Git history, not in this queue.
 
 ## Later
 
-- **Streamed spherical harmonics** — blocked on an SH-bearing streamed capture
-  and headed `?sh=0` versus `?sh=N` validation.
 - **RAD limit feedback** — assess refinement pacing during the RAD headed comparison.
 - **1.0 stabilization** — freeze the API, finalize migration notes, changelog,
   and release tag after the checks above pass.
@@ -45,6 +43,18 @@ selection features until their benefits are measured and visually validated.
   lower peak or settled memory against a recorded baseline, with lifecycle,
   query, editing, and fallback checks. Upstream JS-heap savings are not a
   total-memory estimate or a predicted VLAM gain.
+- **Experimental radix sorter: r186 workgroup atomics** — after the separate
+  upgrade establishes three.js r186 as the minimum supported version, replace
+  the global-storage ranking bitmasks in
+  [`radix-sorter.ts`](src/lib/core/radix-sorter.ts) with atomic workgroup arrays.
+  Target lower global-memory traffic and GPU scratch allocation while preserving
+  stable ranking and portable synchronization; never rely on cross-workgroup
+  execution order. **Acceptance:** compare GPU sort time, scratch memory, and
+  frame-time tails against the current radix implementation; verify exact index
+  coverage, depth ordering, and equal-key stability, including partial workgroups.
+  Visually validate standalone/unified rendering and confirm WebGL2 fallback
+  non-regression. Keep radix experimental and retain the default counting sorter
+  until measurements justify a separate policy change.
 - **Cull before sorting and compute projection** — prototype a WebGPU path
   that builds a dense visible-splat list before sorting, uses its GPU count
   for indirect dispatch/draw, and evaluates projection once per splat. VLAM
@@ -74,5 +84,4 @@ selection features until their benefits are measured and visually validated.
 | Work                        | Blocker                                  |
 | --------------------------- | ---------------------------------------- |
 | Mobile matrix               | Physical Android device max 4 years old  |
-| Streamed SH comparison      | SH-bearing streamed capture              |
 | Reference pixel comparisons | External datasets and viewers            |
