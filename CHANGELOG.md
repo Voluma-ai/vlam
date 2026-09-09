@@ -19,6 +19,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Changed
+
+- The demo hides paint and select-and-cut for streamed/LOD scenes, where edits
+  cannot be applied consistently across changing residency. Annotate and
+  measure remain available.
+
 ### Added
 
 - Extended the local Spark/VLAM benchmark with explicit supplied, proposed,

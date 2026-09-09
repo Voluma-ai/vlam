@@ -68,7 +68,12 @@ import { createFrameBenchmark, verifyGpuSort } from './sort-benchmark';
 import { demoSortStrategy } from './sort-policy';
 import { createPerfHud, hudBrowserName } from './perf-hud';
 import { createSeparateTool, type SeparateTool } from './separate';
-import { buildToolPicker, parseViewerTool, type ViewerTool } from './tool-picker';
+import {
+  buildToolPicker,
+  normalizeViewerTool,
+  parseViewerTool,
+  type ViewerTool,
+} from './tool-picker';
 import { parseFpvParam, parseOrbitPlayingParam, writeShareViewSearchParams } from './share-view';
 import {
   alignXrRigToCamera,
@@ -1588,9 +1593,10 @@ async function main(): Promise<void> {
   const chunked = params.get('mode') === 'chunked';
   // ?tool=select (or legacy ?separate=1) starts with select & cut already
   // picked: place a box/sphere/cylinder, preview the covered splats, split
-  // them into their own animated mesh (M9+). The tool itself is always
-  // available from the picker; Copy cameralink writes `?tool=` for any armed
-  // tool so a pasted link restores it.
+  // them into their own animated mesh (M9+). Streamed meshes hide editing
+  // tools that cannot operate consistently across changing LOD residency.
+  // Copy cameralink writes `?tool=` for any armed tool so a pasted link
+  // restores it when the target scene supports it.
   const separateMode = params.has('separate');
   const toolFromUrl = parseViewerTool(params.get('tool'));
   const orbitFromUrl = parseOrbitPlayingParam(params.get('orbit'));
@@ -1682,6 +1688,8 @@ async function main(): Promise<void> {
   let pointerTool: ViewerTool = 'none';
   /** Where a tool hangs its own controls, once the picker has mounted. */
   let toolSlot: HTMLElement | null = null;
+  /** Updates editing-tool options once the picker exists. */
+  let syncEditingToolAvailability: ((available: boolean) => void) | null = null;
   let brushRadius = 0;
   let lastPickedPoint: THREE.Vector3 | null = null;
   let benchmarkGroundY: number | null = null;
@@ -2539,6 +2547,15 @@ async function main(): Promise<void> {
     }
     if (options.frame ?? true) suppressStreamedUpdate = true;
     mounted = true;
+    const editingToolsAvailable = !(next.mesh instanceof StreamedSplatMesh);
+    if (syncEditingToolAvailability) {
+      syncEditingToolAvailability(editingToolsAvailable);
+    } else if (!editingToolsAvailable) {
+      // The first scene mounts before chrome is built. Sanitize restricted
+      // deep links here so paint modifiers or selection state are never armed.
+      if (effectMode === 'paint') effectMode = parkedEffect;
+      pointerTool = normalizeViewerTool(pointerTool, true);
+    }
     if (
       next.mesh instanceof StreamedSplatMesh &&
       next.mesh.initialRevealState.status === 'pending'
@@ -4171,11 +4188,15 @@ async function main(): Promise<void> {
     const PAINT_OWNS_EFFECTS = 'Paint owns the modifier stack - switch the tool to change effects.';
     // Paint owns the stack, so `?effects=paint` wins over any other `?tool=`.
     // Otherwise honor `?tool=`, then the legacy `?separate` deep link.
-    const initialTool: ViewerTool = localPickClearedChrome
+    const requestedInitialTool: ViewerTool = localPickClearedChrome
       ? 'none'
       : effectMode === 'paint'
         ? 'paint'
         : (toolFromUrl ?? (separateMode ? 'select' : 'none'));
+    const initialTool = normalizeViewerTool(
+      requestedInitialTool,
+      splats instanceof StreamedSplatMesh,
+    );
     const toolPicker = buildToolPicker(initialTool, (tool) => {
       if (tool === 'paint') {
         effectPicker.setValue(null);
@@ -4193,6 +4214,11 @@ async function main(): Promise<void> {
       setPointerTool(tool);
     });
     if (effectMode === 'paint') effectPicker.setEnabled(false, PAINT_OWNS_EFFECTS);
+    syncEditingToolAvailability = (available) => {
+      toolPicker.setToolVisible('paint', available);
+      toolPicker.setToolVisible('select', available);
+    };
+    syncEditingToolAvailability(!(splats instanceof StreamedSplatMesh));
     applyPickerReset = () => {
       effectPicker.setEnabled(true);
       effectPicker.setValue(null);
