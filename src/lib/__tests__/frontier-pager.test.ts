@@ -338,6 +338,31 @@ describe('FrontierPager', () => {
       expect(plan.displayGeneration).toBeGreaterThan(1);
     });
 
+    it('drains stale residents before the first cut is published', () => {
+      const p = new FrontierPager(8);
+      const slab = new SlabModel(8);
+
+      slab.apply(p.update([0, 1, 2, 3], { maxAppends: 8, publish: false }));
+      expect(p.displayCount).toBe(0);
+
+      let plan = p.update([4, 5, 6, 7], { maxAppends: 2, publish: false });
+      slab.apply(plan);
+      expect(plan.truncated).toBe(true);
+      expect(p.hasPendingDrain).toBe(true);
+
+      plan = p.drain(8);
+      slab.apply(plan);
+      expect(plan.truncated).toBe(false);
+      expect(p.hasPendingDrain).toBe(false);
+      expect(p.displayCount).toBe(0);
+      expect(slab.residentSet()).toEqual(new Set([4, 5, 6, 7]));
+
+      plan = p.update([4, 5, 6, 7], { maxAppends: 8, publish: true });
+      slab.apply(plan);
+      expect(plan.displayCount).toBe(4);
+      expect(slab.residentSet()).toEqual(new Set([4, 5, 6, 7]));
+    });
+
     it('bounds appends and moves, and reaches the uncapped frontier by repeating', () => {
       // The whole point of the cap: a hard camera cut must not arrive as one
       // huge plan, but must still converge to exactly the frontier an uncapped

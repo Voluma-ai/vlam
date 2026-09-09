@@ -115,6 +115,8 @@ export type FrontierRequest =
 /** Packed splats to write, in slot order (a subset of {@link SplatData}). */
 export interface PlanSplats {
   readonly count: number;
+  /** Stable `.rad` global splat IDs, aligned with every packed attribute. */
+  readonly globals: Uint32Array;
   readonly positions: Float32Array;
   readonly colors: Uint8Array;
   readonly covariances: Float32Array;

@@ -150,6 +150,7 @@ const inner = (mesh: StreamedSplatMesh) => mesh as unknown as Internals;
 /** An empty plan carrying only the cache fields these tests care about. */
 const emptySplats = {
   count: 0,
+  globals: new Uint32Array(0),
   positions: new Float32Array(0),
   colors: new Uint8Array(0),
   covariances: new Float32Array(0),

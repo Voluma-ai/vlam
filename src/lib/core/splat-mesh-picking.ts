@@ -99,7 +99,26 @@ export class SplatPicker {
     renderer: THREE.WebGPURenderer,
     options?: SplatPickOptions,
   ): Promise<SplatPickResult | null> {
-    const run = this.queue.then(() => this.run(ndc, camera, renderer, options));
+    return this.pickMany([ndc], camera, renderer, options).then((results) => results[0] ?? null);
+  }
+
+  /** Runs one bounded pick pass for an ordered set of screen coordinates. */
+  pickMany(
+    ndcs: readonly THREE.Vector2[],
+    camera: THREE.Camera,
+    renderer: THREE.WebGPURenderer,
+    options?: SplatPickOptions,
+  ): Promise<readonly (SplatPickResult | null)[]> {
+    // Snapshot synchronously: this request may sit behind an earlier readback.
+    camera.updateMatrixWorld(true);
+    const cameraSnapshot = camera.clone();
+    const samples = ndcs.map((ndc) => ndc.clone());
+    // The mesh uniform can still be its constructor-time 1×1 before the first
+    // update. The renderer is the authority for the request's canvas frame.
+    const viewport = renderer.getDrawingBufferSize(new THREE.Vector2());
+    const run = this.queue.then(() =>
+      this.runMany(samples, cameraSnapshot, renderer, viewport, options),
+    );
     // Keep the queue alive even when a pick rejects, so later calls still run.
     this.queue = run.then(
       () => undefined,
@@ -156,28 +175,29 @@ export class SplatPicker {
     this.compilation = null;
   }
 
-  private async run(
-    ndc: THREE.Vector2,
+  private async runMany(
+    ndcs: readonly THREE.Vector2[],
     camera: THREE.Camera,
     renderer: THREE.WebGPURenderer,
+    viewport: THREE.Vector2,
     options?: SplatPickOptions,
-  ): Promise<SplatPickResult | null> {
-    if (this.host.isDisposed()) return null;
-    if (this.host.getActiveCount() === 0) return null;
-    if (ndc.x < -1 || ndc.x > 1 || ndc.y < -1 || ndc.y > 1) return null;
+  ): Promise<readonly (SplatPickResult | null)[]> {
+    const misses = (): readonly null[] => ndcs.map(() => null);
+    if (ndcs.length === 0) return [];
+    if (this.host.isDisposed()) return misses();
+    if (this.host.getActiveCount() === 0) return misses();
     // An XR array camera has no single frustum: no `near`/`far` to unproject
     // the encoded depth through (the fallbacks below would silently substitute
     // 0.1/1000 and return a plausible-looking but wrong world point), and the
     // pass would rasterize stereo into a mono target. Fail loudly instead.
     if (isXrArrayCamera(camera)) {
       throw new Error(
-        'SplatMesh.pick: an XR array camera has no single frustum to pick through. ' +
+        'SplatMesh.pick/pickMany: an XR array camera has no single frustum to pick through. ' +
           'Pass one eye (renderer.xr.getCamera().cameras[i]) or a mono camera, and ' +
           'give `ndc` in that eye’s viewport.',
       );
     }
 
-    camera.updateMatrixWorld(true);
     this.host.updateWorldMatrix();
     // Match the state `update()` establishes: appended-but-unflushed rows must
     // reach the GPU, and an existing sorter's draw list must be refreshed for
@@ -188,23 +208,30 @@ export class SplatPicker {
     // created here when none exists yet (the identity draw list is valid).
     this.host.prepare(camera, renderer);
 
-    const width = Math.max(1, Math.floor(this.host.getViewportSize().x));
-    const height = Math.max(1, Math.floor(this.host.getViewportSize().y));
-    const px = Math.floor((ndc.x * 0.5 + 0.5) * width);
-    // NDC +y is up, so this row index is measured from the BOTTOM edge.
-    const pyBottom = Math.floor((ndc.y * 0.5 + 0.5) * height);
-    if (px < 0 || pyBottom < 0 || px >= width || pyBottom >= height) return null;
-    this.ensureResources(camera);
+    const width = Math.max(1, Math.floor(viewport.x));
+    const height = Math.max(1, Math.floor(viewport.y));
+    const pixels = ndcs.map((ndc) => ({
+      x: Math.floor((ndc.x * 0.5 + 0.5) * width),
+      // NDC +y is up, so this row is measured from the bottom edge.
+      y: Math.floor((ndc.y * 0.5 + 0.5) * height),
+    }));
+    const valid = pixels.filter(({ x, y }) => x >= 0 && y >= 0 && x < width && y < height);
+    if (valid.length === 0) return misses();
+    const x0 = Math.min(...valid.map(({ x }) => x));
+    const y0 = Math.min(...valid.map(({ y }) => y));
+    const x1 = Math.max(...valid.map(({ x }) => x));
+    const y1 = Math.max(...valid.map(({ y }) => y));
+    const targetWidth = x1 - x0 + 1;
+    const targetHeight = y1 - y0 + 1;
+    this.ensureResources(camera, targetWidth, targetHeight);
     const pickTarget = this.target!;
     const pickProxy = this.proxy!;
     const pickCamera = this.pickCamera!;
-    this.cropCameraToPixel(pickCamera, camera, width, height, px, pyBottom);
-    // The crop maps one source pixel onto NDC [-1, 1]. Quad extent is
-    // `pixelOffset * 2 / viewport`, so viewport must be the 1×1 pick target
-    // or a splat tens of pixels wide shrinks to a sliver that never covers
-    // the clicked pixel. Focal follows the cropped projection at this size
+    this.cropCameraToRect(pickCamera, camera, width, height, x0, y0, targetWidth, targetHeight);
+    // Quad extent is `pixelOffset * 2 / viewport`, so the viewport must match
+    // the bounded pick target. Focal follows the cropped projection at this size
     // and matches the canvas-pixel covariance the display pass used.
-    this.host.setView(pickCamera, 1, 1);
+    this.host.setView(pickCamera, targetWidth, targetHeight);
 
     const near = 'near' in camera && typeof camera.near === 'number' ? camera.near : 0.1;
     const far = 'far' in camera && typeof camera.far === 'number' ? camera.far : 1000;
@@ -225,8 +252,8 @@ export class SplatPicker {
     pickProxy.visible = this.host.getPickVisible();
     pickProxy.layers.mask = mesh.layers.mask;
     pickProxy.renderOrder = mesh.renderOrder;
-    pickTarget.viewport.set(0, 0, 1, 1);
-    pickTarget.scissor.set(0, 0, 1, 1);
+    pickTarget.viewport.set(0, 0, targetWidth, targetHeight);
+    pickTarget.scissor.set(0, 0, targetWidth, targetHeight);
 
     // Normal render() creates a pipeline synchronously but leaves its WebGPU
     // validation popErrorScope promise untracked. If the host disposes the
@@ -235,10 +262,10 @@ export class SplatPicker {
     try {
       await this.compilePipeline(renderer, pickTarget, pickCamera, previousTarget);
     } catch (error) {
-      if (this.host.isDisposed()) return null;
+      if (this.host.isDisposed()) return misses();
       throw error;
     }
-    if (this.host.isDisposed()) return null;
+    if (this.host.isDisposed()) return misses();
 
     // Start readback while the target is bound, but restore shared renderer
     // state synchronously. Awaiting while mutated would corrupt normal frames.
@@ -253,7 +280,7 @@ export class SplatPicker {
         renderer.setScissorTest(true);
         renderer.autoClear = false;
         renderer.render(this.scene, pickCamera);
-        return renderer.readRenderTargetPixelsAsync(pickTarget, 0, 0, 1, 1);
+        return renderer.readRenderTargetPixelsAsync(pickTarget, 0, 0, targetWidth, targetHeight);
       } finally {
         this.host.setView(camera, width, height);
         renderer.setRenderTarget(previousTarget);
@@ -271,30 +298,36 @@ export class SplatPicker {
       // target the GPU was copying from; the readback rejection is then an
       // expected consequence of dispose, not a pick failure - resolve as a
       // clean miss so hosts never need a try/catch around a cursor pick.
-      if (this.host.isDisposed()) return null;
+      if (this.host.isDisposed()) return misses();
       throw error;
     }
-    if (this.host.isDisposed()) return null;
+    if (this.host.isDisposed()) return misses();
 
-    const r = rgba[0] as number;
-    const g = rgba[1] as number;
-    const b = rgba[2] as number;
-    const a = rgba[3] as number;
-    if (a === 0) return null;
-
-    const viewDepth = denormalizeViewDepth(unpackNormalizedDepth(r, g, b), near, far);
-    const { point, distance } = unprojectViewDepth(ndc.x, ndc.y, viewDepth, camera, this.point);
-    return { point: point.clone(), distance };
+    return ndcs.map((ndc, index) => {
+      const pixel = pixels[index] as { x: number; y: number };
+      if (pixel.x < 0 || pixel.y < 0 || pixel.x >= width || pixel.y >= height) return null;
+      const offset = ((pixel.y - y0) * targetWidth + pixel.x - x0) * 4;
+      const r = rgba[offset] as number;
+      const g = rgba[offset + 1] as number;
+      const b = rgba[offset + 2] as number;
+      const a = rgba[offset + 3] as number;
+      if (a === 0) return null;
+      const viewDepth = denormalizeViewDepth(unpackNormalizedDepth(r, g, b), near, far);
+      const result = unprojectViewDepth(ndc.x, ndc.y, viewDepth, camera, this.point);
+      return { point: result.point.clone(), distance: result.distance };
+    });
   }
 
-  private ensureResources(camera: THREE.Camera): void {
+  private ensureResources(camera: THREE.Camera, width = 1, height = 1): void {
     if (this.target === null) {
-      this.target = new THREE.RenderTarget(1, 1, {
+      this.target = new THREE.RenderTarget(width, height, {
         format: THREE.RGBAFormat,
         type: THREE.UnsignedByteType,
         depthBuffer: true,
         stencilBuffer: false,
       });
+    } else if (this.target.width !== width || this.target.height !== height) {
+      this.target.setSize(width, height);
     }
     if (this.material === null) {
       this.material = new THREE.NodeMaterial();
@@ -355,26 +388,30 @@ export class SplatPicker {
     }
   }
 
-  /** Maps one original framebuffer pixel onto the complete 1×1 pick target. */
-  private cropCameraToPixel(
+  /** Maps a source framebuffer rectangle onto the complete pick target. */
+  private cropCameraToRect(
     target: THREE.Camera,
     source: THREE.Camera,
     width: number,
     height: number,
-    px: number,
-    pyBottom: number,
+    x: number,
+    yBottom: number,
+    cropWidth: number,
+    cropHeight: number,
   ): void {
     // The concrete subclasses have compatible `copy` overrides; ensureResources
     // keeps source and target constructors equal before this call.
     target.copy(source);
     const projection = target.projectionMatrix;
     const elements = projection.elements;
-    const xOffset = 2 * px + 1 - width;
-    const yOffset = 2 * pyBottom + 1 - height;
+    const xOffset = 2 * x + cropWidth - width;
+    const yOffset = 2 * yBottom + cropHeight - height;
     for (let column = 0; column < 4; column++) {
       const rowW = elements[column * 4 + 3] as number;
-      elements[column * 4] = (elements[column * 4] as number) * width - xOffset * rowW;
-      elements[column * 4 + 1] = (elements[column * 4 + 1] as number) * height - yOffset * rowW;
+      elements[column * 4] =
+        ((elements[column * 4] as number) * width - xOffset * rowW) / cropWidth;
+      elements[column * 4 + 1] =
+        ((elements[column * 4 + 1] as number) * height - yOffset * rowW) / cropHeight;
     }
     target.projectionMatrixInverse.copy(projection).invert();
   }

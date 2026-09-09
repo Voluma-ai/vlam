@@ -1,6 +1,11 @@
 import * as THREE from 'three/webgpu';
 import { abs, float, mix, step, uniformArray, vec4 } from 'three/tsl';
 import type { SplatData, SplatMesh, SplatModifier, SplatRange } from '../lib/core';
+import {
+  selectBrushStrokeInData,
+  type BrushStroke,
+  type BrushStrokeSelectionOptions,
+} from '../lib/selection';
 
 /**
  * Interactive paint demo (`?effects=paint`) for per-splat channels (M7.3).
@@ -14,6 +19,8 @@ import type { SplatData, SplatMesh, SplatModifier, SplatRange } from '../lib/cor
 export interface PaintTool {
   /** Paints a spherical brush (world radius) around a picked world point. */
   paintAt(worldPoint: THREE.Vector3, radius: number): void;
+  /** Applies one complete, possibly depth-split brush stroke. */
+  paintStroke(stroke: BrushStroke, options: BrushStrokeSelectionOptions): void;
   /** Clears the whole mask back to zero. */
   clear(): void;
 }
@@ -123,27 +130,23 @@ export function createPaintTool(
 
   mesh.modifiers = [createMaskHighlightModifier('mask')];
 
-  const local = new THREE.Vector3();
-
   return {
     paintAt(worldPoint, radius): void {
-      const r2 = radius * radius;
+      this.paintStroke(
+        { paths: [[{ point: worldPoint.clone(), radius }]] },
+        { depth: 'through', footprint: 'center' },
+      );
+    },
+    paintStroke(stroke, options): void {
       const index = getPaintBrushIndex();
-      local.copy(worldPoint);
-      mesh.worldToLocal(local); // brush center in the same space as positions
-
+      mesh.updateWorldMatrix(true, false);
       for (const chunk of painted) {
-        const { positions } = chunk.data;
+        const selected = selectBrushStrokeInData(chunk.data, stroke, options, mesh.matrixWorld);
         let changed = false;
-        for (let i = 0; i < chunk.data.count; i++) {
+        for (const i of selected) {
           if ((chunk.mask[i] as number) !== 0) continue; // keep first color
-          const dx = (positions[i * 3 + 0] as number) - local.x;
-          const dy = (positions[i * 3 + 1] as number) - local.y;
-          const dz = (positions[i * 3 + 2] as number) - local.z;
-          if (dx * dx + dy * dy + dz * dz <= r2) {
-            chunk.mask[i] = index;
-            changed = true;
-          }
+          chunk.mask[i] = index;
+          changed = true;
         }
         if (changed) mesh.writeChannel(chunk.range, 'mask', chunk.mask);
       }

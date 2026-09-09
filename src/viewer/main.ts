@@ -39,6 +39,8 @@ import {
   setPaintHighlightColor,
   type PaintTool,
 } from './paint';
+import { buildDepthPickedBrushStroke, decimatePointerSamples } from './brush-stroke';
+import { buildPaintControls, type PaintBrushSettings } from './paint-controls';
 import {
   createLodDistanceDebugModifier,
   createLodLevelDebugModifier,
@@ -1688,9 +1690,30 @@ async function main(): Promise<void> {
   let pointerTool: ViewerTool = 'none';
   /** Where a tool hangs its own controls, once the picker has mounted. */
   let toolSlot: HTMLElement | null = null;
-  /** Updates editing-tool options once the picker exists. */
-  let syncEditingToolAvailability: ((available: boolean) => void) | null = null;
-  let brushRadius = 0;
+  /** Updates scene-kind-specific tool options once the picker exists. */
+  let syncEditingToolAvailability: ((mesh: SplatMesh) => void) | null = null;
+  const paintBrushSettings: PaintBrushSettings = {
+    depth: 'surface',
+    footprint: 'center',
+    radiusPx: 18,
+  };
+  const paintControls = buildPaintControls(paintBrushSettings);
+  const paintCursor = document.createElement('div');
+  paintCursor.id = 'paint-cursor';
+  paintCursor.hidden = true;
+  document.body.appendChild(paintCursor);
+  renderer.domElement.addEventListener('pointermove', (event) => {
+    paintCursor.style.left = `${event.clientX}px`;
+    paintCursor.style.top = `${event.clientY}px`;
+    paintCursor.style.width = `${paintBrushSettings.radiusPx * 2}px`;
+    paintCursor.style.height = `${paintBrushSettings.radiusPx * 2}px`;
+  });
+  renderer.domElement.addEventListener('pointerleave', () => {
+    paintCursor.hidden = true;
+  });
+  renderer.domElement.addEventListener('pointerenter', () => {
+    paintCursor.hidden = pointerTool !== 'paint';
+  });
   let lastPickedPoint: THREE.Vector3 | null = null;
   let benchmarkGroundY: number | null = null;
   /** Wired after the effect picker mounts; syncs the DoF focus slider. */
@@ -2472,6 +2495,8 @@ async function main(): Promise<void> {
     setEffectModifiers([createMaskHighlightModifier('mask')]);
     paintTool = {
       paintAt: (point, radius) => mesh.paintPersistent('mask', point, radius, getPaintBrushIndex()),
+      paintStroke: (stroke, options) =>
+        void mesh.paintPersistentStroke('mask', stroke, options, getPaintBrushIndex()),
       clear: () => mesh.clearPersistentChannel('mask'),
     };
   };
@@ -2547,13 +2572,11 @@ async function main(): Promise<void> {
     }
     if (options.frame ?? true) suppressStreamedUpdate = true;
     mounted = true;
-    const editingToolsAvailable = !(next.mesh instanceof StreamedSplatMesh);
     if (syncEditingToolAvailability) {
-      syncEditingToolAvailability(editingToolsAvailable);
-    } else if (!editingToolsAvailable) {
-      // The first scene mounts before chrome is built. Sanitize restricted
-      // deep links here so paint modifiers or selection state are never armed.
-      if (effectMode === 'paint') effectMode = parkedEffect;
+      syncEditingToolAvailability(next.mesh);
+    } else if (next.mesh instanceof StreamedSplatMesh) {
+      // The first scene mounts before chrome is built. Only destructive
+      // separation is restricted; persistent painting supports streamed LOD.
       pointerTool = normalizeViewerTool(pointerTool, true);
     }
     if (
@@ -2706,7 +2729,6 @@ async function main(): Promise<void> {
       (framing?.focusBounds
         ? FOCUSED_MOVEMENT_SPEED_SCENE_RADII_PER_SECOND
         : MOVEMENT_SPEED_SCENE_RADII_PER_SECOND);
-    brushRadius = interactionRadius * 0.005;
     // Roughly a shoulder's width on a room-sized capture, and clamped so a
     // huge or tiny scene still gets a sane body rather than one scaled to it.
     collisionRadius = THREE.MathUtils.clamp(interactionRadius * 0.005, 0.1, 0.4);
@@ -3355,47 +3377,55 @@ async function main(): Promise<void> {
     { capture: true, passive: false },
   );
 
-  // Paint spray vs camera: on LMB down in paint mode, a pick classifies the
-  // press. Hit a splat → spray for the whole hold (camera locked). Miss →
-  // normal orbit/look for the whole hold (never paints).
+  // Paint stroke vs camera: the first point classifies hit/orbit. A hit then
+  // records pointer samples and commits one batched, immutable stroke on up.
   let sprayPointerId: number | null = null;
   let pendingPaintClassifyId: number | null = null;
+  let pendingPaintReleased = false;
   const sprayClient = new THREE.Vector2();
-  let sprayPickInFlight = false;
-  const lastSprayPoint = new THREE.Vector3();
-  let hasLastSprayPoint = false;
+  const strokeClients: THREE.Vector2[] = [];
+  let paintCommitPending = false;
 
-  const currentPaintRadius = (): number =>
-    brushRadius * (isDefaultGoose && effectMode === 'paint' ? 5 : 1);
-
-  const stopSpray = (pointerId?: number): void => {
-    if (pointerId !== undefined) {
-      if (pendingPaintClassifyId === pointerId) pendingPaintClassifyId = null;
-      if (sprayPointerId !== pointerId) return;
-    }
+  const discardSpray = (pointerId?: number): void => {
+    if (pointerId !== undefined && pointerId !== sprayPointerId) return;
     sprayPointerId = null;
-    hasLastSprayPoint = false;
+    strokeClients.length = 0;
   };
 
-  const sprayPaintAtCursor = (): void => {
-    if (sprayPointerId === null || !mounted || !paintTool || sprayPickInFlight) return;
-    sprayPickInFlight = true;
-    const ndc = eventNdc({ clientX: sprayClient.x, clientY: sprayClient.y });
-    void splats
-      .pick(ndc, camera, renderer)
-      .then((hit) => {
-        sprayPickInFlight = false;
-        // Button may have been released, or paint mode switched, while the
-        // async pick was in flight.
-        if (sprayPointerId === null || !paintTool || !hit) return;
-        if (hasLastSprayPoint && lastSprayPoint.distanceToSquared(hit.point) < 1e-12) return;
-        lastSprayPoint.copy(hit.point);
-        hasLastSprayPoint = true;
-        lastPickedPoint = hit.point.clone();
-        paintTool.paintAt(hit.point, currentPaintRadius());
+  const commitPaintStroke = (): void => {
+    if (sprayPointerId === null || paintCommitPending || strokeClients.length === 0) return;
+    const sourceMesh = splats;
+    const targetTool = paintTool;
+    const samples = decimatePointerSamples(strokeClients, paintBrushSettings.radiusPx * 0.35).slice(
+      0,
+      512,
+    );
+    const ndcs = samples.map((sample) => eventNdc({ clientX: sample.x, clientY: sample.y }));
+    const cameraSnapshot = camera.clone();
+    const drawingSize = renderer.getDrawingBufferSize(new THREE.Vector2());
+    const canvasRect = renderer.domElement.getBoundingClientRect();
+    const radiusPx = paintBrushSettings.radiusPx * (drawingSize.y / Math.max(1, canvasRect.height));
+    const settings = {
+      depth: paintBrushSettings.depth,
+      footprint: paintBrushSettings.footprint,
+    } as const;
+    discardSpray();
+    if (!targetTool || ndcs.length === 0) return;
+    paintCommitPending = true;
+    void sourceMesh
+      .pickMany(ndcs, cameraSnapshot, renderer, { alphaThreshold: 0.1 })
+      .then((hits) => {
+        if (splats !== sourceMesh || paintTool !== targetTool || pointerTool !== 'paint') return;
+        const stroke = buildDepthPickedBrushStroke(hits, cameraSnapshot, drawingSize.y, radiusPx);
+        const lastHit = [...hits].reverse().find((hit) => hit !== null);
+        if (lastHit) lastPickedPoint = lastHit.point.clone();
+        if (stroke.paths.length > 0) targetTool.paintStroke(stroke, settings);
       })
       .catch(() => {
-        sprayPickInFlight = false;
+        /* an abandoned brush readback is a clean no-op */
+      })
+      .finally(() => {
+        paintCommitPending = false;
       });
   };
 
@@ -3404,24 +3434,32 @@ async function main(): Promise<void> {
     // so it still fires on a handle grab - without the guard the classify pick
     // below would spray paint through the drag.
     if (e.button !== 0 || !paintTool || !mounted || gizmoDragging) return;
+    if (paintCommitPending) {
+      if (renderer.domElement.hasPointerCapture(e.pointerId)) {
+        renderer.domElement.releasePointerCapture(e.pointerId);
+      }
+      return;
+    }
     const pointerId = e.pointerId;
     sprayClient.set(e.clientX, e.clientY);
     pendingPaintClassifyId = pointerId;
-    void splats
+    pendingPaintReleased = false;
+    const sourceMesh = splats;
+    const targetTool = paintTool;
+    const firstClient = sprayClient.clone();
+    void sourceMesh
       .pick(eventNdc(e), camera, renderer)
       .then((hit) => {
         if (pendingPaintClassifyId !== pointerId) return;
         pendingPaintClassifyId = null;
-        if (!paintTool) return;
+        if (!targetTool || paintTool !== targetTool || splats !== sourceMesh) return;
         if (hit) {
-          // Paint this press; camera drag stays unset for the hold.
           sprayPointerId = pointerId;
-          hasLastSprayPoint = false;
-          lastSprayPoint.copy(hit.point);
-          hasLastSprayPoint = true;
-          lastPickedPoint = hit.point.clone();
-          paintTool.paintAt(hit.point, currentPaintRadius());
-        } else {
+          strokeClients.length = 0;
+          strokeClients.push(firstClient);
+          if (!sprayClient.equals(firstClient)) strokeClients.push(sprayClient.clone());
+          if (pendingPaintReleased) commitPaintStroke();
+        } else if (!pendingPaintReleased) {
           // Miss: hand the remainder of the press to camera controls.
           dragPointerId = pointerId;
           dragButton = 0;
@@ -3431,6 +3469,7 @@ async function main(): Promise<void> {
       .catch(() => {
         if (pendingPaintClassifyId !== pointerId) return;
         pendingPaintClassifyId = null;
+        if (pendingPaintReleased) return;
         dragPointerId = pointerId;
         dragButton = 0;
         lastDragPointer.copy(sprayClient);
@@ -3439,10 +3478,22 @@ async function main(): Promise<void> {
   renderer.domElement.addEventListener('pointermove', (e) => {
     if (e.pointerId !== sprayPointerId && e.pointerId !== pendingPaintClassifyId) return;
     sprayClient.set(e.clientX, e.clientY);
+    if (e.pointerId === sprayPointerId) strokeClients.push(sprayClient.clone());
   });
-  renderer.domElement.addEventListener('pointerup', (e) => stopSpray(e.pointerId));
-  renderer.domElement.addEventListener('pointercancel', (e) => stopSpray(e.pointerId));
-  renderer.domElement.addEventListener('lostpointercapture', (e) => stopSpray(e.pointerId));
+  renderer.domElement.addEventListener('pointerup', (e) => {
+    if (e.pointerId === pendingPaintClassifyId) {
+      pendingPaintReleased = true;
+      return;
+    }
+    if (e.pointerId === sprayPointerId) commitPaintStroke();
+  });
+  const cancelPaintPointer = (e: PointerEvent): void => {
+    if (e.type === 'lostpointercapture' && pendingPaintReleased) return;
+    if (e.pointerId === pendingPaintClassifyId) pendingPaintClassifyId = null;
+    discardSpray(e.pointerId);
+  };
+  renderer.domElement.addEventListener('pointercancel', cancelPaintPointer);
+  renderer.domElement.addEventListener('lostpointercapture', cancelPaintPointer);
 
   // --- annotate / measure -------------------------------------------------
   //
@@ -3558,10 +3609,13 @@ async function main(): Promise<void> {
   /** Arms one click tool and tears down whatever the last one left on screen. */
   const setPointerTool = (tool: ViewerTool): void => {
     pointerTool = tool;
+    paintCursor.hidden = tool !== 'paint';
     if (tool !== 'annotate') clearAnnotations();
     if (tool !== 'measure') clearMeasure();
     if (toolSlot) {
-      toolSlot.replaceChildren(...(tool === 'measure' ? [measureReadout] : []));
+      toolSlot.replaceChildren(
+        ...(tool === 'measure' ? [measureReadout] : tool === 'paint' ? [paintControls] : []),
+      );
       if (tool === 'measure') clearMeasure();
     }
     syncSeparateTool();
@@ -3973,7 +4027,6 @@ async function main(): Promise<void> {
     // rig-local (and runtime-driven) while presenting.
     if (mounted && !presenting && !nearL0HoldActive) updateFloorProbe();
     // Spray only after a press classified as a splat hit (camera stays locked).
-    if (!presenting && sprayPointerId !== null) sprayPaintAtCursor();
     try {
       // Render the mirror view first: it sorts the shared order buffer for the
       // reflected camera, and the main update() below then re-sorts for the
@@ -4214,11 +4267,12 @@ async function main(): Promise<void> {
       setPointerTool(tool);
     });
     if (effectMode === 'paint') effectPicker.setEnabled(false, PAINT_OWNS_EFFECTS);
-    syncEditingToolAvailability = (available) => {
-      toolPicker.setToolVisible('paint', available);
-      toolPicker.setToolVisible('select', available);
+    syncEditingToolAvailability = (mesh) => {
+      const streamed = mesh instanceof StreamedSplatMesh;
+      toolPicker.setToolVisible('paint', true);
+      toolPicker.setToolVisible('select', !streamed);
     };
-    syncEditingToolAvailability(!(splats instanceof StreamedSplatMesh));
+    syncEditingToolAvailability(splats);
     applyPickerReset = () => {
       effectPicker.setEnabled(true);
       effectPicker.setValue(null);

@@ -95,10 +95,14 @@ function createMockRenderer(width = 200, height = 100): MockRenderer {
         targetScissor: state.target?.scissor.clone(),
       });
     }),
-    readRenderTargetPixelsAsync: vi.fn(async (_rt: unknown, x: number, y: number) => {
-      state.readLog.push({ x, y });
-      return state.pixel.slice();
-    }),
+    readRenderTargetPixelsAsync: vi.fn(
+      async (_rt: unknown, x: number, y: number, readWidth = 1, readHeight = 1) => {
+        state.readLog.push({ x, y });
+        const pixels = new Uint8Array(readWidth * readHeight * 4);
+        for (let offset = 0; offset < pixels.length; offset += 4) pixels.set(state.pixel, offset);
+        return pixels;
+      },
+    ),
     _setPixel: (rgba: number[]) => {
       state.pixel.set(rgba);
     },
@@ -327,6 +331,35 @@ describe('SplatMesh.pick', () => {
     await Promise.all([first, second]);
     expect(reads).toBe(2);
     expect(renderer.compileAsync).toHaveBeenCalledOnce();
+  });
+
+  it('picks many pixels with one bounded render and one readback', async () => {
+    const mesh = createMesh();
+    const camera = new THREE.PerspectiveCamera(60, 2, 0.1, 100);
+    camera.position.set(0, 0, 5);
+    camera.updateMatrixWorld(true);
+    const renderer = createMockRenderer(200, 100);
+    const packed = packNormalizedDepth(0.5);
+    (renderer as unknown as { _setPixel: (rgba: number[]) => void })._setPixel([
+      packed.r,
+      packed.g,
+      packed.b,
+      255,
+    ]);
+
+    const results = await mesh.pickMany(
+      [new THREE.Vector2(-0.5, 0), new THREE.Vector2(0, 0), new THREE.Vector2(0.5, 0)],
+      camera,
+      renderer,
+    );
+
+    expect(results).toHaveLength(3);
+    expect(results.every((result) => result !== null)).toBe(true);
+    expect(renderer.render).toHaveBeenCalledOnce();
+    expect(renderer.readRenderTargetPixelsAsync).toHaveBeenCalledOnce();
+    const target = renderer.renderLog[0] as { target: THREE.RenderTarget };
+    expect(target.target.width).toBe(101);
+    expect(target.target.height).toBe(1);
   });
 
   it('returns null after dispose and disposes pick resources', async () => {

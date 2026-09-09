@@ -228,6 +228,8 @@ describe('frontier worker delivery', () => {
         }
       }
       expect(unwritten).toBe(-1);
+      expect(last.moves.globals).toHaveLength(last.moves.count);
+      expect(last.appends.globals).toHaveLength(last.appends.count);
       expect(last.gatherMissing).toBe(0);
       expect(last.dropped).toBe(0);
     } while (!last.converged && seq < 200);
