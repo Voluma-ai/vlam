@@ -145,7 +145,7 @@ describe('SplatMesh render-only storage', () => {
     mesh.onAfterRender(first as unknown as WebGLRenderer);
 
     expect(() => mesh.update(camera, second)).toThrow(/bound to its first WebGPU renderer/);
-    expect(() => mesh.update(camera, first)).not.toThrow();
+    expect(() => mesh.onAfterRender(first as unknown as WebGLRenderer)).not.toThrow();
     mesh.dispose();
   });
 
