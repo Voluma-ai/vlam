@@ -115,6 +115,28 @@ do not add instrumentation or source changes to those copies. Capture frame
 intervals and browser traces externally so its helpers, stats overlay, MSAA,
 controls and render loops remain present.
 
+#### M3 Air untouched supplied-app smoke, 2026-09-09
+
+The prepared locked and candidate builds were run sequentially in the same
+Chrome 151.0.7922.174 window on the 16 GB M3 Air. The existing UI loaded the
+1,000,000-splat medium SH3 compressed PLY through its file picker with its own
+DPR=2, MSAA, timestamp tracking, helpers, stats-gl overlay and animation loop
+left intact. Both copies reported WebGPU and the full splat count. Grid/axes,
+Orbit/FPS switching and orbit-camera motion were exercised through the UI.
+
+The candidate retained a recognizable, complete watch before and after camera
+motion. The locked 0.6.1 package reduced this compressed PLY to a tiny
+star-like cluster, so it is not a valid pixel reference for this format. Native
+stats snapshots in the otherwise identical full-window state showed roughly
+2–4 FPS for the candidate and about 1 FPS for locked. These overlay readings
+are qualitative smoke evidence, not a replacement for frame-interval samples:
+the app's fixed camera poorly frames this object, stats-gl reported no usable
+GPU timing, and no external browser trace was captured. A post-run hash audit
+matched every supplied source/configuration/lockfile input in the manifest;
+the installed VLAM package tree remained the only difference between copies.
+External frame tracing therefore remains pending, while the untouched UI load,
+backend, completeness and control-lifecycle checks are recorded.
+
 ### Repeatable suite and results
 
 For the experimental standalone WebGPU generated-color path, compare
@@ -352,6 +374,83 @@ The controlled subset can be reproduced without rerunning proposed cases with
 `?suite=1&suitePreset=controlled`; its suite ID was
 `e240b4af-93c7-439a-9d6a-1ba7bc3c1955` and label
 `final-controlled-M3Air`.
+
+A focused five-pair rerun on 2026-09-09 repeated only the controlled 1280×720
+stationary case for 30 seconds per run, alternating renderer order. Median
+Spark/VLAM mean frame times were 53.95/53.03 ms (**0.983×**) and median p95s
+were 66.70/66.70 ms (**1.000×**), passing the 1.10× gate. All ten runs stayed
+focused and visible, all 20 fixed captures were nonblank, and representative
+front/orbit images from both engines were visually inspected for framing,
+orientation and completeness. Every VLAM sample reported zero measured SH
+dispatches and sorts, with no validation error or device loss. The p95 cadence
+step affected both engines in every repeat, so the earlier isolated 1.327×
+ratio is resolved as run-to-run presentation cadence rather than a VLAM cache
+stall or reproducible controlled regression. Raw results are labeled
+`M3Air-controlled-p95-resolution-{spark,vlam}-r1` through `r5`.
+
+#### M3 Air dense thermal comparison, 2026-09-09
+
+A 16 GB M3 Air on macOS 26.3.1 ran on AC power with low power mode off in the
+foreground in-app Chromium 152 browser. The proposed 1280×720 configuration
+used the 8.72M SH3 Langenthal scene, five seconds of warm-up and a 600-second
+orbit sample on commit `9e5e547a10e7045f35636449113c46848d281d48`. The
+automatic cache ran first and the explicit vertex control immediately after it:
+
+| SH path | Mean / median / p95 / p99 | Observed FPS | First-minute FPS | Final-minute FPS |
+| --- | ---: | ---: | ---: | ---: |
+| `auto` → `apple-mac-auto` | 63.78 / 50.00 / 149.90 / 166.70 ms | **15.68** | 15.70 | 15.96 |
+| explicit vertex | 143.95 / 133.40 / 200.00 / 216.60 ms | 6.95 | 7.36 | 7.01 |
+
+The cache submitted 2,937 measured SH refreshes, exactly matching its accepted
+sorts; it reported no independent cadence refreshes, validation errors or
+device loss. Its retained GPU allocation was 34.90 MiB. Both paths retained
+complete, nonblank fixed front/orbit captures, which were visually inspected
+for framing, orientation and completeness. The automatic path showed no
+first-to-final-minute slowdown in this dense orbit soak; the later vertex run's
+observed FPS fell 4.7%. Results are the ignored local artifacts labeled
+`M3Air-thermal-auto-orbit-600` and `M3Air-thermal-vertex-orbit-600`.
+
+This completes one dense thermal A/B on the M3 Air only. It does not replace
+the pending untouched-app UI or other Apple device checks.
+
+#### M3 Air SH3 PLY validation, 2026-09-09
+
+The same M3 Air then exercised two local compressed SH3 PLY captures at the
+proposed 1280×720 settings: a 1,000,000-splat medium scene (61,283,093 bytes,
+SHA-256 `147cd911…1a5f4`) and a 2,549,179-splat large scene (156,218,684 bytes,
+SHA-256 `a1d797cd…db98`). The files and retained images remain ignored local
+artifacts; only their identities and results are recorded here.
+
+| Scene / motion | Mean / median / p95 / p99 | Observed FPS | Measured SH / sorts | Cache |
+| --- | ---: | ---: | ---: | ---: |
+| Medium stationary | 29.95 / 33.30 / 49.90 / 50.00 ms | 33.39 | 0 / 0 | 3.82 MiB |
+| Medium orbit | 24.78 / 17.60 / 33.90 / 34.30 ms | 40.36 | 607 / 607 | 3.82 MiB |
+| Large stationary | 62.85 / 66.60 / 83.40 / 100.00 ms | 15.91 | 0 / 0 | 9.73 MiB |
+| Large orbit | 72.54 / 66.70 / 100.10 / 117.50 ms | 13.78 | 205 / 205 | 9.73 MiB |
+
+All four WebGPU runs resolved `auto` to compute with reason
+`apple-mac-auto`, retained complete nonblank fixed poses, and reported no
+validation errors or device loss. The medium capture was also checked in the
+main viewer while enabling and removing depth of field: the effect engaged and
+the unmodified image returned when removed. This covered modifier lifecycle in
+addition to the benchmark's stationary/orbit camera lifecycle.
+
+Forced WebGL2 orbit fallbacks resolved `auto` to vertex as
+`unvalidated-auto-device`; medium and large runs produced complete nonblank
+poses at 42.13 and 14.53 observed FPS respectively. Safari 26.3.1 WebGPU also
+resolved the medium orbit to compute, kept SH refreshes paired 768/768 with
+sorts, reported no GPU error or loss, and rendered the moving view correctly.
+That run exposed Safari returning the previous WebGPU presentation through
+onscreen `canvas.toDataURL()`. The harness now captures VLAM WebGPU validation
+poses through an offscreen render target and asynchronous GPU readback. A
+follow-up Safari run retained distinct, correctly oriented front and orbit
+images (611 and 389 nonblack 64×64 samples), closing the capture gap rather
+than treating stale screenshots as visual evidence.
+
+These checks complete the medium/large SH-bearing PLY, camera motion,
+modifier-lifecycle, WebGL fallback, Safari, and dense thermal portions of the
+M3 Air acceptance pass. Additional Apple devices, untouched supplied-app UI
+tracing remain open.
 
 Default recommendations remain separate from the benchmark configuration:
 

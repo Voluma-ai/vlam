@@ -116,10 +116,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   comparisons against Spark met the performance
   target at both 720p (0.975× stationary, 0.978× orbit mean-frame ratios) and
   1440p (0.917× stationary, 0.940× orbit). Controlled mean-frame comparisons
-  also passed all four cases; three of four controlled p95 cases passed, with
-  720p stationary cadence variability still above the p95 target.
+  also passed all four cases. A focused five-pair controlled 720p stationary
+  rerun resolved the remaining cadence result at a 1.000× p95 ratio and 0.983×
+  mean ratio. On the same M3 Air, medium/large SH3 PLY camera, modifier and
+  WebGL fallback checks, Safari validation, a ten-minute 8.72M-splat thermal
+  A/B, and an untouched supplied-app smoke completed the automatic-path
+  acceptance matrix. The dense orbit cache sustained 15.68 FPS versus 6.95 FPS
+  for explicit vertex SH without first-to-final-minute slowdown.
   `auto` selects it on identified Apple Silicon Macs and retains vertex SH on
-  unidentified, mobile and other devices. See
+  unidentified, mobile and other devices. This is an M3 Air validation result,
+  not a claim for every Apple GPU generation. See
   [the measurements and limitations](docs/render-benchmark.md).
 
 - Rendering benchmarks now default to a stationary camera, restart after hidden
@@ -170,6 +176,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   above-64-MiB meshes retain vertex SH. The comparison harness also flags blank
   fixed-pose screenshots, stops sequential suites, and records uncaptured
   WebGPU errors plus device-loss state.
+
+- VLAM WebGPU benchmark screenshots now use an offscreen render target and
+  asynchronous GPU readback. Safari no longer archives the previous presented
+  canvas pose for fixed front/orbit validation images.
 
 - Cross-origin streamed scenes no longer fail when an existing object-storage
   CORS policy returns a correct `206` response without exposing `Content-Range`.

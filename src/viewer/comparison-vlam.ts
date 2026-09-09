@@ -1,8 +1,10 @@
 import {
   LinearSRGBColorSpace,
   NoToneMapping,
+  RenderTarget,
   Scene,
   REVISION,
+  UnsignedByteType,
   type PerspectiveCamera,
 } from 'three';
 import { createWebGPURenderer, detectSplatDeviceProfile, SplatMesh } from '../lib/core';
@@ -302,6 +304,11 @@ export async function createComparisonVlam(
     () => backend.timestampQueryPool,
     (kind) => renderer.resolveTimestampsAsync(kind),
   );
+  const captureTarget = new RenderTarget(config.width, config.height, {
+    type: UnsignedByteType,
+    depthBuffer: true,
+  });
+  captureTarget.texture.colorSpace = renderer.outputColorSpace;
   const adapterInfo = backend.device?.adapterInfo;
   return {
     canvas: renderer.domElement,
@@ -351,6 +358,45 @@ export async function createComparisonVlam(
       // Initial sort completion only; never wait for the GPU in the measured loop.
       await renderer.getArrayBufferAsync(view.sourceIndex);
     },
+    async capture(camera) {
+      const previousTarget = renderer.getRenderTarget();
+      try {
+        mesh.update(camera, renderer);
+        renderer.setRenderTarget(captureTarget);
+        renderer.clear();
+        renderer.render(scene, camera);
+      } finally {
+        renderer.setRenderTarget(previousTarget);
+      }
+      const source = await renderer.readRenderTargetPixelsAsync(
+        captureTarget,
+        0,
+        0,
+        config.width,
+        config.height,
+      );
+      const rowBytes = config.width * 4;
+      const sourceStride =
+        config.height > 1 ? (source.byteLength - rowBytes) / (config.height - 1) : rowBytes;
+      if (!Number.isInteger(sourceStride) || sourceStride < rowBytes) {
+        throw new Error('Unexpected WebGPU screenshot row layout.');
+      }
+      const pixels = new Uint8ClampedArray(rowBytes * config.height);
+      const bytes = new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+      for (let row = 0; row < config.height; row++) {
+        pixels.set(
+          bytes.subarray(row * sourceStride, row * sourceStride + rowBytes),
+          row * rowBytes,
+        );
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = config.width;
+      canvas.height = config.height;
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('Could not create WebGPU screenshot canvas.');
+      context.putImageData(new ImageData(pixels, config.width, config.height), 0, 0);
+      return canvas.toDataURL('image/png');
+    },
     frame(camera, frame, sampling) {
       const start = performance.now();
       mesh.update(camera, renderer);
@@ -375,6 +421,7 @@ export async function createComparisonVlam(
     },
     dispose() {
       backend.device?.removeEventListener?.('uncapturederror', onUncapturedError);
+      captureTarget.dispose();
       mesh.dispose();
       renderer.dispose();
     },
