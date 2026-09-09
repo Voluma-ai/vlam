@@ -240,8 +240,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private renderingOnlyExtraTexturesReleased = false;
   private releasedCpuBytesValue = 0;
   private renderingOnlyRenderer: THREE.WebGPURenderer | null = null;
-  /** Set in {@link onAfterRender}; CPU mirrors must survive until that draw. */
-  private renderingOnlyHasDrawn = false;
   /** Pick-pipeline validation that must finish before CPU mirrors can be dropped. */
   private renderingOnlyReleasePreparation: Promise<void> | null = null;
   private readonly shEvaluation: NonNullable<SplatMeshOptions['shEvaluation']>;
@@ -1616,10 +1614,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (this.disposed) return;
     this.bindRenderingOnlyRenderer(renderer, 'update');
     this.lastRenderer = renderer;
-    // Sort/compute can upload storage attributes before the first draw. Dropping
-    // their CPU mirrors here would let the draw path recreate a 0-byte mapped
-    // GPU buffer and hang the WebGPU backend. Retry only after a successful draw.
-    if (this.renderingOnlyHasDrawn) this.releaseRenderingOnlyCpuStorage(renderer);
     this.assertPoolFitsDevice(renderer);
     camera.updateMatrixWorld();
     this.updateWorldMatrix(true, false);
@@ -1739,7 +1733,15 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   ): Promise<SplatPickResult | null> {
     if (this.disposed) return Promise.resolve(null);
     this.bindRenderingOnlyRenderer(renderer, 'pick');
-    return this.picker.pick(ndc, camera, renderer, options);
+    const pick = () => this.picker.pick(ndc, camera, renderer, options);
+    // A render-only first pick must not race the post-draw queue barrier. Apart
+    // from making "pick after release" literal, this prevents the pick pass
+    // from adding new submissions while mirror retirement is waiting for the
+    // display upload to finish. Failed preparation retains the mirrors, so the
+    // ordinary GPU pick remains safe to attempt.
+    return this.renderingOnlyReleasePreparation
+      ? this.renderingOnlyReleasePreparation.then(pick, pick)
+      : pick();
   }
 
   /**
@@ -1916,7 +1918,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (this.disposed) return;
     this.bindRenderingOnlyRenderer(renderer, 'renderView');
     this.lastRenderer = renderer;
-    if (this.renderingOnlyHasDrawn) this.releaseRenderingOnlyCpuStorage(renderer);
     camera.updateMatrixWorld();
     this.updateWorldMatrix(true, false);
     this.flushPendingUploads(renderer);
@@ -2039,6 +2040,19 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.releasedCpuBytesValue += this.renderingOnlyAttributeMirrors?.release(renderer) ?? 0;
   }
 
+  /** Waits until WebGPU has consumed every upload backed by the CPU mirrors. */
+  private async waitForRenderingOnlyGpuIdle(renderer: THREE.WebGPURenderer): Promise<void> {
+    const queue = (
+      renderer.backend as unknown as {
+        device?: { queue?: { onSubmittedWorkDone?: () => Promise<void> } };
+      }
+    ).device?.queue;
+    if (typeof queue?.onSubmittedWorkDone !== 'function') {
+      throw new Error('the WebGPU queue does not expose onSubmittedWorkDone().');
+    }
+    await queue.onSubmittedWorkDone();
+  }
+
   /**
    * Marks the first successful draw. The lazy pick pipeline is compiled before
    * mirrors drop: three captures storage binding arrays during material
@@ -2052,13 +2066,15 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     )
       return;
     const webgpu = renderer as unknown as THREE.WebGPURenderer;
-    this.renderingOnlyHasDrawn = true;
     this.bindRenderingOnlyRenderer(webgpu, 'releaseCpuStorage');
     // onAfterRender runs inside three's render traversal. Start on a microtask
     // so compileAsync cannot re-enter the renderer's active pass.
-    const preparation = Promise.resolve().then(() =>
-      this.picker.prepareForCpuRelease(camera, webgpu),
-    );
+    const preparation = Promise.resolve()
+      .then(() => this.picker.prepareForCpuRelease(camera, webgpu))
+      // `onAfterRender` runs before three submits the current command buffer.
+      // This continuation starts after render() returns, so the queue barrier
+      // covers both that display upload and any earlier sorter dispatches.
+      .then(() => this.waitForRenderingOnlyGpuIdle(webgpu));
     this.renderingOnlyReleasePreparation = preparation;
     void preparation
       .then(() => this.releaseRenderingOnlyCpuStorage(webgpu))

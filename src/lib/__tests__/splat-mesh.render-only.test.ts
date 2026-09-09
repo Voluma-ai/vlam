@@ -21,6 +21,7 @@ function splatData(): SplatData {
 function uploadedRenderer(): THREE.WebGPURenderer {
   const backend = {
     isWebGPUBackend: true,
+    device: { queue: { onSubmittedWorkDone: vi.fn().mockResolvedValue(undefined) } },
     has: () => true,
     get: (object: object) =>
       object instanceof THREE.DataTexture ? { texture: {} } : { buffer: {} },
@@ -32,6 +33,14 @@ function uploadedRenderer(): THREE.WebGPURenderer {
     getRenderTarget: vi.fn().mockReturnValue(null),
     setRenderTarget: vi.fn(),
   } as unknown as THREE.WebGPURenderer;
+}
+
+function submittedWorkDone(renderer: THREE.WebGPURenderer): ReturnType<typeof vi.fn> {
+  return (
+    renderer.backend as unknown as {
+      device: { queue: { onSubmittedWorkDone: ReturnType<typeof vi.fn> } };
+    }
+  ).device.queue.onSubmittedWorkDone;
 }
 
 async function afterFirstDraw(mesh: SplatMesh, renderer: THREE.WebGPURenderer): Promise<void> {
@@ -92,6 +101,7 @@ describe('SplatMesh render-only storage', () => {
 
     expect(renderer.initTexture).toHaveBeenCalledTimes(4);
     expect(renderer.compileAsync).toHaveBeenCalledTimes(1);
+    expect(submittedWorkDone(renderer)).toHaveBeenCalledTimes(1);
     mesh.dispose();
   });
 
@@ -140,6 +150,28 @@ describe('SplatMesh render-only storage', () => {
 
     expect(mesh.cpuStorageReleased).toBe(true);
     expect(mesh.releasedCpuBytes).toBe(WIDTH * (84 + 64));
+    mesh.dispose();
+  });
+
+  it('retains CPU mirrors until submitted GPU work completes', async () => {
+    let finishGpuWork: (() => void) | undefined;
+    const renderer = uploadedRenderer();
+    const gpuIdle = new Promise<void>((resolve) => {
+      finishGpuWork = resolve;
+    });
+    submittedWorkDone(renderer).mockReturnValue(gpuIdle);
+    const mesh = new SplatMesh(splatData(), { storageMode: 'render-only' });
+
+    mesh.onAfterRender(
+      renderer as unknown as WebGLRenderer,
+      new THREE.Scene(),
+      new THREE.PerspectiveCamera(),
+    );
+    await vi.waitFor(() => expect(finishGpuWork).toBeTypeOf('function'));
+    expect(mesh.cpuStorageReleased).toBe(false);
+
+    finishGpuWork?.();
+    await vi.waitFor(() => expect(mesh.cpuStorageReleased).toBe(true));
     mesh.dispose();
   });
 

@@ -21,8 +21,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
-- Render-only WebGPU meshes explicitly initialize texture uploads before
-  releasing CPU mirrors, and the lazy picking pipeline uses awaited validation,
+- Render-only WebGPU meshes initialize texture uploads and the lazy picking
+  pipeline, then wait for submitted GPU work before releasing CPU mirrors,
   preventing SwiftShader device loss and teardown errors in browser CI.
 
 ### Changed
