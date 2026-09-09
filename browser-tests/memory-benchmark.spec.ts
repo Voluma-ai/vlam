@@ -52,6 +52,10 @@ test('records and disposes a static scene memory run', async ({ page }, testInfo
 
 test('releases render-only CPU scene storage on WebGPU', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'chromium-webgpu', 'render-only storage requires WebGPU');
+  test.fixme(
+    process.platform === 'linux',
+    'Chromium Linux SwiftShader drops its external Dawn instance when a released CPU mirror is followed by GPUBuffer readback.',
+  );
   await page.goto(
     '/src/viewer/memory-benchmark.html?scene=synthetic&syntheticSplats=64&storage=render-only&backend=webgpu&uaMemory=0',
   );
