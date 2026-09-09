@@ -7,17 +7,6 @@ Git history, not in this queue.
 
 ## Next
 
-- **Automatic Apple Silicon SH cache** — implemented and unit-tested. The
-  default `auto` path selects compute evaluation only for the identified Apple
-  cohort; it is not a completed device-validation claim. **Evidence:** targeted
-  browser probes and the retained benchmark protocol. **Acceptance:** inspect
-  SH-bearing PLY captures at medium and large sizes through camera motion,
-  lifecycle and fallback paths, then run a thermal comparison. **Open issue:**
-  stationary p95 remains unresolved. **Blocker:** physical Apple devices and
-  representative captures. See the [protocol](docs/render-benchmark.md).
-
-## Later
-
 - **Mobile device gate** — validate a non-Pro iPhone 15 and complete the
   thermal and orientation matrix on sparse and dense captures. Galaxy S7/WebGL2
   is a smoke-test floor, not a performance target. Record browser, OS, GPU,
@@ -26,6 +15,9 @@ Git history, not in this queue.
   and one dense capture; portrait and landscape gaps, discs, popping; A/B
   `?pixelRatio=1`, `0.9`, `0.8` with `?adaptiveDpr=0` before raising
   `maxStdDev`; `?minSplatPx=1.5` vs `3.5`.
+
+## Later
+
 - **Streamed spherical harmonics** — blocked on an SH-bearing streamed capture
   and headed `?sh=0` versus `?sh=N` validation.
 - **Multi-mesh budget** — visually validate several RAD meshes sharpening as the camera moves.

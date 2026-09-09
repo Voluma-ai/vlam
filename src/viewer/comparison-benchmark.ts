@@ -287,7 +287,7 @@ async function run(): Promise<void> {
       await active.settle(camera);
       screenshots.push({
         name: time === 0 ? 'front' : 'orbit',
-        data: active.canvas.toDataURL('image/png'),
+        data: active.capture ? await active.capture(camera) : active.canvas.toDataURL('image/png'),
       });
     }
     result.visualValidation = await Promise.all(
