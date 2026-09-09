@@ -58,6 +58,34 @@ function makeStreamedMesh(
   return createStreamedMeshFixture(scene, capacity, capacity, options);
 }
 
+class PageTableWorker {
+  onmessage: unknown = null;
+  onerror: unknown = null;
+  onmessageerror: unknown = null;
+  postMessage(): void {}
+  terminate(): void {}
+}
+
+function makePageTableMesh(capacity = 4 * WIDTH): StreamedSplatMesh {
+  const scene = {
+    source: { budget: capacity } as unknown,
+    chunkUrls: [] as string[],
+    chunkKind: 'file' as const,
+    bounds: new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(100, 1, 1)),
+    pinnedFiles: new Set<number>(),
+    maxResidentSplats: capacity,
+    chunkSize: 4,
+    foveation: { minScreenRadiusPx: 1.6, maxScreenRadiusPx: 4 },
+  };
+  return createStreamedMeshFixture(
+    scene,
+    capacity,
+    capacity,
+    { foveationMode: 'page-table' },
+    PageTableWorker,
+  );
+}
+
 describe('streamed projected-footprint defaults', () => {
   afterEach(() => vi.unstubAllGlobals());
 
@@ -85,6 +113,8 @@ describe('streamed projected-footprint defaults', () => {
 });
 
 type Internals = {
+  applyFrontierPlan: (plan: Record<string, unknown>) => void;
+  pagerSlots: number;
   stagedSwapsEnabled: boolean;
   appendCap: number;
   scene: { source: { computeDesiredRuns?: () => unknown[] } };
@@ -221,6 +251,67 @@ describe('StreamedSplatMesh persistent channels (M7.6)', () => {
     inner.cache.set(1, { data: makeChunk(10), bytes: 0, lastUsed: 1 });
     inner.appendRun(run(1, 0, 10), 1);
     expect(channelValues(m, 'mask', 0, 5)).toEqual([7, 7, 7, 0, 0]);
+  });
+
+  it('paints and replays geometry across RAD page-table slot replacement', () => {
+    const m = makePageTableMesh();
+    meshes.push(m);
+    const inner = internals(m);
+    m.definePersistentChannel('mask', { type: 'byte' });
+    const apply = (
+      globals: number[],
+      generation: number,
+      xOffset = 0,
+      appendStart = 0,
+      displayCount = globals.length,
+    ): void => {
+      const splats = { ...makeChunk(globals.length), globals: Uint32Array.from(globals) };
+      for (let i = 0; i < splats.count; i++) {
+        splats.positions[i * 3] = (splats.positions[i * 3] as number) + xOffset;
+      }
+      const empty = { ...makeChunk(0), globals: new Uint32Array(0) };
+      inner.applyFrontierPlan({
+        type: 'plan',
+        seq: generation,
+        moveSlots: new Uint32Array(0),
+        moves: empty,
+        appendStart,
+        appends: splats,
+        degenerateStart: appendStart + globals.length,
+        degenerateCount: 0,
+        touched: new Uint32Array(0),
+        residentCount: appendStart + globals.length,
+        displayCount,
+        displayGeneration: generation,
+        gatherMissing: 0,
+        dropped: 0,
+        evicted: new Uint32Array(0),
+        solvedLimit: 0.02,
+        capacity: inner.pagerSlots,
+        converged: true,
+        cacheBytes: 0,
+        cacheLimitBytes: 1024,
+      });
+    };
+
+    apply([0, 1, 2, 3], 1);
+    // A replacement can be staged behind the currently drawn prefix. Paint
+    // both representations so it cannot appear unpainted when later published.
+    apply([4, 5, 6, 7], 2, 0, 4, 4);
+    expect(m.paintPersistent('mask', new THREE.Vector3(1, 0, 0), 1.1, 7)).toBe(6);
+    expect(channelValues(m, 'mask', 0, 8)).toEqual([7, 7, 7, 0, 7, 7, 7, 0]);
+
+    // Different global IDs model a coarse/fine replacement in the same region.
+    apply([4, 5, 6, 7], 3);
+    expect(channelValues(m, 'mask', 0, 4)).toEqual([7, 7, 7, 0]);
+
+    // Reusing those slots for geometry outside every stored stroke must clear
+    // the prior occupants' values instead of leaking ghost paint.
+    apply([8, 9, 10, 11], 4, 20);
+    expect(channelValues(m, 'mask', 0, 4)).toEqual([0, 0, 0, 0]);
+
+    m.clearPersistentChannel('mask');
+    expect(channelValues(m, 'mask', 0, 4)).toEqual([0, 0, 0, 0]);
   });
 
   it('bounds the edit store and warns once past maxEdits', () => {

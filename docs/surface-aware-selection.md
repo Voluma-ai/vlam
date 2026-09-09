@@ -60,21 +60,43 @@ journal before its channel is uploaded. This preserves first-paint-wins across
 eviction, reload, and coarse/fine LOD replacement while keeping the existing
 `maxEdits` cap.
 
-RAD page-table mode is intentionally excluded for now. Its chunk cache and
-global-index-to-slot map live in a worker, so main-thread persistent channels
-cannot identify unchanged resident slots. The demo hides paint for that mode,
-and `paintPersistentStroke` throws a clear error instead of applying a partial
-edit. Supporting it requires extending the worker protocol with persistent
-channel operations keyed by global splat ID.
+RAD page-table plans carry a stable global splat ID beside every moved or
+appended splat. The main thread keeps one 32-bit ID per slab slot and selects
+directly over the pool's existing CPU mirrors, without duplicating slab
+geometry. Incoming slots replay the same geometric journal before upload;
+slots outside stored strokes are reset to the channel fill, preventing ghost
+paint after coarse/fine replacement. Sparse edits remain keyed as `(chunk
+file, local index)` and obey the same first-paint-wins and `maxEdits` rules.
+
+## CPU benchmark
+
+Run `npm run benchmark:brush -- 100000 1000000 6000000` after a clean checkout.
+It reports five through+center scans, the full temporary hit buffer, retained
+result bytes, an exposed-GC estimate for the nested edit maps, and the exact
+page-table identity-array cost. The benchmark is CPU/V8-specific and does not
+include GPU depth-pick readback.
+
+Reference run on 2026-09-09, Node 24.8.0, Windows x64, Intel Core i7-12700:
+
+| Splats | Selected | Median CPU | Temporary hits | Retained edit heap | Page-table IDs |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 100,000 | 1,340 | 4.71 ms | 0.4 MB | 49,552 B | 0.4 MB |
+| 1,000,000 | 12,305 | 38.37 ms | 4 MB | 472,480 B | 4 MB |
+| 6,000,000 | 75,777 | 206.09 ms | 24 MB | 2,530,824 B | 24 MB |
+
+The edit-heap column is an indicative V8 measurement and should be compared in
+fresh processes; the typed-array byte counts are deterministic. Page-table
+painting scans only its bounded resident slab, not every splat in the capture.
 
 ## Verification status
 
 Automated coverage includes pointer spacing, perspective and orthographic
 pixel-to-world sizing, miss/depth splits, tapered-path continuity, all four
 mode combinations, ±3σ anisotropic grazing, non-uniform transforms, ordered
-batched picks, and streamed LOD replacement.
+batched picks, streamed LOD replacement, and RAD page-table slot
+replacement/clearing.
 
 The remaining headed matrix is WebGPU plus forced WebGL2 on thin surfaces,
 foreground/background boundaries, transformed meshes, and small plus large
-static/classic-streamed captures. Record stroke latency and retained edit
-memory there; TypeScript and headless rendering alone cannot validate pixels.
+static/classic-streamed captures, plus a real large RAD page-table capture.
+TypeScript and headless rendering alone cannot validate pixels.

@@ -89,18 +89,19 @@ selection features until their benefits are measured and visually validated.
   depth corridor while `through` takes every intersected Gaussian; `center`
   tests means while `footprint` tests the full VLAM ±3σ covariance ellipsoid.
   Existing point-radius APIs retain their current center-based behavior.
-  See the [implementation notes](docs/surface-aware-selection.md). Static and
-  classic streamed LOD painting are covered; RAD page-table painting remains
-  disabled until its worker protocol can apply channel edits by global splat ID.
-  **Remaining validation:** on WebGPU and forced WebGL2, inspect thin surfaces,
+  See the [implementation notes](docs/surface-aware-selection.md). Static,
+  classic streamed LOD, and RAD page-table painting are covered; the page-table
+  worker carries stable global splat IDs so paint survives slot replacement.
+  The repeatable CPU benchmark records stroke latency and retained edit memory.
+  **Remaining device validation:** on WebGPU and forced WebGL2, inspect thin surfaces,
   foreground/background boundaries, grazing large anisotropic splats,
   transformed meshes, and small plus largest available static/streamed
   captures. A continuous stroke must have no sample gaps, never cross a depth
   discontinuity, and give visibly distinct, correct results for all four
   depth × footprint modes. Camera/tool/scene/pointer changes during readback
   cannot corrupt the edit, and a painted streamed region remains painted as
-  its LOD and residency change. Record stroke latency and retained edit memory,
-  then run the full headless verification bar.
+  its LOD and residency change. A real large RAD capture is still required for
+  a headed page-table paint/replacement pass; synthetic tests cover that path.
 
 ## External blockers
 

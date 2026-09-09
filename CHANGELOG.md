@@ -32,8 +32,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 ### Changed
 
 - The demo keeps persistent paint available for classic streamed/LOD scenes and
-  hides only select-and-cut. RAD page-table scenes still hide paint because the
-  worker-owned slot map cannot yet persist channel edits by global splat ID.
+  RAD page-table scenes, and hides only select-and-cut for streamed meshes.
 
 ### Added
 
@@ -44,6 +43,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   world-space capsules and full ±3σ covariance footprints under transformed
   meshes. Classic streamed meshes retain geometric strokes and replay them as
   LOD runs are replaced or reloaded.
+- RAD page-table painting carries stable global splat IDs in worker plans,
+  selects over existing pool mirrors, and replays persistent strokes as slab
+  slots change owner without retaining a second geometry copy.
 
 - Extended the local Spark/VLAM benchmark with explicit supplied, proposed,
   controlled, and historical-reference configurations; 720p/1440p five-run

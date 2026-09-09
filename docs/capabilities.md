@@ -54,7 +54,7 @@ and [`architecture.md`](architecture.md).
 | Adaptive pixel ratio | ⚠️ policy `suggestAdaptivePixelRatio`; application applies | ⚠️ same |, | `splat-budget.test.ts` | `?adaptiveDpr=1` |
 | Raised WebGPU storage buffer limits | ✅ `createWebGPURenderer()`; applications owning device creation pass `recommendedWebGpuRequiredLimits(adapter)` |, | ✅ early throw if pool exceeds device bind limit | `webgpu-limits.test.ts` | large LCC2 / unified capacity >8M |
 | `SplatMesh.pick` / `pickMany` (GPU depth) | ✅ | ✅ |, | `splat-mesh.pick` | click focus / continuous paint |
-| Surface-aware brush selection | ✅ CPU reference; surface/through × center/±3σ footprint | ✅ same | ⚠️ classic streamed LOD replays geometry; RAD page-table disabled | `brush-stroke`, streamed channel tests | thin edges and anisotropic grazing |
+| Surface-aware brush selection | ✅ CPU reference; surface/through × center/±3σ footprint | ✅ same | ✅ classic streamed and RAD page-table LOD replay geometry | `brush-stroke`, streamed channel tests | thin edges, anisotropic grazing, large RAD replacement |
 | Position queries (`queryNearest`, `queryHeight`) | ✅ | ✅ |, (per-source mesh) | `splat-mesh.query`, `streamed-splat-mesh.query` | query harness |
 | Multi-view exact sort (`renderView`) | ✅ | ⚠️ async worker; sequential views | ⚠️ WebGPU: per-view gather+sort | `splat-mesh.render-view` | `?mirror=1` |
 | Fully loaded multi-cloud (`MergedSplatMesh`) | ✅ | ✅ inter-sort |, (fast path) | `merged-splat-mesh.test.ts` | overlap readback |

@@ -177,7 +177,7 @@ picked depth while `through` selects the swept volume; `center` tests means and
 `footprint` includes each rendered ±3σ covariance ellipsoid.
 
 See [Surface-aware brush and selection](../surface-aware-selection.md) for the
-stroke contract, streamed replay behavior, and current RAD page-table limit.
+stroke contract, streamed replay behavior, and CPU benchmark.
 
 ## Proxy-mesh relighting (not a modifier)
 

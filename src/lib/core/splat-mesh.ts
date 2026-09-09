@@ -926,6 +926,19 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   }
 
   /**
+   * Existing CPU mirrors and absolute pool start for an owned range.
+   * @internal
+   */
+  protected poolRangeBacking(handle: SplatRange): {
+    readonly start: number;
+    readonly backing: SplatPoolBacking;
+  } {
+    const record = this.ranges.get(handle);
+    if (!record) throw new Error('SplatMesh.poolRangeBacking: unknown range handle.');
+    return { start: record.start, backing: this.backing };
+  }
+
+  /**
    * Zeros splats `[offset, offset + count)` of a range so they draw nothing
    * (zero covariance → degenerate quad, zero color). Used to free frontier slab
    * slots that leave the frontier. Queues the rows for upload.

@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import type { SplatData } from '../core/splat-data';
+import type { SplatPoolBacking } from '../core/splat-mesh-pool';
 
 /** Whether a brush selects only the picked surface corridor or the whole swept volume. */
 export type SelectionDepthMode = 'surface' | 'through';
@@ -53,6 +54,17 @@ interface LinearTransform {
   readonly m22: number;
 }
 
+interface PreparedBrushSelection {
+  readonly stroke: BrushStroke;
+  readonly matrix: THREE.Matrix4;
+  readonly linear: LinearTransform;
+  readonly footprint: SelectionFootprintMode;
+  readonly sigma: number;
+  readonly depthFraction: number;
+  readonly surface: boolean;
+  readonly bounds: THREE.Box3;
+}
+
 /**
  * Selects splats intersected by a world-space brush stroke.
  *
@@ -67,6 +79,63 @@ export function selectBrushStrokeInData(
   options: BrushStrokeSelectionOptions = {},
   worldMatrix?: THREE.Matrix4,
 ): Uint32Array {
+  const prepared = prepareBrushSelection(stroke, options, worldMatrix);
+  const hits = new Uint32Array(data.count);
+  const point = new THREE.Vector3();
+  let count = 0;
+
+  for (let i = 0; i < data.count; i++) {
+    point
+      .set(
+        data.positions[i * 3] as number,
+        data.positions[i * 3 + 1] as number,
+        data.positions[i * 3 + 2],
+      )
+      .applyMatrix4(prepared.matrix);
+    if (brushSelectsPoint(point, data.covariances, i * 6, prepared)) hits[count++] = i;
+  }
+  return hits.slice(0, count);
+}
+
+/**
+ * Internal page-table variant over the pool's existing strided CPU mirrors.
+ * Returns indices relative to `[start, start + count)` without copying a slab.
+ * @internal
+ */
+export function selectBrushStrokeInPoolBacking(
+  backing: SplatPoolBacking,
+  start: number,
+  count: number,
+  stroke: BrushStroke,
+  options: BrushStrokeSelectionOptions = {},
+  worldMatrix?: THREE.Matrix4,
+): Uint32Array {
+  const prepared = prepareBrushSelection(stroke, options, worldMatrix);
+  const hits = new Uint32Array(count);
+  const covariance = new Float32Array(6);
+  const point = new THREE.Vector3();
+  let selected = 0;
+  for (let i = 0; i < count; i++) {
+    const p = (start + i) * 4;
+    point
+      .set(backing.centers[p] as number, backing.centers[p + 1] as number, backing.centers[p + 2])
+      .applyMatrix4(prepared.matrix);
+    covariance[0] = backing.covarianceA[p] as number;
+    covariance[1] = backing.covarianceA[p + 1] as number;
+    covariance[2] = backing.covarianceA[p + 2] as number;
+    covariance[3] = backing.covarianceA[p + 3] as number;
+    covariance[4] = backing.covarianceB[p] as number;
+    covariance[5] = backing.covarianceB[p + 1] as number;
+    if (brushSelectsPoint(point, covariance, 0, prepared)) hits[selected++] = i;
+  }
+  return hits.slice(0, selected);
+}
+
+function prepareBrushSelection(
+  stroke: BrushStroke,
+  options: BrushStrokeSelectionOptions,
+  worldMatrix?: THREE.Matrix4,
+): PreparedBrushSelection {
   const depth = options.depth ?? 'surface';
   if (depth === 'surface' && stroke.viewMatrix === undefined) {
     throw new Error('selectBrushStrokeInData: surface mode requires stroke.viewMatrix.');
@@ -84,8 +153,6 @@ export function selectBrushStrokeInData(
       }
     }
   }
-  const hits = new Uint32Array(data.count);
-  const point = new THREE.Vector3();
   const matrix = worldMatrix ?? new THREE.Matrix4();
   const linear = linearTransform(matrix);
   const footprint = options.footprint ?? 'center';
@@ -96,37 +163,33 @@ export function selectBrushStrokeInData(
   );
   const surface = depth === 'surface';
   const bounds = strokeBounds(stroke.paths);
-  let count = 0;
+  return { stroke, matrix, linear, footprint, sigma, depthFraction, surface, bounds };
+}
 
-  for (let i = 0; i < data.count; i++) {
-    point
-      .set(
-        data.positions[i * 3] as number,
-        data.positions[i * 3 + 1] as number,
-        data.positions[i * 3 + 2],
-      )
-      .applyMatrix4(matrix);
-    const covarianceOffset = i * 6;
-    const maxSupport =
-      footprint === 'footprint'
-        ? sigma * covarianceTraceBound(data.covariances, covarianceOffset, linear)
-        : 0;
-    if (!insideExpandedBounds(point, bounds, maxSupport)) continue;
-    const hit = findStrokeHit(
+function brushSelectsPoint(
+  point: THREE.Vector3,
+  covariance: Float32Array,
+  covarianceOffset: number,
+  prepared: PreparedBrushSelection,
+): boolean {
+  const maxSupport =
+    prepared.footprint === 'footprint'
+      ? prepared.sigma * covarianceTraceBound(covariance, covarianceOffset, prepared.linear)
+      : 0;
+  if (!insideExpandedBounds(point, prepared.bounds, maxSupport)) return false;
+  return (
+    findStrokeHit(
       point,
-      stroke.paths,
+      prepared.stroke.paths,
       maxSupport,
-      data.covariances,
+      covariance,
       covarianceOffset,
-      linear,
-      footprint === 'footprint' ? sigma : 0,
-      surface ? stroke.viewMatrix : undefined,
-      depthFraction,
-    );
-    if (!hit) continue;
-    hits[count++] = i;
-  }
-  return hits.slice(0, count);
+      prepared.linear,
+      prepared.footprint === 'footprint' ? prepared.sigma : 0,
+      prepared.surface ? prepared.stroke.viewMatrix : undefined,
+      prepared.depthFraction,
+    ) !== null
+  );
 }
 
 function strokeBounds(paths: readonly (readonly BrushStrokeSample[])[]): THREE.Box3 {

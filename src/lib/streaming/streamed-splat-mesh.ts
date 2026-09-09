@@ -75,6 +75,7 @@ import type {
 import type { ChunkCacheBudget, ChunkCacheHandle } from './chunk-cache-budget';
 import {
   selectBrushStrokeInData,
+  selectBrushStrokeInPoolBacking,
   type BrushStroke,
   type BrushStrokeSelectionOptions,
 } from '../selection/brush-stroke';
@@ -731,6 +732,10 @@ export class StreamedSplatMesh extends SplatMesh {
   /** Last frontier's drawn (non-degenerate) splat count - the true on-screen size
    * in `page-table` mode, where the slab is fully "active" but mostly degenerate. */
   private pageTableDrawn = 0;
+  /** Occupied page-table slots, including a replacement staged behind the drawn prefix. */
+  private pageTableResident = 0;
+  /** Page-table slot → stable `.rad` global splat ID. */
+  private pageTableGlobals = new Uint32Array(0);
   private pageTableDisplayGeneration = -1;
   private frontierConverged = true;
   private pendingFrontierSplats = 0;
@@ -1443,10 +1448,15 @@ export class StreamedSplatMesh extends SplatMesh {
     }
 
     if (slots !== this.pagerSlots) {
+      const globals = new Uint32Array(slots);
+      globals.fill(0xffffffff);
+      globals.set(this.pageTableGlobals.subarray(0, Math.min(slots, this.pageTableGlobals.length)));
+      this.pageTableGlobals = globals;
       this.pagerSlots = slots;
       this.postToWorker({ type: 'resize', capacity: slots });
       // Slots beyond the new count are gone from the pager, so stop drawing
       // them; the next plan re-establishes the resident prefix.
+      this.pageTableResident = Math.min(this.pageTableResident, slots);
       if (this.pageTableDrawn > slots) this.setSlabResident(slots);
       this.pendingWork = true;
       this.lastScheduleTime = -Infinity;
@@ -1458,7 +1468,7 @@ export class StreamedSplatMesh extends SplatMesh {
    * boundary. The pager's runs are contiguous in *slot* space, which page
    * storage no longer guarantees is contiguous in the pool.
    */
-  private writeSlabSlots(data: SplatData, slot: number, count: number): void {
+  private writeSlabSlots(data: PlanSplats, slot: number, count: number): void {
     let written = 0;
     while (written < count) {
       const at = slot + written;
@@ -1466,7 +1476,10 @@ export class StreamedSplatMesh extends SplatMesh {
       if (!page) return; // beyond reserved storage; `dropped` already warns
       const offset = at % this.slabPageSplats;
       const run = Math.min(count - written, this.slabPageSplats - offset);
-      this.overwriteRangeData(page, sliceSplatData(data, written, run), offset);
+      const slice = slicePlanRun(data, written, run);
+      this.overwriteRangeData(page, slice, offset);
+      this.pageTableGlobals.set(slice.globals, at);
+      this.applyPersistentSlabRun(page, offset, slice);
       written += run;
     }
   }
@@ -1482,6 +1495,7 @@ export class StreamedSplatMesh extends SplatMesh {
       const offset = at % this.slabPageSplats;
       const run = Math.min(count - done, this.slabPageSplats - offset);
       this.degenerateRange(page, offset, run);
+      this.pageTableGlobals.fill(0xffffffff, at, at + run);
       done += run;
     }
   }
@@ -2192,15 +2206,12 @@ export class StreamedSplatMesh extends SplatMesh {
           `Call definePersistentChannel("${name}") first.`,
       );
     }
-    if (this.frontierWorker) {
-      throw new Error(
-        'StreamedSplatMesh.paintPersistentStroke: RAD page-table painting is not supported; ' +
-          "load with foveationMode: 'prefix' or paint a fully loaded mesh.",
-      );
-    }
     const snapshot = cloneBrushStroke(stroke);
     channel.strokes.push({ stroke: snapshot, options: { ...options }, value });
     this.updateWorldMatrix(true, false);
+    if (this.frontierWorker) {
+      return this.paintPersistentPageTable(name, channel, snapshot, options, value);
+    }
     let edited = 0;
     const touchedFiles = new Set<number>();
 
@@ -2270,7 +2281,13 @@ export class StreamedSplatMesh extends SplatMesh {
     for (const { run, handle } of this.resident.values()) {
       const data =
         channel.type === 'byte' ? new Uint8Array(run.count) : new Float32Array(run.count);
+      if (channel.fill) data.fill(channel.fill);
       this.writeChannel(handle, name, data);
+    }
+    let slot = 0;
+    for (const page of this.slabPages) {
+      this.writePersistentSlabValues(name, channel, page, 0, page.count, slot);
+      slot += page.count;
     }
   }
 
@@ -3482,6 +3499,119 @@ export class StreamedSplatMesh extends SplatMesh {
     }
   }
 
+  /** Applies a new stroke to the page-table slab already resident on the CPU. */
+  private paintPersistentPageTable(
+    name: string,
+    channel: PersistentChannel,
+    stroke: BrushStroke,
+    options: BrushStrokeSelectionOptions,
+    value: number,
+  ): number {
+    let edited = 0;
+    let slot = 0;
+    for (const page of this.slabPages) {
+      const count = Math.min(page.count, Math.max(0, this.pageTableResident - slot));
+      if (count <= 0) break;
+      const { start, backing } = this.poolRangeBacking(page);
+      const selected = selectBrushStrokeInPoolBacking(
+        backing,
+        start,
+        count,
+        stroke,
+        options,
+        this.matrixWorld,
+      );
+      let touched = false;
+      for (const localIndex of selected) {
+        const global = this.pageTableGlobals[slot + localIndex] as number;
+        if (global === 0xffffffff) continue;
+        if (this.recordPersistentGlobal(name, channel, global, value)) {
+          edited++;
+          touched = true;
+        }
+      }
+      if (touched) this.writePersistentSlabValues(name, channel, page, 0, count, slot);
+      slot += page.count;
+    }
+    return edited;
+  }
+
+  /** Replays stored geometry for newly written page-table slots, then uploads channels. */
+  private applyPersistentSlabRun(page: SplatRange, offset: number, data: PlanSplats): void {
+    if (this.persistentChannels.size === 0) return;
+    this.updateWorldMatrix(true, false);
+    const slot = this.slabPages.indexOf(page) * this.slabPageSplats + offset;
+    for (const [name, channel] of this.persistentChannels) {
+      for (const operation of channel.strokes) {
+        const selected = selectBrushStrokeInData(
+          data,
+          operation.stroke,
+          operation.options,
+          this.matrixWorld,
+        );
+        for (const localIndex of selected) {
+          this.recordPersistentGlobal(
+            name,
+            channel,
+            data.globals[localIndex] as number,
+            operation.value,
+          );
+        }
+      }
+      this.writePersistentSlabValues(name, channel, page, offset, data.count, slot);
+    }
+  }
+
+  /** Writes stored values for a contiguous slab run, clearing stale slot occupants. */
+  private writePersistentSlabValues(
+    name: string,
+    channel: PersistentChannel,
+    page: SplatRange,
+    offset: number,
+    count: number,
+    slot: number,
+  ): void {
+    const values = channel.type === 'byte' ? new Uint8Array(count) : new Float32Array(count);
+    if (channel.fill) values.fill(channel.fill);
+    const chunkSize = this.scene.chunkSize ?? 65536;
+    for (let i = 0; i < count; i++) {
+      const global = this.pageTableGlobals[slot + i] as number;
+      if (global === 0xffffffff) continue;
+      const file = Math.floor(global / chunkSize);
+      const value = channel.edits.get(file)?.get(global - file * chunkSize);
+      if (value !== undefined) values[i] = value;
+    }
+    this.writeChannel(page, name, values, offset);
+  }
+
+  /** Records one stable page-table identity while preserving first-paint-wins. */
+  private recordPersistentGlobal(
+    name: string,
+    channel: PersistentChannel,
+    global: number,
+    value: number,
+  ): boolean {
+    const chunkSize = this.scene.chunkSize ?? 65536;
+    const file = Math.floor(global / chunkSize);
+    const local = global - file * chunkSize;
+    const edits = channel.edits.get(file) ?? new Map<number, number>();
+    if (edits.has(local)) return false;
+    if (channel.total >= channel.maxEdits) {
+      if (!channel.warned) {
+        channel.warned = true;
+        warn(
+          `StreamedSplatMesh.paintPersistent: channel "${name}" hit its ` +
+            `maxEdits cap (${channel.maxEdits}); further new edits are dropped.`,
+        );
+      }
+      return false;
+    }
+    edits.set(local, value);
+    channel.edits.set(file, edits);
+    channel.total++;
+    return true;
+  }
+
   /**
    * Writes the stored edits for one run's `[offset, offset + count)` splats
    * into its freshly appended pool range. No-op when the file has no edits.
@@ -3885,6 +4015,7 @@ export class StreamedSplatMesh extends SplatMesh {
     }
     const writeFinishedAt = performance.now();
     const drawn = Math.min(plan.displayCount ?? plan.residentCount, limit);
+    this.pageTableResident = Math.min(plan.residentCount, limit);
     // Freed tail slots leave the active list, so their data is not drawn - but
     // zero it anyway. It costs a fill over the freed range only, and it means a
     // slot that somehow ends up drawn without being written renders nothing
@@ -4274,10 +4405,11 @@ function shWordsPerSplat(bands: 1 | 2 | 3): number {
   return Math.ceil((3 * shCoefficientCount(bands)) / 4);
 }
 
-function slicePlanRun(splats: PlanSplats, j: number, count: number): SplatData {
+function slicePlanRun(splats: PlanSplats, j: number, count: number): PlanSplats {
   const sh = splats.shPacked;
   return {
     count,
+    globals: splats.globals.subarray(j, j + count),
     positions: splats.positions.subarray(j * 3, (j + count) * 3),
     colors: splats.colors.subarray(j * 4, (j + count) * 4),
     covariances: splats.covariances.subarray(j * 6, (j + count) * 6),

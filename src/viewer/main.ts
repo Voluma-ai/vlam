@@ -2578,7 +2578,6 @@ async function main(): Promise<void> {
       // The first scene mounts before chrome is built. Only destructive
       // separation is restricted; persistent painting supports streamed LOD.
       pointerTool = normalizeViewerTool(pointerTool, true);
-      if (next.mesh.radStrategy === 'page-table' && pointerTool === 'paint') pointerTool = 'none';
     }
     if (
       next.mesh instanceof StreamedSplatMesh &&
@@ -4270,7 +4269,7 @@ async function main(): Promise<void> {
     if (effectMode === 'paint') effectPicker.setEnabled(false, PAINT_OWNS_EFFECTS);
     syncEditingToolAvailability = (mesh) => {
       const streamed = mesh instanceof StreamedSplatMesh;
-      toolPicker.setToolVisible('paint', !streamed || mesh.radStrategy !== 'page-table');
+      toolPicker.setToolVisible('paint', true);
       toolPicker.setToolVisible('select', !streamed);
     };
     syncEditingToolAvailability(splats);

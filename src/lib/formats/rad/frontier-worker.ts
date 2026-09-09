@@ -134,6 +134,7 @@ function cameraKey(msg: FrontierRescheduleMessage): string {
 /** Buffers to transfer with a message (their `.buffer`s). */
 function buffersOf(splats: PlanSplats): Transferable[] {
   const list: Transferable[] = [
+    splats.globals.buffer as ArrayBuffer,
     splats.positions.buffer as ArrayBuffer,
     splats.colors.buffer as ArrayBuffer,
     splats.covariances.buffer as ArrayBuffer,
@@ -213,8 +214,14 @@ function postPlan(
   // make this impossible; the count is reported so a regression is visible
   // instead of merely looking like speckle.
   const gatherStats = { missing: 0 };
-  const moves = gatherGlobals(cache, moveGlobals, chunkSize, gatherStats) as PlanSplats;
-  const appends = gatherGlobals(cache, plan.appends, chunkSize, gatherStats) as PlanSplats;
+  const moves: PlanSplats = {
+    ...gatherGlobals(cache, moveGlobals, chunkSize, gatherStats),
+    globals: moveGlobals,
+  };
+  const appends: PlanSplats = {
+    ...gatherGlobals(cache, plan.appends, chunkSize, gatherStats),
+    globals: plan.appends,
+  };
 
   const reply: FrontierPlanMessage = {
     type: 'plan',
