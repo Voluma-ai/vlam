@@ -65,6 +65,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Performance
 
+- Uncompressed SH-bearing PLY now measures its scene-wide SH extent and packs
+  directly from fixed-stride records instead of retaining a full float
+  coefficient intermediate. SH3 loading removes a 180-byte-per-splat transient;
+  local files make a second bounded-window read to preserve bit-identical
+  quantization. A development-only memory benchmark records load checkpoints,
+  decoded arrays, streamed caches, and separate CPU/GPU allocation estimates.
+
 - Experimental static LOD now chooses deterministic Morton-local pairs by
   Gaussian similarity, color, and opacity before moment matching. This avoids
   needless blends across nearby but separate surfaces while retaining the

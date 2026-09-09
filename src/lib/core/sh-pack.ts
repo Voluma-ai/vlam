@@ -26,6 +26,33 @@ export function shCoefficientCount(bands: number): number {
   return [0, 3, 8, 15][bands] ?? 0;
 }
 
+/** Symmetric three-channel range used by packed per-splat SH. */
+export function symmetricShRange(extent: number): ShRange {
+  return {
+    min: [-extent, -extent, -extent],
+    max: [extent, extent, extent],
+  };
+}
+
+/**
+ * Packs one RGB coefficient against a scene-wide symmetric extent.
+ *
+ * Kept separate from {@link packShCoefficients} so fixed-stride parsers can
+ * measure their extent in one pass and pack directly from source records in a
+ * second pass, without retaining a full float coefficient array.
+ */
+export function packShCoefficient(r: number, g: number, b: number, extent: number): number {
+  const divisor = extent || 1;
+  const encode = (value: number, max: number): number =>
+    Math.min(max, Math.max(0, Math.round((value / divisor + 1) * 0.5 * max)));
+  return (
+    (encode(r, SH_FIELD_MAX[0]) |
+      (encode(g, SH_FIELD_MAX[1]) << 11) |
+      (encode(b, SH_FIELD_MAX[2]) << 21)) >>>
+    0
+  );
+}
+
 /**
  * Quantizes splat-major coefficient triples into packed 11/10/11 words:
  * `count * shCoefficientCount(bands)` words, each holding one coefficient's
@@ -48,20 +75,16 @@ export function packShCoefficients(
   // The shader has one range for every band. A symmetric common range
   // preserves the signed SH convention; exact 0 is not representable (it falls
   // between the two middle codes, a half-LSB positive bias - see the tests).
-  const range = {
-    min: [-extent, -extent, -extent] as const,
-    max: [extent, extent, extent] as const,
-  };
+  const range = symmetricShRange(extent);
   const packed = new Uint32Array(count * words);
-  const divisor = extent || 1;
   for (let i = 0; i < packed.length; i++) {
     const base = i * 3;
-    const encode = (value: number, max: number): number =>
-      Math.min(max, Math.max(0, Math.round((value / divisor + 1) * 0.5 * max)));
-    const r = encode(coefficients[base] as number, 2047);
-    const g = encode(coefficients[base + 1] as number, 1023);
-    const b = encode(coefficients[base + 2] as number, 2047);
-    packed[i] = (r | (g << 11) | (b << 21)) >>> 0;
+    packed[i] = packShCoefficient(
+      coefficients[base] as number,
+      coefficients[base + 1] as number,
+      coefficients[base + 2] as number,
+      extent,
+    );
   }
   return { bands, packed, range };
 }

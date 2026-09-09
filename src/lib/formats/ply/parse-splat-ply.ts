@@ -1,5 +1,10 @@
-import { packShCoefficients } from '../../core/sh-pack';
-import { SH_C0, writeCovariance, type SplatData } from '../../core/splat-data';
+import { packShCoefficient, shCoefficientCount, symmetricShRange } from '../../core/sh-pack';
+import {
+  SH_C0,
+  writeCovariance,
+  type SplatData,
+  type SplatPackedShData,
+} from '../../core/splat-data';
 import { isCompressedPly, parseCompressedPly } from './parse-compressed-ply';
 import { readWholeFile, type SplatProgressCallback } from '../../loaders/loading';
 import {
@@ -75,28 +80,12 @@ export function parseSplatPly(buffer: ArrayBuffer): SplatData {
 
   const out = allocate(vertices.count);
   const rest = restLayout(vertices);
-  const coefficients = rest ? new Float32Array(vertices.count * rest.coefficients * 3) : null;
-  decodeRecords(
-    new DataView(buffer, vertices.offset),
-    vertexOffsets(vertices),
-    vertices.stride,
-    0,
-    0,
-    vertices.count,
-    out,
-  );
-  if (rest && coefficients) {
-    decodeRestRecords(
-      new DataView(buffer, vertices.offset),
-      vertices.stride,
-      0,
-      0,
-      vertices.count,
-      rest,
-      coefficients,
-    );
-  }
-  return finalizePlyDecode(vertices.count, out, rest, coefficients);
+  const view = new DataView(buffer, vertices.offset);
+  decodeRecords(view, vertexOffsets(vertices), vertices.stride, 0, 0, vertices.count, out);
+  const shPacked = rest
+    ? packRestRecords(view, vertices.stride, 0, 0, vertices.count, rest)
+    : undefined;
+  return finalizePlyDecode(vertices.count, out, shPacked);
 }
 
 /**
@@ -148,12 +137,17 @@ export async function parseSplatPlyFile(
   const out = allocate(count);
   const offsets = vertexOffsets(vertices);
   const rest = restLayout(vertices);
-  const coefficients = rest ? new Float32Array(count * rest.coefficients * 3) : null;
   // At least one whole record per read: a window never splits a record, so
   // the decoder always sees complete ones.
   const perWindow = Math.max(1, Math.floor(windowBytes / stride));
 
-  const totalBytes = count * stride;
+  // SH needs a second pass: its scene-wide quantization extent is not known
+  // until every coefficient has been inspected. Re-reading bounded File
+  // windows avoids the former count*coefficients*3 Float32Array (180 B/splat
+  // at SH3) while keeping the packed result bit-identical.
+  const passBytes = count * stride;
+  const totalBytes = passBytes * (rest ? 2 : 1);
+  let extent = 0;
   onProgress?.(0, totalBytes);
   for (let first = 0; first < count; first += perWindow) {
     signal?.throwIfAborted();
@@ -162,11 +156,23 @@ export async function parseSplatPlyFile(
     const view = new DataView(await slice.arrayBuffer());
     // The window's byte 0 is record `first`, so the decoder rebases onto it.
     decodeRecords(view, offsets, stride, first, first, last, out);
-    if (rest && coefficients)
-      decodeRestRecords(view, stride, first, first, last, rest, coefficients);
+    if (rest) extent = measureRestExtent(view, stride, first, first, last, rest, extent);
     onProgress?.(last * stride, totalBytes);
   }
-  return finalizePlyDecode(count, out, rest, coefficients);
+
+  let shPacked: SplatPackedShData | undefined;
+  if (rest) {
+    shPacked = allocatePackedRest(count, rest, extent);
+    for (let first = 0; first < count; first += perWindow) {
+      signal?.throwIfAborted();
+      const last = Math.min(first + perWindow, count);
+      const slice = file.slice(vertices.offset + first * stride, vertices.offset + last * stride);
+      const view = new DataView(await slice.arrayBuffer());
+      writePackedRest(view, stride, first, first, last, rest, extent, shPacked.packed);
+      onProgress?.(passBytes + last * stride, totalBytes);
+    }
+  }
+  return finalizePlyDecode(count, out, shPacked);
 }
 
 /** The vertex element of a splat PLY, with its required properties checked. */
@@ -213,11 +219,8 @@ function restLayout(vertices: PlyElement): RestLayout | null {
 function finalizePlyDecode(
   count: number,
   out: SplatArrays,
-  rest: RestLayout | null,
-  coefficients: Float32Array | null,
+  shPacked: SplatPackedShData | undefined,
 ): SplatData {
-  const shPacked =
-    rest && coefficients ? packShCoefficients(coefficients, count, rest.bands) : undefined;
   return { count, ...out, ...(shPacked ? { shPacked } : {}) };
 }
 
@@ -319,29 +322,72 @@ function decodeRecords(
   }
 }
 
-/**
- * Decodes channel-major `f_rest_*` floats into coefficient-major RGB triples.
- */
-function decodeRestRecords(
+/** Finds the largest absolute SH coefficient in a fixed-stride record range. */
+function measureRestExtent(
   view: DataView,
   stride: number,
   viewFirst: number,
   from: number,
   to: number,
   rest: RestLayout,
-  out: Float32Array,
+  initial: number,
+): number {
+  const { offsets } = rest;
+  let extent = initial;
+  for (let i = from; i < to; i++) {
+    const base = (i - viewFirst) * stride;
+    for (const offset of offsets)
+      extent = Math.max(extent, Math.abs(view.getFloat32(base + offset, true)));
+  }
+  return extent;
+}
+
+/** Allocates the final packed SH array after its scene-wide extent is known. */
+function allocatePackedRest(count: number, rest: RestLayout, extent: number): SplatPackedShData {
+  return {
+    bands: rest.bands,
+    packed: new Uint32Array(count * shCoefficientCount(rest.bands)),
+    range: symmetricShRange(extent),
+  };
+}
+
+/** Packs channel-major `f_rest_*` directly into coefficient-major RGB words. */
+function writePackedRest(
+  view: DataView,
+  stride: number,
+  viewFirst: number,
+  from: number,
+  to: number,
+  rest: RestLayout,
+  extent: number,
+  out: Uint32Array,
 ): void {
   const { coefficients, offsets } = rest;
   for (let i = from; i < to; i++) {
     const base = (i - viewFirst) * stride;
-    const dest = i * coefficients * 3;
+    const dest = i * coefficients;
     for (let c = 0; c < coefficients; c++) {
-      out[dest + c * 3 + 0] = view.getFloat32(base + (offsets[c] as number), true);
-      out[dest + c * 3 + 1] = view.getFloat32(base + (offsets[coefficients + c] as number), true);
-      out[dest + c * 3 + 2] = view.getFloat32(
-        base + (offsets[2 * coefficients + c] as number),
-        true,
+      out[dest + c] = packShCoefficient(
+        view.getFloat32(base + (offsets[c] as number), true),
+        view.getFloat32(base + (offsets[coefficients + c] as number), true),
+        view.getFloat32(base + (offsets[2 * coefficients + c] as number), true),
+        extent,
       );
     }
   }
+}
+
+/** Measures and packs a whole in-memory PLY without an intermediate float array. */
+function packRestRecords(
+  view: DataView,
+  stride: number,
+  viewFirst: number,
+  from: number,
+  to: number,
+  rest: RestLayout,
+): SplatPackedShData {
+  const extent = measureRestExtent(view, stride, viewFirst, from, to, rest, 0);
+  const packed = allocatePackedRest(to - from, rest, extent);
+  writePackedRest(view, stride, viewFirst, from, to, rest, extent, packed.packed);
+  return packed;
 }

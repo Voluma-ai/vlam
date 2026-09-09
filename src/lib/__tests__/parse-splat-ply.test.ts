@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseSplatPly, parseSplatPlyFile } from '../formats/ply/parse-splat-ply';
+import { packShCoefficients } from '../core/sh-pack';
 
 /** The vertex properties a Gaussian splat PLY carries, in file order. */
 const PROPERTY_NAMES = [
@@ -148,6 +149,34 @@ describe('parseSplatPly', () => {
     expect(data.shPacked?.packed.length).toBe(3);
   });
 
+  it('packs SH words bit-identically to the former float intermediate', () => {
+    const coefficients = 15;
+    const rest = Array.from(
+      { length: coefficients * 3 },
+      (_, i) => [`f_rest_${i}`, 'float'] as const,
+    );
+    const vertices: (Vertex & Record<string, number>)[] = [0, 1].map((vertex) => ({
+      x: vertex,
+      ...Object.fromEntries(
+        rest.map(([name], property) => [name, ((vertex + 1) * (property - 17)) / 19]),
+      ),
+    }));
+    const formerIntermediate = new Float32Array(vertices.length * coefficients * 3);
+    for (let vertex = 0; vertex < vertices.length; vertex++) {
+      for (let coefficient = 0; coefficient < coefficients; coefficient++) {
+        for (let channel = 0; channel < 3; channel++) {
+          formerIntermediate[(vertex * coefficients + coefficient) * 3 + channel] =
+            vertices[vertex]?.[`f_rest_${channel * coefficients + coefficient}`] ?? 0;
+        }
+      }
+    }
+
+    const data = parseSplatPly(buildPlyWithRest(vertices, rest));
+    const expected = packShCoefficients(formerIntermediate, vertices.length, 3);
+    expect(data.shPacked?.range).toEqual(expected.range);
+    expect(Array.from(data.shPacked?.packed ?? [])).toEqual(Array.from(expected.packed));
+  });
+
   it('accepts CRLF line endings in the header', () => {
     const data = parseSplatPly(buildPly([{ x: 5 }, { x: 6 }], { newline: '\r\n' }));
     expect(data.count).toBe(2);
@@ -255,6 +284,25 @@ describe('parseSplatPlyFile (streamed)', () => {
     });
     const streamed = await parseSplatPlyFile(new File([buffer], 'scene.ply'), { windowBytes: 56 });
     expect(Array.from(streamed.positions)).toEqual(Array.from(parseSplatPly(buffer).positions));
+  });
+
+  it('streams SH bit-identically across one-record windows', async () => {
+    const rest = Array.from({ length: 9 }, (_, i) => [`f_rest_${i}`, 'float'] as const);
+    const shVertices = vertices.map((vertex, i) => ({
+      ...vertex,
+      ...Object.fromEntries(rest.map(([name], coefficient) => [name, (i - coefficient) / 13])),
+    })) as (Vertex & Record<string, number>)[];
+    const buffer = buildPlyWithRest(shVertices, rest);
+    const whole = parseSplatPly(buffer);
+    const stride = (PROPERTY_NAMES.length + rest.length) * 4;
+    const streamed = await parseSplatPlyFile(new File([buffer], 'scene-sh.ply'), {
+      windowBytes: stride,
+    });
+
+    expect(streamed.shPacked?.range).toEqual(whole.shPacked?.range);
+    expect(Array.from(streamed.shPacked?.packed ?? [])).toEqual(
+      Array.from(whole.shPacked?.packed ?? []),
+    );
   });
 
   it('dispatches a compressed file to the compressed decoder', async () => {
