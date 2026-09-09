@@ -211,6 +211,30 @@ The two mix, pass an existing `BudgetGovernor` as `CameraBudgetGovernor`'s
 on the governor are never camera-weighted, and `CameraBudgetGovernor.dispose()`
 leaves them alone.
 
+## Validation record
+
+On 2026-09-09, the camera governor was exercised in Chrome 151 on macOS with
+native WebGPU and three independently streamed instances of the cached Hotel
+RAD capture (`HOTEL.clean.comp-lod.rad`, 3,189,208 leaves, SHA-256
+`413381d93b452a77d75e7998f89836db0df740127f995bf94f4d5126a129f773`).
+Each mesh had a 1.5M ceiling. The fixed baseline assigned 500,000 to every
+mesh; the camera-weighted run shared the same 1.5M total with
+`foveationTargetPx: 0.25` and moved the camera to each clone in turn.
+
+| Camera target | Governed budgets | Approached active splats | Fixed active splats |
+| --- | --- | ---: | ---: |
+| Mesh 1 | 1,478,238 / 15,189 / 6,572 | 602,587 | 500,000 |
+| Mesh 2 | 15,250 / 1,469,648 / 15,100 | 602,587 | 500,000 |
+| Mesh 3 | 6,600 / 15,337 / 1,478,062 | 602,587 | 500,000 |
+
+The approached clone therefore drew 20.5% more active splats than the equal
+split at every pose. All six fixed/governed captures rendered continuously;
+visual inspection found no holes, bright flashes, or incomplete swaps. Every
+frontier converged with zero failed chunks, uncovered swaps, or early
+retirements, and each governed allocation sum stayed at or just below 1.5M.
+The generated runner, JSON telemetry, and screenshots remain ignored local
+validation evidence rather than shipped package surface.
+
 ## Related
 
 - [Streaming & LOD](streaming-and-lod.md), budgets on a single mesh,

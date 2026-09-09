@@ -28,18 +28,23 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   platforms but is marked as an expected failure on Chromium Linux SwiftShader,
   whose Dawn instance is lost despite completed queue work. Unit coverage still
   verifies the complete mirror-release lifecycle on every platform.
-
-### Changed
-
-- The demo keeps persistent paint available for classic streamed/LOD scenes and
-  RAD page-table scenes, and hides only select-and-cut for streamed meshes.
-
-### Fixed
-
 - RAD page-table startup no longer stalls on an empty first frame when an
   unpublished resident frontier becomes stale while chunks stream in. With no
   visible cut to protect, the pager now drains those stale slots under its
   per-plan cap and continues toward the first publish.
+
+### Changed
+
+- Validated camera-weighted shared budgets with three independently streamed
+  Hotel RAD meshes in Chrome/macOS WebGPU: the approached mesh sharpened from
+  500,000 to 602,587 active splats while allocations remained within the 1.5M
+  total and all page-table frontiers converged without uncovered swaps.
+- The demo hides paint and select-and-cut for streamed/LOD scenes, where edits
+  cannot be applied consistently across changing residency. Annotate and
+  measure remain available.
+- The demo keeps persistent paint available for classic streamed/LOD scenes and
+  RAD page-table scenes, and hides only select-and-cut for streamed meshes.
+
 
 ### Added
 
