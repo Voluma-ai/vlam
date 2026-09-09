@@ -4,6 +4,7 @@ import {
   createWebGPURenderer,
   type WebGPURendererGpu,
   type WebGPURendererGpuAdapter,
+  type WebGPURendererGpuDevice,
 } from '../core/create-webgpu-renderer';
 import { setVlamLogHandler } from '../core/logging';
 import { recommendedWebGpuRequiredLimits } from '../core/webgpu-limits';
@@ -109,6 +110,39 @@ describe('createWebGPURenderer', () => {
     expect(params).not.toHaveProperty('requiredLimits');
     expect(params.antialias).toBe(true);
     expect(warnings).toEqual([]);
+  });
+
+  it('retains the GPUAdapter on the renderer and the owned device', async () => {
+    const { gpu } = fakeGpu();
+    const adapter = await gpu.requestAdapter();
+    const renderer = await createWebGPURenderer({ gpu });
+    expect((renderer as { __vlamGpuAdapter?: WebGPURendererGpuAdapter }).__vlamGpuAdapter).toBe(
+      adapter,
+    );
+    expect(
+      (lastParams().device as { __vlamGpuAdapter?: WebGPURendererGpuAdapter }).__vlamGpuAdapter,
+    ).toBe(adapter);
+  });
+
+  it('swallows Dawn Instance-dropped popErrorScope rejections on the owned device', async () => {
+    const dropped = new Error('Instance dropped in popErrorScope');
+    const validation = new Error('shader compilation failed');
+    let calls = 0;
+    const { gpu } = fakeGpu({
+      requestDevice: () =>
+        Promise.resolve({
+          features: new Set(['core-features-and-limits']),
+          popErrorScope: () => {
+            calls += 1;
+            return Promise.reject(calls === 1 ? dropped : validation);
+          },
+        } as WebGPURendererGpuDevice & { popErrorScope: () => Promise<unknown> }),
+    });
+
+    await createWebGPURenderer({ gpu });
+    const device = lastParams().device as { popErrorScope: () => Promise<unknown> };
+    await expect(device.popErrorScope()).resolves.toBeNull();
+    await expect(device.popErrorScope()).rejects.toBe(validation);
   });
 
   it('warns and falls back to WebGL2 when no adapter is available', async () => {

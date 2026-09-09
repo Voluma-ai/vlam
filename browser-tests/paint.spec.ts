@@ -3,12 +3,20 @@ import { expect, test } from '@playwright/test';
 test('renders a surface-aware painted channel on both backends', async ({ page }, testInfo) => {
   const backend = testInfo.project.name === 'chromium-webgpu' ? 'webgpu' : 'webgl2';
   const errors: string[] = [];
-  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('pageerror', (error) => {
+    // Three's sync pipeline compile leaves popErrorScope untracked. Chromium
+    // Linux SwiftShader (CI) can then reject it as "Instance dropped" after
+    // pixels are already correct. createWebGPURenderer guards this on the
+    // owned device; ignore the leftover in case the host object was frozen.
+    if (error.message.includes('Instance dropped in popErrorScope')) return;
+    errors.push(error.message);
+  });
   await page.goto(`/src/viewer/paint-probe.html?backend=${backend}`);
   const result = page.locator('[data-testid="result"]');
   await expect(result).not.toHaveText('', { timeout: 30_000 });
   const value = JSON.parse((await result.textContent()) ?? 'null') as {
     backend: string;
+    paintedMode: { depth: string; footprint: string };
     modes: {
       surfaceCenter: number;
       throughCenter: number;
@@ -22,6 +30,7 @@ test('renders a surface-aware painted channel on both backends', async ({ page }
 
   expect(errors).toEqual([]);
   expect(value.backend).toBe(backend);
+  expect(value.paintedMode).toEqual({ depth: 'surface', footprint: 'center' });
   expect(value.modes).toEqual({
     surfaceCenter: 1,
     throughCenter: 2,

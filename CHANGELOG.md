@@ -21,6 +21,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- `createWebGPURenderer` keeps the GPUAdapter on the renderer (an ordinary
+  JS object) for the owned device's lifetime and swallows Dawn's
+  "Instance dropped in popErrorScope" teardown on that device, so three.js
+  pipeline validation cannot become an unhandled rejection after Chromium
+  collects a WebIDL wrapper or Linux SwiftShader drops the instance. The
+  surface-aware paint probe compiles through three's awaited path and
+  publishes results only after the canvas present.
 - Render-only WebGPU meshes initialize texture uploads and the lazy picking
   pipeline, then wait for submitted GPU work before releasing CPU mirrors,
   preventing mirror retirement from racing GPU uploads or the first pick.
@@ -61,6 +68,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - A headed browser regression renders surface-aware paint on WebGPU and forced
   WebGL2, checks all four depth × footprint selection outcomes, and asserts the
   painted channel changes output pixels.
+- Headed Chrome 152 validation on Windows covers transformed depth boundaries,
+  anisotropic footprint grazing, gap-free continuous strokes, and both the
+  bundled 149,120-splat goose and a 3.19 M-splat RAD capture on WebGPU and
+  forced WebGL2.
 
 - Extended the local Spark/VLAM benchmark with explicit supplied, proposed,
   controlled, and historical-reference configurations; 720p/1440p five-run
