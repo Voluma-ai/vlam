@@ -1,80 +1,108 @@
 # Surface-aware brush and selection
 
-Post-1.0 implementation plan for continuous, depth-aware strokes and
-orthogonal surface/through × center/footprint selection. Tracked from
-[`ROADMAP.md`](../ROADMAP.md). Not a 1.0 release requirement.
+Implementation notes for continuous, depth-aware painting with orthogonal
+surface/through × center/footprint selection. This post-1.0 opportunity is
+implemented and unit-tested; headed backend/device validation remains tracked
+in [`ROADMAP.md`](../ROADMAP.md).
 
 References: SuperSplat's
 [sphere brush](https://github.com/playcanvas/supersplat/pull/1024) and
 [selection controls](https://github.com/playcanvas/supersplat/pull/1020).
 
-## Goal
-
-Extend the existing depth-picked sphere paint tool with continuous strokes
-that split at depth discontinuities, independent visible-surface/through and
-footprint/center selection controls, and scalable selection processing.
-Existing point-radius APIs retain their current center-based behavior.
-
 ## Modes
 
-Keep the two decisions orthogonal. Defaults live in one settings object
-shared by paint and selection UI.
+The choices are independent and default to `surface` + `center` in the demo.
 
 | Axis | Values | Meaning |
 | --- | --- | --- |
-| Depth | `surface` / `through` | `surface` limits a stroke to the visible depth corridor; `through` takes every intersected Gaussian |
-| Footprint | `center` / `footprint` | `center` tests means; `footprint` tests the full VLAM ±3σ covariance ellipsoid |
+| Depth | `surface` / `through` | `surface` limits selection to the depth-picked visible corridor; `through` takes every intersected Gaussian |
+| Target | `center` / `footprint` | `center` tests Gaussian means; `footprint` includes the rendered ±3σ covariance ellipsoid |
 
-## Implementation
+The size control is a screen-space radius. Each pick converts it to world units
+at that sample's depth, so a stroke keeps a stable visual width while crossing
+surfaces at different distances.
 
-1. Extract stroke capture from `viewer/main.ts`: collect and spacing-decimate
-   pointer samples, show a radius cursor, and commit one immutable stroke on
-   pointer-up/cancel rather than issuing and applying one pick per frame.
-   Define the four depth × footprint combinations and their defaults in the
-   shared settings object.
-2. Add a batched depth-pick path that snapshots NDC samples, camera matrices,
-   viewport, mesh/scene generation, alpha threshold, and tool settings. Use
-   one tiled/bounded depth pass and start all readbacks before awaiting them.
-   Misses and depth jumps split the result into subpaths; convert screen
-   radius to world radius at each hit and join samples with variable-radius
-   capsules without bridging foreground and background surfaces.
-3. Put the selection math in `@voluma/vlam/selection`: a pure CPU reference
-   for center/covariance intersection against spheres and tapered capsule
-   paths, including world transforms and non-uniform scale. Footprint mode
-   uses the covariance support radius at VLAM's ±3σ extent. Avoid the
-   closest-centerline shortcut for tapered capsules because it leaves gaps
-   when endpoint radii differ.
-4. Evaluate a completed stroke once per resident set, union and deduplicate
-   its hits, then batch channel writes by pool row/range. Benchmark the CPU
-   reference at representative 100k/1M/6M counts; if it misses the interaction
-   budget, add a portable WebGPU bitset compute path with the CPU result as
-   its oracle and a bounded, yielding CPU/WebGL2 fallback. Do not add a second
-   rendering projection convention merely for selection.
-5. For streamed meshes, persist immutable geometric stroke operations (path,
-   radii, camera/depth snapshot, mode, and value), not only the IDs resident
-   when the stroke landed. Replay only spatially overlapping operations when
-   a run is appended so coarse↔fine LOD swaps, eviction, and reload reproduce
-   the edit; preserve first-paint-wins ordering and the existing edit cap.
-6. Treat an in-flight stroke as a transaction. Scene replacement, dispose,
-   tool/effect changes, pointer cancellation, and superseding input must
-   either invalidate it or leave it to commit wholly against its captured
-   state; none may paint the new scene, use a later camera, leak pointer
-   capture, or partially apply a stale result.
-7. Add unit coverage for sample spacing, miss/depth splits, perspective
-   pixel-to-world sizing, tapered paths, all four mode combinations, ±3σ
-   footprint grazing, transforms, and deterministic union/order. Extend pick
-   lifecycle and streamed-channel tests for batched readback, concurrent
-   strokes, LOD replacement, eviction/reload, clear, edit caps, and dispose.
-   Update the picking/effects guides, capability table, public JSDoc, and
-   changelog with the implementation.
+## Public primitives
 
-## Acceptance
+`SplatMesh.pickMany(ndcs, camera, renderer, options?)` snapshots its inputs,
+renders the smallest framebuffer rectangle containing the samples once, and
+returns ordered hit/miss results. Existing `pick` delegates to this path and
+retains its one-point behavior.
 
-On WebGPU and forced WebGL2, inspect thin surfaces, foreground/background
-boundaries, grazing large anisotropic splats, transformed meshes, and small
-plus largest available static/streamed captures. A continuous stroke has no
-sample gaps, never crosses a depth discontinuity, and gives visibly distinct,
-correct results for all four depth × footprint modes. Camera/tool/scene/pointer
-changes during readback cannot corrupt the edit, and a painted streamed region
-remains painted as its LOD and residency change. Record stroke latency and
-retained edit memory, then run the full headless verification bar.
+`selectBrushStrokeInData(data, stroke, options?, worldMatrix?)` is exported from
+`@voluma/vlam/selection`. It accepts immutable world-space paths and returns
+matching source indices in deterministic ascending order. Center tests use the
+exact union of linearly tapered capsules. Footprint tests use directional
+covariance support at VLAM's rendered ±3σ extent and remain correct under
+rotation and non-uniform scale.
+
+Existing point-radius paint methods still mean through + center selection. The
+viewer and `PaintTool.paintStroke` opt into the richer modes explicitly.
+
+## Stroke lifecycle
+
+The viewer spacing-decimates pointer samples, caps a stroke at 512 samples, and
+commits on pointer-up. Misses or world/depth jumps larger than two local brush
+radii split the result into separate paths, preventing a capsule from bridging
+a foreground edge to the background.
+
+Every asynchronous commit owns snapshots of the source mesh, paint tool,
+camera, viewport, samples, and settings. A scene/tool change before readback
+completes turns the commit into a no-op. Pointer cancellation discards the
+stroke.
+
+## Streamed meshes
+
+Classic streamed SOG, LCC, LCC2, and RAD-prefix meshes retain an immutable
+geometric stroke journal in addition to sparse `(chunk file, local index)`
+values. When another run becomes resident, its geometry is tested against the
+journal before its channel is uploaded. This preserves first-paint-wins across
+eviction, reload, and coarse/fine LOD replacement while keeping the existing
+`maxEdits` cap.
+
+RAD page-table plans carry a stable global splat ID beside every moved or
+appended splat. The main thread keeps one 32-bit ID per slab slot and selects
+directly over the pool's existing CPU mirrors, without duplicating slab
+geometry. Incoming slots replay the same geometric journal before upload;
+slots outside stored strokes are reset to the channel fill, preventing ghost
+paint after coarse/fine replacement. Sparse edits remain keyed as `(chunk
+file, local index)` and obey the same first-paint-wins and `maxEdits` rules.
+
+## CPU benchmark
+
+Run `npm run benchmark:brush -- 100000 1000000 6000000` after a clean checkout.
+It reports five through+center scans, the full temporary hit buffer, retained
+result bytes, an exposed-GC estimate for the nested edit maps, and the exact
+page-table identity-array cost. The benchmark is CPU/V8-specific and does not
+include GPU depth-pick readback.
+
+Reference run on 2026-09-09, Node 24.8.0, Windows x64, Intel Core i7-12700:
+
+| Splats | Selected | Median CPU | Temporary hits | Retained edit heap | Page-table IDs |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 100,000 | 1,340 | 4.71 ms | 0.4 MB | 49,552 B | 0.4 MB |
+| 1,000,000 | 12,305 | 38.37 ms | 4 MB | 472,480 B | 4 MB |
+| 6,000,000 | 75,777 | 206.09 ms | 24 MB | 2,530,824 B | 24 MB |
+
+The edit-heap column is an indicative V8 measurement and should be compared in
+fresh processes; the typed-array byte counts are deterministic. Page-table
+painting scans only its bounded resident slab, not every splat in the capture.
+
+## Verification status
+
+Automated coverage includes pointer spacing, perspective and orthographic
+pixel-to-world sizing, miss/depth splits, tapered-path continuity, all four
+mode combinations, ±3σ anisotropic grazing, non-uniform transforms, ordered
+batched picks, streamed LOD replacement, and RAD page-table slot
+replacement/clearing. A browser probe also renders a painted channel on WebGPU
+and forced WebGL2, asserts the four selection-mode results, and verifies the
+resulting pixel change.
+
+A headed 3.19 M-splat hotel RAD capture publishes a one-million-splat
+page-table cut and stays live through a paint gesture plus camera-driven
+replacement. That pass found an initial unpublished-frontier drain deadlock;
+the pager now has a focused regression test. The remaining manual matrix is
+continuous-stroke inspection on thin surfaces, foreground/background
+boundaries, grazing large anisotropic splats, and transformed meshes across
+small and largest-available static/classic-streamed captures. TypeScript and
+headless rendering alone cannot validate those subjective pixels.

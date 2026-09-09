@@ -7,17 +7,6 @@ Git history, not in this queue.
 
 ## Next
 
-- **Automatic Apple Silicon SH cache** — implemented and unit-tested. The
-  default `auto` path selects compute evaluation only for the identified Apple
-  cohort; it is not a completed device-validation claim. **Evidence:** targeted
-  browser probes and the retained benchmark protocol. **Acceptance:** inspect
-  SH-bearing PLY captures at medium and large sizes through camera motion,
-  lifecycle and fallback paths, then run a thermal comparison. **Open issue:**
-  stationary p95 remains unresolved. **Blocker:** physical Apple devices and
-  representative captures. See the [protocol](docs/render-benchmark.md).
-
-## Later
-
 - **Mobile device gate** — validate a non-Pro iPhone 15 and complete the
   thermal and orientation matrix on sparse and dense captures. Galaxy S7/WebGL2
   is a smoke-test floor, not a performance target. Record browser, OS, GPU,
@@ -26,6 +15,9 @@ Git history, not in this queue.
   and one dense capture; portrait and landscape gaps, discs, popping; A/B
   `?pixelRatio=1`, `0.9`, `0.8` with `?adaptiveDpr=0` before raising
   `maxStdDev`; `?minSplatPx=1.5` vs `3.5`.
+
+## Later
+
 - **Streamed spherical harmonics** — blocked on an SH-bearing streamed capture
   and headed `?sh=0` versus `?sh=N` validation.
 - **RAD limit feedback** — assess refinement pacing during the RAD headed comparison.
@@ -77,26 +69,31 @@ selection features until their benefits are measured and visually validated.
   **Acceptance:** same-camera reference captures outside and inside scene
   bounds, correct projected size and picked positions, and perspective
   non-regression on WebGPU, WebGL2, and unified rendering.
-- **Surface-aware brush and selection precision** — extend the existing
-  depth-picked sphere paint tool with continuous strokes that split at depth
-  discontinuities, independent visible-surface/through and footprint/center
-  selection controls, and scalable selection processing. References:
+- [v] **Surface-aware brush and selection precision** — implemented with
+  continuous depth-picked strokes, discontinuity splitting, independent
+  visible-surface/through and footprint/center controls, and a bounded batched
+  pick pass. References:
   [sphere brush](https://github.com/playcanvas/supersplat/pull/1024) and
   [selection controls](https://github.com/playcanvas/supersplat/pull/1020).
   Keep the two decisions orthogonal: `surface` limits a stroke to the visible
   depth corridor while `through` takes every intersected Gaussian; `center`
   tests means while `footprint` tests the full VLAM ±3σ covariance ellipsoid.
   Existing point-radius APIs retain their current center-based behavior.
-  See the [implementation plan](docs/surface-aware-selection.md).
-  **Acceptance:** on WebGPU and forced WebGL2, inspect thin surfaces,
-  foreground/background boundaries, grazing large anisotropic splats,
-  transformed meshes, and small plus largest available static/streamed
-  captures. A continuous stroke has no sample gaps, never crosses a depth
-  discontinuity, and gives visibly distinct, correct results for all four
-  depth × footprint modes. Camera/tool/scene/pointer changes during readback
-  cannot corrupt the edit, and a painted streamed region remains painted as
-  its LOD and residency change. Record stroke latency and retained edit memory,
-  then run the full headless verification bar.
+  See the [implementation notes](docs/surface-aware-selection.md). Static,
+  classic streamed LOD, and RAD page-table painting are covered; the page-table
+  worker carries stable global splat IDs so paint survives slot replacement.
+  The repeatable CPU benchmark records stroke latency and retained edit memory.
+  Automated headed coverage now renders a painted channel on WebGPU and forced
+  WebGL2, checks the four depth × footprint results, and verifies that painting
+  changes output pixels. A headed 3.19 M-splat hotel RAD pass also exercises
+  paint plus camera-driven page-table replacement; its initial unpublished
+  frontier exposed and now guards a stale-drain deadlock. **Remaining manual
+  device matrix:** inspect continuous strokes on thin surfaces,
+  foreground/background boundaries, grazing large anisotropic splats, and
+  transformed meshes across small and largest-available static/classic-streamed
+  captures. Confirm no sample gaps or depth-discontinuity bridges and visibly
+  distinct results for all four modes. Camera/tool/scene/pointer changes during
+  readback must remain harmless.
 
 ## External blockers
 

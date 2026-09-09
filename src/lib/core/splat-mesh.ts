@@ -926,6 +926,19 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   }
 
   /**
+   * Existing CPU mirrors and absolute pool start for an owned range.
+   * @internal
+   */
+  protected poolRangeBacking(handle: SplatRange): {
+    readonly start: number;
+    readonly backing: SplatPoolBacking;
+  } {
+    const record = this.ranges.get(handle);
+    if (!record) throw new Error('SplatMesh.poolRangeBacking: unknown range handle.');
+    return { start: record.start, backing: this.backing };
+  }
+
+  /**
    * Zeros splats `[offset, offset + count)` of a range so they draw nothing
    * (zero covariance → degenerate quad, zero color). Used to free frontier slab
    * slots that leave the frontier. Queues the rows for upload.
@@ -1739,6 +1752,26 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // from adding new submissions while mirror retirement is waiting for the
     // display upload to finish. Failed preparation retains the mirrors, so the
     // ordinary GPU pick remains safe to attempt.
+    return this.renderingOnlyReleasePreparation
+      ? this.renderingOnlyReleasePreparation.then(pick, pick)
+      : pick();
+  }
+
+  /**
+   * Batched form of {@link pick}. One bounded depth pass covers every input
+   * coordinate and returns results in the same order. Camera and viewport state
+   * are captured when called, so a queued brush stroke cannot drift to a later
+   * camera frame.
+   */
+  pickMany(
+    ndcs: readonly THREE.Vector2[],
+    camera: THREE.Camera,
+    renderer: THREE.WebGPURenderer,
+    options?: SplatPickOptions,
+  ): Promise<readonly (SplatPickResult | null)[]> {
+    if (this.disposed) return Promise.resolve(ndcs.map(() => null));
+    this.bindRenderingOnlyRenderer(renderer, 'pickMany');
+    const pick = () => this.picker.pickMany(ndcs, camera, renderer, options);
     return this.renderingOnlyReleasePreparation
       ? this.renderingOnlyReleasePreparation.then(pick, pick)
       : pick();

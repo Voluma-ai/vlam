@@ -6,6 +6,8 @@ export interface ComparisonAdapter {
   canvas: HTMLCanvasElement;
   metadata: Record<string, unknown>;
   diagnostics?(): Record<string, unknown>;
+  /** Captures the settled pose without relying on onscreen canvas serialization. */
+  capture?(camera: PerspectiveCamera): Promise<string>;
   settle(camera: PerspectiveCamera): Promise<void>;
   frame(
     camera: PerspectiveCamera,

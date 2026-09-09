@@ -28,6 +28,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   platforms but is marked as an expected failure on Chromium Linux SwiftShader,
   whose Dawn instance is lost despite completed queue work. Unit coverage still
   verifies the complete mirror-release lifecycle on every platform.
+- RAD page-table startup no longer stalls on an empty first frame when an
+  unpublished resident frontier becomes stale while chunks stream in. With no
+  visible cut to protect, the pager now drains those stale slots under its
+  per-plan cap and continues toward the first publish.
 
 ### Changed
 
@@ -38,8 +42,25 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - The demo hides paint and select-and-cut for streamed/LOD scenes, where edits
   cannot be applied consistently across changing residency. Annotate and
   measure remain available.
+- The demo keeps persistent paint available for classic streamed/LOD scenes and
+  RAD page-table scenes, and hides only select-and-cut for streamed meshes.
+
 
 ### Added
+
+- Surface-aware painting now captures a continuous pointer stroke, resolves its
+  samples with one bounded `SplatMesh.pickMany` depth pass, splits paths at
+  misses and depth jumps, and exposes independent `surface`/`through` and
+  `center`/`footprint` controls. The public selection kernel tests tapered
+  world-space capsules and full ±3σ covariance footprints under transformed
+  meshes. Classic streamed meshes retain geometric strokes and replay them as
+  LOD runs are replaced or reloaded.
+- RAD page-table painting carries stable global splat IDs in worker plans,
+  selects over existing pool mirrors, and replays persistent strokes as slab
+  slots change owner without retaining a second geometry copy.
+- A headed browser regression renders surface-aware paint on WebGPU and forced
+  WebGL2, checks all four depth × footprint selection outcomes, and asserts the
+  painted channel changes output pixels.
 
 - Extended the local Spark/VLAM benchmark with explicit supplied, proposed,
   controlled, and historical-reference configurations; 720p/1440p five-run
@@ -120,10 +141,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   comparisons against Spark met the performance
   target at both 720p (0.975× stationary, 0.978× orbit mean-frame ratios) and
   1440p (0.917× stationary, 0.940× orbit). Controlled mean-frame comparisons
-  also passed all four cases; three of four controlled p95 cases passed, with
-  720p stationary cadence variability still above the p95 target.
+  also passed all four cases. A focused five-pair controlled 720p stationary
+  rerun resolved the remaining cadence result at a 1.000× p95 ratio and 0.983×
+  mean ratio. On the same M3 Air, medium/large SH3 PLY camera, modifier and
+  WebGL fallback checks, Safari validation, a ten-minute 8.72M-splat thermal
+  A/B, and an untouched supplied-app smoke completed the automatic-path
+  acceptance matrix. The dense orbit cache sustained 15.68 FPS versus 6.95 FPS
+  for explicit vertex SH without first-to-final-minute slowdown.
   `auto` selects it on identified Apple Silicon Macs and retains vertex SH on
-  unidentified, mobile and other devices. See
+  unidentified, mobile and other devices. This is an M3 Air validation result,
+  not a claim for every Apple GPU generation. See
   [the measurements and limitations](docs/render-benchmark.md).
 
 - Rendering benchmarks now default to a stationary camera, restart after hidden
@@ -174,6 +201,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   above-64-MiB meshes retain vertex SH. The comparison harness also flags blank
   fixed-pose screenshots, stops sequential suites, and records uncaptured
   WebGPU errors plus device-loss state.
+
+- VLAM WebGPU benchmark screenshots now use an offscreen render target and
+  asynchronous GPU readback. Safari no longer archives the previous presented
+  canvas pose for fixed front/orbit validation images.
 
 - Cross-origin streamed scenes no longer fail when an existing object-storage
   CORS policy returns a correct `206` response without exposing `Content-Range`.

@@ -35,6 +35,21 @@ persistent splat id or collision surface. Suitable for click-to-focus and
 placement anchors. It is robust by contract: empty meshes, mid-stream LOD
 churn, and dispose during a pending pick all resolve `null`, never a throw.
 
+For a stroke or another ordered group of points, use `pickMany`. It snapshots
+the camera, coordinates, and drawing-buffer size immediately, renders the
+smallest framebuffer rectangle containing the valid samples once, and returns
+one hit or `null` per input in the same order:
+
+```ts
+const hits = await splats.pickMany(ndcs, camera, renderer, {
+  alphaThreshold: 0.1,
+});
+```
+
+Keep batches spatially local. A set spanning opposite canvas corners makes the
+bounded target approach the full drawing buffer; the demo spacing-decimates a
+stroke and caps it at 512 samples.
+
 ## CPU queries: `queryNearest` and `queryHeight`
 
 Synchronous, no GPU round-trip, backed by a uniform grid rebuilt only when
@@ -98,6 +113,7 @@ worked sample.
 | Need | Use |
 | --- | --- |
 | Click-to-focus, placement anchor under the cursor | `pick` (GPU, async) |
+| Continuous screen-space stroke | `pickMany` (one bounded GPU pass) |
 | Nearest surface to a 3D point, measurements | `queryNearest` (CPU, sync) |
 | Floor following, teleport validation | `queryHeight` (CPU, sync) |
 | Cursor hit across several unified sources | `UnifiedSplatMesh.pick` |

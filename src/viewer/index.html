@@ -225,6 +225,30 @@
       #tools .tool-slot:empty {
         display: none;
       }
+      .paint-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .paint-controls input[type='range'] {
+        width: 72px;
+        vertical-align: middle;
+      }
+      .paint-controls output {
+        display: inline-block;
+        min-width: 30px;
+        margin-left: 3px;
+      }
+      #paint-cursor {
+        position: fixed;
+        z-index: 2;
+        box-sizing: border-box;
+        border: 1px solid rgba(255, 170, 51, 0.95);
+        border-radius: 50%;
+        box-shadow: 0 0 0 1px rgba(20, 20, 26, 0.7);
+        pointer-events: none;
+        transform: translate(-50%, -50%);
+      }
       /* Each tool owns its own chrome, revealed by the body attribute the tool
          picker stamps - so a tool's controls need no wiring in the picker. */
       body:not([data-tool='select']) #separate {
