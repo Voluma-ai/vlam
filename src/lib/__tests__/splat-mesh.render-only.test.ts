@@ -25,7 +25,7 @@ function uploadedRenderer(): THREE.WebGPURenderer {
     get: (object: object) =>
       object instanceof THREE.DataTexture ? { texture: {} } : { buffer: {} },
   };
-  return { backend } as unknown as THREE.WebGPURenderer;
+  return { backend, initTexture: () => undefined } as unknown as THREE.WebGPURenderer;
 }
 
 async function afterFirstDraw(mesh: SplatMesh, renderer: THREE.WebGPURenderer): Promise<void> {

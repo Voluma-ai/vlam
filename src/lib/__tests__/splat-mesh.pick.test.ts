@@ -84,6 +84,7 @@ function createMockRenderer(width = 200, height = 100): MockRenderer {
     },
     getClearAlpha: () => state.clearAlpha,
     clear: vi.fn(),
+    compileAsync: vi.fn(async () => undefined),
     render: vi.fn((scene: unknown, camera: unknown) => {
       if (scene instanceof THREE.Scene) scene.updateMatrixWorld(true);
       state.renderLog.push({
@@ -321,11 +322,11 @@ describe('SplatMesh.pick', () => {
     const second = mesh.pick(new THREE.Vector2(0.1, 0), camera, renderer);
 
     // Second must not have started its read while the first is gated.
-    await Promise.resolve();
-    expect(reads).toBe(1);
+    await vi.waitFor(() => expect(reads).toBe(1));
     release();
     await Promise.all([first, second]);
     expect(reads).toBe(2);
+    expect(renderer.compileAsync).toHaveBeenCalledOnce();
   });
 
   it('returns null after dispose and disposes pick resources', async () => {

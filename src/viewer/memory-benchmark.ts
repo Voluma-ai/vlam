@@ -305,6 +305,11 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
     frameCamera(mesh, camera);
     samplePhase = 'first-render';
     status.textContent = 'Uploading and settling scene…';
+    // The benchmark tears its renderer down immediately after reporting. Use
+    // three's tracked compilation path so no pipeline validation error scope
+    // can outlive the WebGPU device on a slow CI backend.
+    mesh.update(camera, renderer);
+    await renderer.compileAsync(scene, camera);
     const settle = await renderUntilSettled(mesh, scene, camera, renderer);
     checkpoints.push(await checkpoint('after-first-settle', mesh));
 

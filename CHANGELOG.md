@@ -19,6 +19,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Fixed
+
+- Render-only WebGPU meshes explicitly initialize texture uploads before
+  releasing CPU mirrors, and the lazy picking pipeline uses awaited validation,
+  preventing SwiftShader device loss and teardown errors in browser CI.
+
 ### Changed
 
 - The demo hides paint and select-and-cut for streamed/LOD scenes, where edits

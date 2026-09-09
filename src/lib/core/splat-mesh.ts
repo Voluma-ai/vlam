@@ -2031,10 +2031,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       !this.renderingOnlyExtraTexturesReleased &&
       dataTexturesUploaded(renderer, this.renderingOnlyExtraTextures)
     ) {
-      this.releasedCpuBytesValue += releaseDataTextureMirrors(
-        this.renderingOnlyExtraTextures,
-        renderer,
-      );
+      this.releasedCpuBytesValue += releaseDataTextureMirrors(this.renderingOnlyExtraTextures);
       this.renderingOnlyExtraTexturesReleased = true;
     }
     this.releasedCpuBytesValue += this.renderingOnlyAttributeMirrors?.release(renderer) ?? 0;
