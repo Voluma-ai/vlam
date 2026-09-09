@@ -1914,8 +1914,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (this.disposed) return;
     this.bindRenderingOnlyRenderer(renderer, 'renderView');
     this.lastRenderer = renderer;
+    if (this.renderingOnlyHasDrawn) this.releaseRenderingOnlyCpuStorage(renderer);
     camera.updateMatrixWorld();
-    this.updateWorldMatrix(true, false);
     this.flushPendingUploads(renderer);
     if (target) _viewSize.set(target.width, target.height);
     else renderer.getDrawingBufferSize(_viewSize);
