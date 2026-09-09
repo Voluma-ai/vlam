@@ -234,6 +234,7 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
   const checkpoints: MemoryCheckpoint[] = [];
   const forceWebGL = params.get('backend') === 'webgl';
   const floatTextures = params.get('poolFloat') === 'float16' ? 'float16' : 'float32';
+  const storageMode = params.get('storage') === 'render-only' ? 'render-only' : 'editable';
   const requestedSort = sortStrategyParam();
   const requestedShBands = shBandsParam();
   const kind = params.get('kind') === 'streamed' && 'url' in source ? 'streamed' : 'static';
@@ -274,6 +275,7 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
         maxBudget: Math.floor(numberParam('maxBudget', numberParam('budget', 1_000_000))),
         poolFloatTextures: floatTextures,
         sortStrategy: requestedSort,
+        storageMode,
         ...(requestedShBands === undefined ? {} : { shBands: requestedShBands }),
       });
       packedShBands =
@@ -291,6 +293,7 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
       mesh = new SplatMesh(decoded, {
         poolFloatTextures: floatTextures,
         sortStrategy: requestedSort,
+        storageMode,
         ...(requestedShBands === undefined ? {} : { shBands: requestedShBands }),
       });
       packedShBands = mesh.shBands > 0 ? (decoded.shPacked?.bands ?? 0) : 0;
@@ -304,6 +307,10 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
     status.textContent = 'Uploading and settling scene…';
     const settle = await renderUntilSettled(mesh, scene, camera, renderer);
     checkpoints.push(await checkpoint('after-first-settle', mesh));
+    const gpuPickAfterRelease =
+      storageMode === 'render-only'
+        ? (await mesh.pick(new THREE.Vector2(0, 0), camera, renderer)) !== null
+        : null;
 
     // Static caller-owned SplatData is released here. The earlier checkpoint
     // records the retained-input case; the next one isolates the mesh itself.
@@ -316,11 +323,14 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
       floatTextures,
       packedShBands,
       sortStrategy: effectiveSort,
+      storageMode,
       paletteBytes,
     });
     const activeSplats = mesh.activeSplatCount;
     const capacity = mesh.capacity;
     const shBands = mesh.shBands;
+    const releasedCpuBytes = mesh.releasedCpuBytes;
+    const cpuStorageReleased = mesh.cpuStorageReleased;
     const finalCacheBytes = streamedCacheBytes(mesh);
     const streamDiagnostics =
       mesh instanceof StreamedSplatMesh
@@ -356,6 +366,7 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
         sourceFormat,
         sourceBytes: 'file' in source ? source.file.size : sourceProgress.total || null,
         floatTextures,
+        storageMode,
         requestedSort,
         requestedShBands: requestedShBands ?? 'source',
         budget: kind === 'streamed' ? Math.floor(numberParam('budget', 1_000_000)) : null,
@@ -370,6 +381,9 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
         activeSplats,
         capacity,
         shBands,
+        releasedCpuBytes,
+        cpuStorageReleased,
+        gpuPickAfterRelease,
         settleFrames: settle.frames,
         settleTimedOut: settle.timedOut,
         streamDiagnostics,

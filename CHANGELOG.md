@@ -65,6 +65,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Performance
 
+- Static, self-owned WebGPU meshes can opt into
+  `storageMode: 'render-only'` to release pool texture images and CPU index
+  mirrors after their first successful draw. The default editable path is
+  unchanged; unsupported query/edit/dynamic/shared/WebGL2 operations fail
+  explicitly. On the bundled 149,120-splat scene this releases the padded
+  pool's accounted 10,166,272-byte CPU backing with GPU allocation unchanged.
+
 - Uncompressed SH-bearing PLY now measures its scene-wide SH extent and packs
   directly from fixed-stride records instead of retaining a full float
   coefficient intermediate. SH3 loading removes a 180-byte-per-splat transient;

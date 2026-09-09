@@ -1,4 +1,9 @@
-import { estimateSplatPoolBytes, type SplatData, type SplatSortStrategy } from '../lib/core';
+import {
+  estimateSplatPoolBytes,
+  type SplatData,
+  type SplatSortStrategy,
+  type SplatStorageMode,
+} from '../lib/core';
 
 /** Byte counts for the arrays owned by one decoded {@link SplatData}. */
 export interface DecodedSplatMemory {
@@ -11,6 +16,7 @@ export interface DecodedSplatMemory {
 /** Estimated persistent allocations attached to one rendered splat mesh. */
 export interface MeshMemoryEstimate {
   readonly cpuBackingBytes: number;
+  readonly releasedCpuBackingBytes: number;
   readonly gpuBytes: number;
   readonly totalBytes: number;
   readonly paletteBytesPerSide: number;
@@ -49,6 +55,7 @@ export function estimateMeshMemory(
     readonly floatTextures: 'float32' | 'float16';
     readonly packedShBands: 0 | 1 | 2 | 3;
     readonly sortStrategy: SplatSortStrategy;
+    readonly storageMode?: SplatStorageMode;
     readonly paletteBytes?: number;
   },
 ): MeshMemoryEstimate {
@@ -65,9 +72,13 @@ export function estimateMeshMemory(
   const poolTotalBytes = estimateSplatPoolBytes(capacity, estimateOptions);
   const paletteBytesPerSide = options.paletteBytes ?? 0;
   const gpuBytes = poolGpuBytes + paletteBytesPerSide;
-  const cpuBackingBytes = poolTotalBytes - poolGpuBytes + paletteBytesPerSide;
+  const editableCpuBackingBytes = poolTotalBytes - poolGpuBytes + paletteBytesPerSide;
+  const releasedCpuBackingBytes =
+    options.storageMode === 'render-only' ? editableCpuBackingBytes : 0;
+  const cpuBackingBytes = editableCpuBackingBytes - releasedCpuBackingBytes;
   return {
     cpuBackingBytes,
+    releasedCpuBackingBytes,
     gpuBytes,
     totalBytes: cpuBackingBytes + gpuBytes,
     paletteBytesPerSide,

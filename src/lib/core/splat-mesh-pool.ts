@@ -11,6 +11,7 @@
  * from a shared memory envelope. The rest is internal.
  */
 import * as THREE from 'three/webgpu';
+import { dataTexturesUploaded, releaseDataTextureMirrors } from './data-texture-mirror';
 
 /**
  * Texels per row in every pool data texture.
@@ -200,8 +201,9 @@ export class SplatPool {
    * entry - the slot numbers in it are simply read back by whoever owns
    * the row.
    */
-  readonly activeSlotByPoolIndex: Uint32Array;
+  private activeSlotByPoolIndexValue: Uint32Array;
   private poolIndexTemplate: Uint32Array | null = null;
+  private cpuMirrorsReleasedValue = false;
 
   constructor(options: SplatPoolOptions) {
     if (!(options.capacity > 0)) throw new Error('SplatPool capacity must be positive.');
@@ -250,7 +252,12 @@ export class SplatPool {
       createIntegerDataTexture(data, this.width, this.rows),
     );
     this.freeRowSpans = [{ start: 0, count: this.rows }];
-    this.activeSlotByPoolIndex = new Uint32Array(texelCount);
+    this.activeSlotByPoolIndexValue = new Uint32Array(texelCount);
+  }
+
+  /** Pool index → packed active-list slot. */
+  get activeSlotByPoolIndex(): Uint32Array {
+    return this.activeSlotByPoolIndexValue;
   }
 
   /**
@@ -259,6 +266,9 @@ export class SplatPool {
    * tenants sharing a pool share the one copy.
    */
   indexTemplate(): Uint32Array {
+    if (this.cpuMirrorsReleasedValue) {
+      throw new Error('SplatPool: CPU indexing mirrors were released for rendering-only storage.');
+    }
     if (this.poolIndexTemplate) return this.poolIndexTemplate;
     const indices = new Uint32Array(this.capacity);
     for (let index = 0; index < indices.length; index++) indices[index] = index;
@@ -336,6 +346,41 @@ export class SplatPool {
   /** Number of meshes drawing from this pool. */
   get tenantCount(): number {
     return this.tenants.size;
+  }
+
+  /** @internal Whether rendering-only storage released every pool-owned CPU mirror. */
+  get cpuMirrorsReleased(): boolean {
+    return this.cpuMirrorsReleasedValue;
+  }
+
+  /**
+   * Drops texture images, authoritative backing, and indexing arrays after
+   * WebGPU has uploaded every pool texture.
+   *
+   * @internal Rendering-only static meshes are the sole caller.
+   */
+  releaseCpuMirrors(renderer: THREE.WebGPURenderer): number {
+    if (this.cpuMirrorsReleasedValue) return 0;
+    const textures = [...this.coreTextures, ...this.shPackedTextures];
+    if (!dataTexturesUploaded(renderer, textures)) return 0;
+
+    let released = releaseDataTextureMirrors(textures);
+    // Float16 textures own half-encoded images in addition to the authoritative
+    // float32 centers/covarianceA backing. The other images alias backing.
+    if (this.floatTextures === 'float16') {
+      released += this.backing.centers.byteLength + this.backing.covarianceA.byteLength;
+    }
+    released += this.activeSlotByPoolIndexValue.byteLength;
+    released += this.poolIndexTemplate?.byteLength ?? 0;
+    this.backing.centers = new Float32Array(0);
+    this.backing.colors = new Uint8Array(0);
+    this.backing.covarianceA = new Float32Array(0);
+    this.backing.covarianceB = new Float32Array(0);
+    this.backing.shPacked = this.backing.shPacked.map(() => new Uint32Array(0));
+    this.activeSlotByPoolIndexValue = new Uint32Array(0);
+    this.poolIndexTemplate = null;
+    this.cpuMirrorsReleasedValue = true;
+    return released;
   }
 
   /**

@@ -48,6 +48,26 @@ describe('memory accounting', () => {
     expect(palette.totalBytes - plain.totalBytes).toBe(8192);
   });
 
+  it('moves render-only CPU backing into the released category', () => {
+    const editable = estimateMeshMemory(2048, {
+      floatTextures: 'float32',
+      packedShBands: 3,
+      sortStrategy: 'counting',
+      paletteBytes: 4096,
+    });
+    const renderOnly = estimateMeshMemory(2048, {
+      floatTextures: 'float32',
+      packedShBands: 3,
+      sortStrategy: 'counting',
+      storageMode: 'render-only',
+      paletteBytes: 4096,
+    });
+
+    expect(renderOnly.cpuBackingBytes).toBe(0);
+    expect(renderOnly.releasedCpuBackingBytes).toBe(editable.cpuBackingBytes);
+    expect(renderOnly.gpuBytes).toBe(editable.gpuBytes);
+  });
+
   it('reports worker sorting as both CPU and GPU memory', () => {
     const worker = estimateMeshMemory(2048, {
       floatTextures: 'float32',

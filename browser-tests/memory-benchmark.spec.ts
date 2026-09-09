@@ -36,3 +36,27 @@ test('records and disposes a static scene memory run', async ({ page }, testInfo
     activeSplats: 0,
   });
 });
+
+test('releases render-only CPU scene storage on WebGPU', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'chromium-webgpu', 'render-only storage requires WebGPU');
+  await page.goto(
+    '/src/viewer/memory-benchmark.html?scene=synthetic&syntheticSplats=64&storage=render-only&uaMemory=0',
+  );
+
+  const result = page.locator('[data-testid="result"]');
+  await expect(result).not.toHaveText('', { timeout: 60_000 });
+  const report = JSON.parse((await result.textContent()) ?? 'null') as {
+    scene: {
+      cpuStorageReleased: boolean;
+      releasedCpuBytes: number;
+      gpuPickAfterRelease: boolean;
+    };
+    accounted: { mesh: { cpuBackingBytes: number; releasedCpuBackingBytes: number } };
+  };
+
+  expect(report.scene.cpuStorageReleased).toBe(true);
+  expect(report.scene.releasedCpuBytes).toBeGreaterThan(0);
+  expect(report.scene.gpuPickAfterRelease).toBe(true);
+  expect(report.accounted.mesh.cpuBackingBytes).toBe(0);
+  expect(report.accounted.mesh.releasedCpuBackingBytes).toBe(report.scene.releasedCpuBytes);
+});

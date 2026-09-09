@@ -32,6 +32,7 @@ Useful query parameters:
 | `kind` | `static` / `streamed`; `static` | Loader and mesh lifecycle |
 | `backend` | `webgpu` / `webgl`; `webgpu` | Requested renderer backend |
 | `poolFloat` | `float32` / `float16`; `float32` | Pool texture precision |
+| `storage` | `editable` / `render-only`; `editable` | Static mesh CPU-storage lifetime |
 | `sort` | `counting`, `radix`, `exact`, `worker`; `counting` | Requested sort storage |
 | `sh` | `0`–`3`; source default | SH storage requested from the mesh |
 | `budget` | positive splat count; `1000000` | Streamed active budget |
@@ -130,10 +131,32 @@ the former float-intermediate algorithm. The expected peak reduction is the
 removed 180 bytes/splat; it is not described as a total-process saving, and the
 second local read's load-time cost stays visible in `scene.loadMs`.
 
+## Settled reduction: render-only static WebGPU
+
+`storageMode: 'render-only'` releases a static mesh's pool texture images,
+authoritative pool arrays, active/reverse index maps, and draw/source attribute
+mirrors once three.js has created all corresponding WebGPU resources. The
+default `editable` mode and every WebGL2, dynamic, streamed, shared-pool, or
+subclass path are unchanged.
+
+Against the reference `goose.sog` run above, the 149,504-slot padded pool moves
+from 10,166,272 bytes of retained mesh CPU backing to 0 after the first draw:
+`149,504 × 68 bytes = 10,166,272 bytes` (9.70 MiB) released, while the explicit
+10,682,624-byte GPU allocation is unchanged. The browser lifecycle test checks
+the real WebGPU backend state, requires the released byte count to match the
+accounting report, and completes a GPU pick after release. This is a mesh-owned
+allocation reduction, not a claim about total browser memory or arrays the
+application still references.
+
+Render-only mode keeps GPU picking, transforms, display/effect uniforms, and
+sorting on supported GPU strategies. CPU queries, range or channel mutation,
+compaction, shared storage, unified sources, worker sorting, and WebGL2 throw
+explicit errors.
+
 ## Acceptance for further reductions
 
-Do not release pool backing merely to improve this page. Default behavior must
-retain CPU queries, channel painting, dynamic writes, pool compaction, streamed
-residency, and WebGL2 worker sorting. Any future opt-in rendering-only storage
-mode is a separate change, gated by these baselines and explicit unsupported-
-operation behavior.
+Do not release more pool backing merely to improve this page. Default behavior
+must retain CPU queries, channel painting, dynamic writes, pool compaction,
+streamed residency, and WebGL2 worker sorting. Any further opt-in storage mode
+must remain gated by these baselines and explicit unsupported-operation
+behavior.

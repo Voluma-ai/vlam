@@ -79,6 +79,25 @@ export function resolveSplatPerformanceProfile(
 /** Construction options for {@link SplatMesh}. */
 export interface SplatMeshOptions {
   /**
+   * CPU storage retained after the initial GPU upload.
+   *
+   * `'editable'` (default) keeps authoritative pool arrays for spatial
+   * queries, range/channel writes, compaction, streaming, shared pools, and
+   * WebGL2 worker sorting. `'render-only'` is an opt-in static, self-owned
+   * WebGPU mode: after the first successful draw it releases pool texture
+   * images and index mirrors while preserving rendering, GPU picking,
+   * transforms, and shader-only controls.
+   *
+   * Render-only storage rejects dynamic-capacity meshes, subclasses, shared
+   * pools, unified-renderer sources, worker sorting, CPU spatial queries,
+   * channels, range mutation, and compaction with explicit errors. It also
+   * rejects a WebGL2 renderer on the first update or pick rather than silently
+   * retaining the backing.
+   *
+   * @experimental Measure the target scene and device before opting in.
+   */
+  storageMode?: SplatStorageMode;
+  /**
    * Where higher-order SH is evaluated. `auto` (default) selects generated
    * final color on identified Apple Silicon Macs and retains vertex evaluation
    * elsewhere.
@@ -342,6 +361,9 @@ export interface SplatMeshOptions {
 
 /** Available WebGPU depth-sort implementations. */
 export type SplatSortStrategy = 'counting' | 'worker' | 'radix' | 'exact';
+
+/** Lifetime policy for the pool's CPU-side scene mirrors. */
+export type SplatStorageMode = 'editable' | 'render-only';
 
 /** Camera-space key used for back-to-front splat ordering. */
 export type SplatSortMetric = 'depth' | 'radial';

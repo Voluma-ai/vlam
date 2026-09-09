@@ -50,6 +50,7 @@ and [`architecture.md`](architecture.md).
 | Streamed LOD / budget | ✅ | ✅ | ✅ per-source cut gathered | streamed-splat-mesh.* | `?budget=` |
 | Shared budget across meshes (`BudgetGovernor`) | ✅ weighted split via `setBudget`; flat-leaf, octree-cut and RAD page-table paths | ✅ same | ⚠️ per-source meshes registrable | `budget-governor.test.ts` |, |
 | Float16 pool textures | ⚠️ opt-in `poolFloatTextures: 'float16'` (centers + covA) | ⚠️ same |, | `half-float`, `splat-mesh.pool` | `?poolFloat=float16` |
+| Render-only CPU storage | ⚠️ opt-in static own-pool `storageMode: 'render-only'` | ❌ CPU worker needs backing | ❌ source lifetime can require direct-draw mirrors | `splat-mesh.render-only`, memory browser test | memory benchmark |
 | Adaptive pixel ratio | ⚠️ policy `suggestAdaptivePixelRatio`; application applies | ⚠️ same |, | `splat-budget.test.ts` | `?adaptiveDpr=1` |
 | Raised WebGPU storage buffer limits | ✅ `createWebGPURenderer()`; applications owning device creation pass `recommendedWebGpuRequiredLimits(adapter)` |, | ✅ early throw if pool exceeds device bind limit | `webgpu-limits.test.ts` | large LCC2 / unified capacity >8M |
 | `SplatMesh.pick` (GPU depth) | ✅ | ✅ |, | `splat-mesh.pick` | click focus |

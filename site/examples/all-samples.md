@@ -122,6 +122,10 @@ Short reference snippets from `docs/guide/samples/`, mostly exported functions r
 <<< ../../docs/guide/samples/getting-started-dispose.ts
 :::
 
+::: details getting-started-render-only.ts, release static WebGPU CPU mirrors
+<<< ../../docs/guide/samples/getting-started-render-only.ts
+:::
+
 ::: details getting-started-resize.ts, update renderer and camera projection on resize
 <<< ../../docs/guide/samples/getting-started-resize.ts
 :::

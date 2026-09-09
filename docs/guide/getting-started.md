@@ -140,6 +140,32 @@ export function teardown(scene: THREE.Scene, renderer: THREE.WebGPURenderer, spl
 Disposing is safe while loads or picks are in flight, pending picks resolve
 `null`, and a `StreamedSplatMesh` stops its streaming.
 
+## Render-only static memory
+
+A static scene that will never be queried or edited can release its CPU pool
+mirrors after the first successful WebGPU draw:
+
+```ts
+import { SplatMesh } from '@voluma/vlam';
+import { loadSplatData } from '@voluma/vlam/loaders';
+
+export async function loadRenderOnlyScene(url: string): Promise<SplatMesh> {
+  const data = await loadSplatData(url);
+  return new SplatMesh(data, { storageMode: 'render-only' });
+}
+```
+
+<!-- full file: docs/guide/samples/getting-started-render-only.ts -->
+
+The default remains `storageMode: 'editable'`. Render-only mode is limited to
+standalone static `SplatMesh` instances on WebGPU: it preserves drawing,
+transforms, GPU picking, and shader-only controls, but rejects spatial queries,
+range and channel writes, compaction, shared/dynamic pools, unified sources,
+subclasses, CPU worker sorting, and WebGL2. Check
+`splats.cpuStorageReleased` after a draw and drop
+your own `data` reference; the mesh cannot release arrays still retained by the
+application.
+
 ## Non-uniform scale
 
 A splat mesh scales like any three.js object, including **per-axis
