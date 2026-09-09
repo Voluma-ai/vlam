@@ -42,6 +42,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- Validated streamed palette SH with the 12.85M-splat SH3 Tempel `.lcc2`
+  capture in headed Chrome/Windows on WebGPU and forced WebGL2. Explicit SH0,
+  explicit SH3, and automatic tile detection resolved correctly; SH remained
+  coherent through camera motion and octree LOD replacement without holes,
+  neutral tiles, seams, or device errors.
 - Validated camera-weighted shared budgets with three independently streamed
   Hotel RAD meshes in Chrome/macOS WebGPU: the approached mesh sharpened from
   500,000 to 602,587 active splats while allocations remained within the 1.5M
