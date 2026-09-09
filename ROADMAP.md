@@ -28,8 +28,6 @@ Git history, not in this queue.
   `maxStdDev`; `?minSplatPx=1.5` vs `3.5`.
 - **Streamed spherical harmonics** — blocked on an SH-bearing streamed capture
   and headed `?sh=0` versus `?sh=N` validation.
-- **Multi-mesh budget** — visually validate several RAD meshes sharpening as the camera moves.
-  See the [multi-mesh guide](docs/guide/multi-mesh-budgets.md).
 - **RAD limit feedback** — assess refinement pacing during the RAD headed comparison.
 - **1.0 stabilization** — freeze the API, finalize migration notes, changelog,
   and release tag after the checks above pass.

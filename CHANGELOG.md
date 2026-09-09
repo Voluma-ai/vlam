@@ -31,6 +31,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- Validated camera-weighted shared budgets with three independently streamed
+  Hotel RAD meshes in Chrome/macOS WebGPU: the approached mesh sharpened from
+  500,000 to 602,587 active splats while allocations remained within the 1.5M
+  total and all page-table frontiers converged without uncovered swaps.
 - The demo hides paint and select-and-cut for streamed/LOD scenes, where edits
   cannot be applied consistently across changing residency. Annotate and
   measure remain available.
