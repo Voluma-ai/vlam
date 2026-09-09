@@ -25,12 +25,22 @@ function uploadedRenderer(): THREE.WebGPURenderer {
     get: (object: object) =>
       object instanceof THREE.DataTexture ? { texture: {} } : { buffer: {} },
   };
-  return { backend, initTexture: vi.fn() } as unknown as THREE.WebGPURenderer;
+  return {
+    backend,
+    initTexture: vi.fn(),
+    compileAsync: vi.fn().mockResolvedValue(undefined),
+    getRenderTarget: vi.fn().mockReturnValue(null),
+    setRenderTarget: vi.fn(),
+  } as unknown as THREE.WebGPURenderer;
 }
 
 async function afterFirstDraw(mesh: SplatMesh, renderer: THREE.WebGPURenderer): Promise<void> {
-  mesh.onAfterRender(renderer as unknown as WebGLRenderer);
-  await Promise.resolve();
+  mesh.onAfterRender(
+    renderer as unknown as WebGLRenderer,
+    new THREE.Scene(),
+    new THREE.PerspectiveCamera(),
+  );
+  await vi.waitFor(() => expect(mesh.cpuStorageReleased).toBe(true));
 }
 
 describe('SplatMesh render-only storage', () => {
@@ -81,6 +91,34 @@ describe('SplatMesh render-only storage', () => {
     await afterFirstDraw(mesh, renderer);
 
     expect(renderer.initTexture).toHaveBeenCalledTimes(4);
+    expect(renderer.compileAsync).toHaveBeenCalledTimes(1);
+    mesh.dispose();
+  });
+
+  it('retains CPU mirrors until the pick pipeline has compiled', async () => {
+    let finishCompilation!: () => void;
+    const renderer = uploadedRenderer();
+    vi.mocked(renderer.compileAsync).mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishCompilation = resolve;
+      }),
+    );
+    const mesh = new SplatMesh(splatData(), { storageMode: 'render-only' });
+    const draw = mesh.geometry.getAttribute('splatIndex');
+
+    mesh.onAfterRender(
+      renderer as unknown as WebGLRenderer,
+      new THREE.Scene(),
+      new THREE.PerspectiveCamera(),
+    );
+    await vi.waitFor(() => expect(renderer.compileAsync).toHaveBeenCalledOnce());
+
+    expect(mesh.cpuStorageReleased).toBe(false);
+    expect(draw.array.byteLength).toBeGreaterThan(0);
+
+    finishCompilation();
+    await vi.waitFor(() => expect(mesh.cpuStorageReleased).toBe(true));
+    expect(draw.array.byteLength).toBe(0);
     mesh.dispose();
   });
 
@@ -160,7 +198,9 @@ describe('SplatMesh render-only storage', () => {
     await afterFirstDraw(mesh, first);
 
     expect(() => mesh.update(camera, second)).toThrow(/bound to its first WebGPU renderer/);
-    expect(() => mesh.onAfterRender(first as unknown as WebGLRenderer)).not.toThrow();
+    expect(() =>
+      mesh.onAfterRender(first as unknown as WebGLRenderer, new THREE.Scene(), camera),
+    ).not.toThrow();
     mesh.dispose();
   });
 

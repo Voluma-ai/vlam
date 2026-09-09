@@ -71,6 +71,13 @@ export class SplatPicker {
   /** Renderer/material pair whose validation scopes compileAsync has drained. */
   private compiledRenderer: THREE.WebGPURenderer | null = null;
   private compiledMaterialVersion = -1;
+  /** In-flight validation shared by render-only preparation and the first pick. */
+  private compilation: {
+    renderer: THREE.WebGPURenderer;
+    material: THREE.NodeMaterial;
+    version: number;
+    promise: Promise<void>;
+  } | null = null;
   /** Reused sub-frustum camera; preserves the caller's concrete camera type. */
   private pickCamera: THREE.Camera | null = null;
   private readonly scene = new THREE.Scene();
@@ -101,6 +108,26 @@ export class SplatPicker {
     return run;
   }
 
+  /**
+   * Builds and validates the lazy pick bindings while CPU storage still exists.
+   *
+   * Three's `NodeStorageBuffer` captures `attribute.array` while compiling a
+   * new material. Render-only meshes replace that array with a zero-length
+   * mirror after upload, so compiling the pick material afterwards can create
+   * an invalid WebGPU binding on strict backends such as SwiftShader. The mesh
+   * awaits this preparation before releasing those mirrors.
+   */
+  async prepareForCpuRelease(camera: THREE.Camera, renderer: THREE.WebGPURenderer): Promise<void> {
+    if (this.host.isDisposed() || this.host.getActiveCount() === 0) return;
+    this.ensureResources(camera);
+    await this.compilePipeline(
+      renderer,
+      this.target!,
+      this.pickCamera!,
+      renderer.getRenderTarget(),
+    );
+  }
+
   /** Rebuilds the pick graph after a settings change. No-op before the first pick. */
   rebuildMaterial(): void {
     if (!this.material) return;
@@ -126,6 +153,7 @@ export class SplatPicker {
     this.pickCamera = null;
     this.compiledRenderer = null;
     this.compiledMaterialVersion = -1;
+    this.compilation = null;
   }
 
   private async run(
@@ -293,6 +321,16 @@ export class SplatPicker {
       return;
     }
 
+    const pending = this.compilation;
+    if (
+      pending?.renderer === renderer &&
+      pending.material === material &&
+      pending.version === material.version
+    ) {
+      await pending.promise;
+      return;
+    }
+
     let compilation: Promise<void>;
     try {
       renderer.setRenderTarget(target);
@@ -302,9 +340,19 @@ export class SplatPicker {
     } finally {
       renderer.setRenderTarget(previousTarget);
     }
-    await compilation;
-    this.compiledRenderer = renderer;
-    this.compiledMaterialVersion = material.version;
+    const version = material.version;
+    const tracked = compilation.then(() => {
+      if (this.material === material && material.version === version && !this.host.isDisposed()) {
+        this.compiledRenderer = renderer;
+        this.compiledMaterialVersion = version;
+      }
+    });
+    this.compilation = { renderer, material, version, promise: tracked };
+    try {
+      await tracked;
+    } finally {
+      if (this.compilation?.promise === tracked) this.compilation = null;
+    }
   }
 
   /** Maps one original framebuffer pixel onto the complete 1×1 pick target. */

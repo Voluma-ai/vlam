@@ -242,6 +242,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private renderingOnlyRenderer: THREE.WebGPURenderer | null = null;
   /** Set in {@link onAfterRender}; CPU mirrors must survive until that draw. */
   private renderingOnlyHasDrawn = false;
+  /** Pick-pipeline validation that must finish before CPU mirrors can be dropped. */
+  private renderingOnlyReleasePreparation: Promise<void> | null = null;
   private readonly shEvaluation: NonNullable<SplatMeshOptions['shEvaluation']>;
   private shCache: ShComputeCache | null = null;
   private shCacheSh: SplatShInputs | null = null;
@@ -2022,7 +2024,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.renderingOnlyRenderer = renderer;
   }
 
-  /** Releases render-only mirrors once three has created their WebGPU resources. */
+  /** Releases render-only mirrors once every display and pick GPU consumer exists. */
   private releaseRenderingOnlyCpuStorage(renderer: THREE.WebGPURenderer): void {
     if (this.disposed || this.storageModeValue !== 'render-only' || this.cpuStorageReleased) return;
     this.bindRenderingOnlyRenderer(renderer, 'releaseCpuStorage');
@@ -2038,16 +2040,38 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   }
 
   /**
-   * Marks the first successful draw. CPU mirrors drop on a microtask so three
-   * can finish the current encoder; emptying images mid-pass poisons SwiftShader
-   * and pick readback then fails with mapAsync.
+   * Marks the first successful draw. The lazy pick pipeline is compiled before
+   * mirrors drop: three captures storage binding arrays during material
+   * compilation, and an empty post-release array can poison SwiftShader.
    */
-  override onAfterRender(renderer: WebGLRenderer): void {
-    if (this.storageModeValue !== 'render-only' || this.cpuStorageReleased) return;
+  override onAfterRender(renderer: WebGLRenderer, _scene: THREE.Scene, camera: THREE.Camera): void {
+    if (
+      this.storageModeValue !== 'render-only' ||
+      this.cpuStorageReleased ||
+      this.renderingOnlyReleasePreparation
+    )
+      return;
     const webgpu = renderer as unknown as THREE.WebGPURenderer;
     this.renderingOnlyHasDrawn = true;
     this.bindRenderingOnlyRenderer(webgpu, 'releaseCpuStorage');
-    queueMicrotask(() => this.releaseRenderingOnlyCpuStorage(webgpu));
+    // onAfterRender runs inside three's render traversal. Start on a microtask
+    // so compileAsync cannot re-enter the renderer's active pass.
+    const preparation = Promise.resolve().then(() =>
+      this.picker.prepareForCpuRelease(camera, webgpu),
+    );
+    this.renderingOnlyReleasePreparation = preparation;
+    void preparation
+      .then(() => this.releaseRenderingOnlyCpuStorage(webgpu))
+      .catch((error: unknown) => {
+        // Fail safe: retained mirrors cost memory but remain valid. A later
+        // successful frame may retry preparation instead of losing the device.
+        warn(
+          `SplatMesh: retaining render-only CPU storage because pick preparation failed: ${String(error)}`,
+        );
+      })
+      .finally(() => {
+        if (!this.cpuStorageReleased) this.renderingOnlyReleasePreparation = null;
+      });
   }
 
   /**
