@@ -1,0 +1,249 @@
+import { describe, expect, it, vi } from 'vitest';
+import * as THREE from 'three/webgpu';
+import type { WebGLRenderer } from 'three';
+import { SplatMesh } from '../core/splat-mesh';
+import { SplatPool } from '../core/splat-mesh-pool';
+import { writeCovariance, type SplatData } from '../core/splat-data';
+
+const WIDTH = 2048;
+
+function splatData(): SplatData {
+  const covariances = new Float32Array(6);
+  writeCovariance(covariances, 0, 0.05, 0.05, 0.05, 1, 0, 0, 0);
+  return {
+    count: 1,
+    positions: new Float32Array([1, 2, 3]),
+    colors: new Uint8Array([180, 205, 255, 255]),
+    covariances,
+  };
+}
+
+function uploadedRenderer(): THREE.WebGPURenderer {
+  const backend = {
+    isWebGPUBackend: true,
+    device: { queue: { onSubmittedWorkDone: vi.fn().mockResolvedValue(undefined) } },
+    has: () => true,
+    get: (object: object) =>
+      object instanceof THREE.DataTexture ? { texture: {} } : { buffer: {} },
+  };
+  return {
+    backend,
+    initTexture: vi.fn(),
+    compileAsync: vi.fn().mockResolvedValue(undefined),
+    getRenderTarget: vi.fn().mockReturnValue(null),
+    setRenderTarget: vi.fn(),
+  } as unknown as THREE.WebGPURenderer;
+}
+
+function submittedWorkDone(renderer: THREE.WebGPURenderer): ReturnType<typeof vi.fn> {
+  return (
+    renderer.backend as unknown as {
+      device: { queue: { onSubmittedWorkDone: ReturnType<typeof vi.fn> } };
+    }
+  ).device.queue.onSubmittedWorkDone;
+}
+
+async function afterFirstDraw(mesh: SplatMesh, renderer: THREE.WebGPURenderer): Promise<void> {
+  mesh.onAfterRender(
+    renderer as unknown as WebGLRenderer,
+    new THREE.Scene(),
+    new THREE.PerspectiveCamera(),
+  );
+  await vi.waitFor(() => expect(mesh.cpuStorageReleased).toBe(true));
+}
+
+describe('SplatMesh render-only storage', () => {
+  it('accepts only an own static WebGPU-compatible mesh', () => {
+    class DerivedSplatMesh extends SplatMesh {}
+    const sharedPool = new SplatPool({ capacity: WIDTH });
+    expect(() => new SplatMesh({ capacity: WIDTH }, { storageMode: 'render-only' })).toThrow(
+      /static SplatData/,
+    );
+    expect(
+      () =>
+        new SplatMesh(splatData(), {
+          storageMode: 'render-only',
+          pool: sharedPool,
+        }),
+    ).toThrow(/shared pool/);
+    expect(() => new DerivedSplatMesh(splatData(), { storageMode: 'render-only' })).toThrow(
+      /subclasses/,
+    );
+    expect(
+      () => new SplatMesh(splatData(), { storageMode: 'render-only', sortStrategy: 'worker' }),
+    ).toThrow(/worker sorting/);
+    sharedPool.dispose();
+  });
+
+  it('releases every float32 pool and index mirror after upload', async () => {
+    const mesh = new SplatMesh(splatData(), { storageMode: 'render-only' });
+    const view = mesh.getUnifiedSourceView();
+    const draw = mesh.geometry.getAttribute('splatIndex');
+
+    await afterFirstDraw(mesh, uploadedRenderer());
+
+    expect(mesh.cpuStorageReleased).toBe(true);
+    expect(mesh.releasedCpuBytes).toBe(WIDTH * 68);
+    expect(view.sourceIndex.array.byteLength).toBe(0);
+    expect(draw.array.byteLength).toBe(0);
+    expect((view.centersTexture.image as { data: Float32Array }).data.byteLength).toBe(0);
+    expect((view.colorsTexture.image as { data: Uint8Array }).data.byteLength).toBe(0);
+    expect((view.covarianceATexture.image as { data: Float32Array }).data.byteLength).toBe(0);
+    expect((view.covarianceBTexture.image as { data: Float32Array }).data.byteLength).toBe(0);
+    expect(() => mesh.dispose()).not.toThrow();
+  });
+
+  it('initializes every pool texture through the renderer before releasing it', async () => {
+    const mesh = new SplatMesh(splatData(), { storageMode: 'render-only' });
+    const renderer = uploadedRenderer();
+
+    await afterFirstDraw(mesh, renderer);
+
+    expect(renderer.initTexture).toHaveBeenCalledTimes(4);
+    expect(renderer.compileAsync).toHaveBeenCalledTimes(1);
+    expect(submittedWorkDone(renderer)).toHaveBeenCalledTimes(1);
+    mesh.dispose();
+  });
+
+  it('retains CPU mirrors until the pick pipeline has compiled', async () => {
+    let finishCompilation!: () => void;
+    const renderer = uploadedRenderer();
+    vi.mocked(renderer.compileAsync).mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishCompilation = resolve;
+      }),
+    );
+    const mesh = new SplatMesh(splatData(), { storageMode: 'render-only' });
+    const draw = mesh.geometry.getAttribute('splatIndex');
+
+    mesh.onAfterRender(
+      renderer as unknown as WebGLRenderer,
+      new THREE.Scene(),
+      new THREE.PerspectiveCamera(),
+    );
+    await vi.waitFor(() => expect(renderer.compileAsync).toHaveBeenCalledOnce());
+
+    expect(mesh.cpuStorageReleased).toBe(false);
+    expect(draw.array.byteLength).toBeGreaterThan(0);
+
+    finishCompilation();
+    await vi.waitFor(() => expect(mesh.cpuStorageReleased).toBe(true));
+    expect(draw.array.byteLength).toBe(0);
+    mesh.dispose();
+  });
+
+  it('releases additional float16 images and packed SH mirrors', async () => {
+    const data: SplatData = {
+      ...splatData(),
+      shPacked: {
+        bands: 3,
+        packed: new Uint32Array(15),
+        range: { min: [-1, -1, -1], max: [1, 1, 1] },
+      },
+    };
+    const mesh = new SplatMesh(data, {
+      storageMode: 'render-only',
+      poolFloatTextures: 'float16',
+    });
+
+    await afterFirstDraw(mesh, uploadedRenderer());
+
+    expect(mesh.cpuStorageReleased).toBe(true);
+    expect(mesh.releasedCpuBytes).toBe(WIDTH * (84 + 64));
+    mesh.dispose();
+  });
+
+  it('retains CPU mirrors until submitted GPU work completes', async () => {
+    let finishGpuWork: (() => void) | undefined;
+    const renderer = uploadedRenderer();
+    const gpuIdle = new Promise<void>((resolve) => {
+      finishGpuWork = resolve;
+    });
+    submittedWorkDone(renderer).mockReturnValue(gpuIdle);
+    const mesh = new SplatMesh(splatData(), { storageMode: 'render-only' });
+
+    mesh.onAfterRender(
+      renderer as unknown as WebGLRenderer,
+      new THREE.Scene(),
+      new THREE.PerspectiveCamera(),
+    );
+    await vi.waitFor(() => expect(finishGpuWork).toBeTypeOf('function'));
+    expect(mesh.cpuStorageReleased).toBe(false);
+
+    finishGpuWork?.();
+    await vi.waitFor(() => expect(mesh.cpuStorageReleased).toBe(true));
+    mesh.dispose();
+  });
+
+  it('releases a palette image retained by the mesh', async () => {
+    const palette = new Float32Array(12);
+    const mesh = new SplatMesh(
+      {
+        ...splatData(),
+        sh: { bands: 1, labels: new Uint32Array([0]), palette, paletteWidth: 3, paletteHeight: 1 },
+      },
+      { storageMode: 'render-only' },
+    );
+
+    await afterFirstDraw(mesh, uploadedRenderer());
+
+    expect(mesh.cpuStorageReleased).toBe(true);
+    expect(mesh.releasedCpuBytes).toBe(WIDTH * 68 + palette.byteLength);
+    mesh.dispose();
+  });
+
+  it('fails CPU-backed operations explicitly while retaining shader controls', async () => {
+    const mesh = new SplatMesh(splatData(), { storageMode: 'render-only' });
+    const point = new THREE.Vector3();
+    const ray = new THREE.Ray(point, new THREE.Vector3(0, 0, -1));
+
+    expect(() => mesh.appendRange(splatData())).toThrow(/render-only/);
+    expect(() => mesh.defineChannel('paint')).toThrow(/render-only/);
+    expect(() => mesh.compact()).toThrow(/render-only/);
+    expect(() => mesh.queryNearest(point, 1)).toThrow(/render-only/);
+    expect(() => mesh.queryRay(ray, 1)).toThrow(/render-only/);
+    expect(() => mesh.queryHeight(point, 1, 1)).toThrow(/render-only/);
+    await expect(mesh.setSortStrategy('worker')).rejects.toThrow(/editable CPU storage/);
+    expect(() => mesh.setUnifiedPickVisibility(true)).toThrow(/UnifiedSplatMesh/);
+    expect(() => mesh.setMaxStdDev(2.5)).not.toThrow();
+    mesh.dispose();
+  });
+
+  it('rejects WebGL2 before rendering or picking', () => {
+    const mesh = new SplatMesh(splatData(), { storageMode: 'render-only' });
+    const renderer = { backend: { isWebGPUBackend: false } } as unknown as THREE.WebGPURenderer;
+    const camera = new THREE.PerspectiveCamera();
+
+    expect(() => mesh.update(camera, renderer)).toThrow(/requires a WebGPU backend/);
+    expect(() => mesh.pick(new THREE.Vector2(), camera, renderer)).toThrow(
+      /requires a WebGPU backend/,
+    );
+    mesh.dispose();
+  });
+
+  it('stays bound to the first WebGPU renderer after releasing CPU storage', async () => {
+    const mesh = new SplatMesh(splatData(), { storageMode: 'render-only' });
+    const first = uploadedRenderer();
+    const second = uploadedRenderer();
+    const camera = new THREE.PerspectiveCamera();
+
+    await afterFirstDraw(mesh, first);
+
+    expect(() => mesh.update(camera, second)).toThrow(/bound to its first WebGPU renderer/);
+    expect(() =>
+      mesh.onAfterRender(first as unknown as WebGLRenderer, new THREE.Scene(), camera),
+    ).not.toThrow();
+    mesh.dispose();
+  });
+
+  it('keeps pick a no-op after disposal before validating the renderer', async () => {
+    const mesh = new SplatMesh(splatData(), { storageMode: 'render-only' });
+    const renderer = { backend: { isWebGPUBackend: false } } as unknown as THREE.WebGPURenderer;
+
+    mesh.dispose();
+
+    await expect(
+      mesh.pick(new THREE.Vector2(), new THREE.PerspectiveCamera(), renderer),
+    ).resolves.toBeNull();
+  });
+});

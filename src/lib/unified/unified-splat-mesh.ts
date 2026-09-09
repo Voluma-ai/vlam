@@ -296,6 +296,11 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   addSource(source: SplatMesh, options: UnifiedSplatSourceOptions = {}): void {
     this.assertNotDisposed('addSource');
     if (this.sources.some((record) => record.source === source)) return;
+    if (source.storageMode === 'render-only') {
+      throw new Error(
+        'UnifiedSplatMesh: storageMode "render-only" sources are renderer-bound and cannot join a unified draw.',
+      );
+    }
     const view = source.getUnifiedSourceView();
     const resolvedVisible = options.visible ?? source.visible;
     if (view.hasSourcePlacement) {

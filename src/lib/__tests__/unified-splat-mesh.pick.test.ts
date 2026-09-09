@@ -66,6 +66,7 @@ function mockRenderer(width = 200, height = 100): PickMockRenderer {
     },
     getClearAlpha: () => state.clearAlpha,
     clear: vi.fn(),
+    compileAsync: vi.fn(async () => undefined),
     render: vi.fn(),
     readRenderTargetPixelsAsync: vi.fn(async () => {
       const next = state.queue.shift();

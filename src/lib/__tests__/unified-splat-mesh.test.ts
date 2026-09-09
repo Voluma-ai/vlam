@@ -13,6 +13,7 @@ function source(
     antialias?: boolean;
     lodAlpha?: boolean;
     sh?: boolean;
+    storageMode?: 'editable' | 'render-only';
   } = {},
 ): SplatMesh {
   const covariance = new Float32Array(6);
@@ -68,6 +69,19 @@ describe('supportsUnifiedSplatMesh', () => {
 });
 
 describe('UnifiedSplatMesh', () => {
+  it('rejects render-only sources before mutating registration state', () => {
+    const renderer = mockRenderer();
+    const mesh = source({ storageMode: 'render-only' });
+    const unified = new UnifiedSplatMesh(renderer, 1);
+
+    expect(() => unified.addSource(mesh)).toThrow(/render-only/);
+    expect(mesh.visible).toBe(true);
+    expect(unified.removeSource(mesh)).toBe(false);
+
+    unified.dispose();
+    mesh.dispose();
+  });
+
   it.each(['radix', 'exact'] as const)(
     'uses the stable %s sorter when requested',
     (sortStrategy) => {

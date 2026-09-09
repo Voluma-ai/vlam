@@ -60,6 +60,7 @@ const HTML_PAGES: Readonly<Record<string, string>> = {
   '/unified-harness.html': 'src/viewer/unified-harness.html',
   '/rad-parity-harness.html': 'src/viewer/rad-parity-harness.html',
   '/render-benchmark.html': 'src/viewer/render-benchmark.html',
+  '/memory-benchmark.html': 'src/viewer/memory-benchmark.html',
   '/spark-benchmark.html': 'src/viewer/spark-benchmark.html',
   '/vlam-benchmark.html': 'src/viewer/vlam-benchmark.html',
   ...Object.fromEntries(
@@ -151,6 +152,10 @@ export function viewerDevPlugin(): Plugin {
             html = await server.transformIndexHtml(transformUrl, html);
             res.statusCode = 200;
             res.setHeader('Content-Type', 'text/html; charset=utf-8');
+            if (pathname === '/memory-benchmark.html') {
+              res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+              res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+            }
             res.end(html);
             return;
           } catch (error) {

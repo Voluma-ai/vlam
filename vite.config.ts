@@ -31,9 +31,26 @@ function flattenViewerHtml(): Plugin {
   };
 }
 
+/** Enables the optional browser-wide memory API only on its dev harness. */
+function memoryBenchmarkIsolation(): Plugin {
+  return {
+    name: 'vlam-memory-benchmark-isolation',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+        if (pathname === '/src/viewer/memory-benchmark.html') {
+          res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+          res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+        }
+        next();
+      });
+    },
+  };
+}
+
 export default defineConfig({
   base: viewerBase,
-  plugins: [flattenViewerHtml()],
+  plugins: [memoryBenchmarkIsolation(), flattenViewerHtml()],
   // Serve the repo's assets/ directory as static files, so the viewer can
   // fetch e.g. /goose.ply directly. Large local captures do not go here -
   // drop their folder onto the viewer instead (StreamedSplatMesh.loadLocal),

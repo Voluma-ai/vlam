@@ -68,6 +68,16 @@ export class SplatPicker {
   private material: THREE.NodeMaterial | null = null;
   private proxy: THREE.Mesh | null = null;
   private target: THREE.RenderTarget | null = null;
+  /** Renderer/material pair whose validation scopes compileAsync has drained. */
+  private compiledRenderer: THREE.WebGPURenderer | null = null;
+  private compiledMaterialVersion = -1;
+  /** In-flight validation shared by render-only preparation and the first pick. */
+  private compilation: {
+    renderer: THREE.WebGPURenderer;
+    material: THREE.NodeMaterial;
+    version: number;
+    promise: Promise<void>;
+  } | null = null;
   /** Reused sub-frustum camera; preserves the caller's concrete camera type. */
   private pickCamera: THREE.Camera | null = null;
   private readonly scene = new THREE.Scene();
@@ -98,15 +108,39 @@ export class SplatPicker {
     return run;
   }
 
+  /**
+   * Builds and validates the lazy pick bindings while CPU storage still exists.
+   *
+   * Three's `NodeStorageBuffer` captures `attribute.array` while compiling a
+   * new material. Render-only meshes replace that array with a zero-length
+   * mirror after upload, so compiling the pick material afterwards can create
+   * an invalid WebGPU binding on strict backends such as SwiftShader. The mesh
+   * awaits this preparation before releasing those mirrors.
+   */
+  async prepareForCpuRelease(camera: THREE.Camera, renderer: THREE.WebGPURenderer): Promise<void> {
+    if (this.host.isDisposed() || this.host.getActiveCount() === 0) return;
+    this.ensureResources(camera);
+    await this.compilePipeline(
+      renderer,
+      this.target!,
+      this.pickCamera!,
+      renderer.getRenderTarget(),
+    );
+  }
+
   /** Rebuilds the pick graph after a settings change. No-op before the first pick. */
   rebuildMaterial(): void {
     if (!this.material) return;
     this.host.applyPickGraph(this.material);
+    this.compiledRenderer = null;
   }
 
   /** Flags the pick graph for recompile (e.g. the modifier list changed). */
   markNeedsUpdate(): void {
-    if (this.material) this.material.needsUpdate = true;
+    if (this.material) {
+      this.material.needsUpdate = true;
+      this.compiledRenderer = null;
+    }
   }
 
   dispose(): void {
@@ -117,6 +151,9 @@ export class SplatPicker {
     this.target?.dispose();
     this.target = null;
     this.pickCamera = null;
+    this.compiledRenderer = null;
+    this.compiledMaterialVersion = -1;
+    this.compilation = null;
   }
 
   private async run(
@@ -191,6 +228,18 @@ export class SplatPicker {
     pickTarget.viewport.set(0, 0, 1, 1);
     pickTarget.scissor.set(0, 0, 1, 1);
 
+    // Normal render() creates a pipeline synchronously but leaves its WebGPU
+    // validation popErrorScope promise untracked. If the host disposes the
+    // renderer after this awaited pick, a slow backend can reject that orphaned
+    // promise as "Instance dropped". Compile once through three's awaited path.
+    try {
+      await this.compilePipeline(renderer, pickTarget, pickCamera, previousTarget);
+    } catch (error) {
+      if (this.host.isDisposed()) return null;
+      throw error;
+    }
+    if (this.host.isDisposed()) return null;
+
     // Start readback while the target is bound, but restore shared renderer
     // state synchronously. Awaiting while mutated would corrupt normal frames.
     const readback = (() => {
@@ -257,6 +306,52 @@ export class SplatPicker {
     }
     if (this.pickCamera === null || this.pickCamera.constructor !== camera.constructor) {
       this.pickCamera = camera.clone();
+    }
+  }
+
+  /** Compiles for the pick target while restoring renderer state before the first async yield. */
+  private async compilePipeline(
+    renderer: THREE.WebGPURenderer,
+    target: THREE.RenderTarget,
+    camera: THREE.Camera,
+    previousTarget: THREE.RenderTarget | null,
+  ): Promise<void> {
+    const material = this.material as THREE.NodeMaterial;
+    if (this.compiledRenderer === renderer && this.compiledMaterialVersion === material.version) {
+      return;
+    }
+
+    const pending = this.compilation;
+    if (
+      pending?.renderer === renderer &&
+      pending.material === material &&
+      pending.version === material.version
+    ) {
+      await pending.promise;
+      return;
+    }
+
+    let compilation: Promise<void>;
+    try {
+      renderer.setRenderTarget(target);
+      // compileAsync captures the render context synchronously, restores its
+      // own render state, then awaits pipeline validation.
+      compilation = renderer.compileAsync(this.scene, camera);
+    } finally {
+      renderer.setRenderTarget(previousTarget);
+    }
+    const version = material.version;
+    const tracked = compilation.then(() => {
+      if (this.material === material && material.version === version && !this.host.isDisposed()) {
+        this.compiledRenderer = renderer;
+        this.compiledMaterialVersion = version;
+      }
+    });
+    this.compilation = { renderer, material, version, promise: tracked };
+    try {
+      await tracked;
+    } finally {
+      if (this.compilation?.promise === tracked) this.compilation = null;
     }
   }
 

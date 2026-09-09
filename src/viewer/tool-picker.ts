@@ -14,11 +14,22 @@
 export type ViewerTool = 'none' | 'paint' | 'annotate' | 'measure' | 'select';
 
 const VIEWER_TOOLS = new Set<ViewerTool>(['none', 'paint', 'annotate', 'measure', 'select']);
+const STREAMED_UNAVAILABLE_TOOLS = new Set<ViewerTool>(['paint', 'select']);
 
 /** Parses `?tool=` from a share link; unknown values are ignored. */
 export function parseViewerTool(value: string | null | undefined): ViewerTool | null {
   if (value == null || !VIEWER_TOOLS.has(value as ViewerTool)) return null;
   return value as ViewerTool;
+}
+
+/** Whether a tool is supported by the active scene kind. */
+export function isViewerToolAvailable(tool: ViewerTool, streamed: boolean): boolean {
+  return !streamed || !STREAMED_UNAVAILABLE_TOOLS.has(tool);
+}
+
+/** Falls back to camera controls when a requested tool cannot operate on the scene. */
+export function normalizeViewerTool(tool: ViewerTool, streamed: boolean): ViewerTool {
+  return isViewerToolAvailable(tool, streamed) ? tool : 'none';
 }
 
 const TOOLS: { value: ViewerTool; label: string; title: string }[] = [
@@ -45,6 +56,8 @@ export interface ToolPicker {
   readonly element: HTMLElement;
   /** Reflects a tool change the picker did not originate (a URL param, a reset). */
   setValue(tool: ViewerTool): void;
+  /** Shows or hides a tool option, resetting an active hidden tool to camera controls. */
+  setToolVisible(tool: ViewerTool, visible: boolean): void;
   /** The slot each tool hangs its own controls in, to the right of the select. */
   readonly slot: HTMLElement;
 }
@@ -63,12 +76,14 @@ export function buildToolPicker(
   const select = document.createElement('select');
   select.className = 'picker-select';
   select.setAttribute('aria-label', 'tool');
+  const optionByTool = new Map<ViewerTool, HTMLOptionElement>();
   for (const { value, label: text, title } of TOOLS) {
     const option = document.createElement('option');
     option.value = value;
     option.textContent = text;
     option.title = title;
     select.appendChild(option);
+    optionByTool.set(value, option);
   }
   label.appendChild(select);
   picker.appendChild(label);
@@ -77,7 +92,9 @@ export function buildToolPicker(
   slot.className = 'tool-slot';
   picker.appendChild(slot);
 
+  let current = active;
   const apply = (tool: ViewerTool): void => {
+    current = tool;
     select.value = tool;
     // CSS reveals the tool's controls from this attribute, so a tool can own
     // chrome that the picker itself knows nothing about.
@@ -105,5 +122,20 @@ export function buildToolPicker(
     element: picker,
     slot,
     setValue: apply,
+    setToolVisible: (tool, visible) => {
+      const option = optionByTool.get(tool);
+      if (!option) return;
+      option.hidden = !visible;
+      // Some browsers ignore `hidden` on <option>; disabled also keeps the
+      // unavailable tool out of keyboard selection.
+      option.disabled = !visible;
+      if (!visible && current === tool) {
+        apply('none');
+        onChange('none');
+        return;
+      }
+      // Re-apply selection after unhiding (disabled options often reject .value).
+      if (visible && current === tool) apply(tool);
+    },
   };
 }

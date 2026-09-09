@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VLAM! memory benchmark</title>
+    <style>
+      body { margin: 16px; background: #111; color: #ddd; font: 13px/1.5 ui-monospace, monospace; }
+      canvas { display: block; width: min(800px, 100%); height: auto; margin: 12px 0; }
+      button, input { margin: 0 8px 8px 0; padding: 5px 10px; font: inherit; }
+      pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+    </style>
+  </head>
+  <body>
+    <p>
+      Query parameters select URL runs. Use <code>?scene=/goose.sog</code> for static or
+      <code>?kind=streamed&amp;scene=/capture.lcc2</code> for streaming.
+    </p>
+    <input id="local-file" type="file" accept=".ply,.sog,.spz,.splat,.ksplat,.rad" />
+    <button id="run-file">Measure selected static file</button>
+    <button id="download-json" disabled>Download JSON</button>
+    <div id="viewport"><canvas width="800" height="600"></canvas></div>
+    <pre id="status" data-testid="status">Ready.</pre>
+    <pre id="result" data-testid="result"></pre>
+    <script type="module" src="/src/viewer/memory-benchmark.ts"></script>
+  </body>
+</html>

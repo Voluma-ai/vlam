@@ -19,6 +19,22 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Fixed
+
+- Render-only WebGPU meshes initialize texture uploads and the lazy picking
+  pipeline, then wait for submitted GPU work before releasing CPU mirrors,
+  preventing mirror retirement from racing GPU uploads or the first pick.
+- The render-only readback integration case remains enabled on native test
+  platforms but is marked as an expected failure on Chromium Linux SwiftShader,
+  whose Dawn instance is lost despite completed queue work. Unit coverage still
+  verifies the complete mirror-release lifecycle on every platform.
+
+### Changed
+
+- The demo hides paint and select-and-cut for streamed/LOD scenes, where edits
+  cannot be applied consistently across changing residency. Annotate and
+  measure remain available.
+
 ### Added
 
 - Extended the local Spark/VLAM benchmark with explicit supplied, proposed,
@@ -64,6 +80,22 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   [the protocol](docs/render-benchmark.md).
 
 ### Performance
+
+- Static, self-owned WebGPU meshes can opt into
+  `storageMode: 'render-only'` to release pool texture images and CPU index
+  mirrors after their first successful draw. The default editable path is
+  unchanged; unsupported query/edit/dynamic/shared/WebGL2 operations fail
+  explicitly. Released meshes remain bound to their first WebGPU renderer and
+  must be reconstructed after renderer replacement or device loss. On the
+  bundled 149,120-splat scene this releases the padded
+  pool's accounted 10,166,272-byte CPU backing with GPU allocation unchanged.
+
+- Uncompressed SH-bearing PLY now measures its scene-wide SH extent and packs
+  directly from fixed-stride records instead of retaining a full float
+  coefficient intermediate. SH3 loading removes a 180-byte-per-splat transient;
+  local files make a second bounded-window read to preserve bit-identical
+  quantization. A development-only memory benchmark records load checkpoints,
+  decoded arrays, streamed caches, and separate CPU/GPU allocation estimates.
 
 - Experimental static LOD now chooses deterministic Morton-local pairs by
   Gaussian similarity, color, and opacity before moment matching. This avoids

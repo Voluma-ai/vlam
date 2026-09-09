@@ -14,6 +14,7 @@ import {
   type SplatRange,
   type SplatSortStrategy,
   type SplatSortMetric,
+  type SplatStorageMode,
   type SplatUpdateOptions,
   type UnifiedSourceView,
   resolveSplatFoveationMode,
@@ -21,6 +22,7 @@ import {
 } from './splat-mesh-types';
 export * from './splat-mesh-types';
 import * as THREE from 'three/webgpu';
+import type { WebGLRenderer } from 'three';
 import { uniform } from 'three/tsl';
 import type { SplatData } from './splat-data';
 import { type SplatOrientation, yUpTransformForFormat } from './orientation';
@@ -72,6 +74,8 @@ import {
 import { warn } from './logging';
 import { radialSortState } from './splat-sort-bounds';
 import type { ShComputeCache } from './sh-compute-cache';
+import { StorageMirrorReleaser } from './storage-attribute-mirror';
+import { dataTexturesUploaded, releaseDataTextureMirrors } from './data-texture-mirror';
 
 interface UploadRowSpan {
   readonly start: number;
@@ -230,6 +234,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /** True when constructed from a complete SplatData (single fixed range). */
   private readonly isStatic: boolean;
+  private readonly storageModeValue: SplatStorageMode;
+  private readonly renderingOnlyAttributeMirrors: StorageMirrorReleaser | null;
+  private readonly renderingOnlyExtraTextures: readonly THREE.DataTexture[];
+  private renderingOnlyExtraTexturesReleased = false;
+  private releasedCpuBytesValue = 0;
+  private renderingOnlyRenderer: THREE.WebGPURenderer | null = null;
+  /** Pick-pipeline validation that must finish before CPU mirrors can be dropped. */
+  private renderingOnlyReleasePreparation: Promise<void> | null = null;
   private readonly shEvaluation: NonNullable<SplatMeshOptions['shEvaluation']>;
   private shCache: ShComputeCache | null = null;
   private shCacheSh: SplatShInputs | null = null;
@@ -376,11 +388,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     hasSorter: () => this.sorter !== null,
     updateWorldMatrix: () => this.updateWorldMatrix(true, false),
     prepare: (camera, renderer) => {
-      this.flushPendingUploads(renderer);
+      // After render-only CPU release, do not flush or re-sort: both paths can
+      // re-read emptied `.array` / texture images and poison the WebGPU device.
+      // The last `update()` already left a valid GPU draw list.
+      if (!this.cpuStorageReleased) {
+        this.flushPendingUploads(renderer);
+        if (this.sorter !== null) this.requestSortIfNeeded(camera, renderer);
+      }
       this.refreshProjectionUniforms(camera, renderer);
-      // Deliberately not `createSorter`: a depth-tested pick needs a valid
-      // draw list, not a sorted one, and the identity list is valid.
-      if (this.sorter !== null) this.requestSortIfNeeded(camera, renderer);
     },
     setView: (camera, width, height) => this.writeViewUniforms(camera, width, height),
     applyPickGraph: (material) =>
@@ -483,6 +498,24 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     const isStatic = !('capacity' in source);
     const capacity = isStatic ? source.count : source.capacity;
     if (capacity <= 0) throw new Error('SplatMesh capacity must be positive.');
+    const storageMode = options.storageMode ?? 'editable';
+    if (storageMode !== 'editable' && storageMode !== 'render-only') {
+      throw new RangeError('SplatMesh: invalid storageMode.');
+    }
+    if (storageMode === 'render-only') {
+      if (!isStatic) {
+        throw new Error('SplatMesh: storageMode "render-only" requires a static SplatData source.');
+      }
+      if (new.target !== SplatMesh) {
+        throw new Error('SplatMesh: storageMode "render-only" does not support subclasses.');
+      }
+      if (options.pool) {
+        throw new Error('SplatMesh: storageMode "render-only" does not support a shared pool.');
+      }
+      if (options.sortStrategy === 'worker') {
+        throw new Error('SplatMesh: storageMode "render-only" does not support worker sorting.');
+      }
+    }
 
     // Pool data textures (CPU backing arrays kept for partial uploads):
     //   centers      RGBA32F or RGBA16F  x, y, z, (unused)
@@ -630,12 +663,22 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.sourceIndexAttribute = new THREE.StorageBufferAttribute(new Uint32Array(texelCount), 1);
     this.dataTextures = pool.coreTextures;
     this.isStatic = isStatic;
+    this.storageModeValue = storageMode;
+    this.renderingOnlyAttributeMirrors =
+      storageMode === 'render-only'
+        ? new StorageMirrorReleaser([this.splatIndexAttribute, this.sourceIndexAttribute])
+        : null;
     this.shEnabled = shPaletteTexture !== null;
     this.shRange = { min: vec3Uniform(), max: vec3Uniform() };
     this.frustumCulled = false; // Culling happens per splat in the shader.
     if (shPaletteTexture) this.dataTextures = [...this.dataTextures, shPaletteTexture];
     if (shPackedTextures.length > 0)
       this.dataTextures = [...this.dataTextures, ...shPackedTextures];
+    this.renderingOnlyExtraTextures =
+      storageMode === 'render-only'
+        ? this.dataTextures.filter((texture) => !this.pool.isPoolTexture(texture))
+        : [];
+    this.renderingOnlyExtraTexturesReleased = this.renderingOnlyExtraTextures.length === 0;
 
     this.materialInputs = {
       textures: { centersTexture, colorsTexture, covarianceATexture, covarianceBTexture },
@@ -654,7 +697,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.buildMaterial(this.materialInputs.textures, this.materialInputs.sh);
 
     if (isStatic) {
-      this.staticRange = this.appendRange(source);
+      this.staticRange = this.appendRangeWithState(source, true);
       // Constructor-time writes are covered by the textures' initial
       // `needsUpdate` upload - the GPU cannot have seen them earlier. Any
       // append after construction must go through the staging-copy path,
@@ -687,6 +730,26 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     return this.materialInputs.sh?.bands ?? 0;
   }
 
+  /** CPU scene-storage lifetime selected at construction. */
+  get storageMode(): SplatStorageMode {
+    return this.storageModeValue;
+  }
+
+  /** Bytes of mesh-owned CPU scene storage released after WebGPU upload. */
+  get releasedCpuBytes(): number {
+    return this.releasedCpuBytesValue;
+  }
+
+  /** Whether a render-only mesh has released every eligible CPU mirror. */
+  get cpuStorageReleased(): boolean {
+    return (
+      this.storageModeValue === 'render-only' &&
+      this.pool.cpuMirrorsReleased &&
+      this.renderingOnlyExtraTexturesReleased &&
+      this.renderingOnlyAttributeMirrors?.settled === true
+    );
+  }
+
   /**
    * The contribution-culling profile currently in effect (resolved at
    * construction, or the last {@link setPerformanceProfile} value).
@@ -706,6 +769,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * selected, with the new sort submitted on the next update, even at rest.
    */
   async setSortStrategy(strategy: SplatSortStrategy): Promise<void> {
+    if (this.storageModeValue === 'render-only' && strategy === 'worker') {
+      throw new Error('SplatMesh.setSortStrategy: worker sorting requires editable CPU storage.');
+    }
     const revision = ++this.sortStrategyRevision;
     if (this.disposed || strategy === this.sortStrategyValue) return;
     if (strategy === 'radix' || strategy === 'exact') {
@@ -771,6 +837,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * @throws {Error} when the remaining pool capacity cannot fit the range.
    */
   appendRange(data: SplatData): SplatRange {
+    this.assertEditableStorage('appendRange');
     return this.appendRangeWithState(data, true);
   }
 
@@ -1182,6 +1249,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * conservative superset until new ranges grow it again.
    */
   removeRange(handle: SplatRange): void {
+    this.assertEditableStorage('removeRange');
     const record = this.ranges.get(handle);
     if (!record) throw new Error('SplatMesh.removeRange: unknown range handle.');
     if (record.active) this.deactivateRecord(record);
@@ -1271,6 +1339,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * Internal consumers should clear the state with `null` before disposing.
    */
   setUnifiedPickVisibility(visible: boolean | null): void {
+    if (visible !== null && this.storageModeValue === 'render-only') {
+      throw new Error(
+        'SplatMesh.setUnifiedPickVisibility: storageMode "render-only" does not support UnifiedSplatMesh sources.',
+      );
+    }
     this.unifiedPickVisibility = visible;
   }
 
@@ -1315,6 +1388,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * @throws {Error} if a channel of this name already exists.
    */
   defineChannel(name: string, options: SplatChannelOptions = {}): void {
+    this.assertEditableStorage('defineChannel');
     if (this.channels.has(name)) {
       throw new Error(`SplatMesh.defineChannel: channel "${name}" already defined.`);
     }
@@ -1348,6 +1422,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * @throws {Error} for an unknown channel or range, or a write past the range.
    */
   writeChannel(range: SplatRange, name: string, data: ArrayLike<number>, offset = 0): void {
+    this.assertEditableStorage('writeChannel');
     const channel = this.channels.get(name);
     if (!channel) throw new Error(`SplatMesh.writeChannel: channel "${name}" is not defined.`);
     const record = this.ranges.get(range);
@@ -1484,6 +1559,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * moved rows are re-uploaded to the GPU on the next {@link update}.
    */
   compact(): void {
+    this.assertEditableStorage('compact');
     this.pool.compact();
   }
 
@@ -1536,6 +1612,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // A render loop can outlive the mesh by a frame; updating after dispose
     // would recreate a sorter and upload into disposed textures.
     if (this.disposed) return;
+    this.bindRenderingOnlyRenderer(renderer, 'update');
     this.lastRenderer = renderer;
     this.assertPoolFitsDevice(renderer);
     camera.updateMatrixWorld();
@@ -1654,7 +1731,17 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     renderer: THREE.WebGPURenderer,
     options?: SplatPickOptions,
   ): Promise<SplatPickResult | null> {
-    return this.picker.pick(ndc, camera, renderer, options);
+    if (this.disposed) return Promise.resolve(null);
+    this.bindRenderingOnlyRenderer(renderer, 'pick');
+    const pick = () => this.picker.pick(ndc, camera, renderer, options);
+    // A render-only first pick must not race the post-draw queue barrier. Apart
+    // from making "pick after release" literal, this prevents the pick pass
+    // from adding new submissions while mirror retirement is waiting for the
+    // display upload to finish. Failed preparation retains the mirrors, so the
+    // ordinary GPU pick remains safe to attempt.
+    return this.renderingOnlyReleasePreparation
+      ? this.renderingOnlyReleasePreparation.then(pick, pick)
+      : pick();
   }
 
   /**
@@ -1677,6 +1764,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * modifiers are queried at their undisplaced CPU positions.
    */
   queryNearest(worldPoint: THREE.Vector3, radius: number): SplatNearestResult | null {
+    this.assertEditableStorage('queryNearest');
     if (this.activeCount === 0 || !(radius >= 0)) return null;
     this.updateWorldMatrix(true, false);
     _queryLocal.copy(worldPoint);
@@ -1716,6 +1804,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     radiusAtUnitDistance = 0.025,
     minimumRadius = 0.05,
   ): SplatRayResult | null {
+    this.assertEditableStorage('queryRay');
     if (
       this.activeCount === 0 ||
       !(radiusAtUnitDistance >= 0) ||
@@ -1767,6 +1856,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     maxDrop: number,
     radius = maxDrop / 2,
   ): SplatHeightResult | null {
+    this.assertEditableStorage('queryHeight');
     if (this.activeCount === 0 || !(maxDrop >= 0) || !(radius >= 0)) return null;
     this.updateWorldMatrix(true, false);
     _queryLocal.copy(worldPoint);
@@ -1826,6 +1916,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     target: THREE.RenderTarget | null = null,
   ): void {
     if (this.disposed) return;
+    this.bindRenderingOnlyRenderer(renderer, 'renderView');
     this.lastRenderer = renderer;
     camera.updateMatrixWorld();
     this.updateWorldMatrix(true, false);
@@ -1908,6 +1999,97 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     return Math.min(Math.abs(_queryScale.x), Math.abs(_queryScale.y), Math.abs(_queryScale.z)) || 1;
   }
 
+  private assertEditableStorage(method: string): void {
+    if (this.storageModeValue !== 'render-only') return;
+    throw new Error(
+      `SplatMesh.${method}: unavailable with storageMode "render-only"; ` +
+        'construct an editable mesh to retain CPU scene data.',
+    );
+  }
+
+  private bindRenderingOnlyRenderer(renderer: THREE.WebGPURenderer, method: string): void {
+    if (this.storageModeValue !== 'render-only') return;
+    const backend = renderer.backend as { isWebGPUBackend?: boolean };
+    if (backend.isWebGPUBackend !== true) {
+      throw new Error(
+        `SplatMesh.${method}: storageMode "render-only" requires a WebGPU backend; ` +
+          'WebGL2 worker sorting requires retained CPU scene data.',
+      );
+    }
+    if (this.renderingOnlyRenderer && this.renderingOnlyRenderer !== renderer) {
+      throw new Error(
+        `SplatMesh.${method}: storageMode "render-only" is bound to its first WebGPU renderer; ` +
+          'construct a new mesh to use another renderer.',
+      );
+    }
+    this.renderingOnlyRenderer = renderer;
+  }
+
+  /** Releases render-only mirrors once every display and pick GPU consumer exists. */
+  private releaseRenderingOnlyCpuStorage(renderer: THREE.WebGPURenderer): void {
+    if (this.disposed || this.storageModeValue !== 'render-only' || this.cpuStorageReleased) return;
+    this.bindRenderingOnlyRenderer(renderer, 'releaseCpuStorage');
+    this.releasedCpuBytesValue += this.pool.releaseCpuMirrors(renderer);
+    if (
+      !this.renderingOnlyExtraTexturesReleased &&
+      dataTexturesUploaded(renderer, this.renderingOnlyExtraTextures)
+    ) {
+      this.releasedCpuBytesValue += releaseDataTextureMirrors(this.renderingOnlyExtraTextures);
+      this.renderingOnlyExtraTexturesReleased = true;
+    }
+    this.releasedCpuBytesValue += this.renderingOnlyAttributeMirrors?.release(renderer) ?? 0;
+  }
+
+  /** Waits until WebGPU has consumed every upload backed by the CPU mirrors. */
+  private async waitForRenderingOnlyGpuIdle(renderer: THREE.WebGPURenderer): Promise<void> {
+    const queue = (
+      renderer.backend as unknown as {
+        device?: { queue?: { onSubmittedWorkDone?: () => Promise<void> } };
+      }
+    ).device?.queue;
+    if (typeof queue?.onSubmittedWorkDone !== 'function') {
+      throw new Error('the WebGPU queue does not expose onSubmittedWorkDone().');
+    }
+    await queue.onSubmittedWorkDone();
+  }
+
+  /**
+   * Marks the first successful draw. The lazy pick pipeline is compiled before
+   * mirrors drop: three captures storage binding arrays during material
+   * compilation, and an empty post-release array can poison SwiftShader.
+   */
+  override onAfterRender(renderer: WebGLRenderer, _scene: THREE.Scene, camera: THREE.Camera): void {
+    if (
+      this.storageModeValue !== 'render-only' ||
+      this.cpuStorageReleased ||
+      this.renderingOnlyReleasePreparation
+    )
+      return;
+    const webgpu = renderer as unknown as THREE.WebGPURenderer;
+    this.bindRenderingOnlyRenderer(webgpu, 'releaseCpuStorage');
+    // onAfterRender runs inside three's render traversal. Start on a microtask
+    // so compileAsync cannot re-enter the renderer's active pass.
+    const preparation = Promise.resolve()
+      .then(() => this.picker.prepareForCpuRelease(camera, webgpu))
+      // `onAfterRender` runs before three submits the current command buffer.
+      // This continuation starts after render() returns, so the queue barrier
+      // covers both that display upload and any earlier sorter dispatches.
+      .then(() => this.waitForRenderingOnlyGpuIdle(webgpu));
+    this.renderingOnlyReleasePreparation = preparation;
+    void preparation
+      .then(() => this.releaseRenderingOnlyCpuStorage(webgpu))
+      .catch((error: unknown) => {
+        // Fail safe: retained mirrors cost memory but remain valid. A later
+        // successful frame may retry preparation instead of losing the device.
+        warn(
+          `SplatMesh: retaining render-only CPU storage because pick preparation failed: ${String(error)}`,
+        );
+      })
+      .finally(() => {
+        if (!this.cpuStorageReleased) this.renderingOnlyReleasePreparation = null;
+      });
+  }
+
   /**
    * Releases every GPU resource and worker this mesh owns. Idempotent: a
    * second call is a no-op, and a render loop that outlives the mesh by a
@@ -1952,6 +2134,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       releaseRendererAttributes(this.lastRenderer, [this.sourceIndexAttribute]);
       this.lastRenderer = null;
     }
+    this.renderingOnlyRenderer = null;
     // Drop queued CPU work and cached references so nothing uploads or
     // rebuilds after teardown, and large arrays are unreachable promptly.
     this.pendingUploadRows = [];

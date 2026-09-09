@@ -19,7 +19,9 @@ from public JSDoc and is deliberately not checked in.
 | [Troubleshooting](guide/troubleshooting.md) | Common integration failures |
 | [Capabilities](capabilities.md) | Supported formats and platforms |
 | [XR](xr.md) | WebXR integration |
+| [Memory benchmark](memory-benchmark.md) | Repeatable peak and retained scene-memory protocol |
 | [Architecture](architecture.md) | Contributor constraints and source map |
+| [Surface-aware selection](surface-aware-selection.md) | Post-1.0 brush and selection implementation plan |
 | [Roadmap](../ROADMAP.md) | Open work only |
 
 The files under `formats/` document byte layouts and interoperability details

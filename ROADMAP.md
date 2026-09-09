@@ -18,13 +18,6 @@ Git history, not in this queue.
 
 ## Later
 
-- **Apple Silicon GPU tiers** — design recorded in
-  [capabilities](docs/capabilities.md#apple-silicon-gpu-tiers-design-not-shipped).
-  Today every Apple adapter is `integrated` (correct for Air; underserves
-  Pro / Max). Do not raise Mac defaults from marketing specs. Needs host/URL
-  override hooks in tests, then headed M-series Pro/Max hotel-orbit matrix
-  (Chrome + Safari) before any `apple-pro` budget or SD-default change.
-  Blocked on physical Pro/Max validation.
 - **Mobile device gate** — validate a non-Pro iPhone 15 and complete the
   thermal and orientation matrix on sparse and dense captures. Galaxy S7/WebGL2
   is a smoke-test floor, not a performance target. Record browser, OS, GPU,
@@ -35,25 +28,82 @@ Git history, not in this queue.
   `maxStdDev`; `?minSplatPx=1.5` vs `3.5`.
 - **Streamed spherical harmonics** — blocked on an SH-bearing streamed capture
   and headed `?sh=0` versus `?sh=N` validation.
-- **RAD parity and coverage** — capture a same-camera Spark side-by-side and a
-  construction-timeline marker crossfade. See the
-  [RAD format notes](docs/formats/rad-notes.md#headed-spark-parity-2026-09-04).
 - **Multi-mesh budget** — visually validate several RAD meshes sharpening as the camera moves.
   See the [multi-mesh guide](docs/guide/multi-mesh-budgets.md).
-- **Selection and separation** — verify seams, global sort, and SDF highlighting in headed WebGPU. Use
-  `?tool=select` in the demo.
-- **Experimental static merged auto-LOD** — compare WebGPU and forced WebGL2 with
-  Spark on small and large captures.
-- **WebGL2 streamed sort flicker** — visually validate camera motion before closing.
 - **RAD limit feedback** — assess refinement pacing during the RAD headed comparison.
 - **1.0 stabilization** — freeze the API, finalize migration notes, changelog,
   and release tag after the checks above pass.
+
+## Post-1.0 opportunities (optional)
+
+These are candidates for future work, not 1.0 release requirements. Preserve
+the WebGL2 fallback, the three.js-only library dependency, portable compute,
+and the verified rendering math.
+
+For 1.0, the most useful early work is a memory baseline and small fixes for
+unnecessary retained copies that it identifies. Brush lifecycle or stale-pick
+fixes discovered during existing selection validation also fit stabilization.
+Neither adds a release gate; defer new storage modes, rendering paths, and
+selection features until their benefits are measured and visually validated.
+
+- **Lower retained scene memory** — measure peak loading memory, settled CPU
+  backing, and GPU allocations separately on representative static and streamed
+  scenes. GPU scratch mirrors are already released; local PLY input already
+  uses windowed reads. Target remaining scene-data copies and investigate an
+  opt-in rendering-only storage mode. Retain data needed by CPU queries,
+  painting, pool compaction, and WebGL2 sorting. **Acceptance:** demonstrate
+  lower peak or settled memory against a recorded baseline, with lifecycle,
+  query, editing, and fallback checks. Upstream JS-heap savings are not a
+  total-memory estimate or a predicted VLAM gain.
+- **Cull before sorting and compute projection** — prototype a WebGPU path
+  that builds a dense visible-splat list before sorting, uses its GPU count
+  for indirect dispatch/draw, and evaluates projection once per splat. VLAM
+  already sorts on the GPU; the opportunity is reducing the sorted/drawn work
+  and repeated vertex projection. **Acceptance:** compare GPU time, memory,
+  and frame-time tails against the current path on interior views and views
+  with most splats visible. Verify footprint-aware edge culling, exact index
+  coverage, standalone/unified rendering, and per-view/XR correctness. Keep
+  the current path until the additional compute/storage cost earns its place.
+- **Stochastic transparency during movement** — experiment with opt-in
+  sort-free fragment coverage while navigating heavy scenes, then restore
+  sorted blending when motion settles and for captures. Any automatic policy
+  must distinguish sorted-frame timings from stochastic-frame timings and
+  define behavior without GPU timestamps. **Acceptance:** measure navigation
+  gains and inspect noise, transition quality, picking, mesh compositing, and
+  stereo behavior. Include fragment-bound devices; skipping sorting alone
+  does not guarantee an improvement. Do not change the default without evidence.
+- **Orthographic rendering and inspection views** — extend the shared
+  perspective-only projection for plan/elevation views, including clipping,
+  depth sorting, SH view direction, and picking. Reference
+  [SuperSplat's orthographic fix](https://github.com/playcanvas/supersplat/pull/1022).
+  **Acceptance:** same-camera reference captures outside and inside scene
+  bounds, correct projected size and picked positions, and perspective
+  non-regression on WebGPU, WebGL2, and unified rendering.
+- **Surface-aware brush and selection precision** — extend the existing
+  depth-picked sphere paint tool with continuous strokes that split at depth
+  discontinuities, independent visible-surface/through and footprint/center
+  selection controls, and scalable selection processing. References:
+  [sphere brush](https://github.com/playcanvas/supersplat/pull/1024) and
+  [selection controls](https://github.com/playcanvas/supersplat/pull/1020).
+  Keep the two decisions orthogonal: `surface` limits a stroke to the visible
+  depth corridor while `through` takes every intersected Gaussian; `center`
+  tests means while `footprint` tests the full VLAM ±3σ covariance ellipsoid.
+  Existing point-radius APIs retain their current center-based behavior.
+  See the [implementation plan](docs/surface-aware-selection.md).
+  **Acceptance:** on WebGPU and forced WebGL2, inspect thin surfaces,
+  foreground/background boundaries, grazing large anisotropic splats,
+  transformed meshes, and small plus largest available static/streamed
+  captures. A continuous stroke has no sample gaps, never crosses a depth
+  discontinuity, and gives visibly distinct, correct results for all four
+  depth × footprint modes. Camera/tool/scene/pointer changes during readback
+  cannot corrupt the edit, and a painted streamed region remains painted as
+  its LOD and residency change. Record stroke latency and retained edit memory,
+  then run the full headless verification bar.
 
 ## External blockers
 
 | Work                        | Blocker                                  |
 | --------------------------- | ---------------------------------------- |
-| Apple Silicon Pro/Max tier  | Physical MacBook Pro (M-series Pro/Max)  |
-| Mobile matrix               | Physical iPhone 15 (non-Pro)             |
+| Mobile matrix               | Physical Android device max 4 years old  |
 | Streamed SH comparison      | SH-bearing streamed capture              |
 | Reference pixel comparisons | External datasets and viewers            |
