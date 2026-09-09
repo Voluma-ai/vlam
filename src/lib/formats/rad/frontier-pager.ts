@@ -180,13 +180,15 @@ export class FrontierPager {
   /**
    * How many leavers this plan may retire.
    *
-   * While replacements are still arriving, evict only tail slots the admitted
-   * appends need (`needRoom`). Never spend leftover cap on the published
-   * prefix - that mixed the previous cut with the next on screen. Once every
-   * newcomer is seated *and* the caller asked to publish, retire remaining
-   * stale - but still under `maxEvicts`. Publishing used to dump the whole
-   * deferred leaver queue in one plan (hotel-orbit spikes of 300k+ moves /
-   * ~150 ms apply); the append cap alone does not bound that half.
+   * While replacements are still arriving, evict only slots the admitted
+   * appends need (`needRoom`). Never spend leftover cap on an already-published
+   * prefix - that mixed the previous cut with the next on screen. Before the
+   * first cut is visible there is no prefix to protect, so once every newcomer
+   * is seated we may retire the remaining stale residents even when publication
+   * is still held. Otherwise an early cache refill can leave `drain()` reporting
+   * stale work forever while evicting zero entries. Retirement remains bounded
+   * by `maxEvicts`; publishing used to dump the whole deferred leaver queue in
+   * one plan (hotel-orbit spikes of 300k+ moves / ~150 ms apply).
    */
   private evictBudget(
     admitted: number,
@@ -197,10 +199,11 @@ export class FrontierPager {
     maxEvicts: number,
   ): number {
     const needRoom = Math.max(0, admitted - (this.capacity - this.count));
-    if (remainingNewAfter === 0 && publish) {
+    const holdsPublishedPrefix = this.hasPublishedCut && !publish;
+    if (remainingNewAfter === 0 && !holdsPublishedPrefix) {
       return Math.min(tailStale + prefixStale, maxEvicts);
     }
-    return Math.min(publish ? tailStale + prefixStale : tailStale, needRoom);
+    return Math.min(holdsPublishedPrefix ? tailStale : tailStale + prefixStale, needRoom);
   }
 
   /** Forgets any deferred work, so the next plan re-diffs from scratch. */

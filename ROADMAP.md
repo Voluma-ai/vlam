@@ -93,15 +93,17 @@ selection features until their benefits are measured and visually validated.
   classic streamed LOD, and RAD page-table painting are covered; the page-table
   worker carries stable global splat IDs so paint survives slot replacement.
   The repeatable CPU benchmark records stroke latency and retained edit memory.
-  **Remaining device validation:** on WebGPU and forced WebGL2, inspect thin surfaces,
-  foreground/background boundaries, grazing large anisotropic splats,
-  transformed meshes, and small plus largest available static/streamed
-  captures. A continuous stroke must have no sample gaps, never cross a depth
-  discontinuity, and give visibly distinct, correct results for all four
-  depth × footprint modes. Camera/tool/scene/pointer changes during readback
-  cannot corrupt the edit, and a painted streamed region remains painted as
-  its LOD and residency change. A real large RAD capture is still required for
-  a headed page-table paint/replacement pass; synthetic tests cover that path.
+  Automated headed coverage now renders a painted channel on WebGPU and forced
+  WebGL2, checks the four depth × footprint results, and verifies that painting
+  changes output pixels. A headed 3.19 M-splat hotel RAD pass also exercises
+  paint plus camera-driven page-table replacement; its initial unpublished
+  frontier exposed and now guards a stale-drain deadlock. **Remaining manual
+  device matrix:** inspect continuous strokes on thin surfaces,
+  foreground/background boundaries, grazing large anisotropic splats, and
+  transformed meshes across small and largest-available static/classic-streamed
+  captures. Confirm no sample gaps or depth-discontinuity bridges and visibly
+  distinct results for all four modes. Camera/tool/scene/pointer changes during
+  readback must remain harmless.
 
 ## External blockers
 

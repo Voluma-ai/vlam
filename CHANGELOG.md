@@ -34,6 +34,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - The demo keeps persistent paint available for classic streamed/LOD scenes and
   RAD page-table scenes, and hides only select-and-cut for streamed meshes.
 
+### Fixed
+
+- RAD page-table startup no longer stalls on an empty first frame when an
+  unpublished resident frontier becomes stale while chunks stream in. With no
+  visible cut to protect, the pager now drains those stale slots under its
+  per-plan cap and continues toward the first publish.
+
 ### Added
 
 - Surface-aware painting now captures a continuous pointer stroke, resolves its
@@ -46,6 +53,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - RAD page-table painting carries stable global splat IDs in worker plans,
   selects over existing pool mirrors, and replays persistent strokes as slab
   slots change owner without retaining a second geometry copy.
+- A headed browser regression renders surface-aware paint on WebGPU and forced
+  WebGL2, checks all four depth × footprint selection outcomes, and asserts the
+  painted channel changes output pixels.
 
 - Extended the local Spark/VLAM benchmark with explicit supplied, proposed,
   controlled, and historical-reference configurations; 720p/1440p five-run

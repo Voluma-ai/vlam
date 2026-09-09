@@ -94,9 +94,15 @@ Automated coverage includes pointer spacing, perspective and orthographic
 pixel-to-world sizing, miss/depth splits, tapered-path continuity, all four
 mode combinations, ±3σ anisotropic grazing, non-uniform transforms, ordered
 batched picks, streamed LOD replacement, and RAD page-table slot
-replacement/clearing.
+replacement/clearing. A browser probe also renders a painted channel on WebGPU
+and forced WebGL2, asserts the four selection-mode results, and verifies the
+resulting pixel change.
 
-The remaining headed matrix is WebGPU plus forced WebGL2 on thin surfaces,
-foreground/background boundaries, transformed meshes, and small plus large
-static/classic-streamed captures, plus a real large RAD page-table capture.
-TypeScript and headless rendering alone cannot validate pixels.
+A headed 3.19 M-splat hotel RAD capture publishes a one-million-splat
+page-table cut and stays live through a paint gesture plus camera-driven
+replacement. That pass found an initial unpublished-frontier drain deadlock;
+the pager now has a focused regression test. The remaining manual matrix is
+continuous-stroke inspection on thin surfaces, foreground/background
+boundaries, grazing large anisotropic splats, and transformed meshes across
+small and largest-available static/classic-streamed captures. TypeScript and
+headless rendering alone cannot validate those subjective pixels.
