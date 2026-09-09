@@ -164,7 +164,9 @@ range and channel writes, compaction, shared/dynamic pools, unified sources,
 subclasses, CPU worker sorting, and WebGL2. Check
 `splats.cpuStorageReleased` after a draw and drop
 your own `data` reference; the mesh cannot release arrays still retained by the
-application.
+application. A render-only mesh is bound to the first WebGPU renderer that uses
+it. Recreate the mesh from source data when replacing that renderer or
+recovering from device loss.
 
 ## Non-uniform scale
 

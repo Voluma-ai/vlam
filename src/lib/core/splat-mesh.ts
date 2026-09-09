@@ -239,6 +239,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private readonly renderingOnlyExtraTextures: readonly THREE.DataTexture[];
   private renderingOnlyExtraTexturesReleased = false;
   private releasedCpuBytesValue = 0;
+  private renderingOnlyRenderer: THREE.WebGPURenderer | null = null;
   private readonly shEvaluation: NonNullable<SplatMeshOptions['shEvaluation']>;
   private shCache: ShComputeCache | null = null;
   private shCacheSh: SplatShInputs | null = null;
@@ -1606,7 +1607,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // A render loop can outlive the mesh by a frame; updating after dispose
     // would recreate a sorter and upload into disposed textures.
     if (this.disposed) return;
-    this.assertRenderingOnlyBackend(renderer, 'update');
+    this.bindRenderingOnlyRenderer(renderer, 'update');
     this.lastRenderer = renderer;
     this.releaseRenderingOnlyCpuStorage(renderer);
     this.assertPoolFitsDevice(renderer);
@@ -1727,7 +1728,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     renderer: THREE.WebGPURenderer,
     options?: SplatPickOptions,
   ): Promise<SplatPickResult | null> {
-    this.assertRenderingOnlyBackend(renderer, 'pick');
+    if (this.disposed) return Promise.resolve(null);
+    this.bindRenderingOnlyRenderer(renderer, 'pick');
     return this.picker.pick(ndc, camera, renderer, options);
   }
 
@@ -1903,7 +1905,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     target: THREE.RenderTarget | null = null,
   ): void {
     if (this.disposed) return;
-    this.assertRenderingOnlyBackend(renderer, 'renderView');
+    this.bindRenderingOnlyRenderer(renderer, 'renderView');
     this.lastRenderer = renderer;
     camera.updateMatrixWorld();
     this.updateWorldMatrix(true, false);
@@ -1994,20 +1996,28 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     );
   }
 
-  private assertRenderingOnlyBackend(renderer: THREE.WebGPURenderer, method: string): void {
+  private bindRenderingOnlyRenderer(renderer: THREE.WebGPURenderer, method: string): void {
     if (this.storageModeValue !== 'render-only') return;
     const backend = renderer.backend as { isWebGPUBackend?: boolean };
-    if (backend.isWebGPUBackend === true) return;
-    throw new Error(
-      `SplatMesh.${method}: storageMode "render-only" requires a WebGPU backend; ` +
-        'WebGL2 worker sorting requires retained CPU scene data.',
-    );
+    if (backend.isWebGPUBackend !== true) {
+      throw new Error(
+        `SplatMesh.${method}: storageMode "render-only" requires a WebGPU backend; ` +
+          'WebGL2 worker sorting requires retained CPU scene data.',
+      );
+    }
+    if (this.renderingOnlyRenderer && this.renderingOnlyRenderer !== renderer) {
+      throw new Error(
+        `SplatMesh.${method}: storageMode "render-only" is bound to its first WebGPU renderer; ` +
+          'construct a new mesh to use another renderer.',
+      );
+    }
+    this.renderingOnlyRenderer = renderer;
   }
 
   /** Releases render-only mirrors once three has created their WebGPU resources. */
   private releaseRenderingOnlyCpuStorage(renderer: THREE.WebGPURenderer): void {
     if (this.storageModeValue !== 'render-only' || this.cpuStorageReleased) return;
-    this.assertRenderingOnlyBackend(renderer, 'releaseCpuStorage');
+    this.bindRenderingOnlyRenderer(renderer, 'releaseCpuStorage');
     this.releasedCpuBytesValue += this.pool.releaseCpuMirrors(renderer);
     if (
       !this.renderingOnlyExtraTexturesReleased &&
@@ -2068,6 +2078,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       releaseRendererAttributes(this.lastRenderer, [this.sourceIndexAttribute]);
       this.lastRenderer = null;
     }
+    this.renderingOnlyRenderer = null;
     // Drop queued CPU work and cached references so nothing uploads or
     // rebuilds after teardown, and large arrays are unreachable promptly.
     this.pendingUploadRows = [];

@@ -21,6 +21,11 @@ export type ShRange = SplatPackedShData['range'];
 /** The 11/10/11 field maxima of a packed SH word, per channel. */
 const SH_FIELD_MAX = [2047, 1023, 2047] as const;
 
+/** Quantizes one signed coefficient into one packed channel field. */
+function encodeShField(value: number, divisor: number, max: number): number {
+  return Math.min(max, Math.max(0, Math.round((value / divisor + 1) * 0.5 * max)));
+}
+
 /** Coefficients per channel for a band count (0 → none, 3 → 3rd order). */
 export function shCoefficientCount(bands: number): number {
   return [0, 3, 8, 15][bands] ?? 0;
@@ -43,12 +48,10 @@ export function symmetricShRange(extent: number): ShRange {
  */
 export function packShCoefficient(r: number, g: number, b: number, extent: number): number {
   const divisor = extent || 1;
-  const encode = (value: number, max: number): number =>
-    Math.min(max, Math.max(0, Math.round((value / divisor + 1) * 0.5 * max)));
   return (
-    (encode(r, SH_FIELD_MAX[0]) |
-      (encode(g, SH_FIELD_MAX[1]) << 11) |
-      (encode(b, SH_FIELD_MAX[2]) << 21)) >>>
+    (encodeShField(r, divisor, SH_FIELD_MAX[0]) |
+      (encodeShField(g, divisor, SH_FIELD_MAX[1]) << 11) |
+      (encodeShField(b, divisor, SH_FIELD_MAX[2]) << 21)) >>>
     0
   );
 }

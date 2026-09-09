@@ -92,7 +92,10 @@ export interface SplatMeshOptions {
    * pools, unified-renderer sources, worker sorting, CPU spatial queries,
    * channels, range mutation, and compaction with explicit errors. It also
    * rejects a WebGL2 renderer on the first update or pick rather than silently
-   * retaining the backing.
+   * retaining the backing. The first WebGPU renderer used becomes the mesh's
+   * permanent GPU owner; construct a new mesh after switching renderers or
+   * recovering from device loss because the released CPU data cannot be
+   * uploaded again.
    *
    * @experimental Measure the target scene and device before opting in.
    */

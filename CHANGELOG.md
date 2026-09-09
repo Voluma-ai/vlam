@@ -69,7 +69,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `storageMode: 'render-only'` to release pool texture images and CPU index
   mirrors after their first successful draw. The default editable path is
   unchanged; unsupported query/edit/dynamic/shared/WebGL2 operations fail
-  explicitly. On the bundled 149,120-splat scene this releases the padded
+  explicitly. Released meshes remain bound to their first WebGPU renderer and
+  must be reconstructed after renderer replacement or device loss. On the
+  bundled 149,120-splat scene this releases the padded
   pool's accounted 10,166,272-byte CPU backing with GPU allocation unchanged.
 
 - Uncompressed SH-bearing PLY now measures its scene-wide SH extent and packs

@@ -151,7 +151,8 @@ application still references.
 Render-only mode keeps GPU picking, transforms, display/effect uniforms, and
 sorting on supported GPU strategies. CPU queries, range or channel mutation,
 compaction, shared storage, unified sources, worker sorting, and WebGL2 throw
-explicit errors.
+explicit errors. The released mesh is bound to its first WebGPU renderer and
+must be reconstructed after renderer replacement or device loss.
 
 ## Acceptance for further reductions
 

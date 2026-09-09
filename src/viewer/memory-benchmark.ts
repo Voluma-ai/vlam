@@ -307,16 +307,21 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
     status.textContent = 'Uploading and settling scene…';
     const settle = await renderUntilSettled(mesh, scene, camera, renderer);
     checkpoints.push(await checkpoint('after-first-settle', mesh));
-    const gpuPickAfterRelease =
-      storageMode === 'render-only'
-        ? (await mesh.pick(new THREE.Vector2(0, 0), camera, renderer)) !== null
-        : null;
 
     // Static caller-owned SplatData is released here. The earlier checkpoint
     // records the retained-input case; the next one isolates the mesh itself.
     retainedDecoded.data = null;
     garbageCollectionExposed = await settleGarbage();
     checkpoints.push(await checkpoint('settled-without-caller-data', mesh));
+    stopHeapSampling();
+
+    // Exercise GPU-only behavior after the comparable settled-memory samples.
+    // Picking lazily creates its own render target/material, so running it any
+    // earlier would contaminate the R1/R2 memory comparison.
+    const gpuPickAfterRelease =
+      storageMode === 'render-only'
+        ? (await mesh.pick(new THREE.Vector2(0, 0), camera, renderer)) !== null
+        : null;
 
     const effectiveSort: SplatSortStrategy = backend === 'WebGL2' ? 'worker' : requestedSort;
     const memory = estimateMeshMemory(mesh.capacity, {
@@ -348,7 +353,6 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
     renderer = null;
     garbageCollectionExposed = (await settleGarbage()) || garbageCollectionExposed;
     checkpoints.push(await checkpoint('after-dispose', null));
-    stopHeapSampling();
 
     const usedHeap = heapSamples.map((sample) => sample.usedJsHeapBytes);
     const report = {

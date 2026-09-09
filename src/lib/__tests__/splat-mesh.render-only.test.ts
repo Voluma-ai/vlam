@@ -135,4 +135,28 @@ describe('SplatMesh render-only storage', () => {
     );
     mesh.dispose();
   });
+
+  it('stays bound to the first WebGPU renderer after releasing CPU storage', () => {
+    const mesh = new SplatMesh(splatData(), { storageMode: 'render-only' });
+    const first = uploadedRenderer();
+    const second = uploadedRenderer();
+    const camera = new THREE.PerspectiveCamera();
+
+    mesh.onAfterRender(first as unknown as WebGLRenderer);
+
+    expect(() => mesh.update(camera, second)).toThrow(/bound to its first WebGPU renderer/);
+    expect(() => mesh.update(camera, first)).not.toThrow();
+    mesh.dispose();
+  });
+
+  it('keeps pick a no-op after disposal before validating the renderer', async () => {
+    const mesh = new SplatMesh(splatData(), { storageMode: 'render-only' });
+    const renderer = { backend: { isWebGPUBackend: false } } as unknown as THREE.WebGPURenderer;
+
+    mesh.dispose();
+
+    await expect(
+      mesh.pick(new THREE.Vector2(), new THREE.PerspectiveCamera(), renderer),
+    ).resolves.toBeNull();
+  });
 });
