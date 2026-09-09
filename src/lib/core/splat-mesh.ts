@@ -2045,6 +2045,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * and pick readback then fails with mapAsync.
    */
   override onAfterRender(renderer: WebGLRenderer): void {
+    if (this.storageModeValue !== 'render-only' || this.cpuStorageReleased) return;
     const webgpu = renderer as unknown as THREE.WebGPURenderer;
     this.renderingOnlyHasDrawn = true;
     this.bindRenderingOnlyRenderer(webgpu, 'releaseCpuStorage');
