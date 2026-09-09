@@ -318,10 +318,11 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
     // Exercise GPU-only behavior after the comparable settled-memory samples.
     // Picking lazily creates its own render target/material, so running it any
     // earlier would contaminate the R1/R2 memory comparison.
-    const gpuPickAfterRelease =
-      storageMode === 'render-only'
-        ? (await mesh.pick(new THREE.Vector2(0, 0), camera, renderer)) !== null
-        : null;
+    let gpuPickAfterRelease: boolean | null = null;
+    if (storageMode === 'render-only') {
+      status.textContent = 'Picking after CPU release…';
+      gpuPickAfterRelease = (await mesh.pick(new THREE.Vector2(0, 0), camera, renderer)) !== null;
+    }
 
     const effectiveSort: SplatSortStrategy = backend === 'WebGL2' ? 'worker' : requestedSort;
     const memory = estimateMeshMemory(mesh.capacity, {
@@ -425,7 +426,9 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
     stopHeapSampling();
     mesh?.dispose();
     renderer?.dispose();
-    status.textContent = `Failed: ${error instanceof Error ? error.message : String(error)}`;
+    const message = error instanceof Error ? error.message : String(error);
+    status.textContent = `Failed: ${message}`;
+    result.textContent = JSON.stringify({ error: message });
     throw error;
   }
 }

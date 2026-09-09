@@ -240,6 +240,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private renderingOnlyExtraTexturesReleased = false;
   private releasedCpuBytesValue = 0;
   private renderingOnlyRenderer: THREE.WebGPURenderer | null = null;
+  /** Set in {@link onAfterRender}; CPU mirrors must survive until that draw. */
+  private renderingOnlyHasDrawn = false;
   private readonly shEvaluation: NonNullable<SplatMeshOptions['shEvaluation']>;
   private shCache: ShComputeCache | null = null;
   private shCacheSh: SplatShInputs | null = null;
@@ -1609,7 +1611,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (this.disposed) return;
     this.bindRenderingOnlyRenderer(renderer, 'update');
     this.lastRenderer = renderer;
-    this.releaseRenderingOnlyCpuStorage(renderer);
+    // Sort/compute can upload storage attributes before the first draw. Dropping
+    // their CPU mirrors here would let the draw path recreate a 0-byte mapped
+    // GPU buffer and hang the WebGPU backend. Retry only after a successful draw.
+    if (this.renderingOnlyHasDrawn) this.releaseRenderingOnlyCpuStorage(renderer);
     this.assertPoolFitsDevice(renderer);
     camera.updateMatrixWorld();
     this.updateWorldMatrix(true, false);
@@ -1656,7 +1661,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       this.updateTimings.sortSubmitMs = performance.now() - sortStartedAt;
     }
     this.prepareShEvaluation(renderer, false, sortAccepted, options.sort !== false);
-    this.releaseRenderingOnlyCpuStorage(renderer);
   }
 
   /** Returns the render-preparation CPU timings for the current update. */
@@ -2031,6 +2035,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /** Releases render-only CPU images immediately after the first successful draw. */
   override onAfterRender(renderer: WebGLRenderer): void {
+    this.renderingOnlyHasDrawn = true;
     this.releaseRenderingOnlyCpuStorage(renderer as unknown as THREE.WebGPURenderer);
   }
 
