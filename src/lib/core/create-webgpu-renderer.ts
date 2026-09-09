@@ -96,6 +96,29 @@ function ambientGpu(): WebGPURendererGpu | null {
 }
 
 /**
+ * Chromium can destroy the Dawn instance when a `GPUAdapter` is collected even
+ * though the `GPUDevice` it created is still in use. Three's synchronous
+ * `render()` / `compute()` path then rejects an untracked `popErrorScope` as
+ * "Instance dropped". The device is the WeakMap key, so the adapter lives exactly
+ * as long as the owned device.
+ */
+const retainedGpuAdapters = new WeakMap<WebGPURendererGpuDevice, WebGPURendererGpuAdapter>();
+
+function retainGpuAdapter(
+  device: WebGPURendererGpuDevice,
+  adapter: WebGPURendererGpuAdapter,
+): void {
+  retainedGpuAdapters.set(device, adapter);
+  try {
+    (
+      device as WebGPURendererGpuDevice & { __vlamGpuAdapter?: WebGPURendererGpuAdapter }
+    ).__vlamGpuAdapter = adapter;
+  } catch {
+    // Some GPUDevice host objects reject expandos; the WeakMap is the pin.
+  }
+}
+
+/**
  * Optional convenience for creating a standard `THREE.WebGPURenderer` with
  * raised WebGPU limits. `SplatMesh` also works with a renderer constructed
  * directly by the application; this function does not return a VLAM-specific
@@ -154,6 +177,9 @@ function ambientGpu(): WebGPURendererGpu | null {
  *   ...powerOptions,
  *   device,
  * });
+ * // Keep `adapter` reachable for as long as `device` is. Chromium can reject
+ * // three's pipeline-validation `popErrorScope` with "Instance dropped" if the
+ * // adapter is collected first.
  * ```
  *
  * That version deliberately leaves failure policy to the application. This
@@ -222,6 +248,7 @@ export async function createWebGPURenderer(
             requiredFeatures: [...adapter.features],
             requiredLimits: recommendedWebGpuRequiredLimits(adapter),
           });
+          retainGpuAdapter(device, adapter);
         } catch (error) {
           if (requireWebGpu) throw error;
           // The error object itself, not just a message: this is the value

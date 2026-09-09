@@ -21,6 +21,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- `createWebGPURenderer` retains the GPUAdapter for the owned device's
+  lifetime, so Chromium cannot reject three.js pipeline validation as
+  "Instance dropped in popErrorScope" after collecting the adapter. The
+  surface-aware paint probe compiles through three's awaited path and
+  publishes results only after the canvas present.
 - Render-only WebGPU meshes initialize texture uploads and the lazy picking
   pipeline, then wait for submitted GPU work before releasing CPU mirrors,
   preventing mirror retirement from racing GPU uploads or the first pick.

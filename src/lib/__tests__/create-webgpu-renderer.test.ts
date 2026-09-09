@@ -111,6 +111,15 @@ describe('createWebGPURenderer', () => {
     expect(warnings).toEqual([]);
   });
 
+  it('retains the GPUAdapter on the owned device', async () => {
+    const { gpu } = fakeGpu();
+    const adapter = await gpu.requestAdapter();
+    await createWebGPURenderer({ gpu });
+    expect(
+      (lastParams().device as { __vlamGpuAdapter?: WebGPURendererGpuAdapter }).__vlamGpuAdapter,
+    ).toBe(adapter);
+  });
+
   it('warns and falls back to WebGL2 when no adapter is available', async () => {
     const { gpu } = fakeGpu({ requestAdapter: () => Promise.resolve(null) });
 

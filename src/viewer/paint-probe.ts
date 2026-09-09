@@ -66,10 +66,29 @@ const paintOptions: BrushStrokeSelectionOptions = {
   depth: depth === 'through' ? 'through' : 'surface',
   footprint: footprint === 'footprint' ? 'footprint' : 'center',
 };
+let compiledOffscreen = false;
+
+async function compileFor(renderTarget: THREE.RenderTarget | null): Promise<void> {
+  if (actual !== 'webgpu') return;
+  const previous = renderer.getRenderTarget();
+  renderer.setRenderTarget(renderTarget);
+  try {
+    // render() creates pipelines with an untracked popErrorScope. Awaiting
+    // compileAsync drains validation before Playwright can treat a late
+    // "Instance dropped" rejection as a pageerror. WebGL2 has no such scope.
+    await renderer.compileAsync(scene, camera);
+  } finally {
+    renderer.setRenderTarget(previous);
+  }
+}
 
 async function draw(): Promise<Uint8Array> {
   mesh.update(camera, renderer);
   renderer.setRenderTarget(target);
+  if (!compiledOffscreen) {
+    await compileFor(target);
+    compiledOffscreen = true;
+  }
   renderer.clear();
   renderer.render(scene, camera);
   // The unsigned-byte target guarantees this narrower runtime array type.
@@ -115,6 +134,14 @@ const modes = {
 paint.paintStroke(stroke, paintOptions);
 const after = await draw();
 const center = (48 * 96 + 48) * 4;
+
+// Present before publishing results so Playwright does not race a second
+// canvas pipeline compile's error-scope promise.
+renderer.setRenderTarget(null);
+mesh.update(camera, renderer);
+await compileFor(null);
+renderer.render(scene, camera);
+
 output.textContent = JSON.stringify({
   backend: actual,
   paintedMode: paintOptions,
@@ -123,8 +150,3 @@ output.textContent = JSON.stringify({
   centerBefore: Array.from(before.subarray(center, center + 4)),
   centerAfter: Array.from(after.subarray(center, center + 4)),
 });
-
-// Keep the final painted frame on the visible canvas for headed inspection.
-renderer.setRenderTarget(null);
-mesh.update(camera, renderer);
-renderer.render(scene, camera);
