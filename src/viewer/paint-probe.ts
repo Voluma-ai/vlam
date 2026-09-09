@@ -144,18 +144,13 @@ paint.paintStroke(stroke, paintOptions);
 const after = await draw();
 const center = (48 * 96 + 48) * 4;
 
-// Present before publishing results so Playwright does not race a second
-// canvas pipeline compile's error-scope promise.
+// The readbacks above already synchronize the pixels under test. Do not await
+// the whole device queue here: Linux SwiftShader can leave that promise pending
+// during Dawn teardown, which would prevent the probe from publishing a result.
 renderer.setRenderTarget(null);
 mesh.update(camera, renderer);
 await compileFor(null);
 renderer.render(scene, camera);
-const queue = (
-  renderer.backend as { device?: { queue?: { onSubmittedWorkDone?: () => Promise<void> } } }
-).device?.queue;
-if (typeof queue?.onSubmittedWorkDone === 'function') {
-  await queue.onSubmittedWorkDone();
-}
 
 output.textContent = JSON.stringify({
   backend: actual,
