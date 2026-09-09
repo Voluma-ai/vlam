@@ -16,6 +16,15 @@ const canvas = document.querySelector<HTMLCanvasElement>('#canvas');
 const output = document.querySelector<HTMLOutputElement>('[data-testid="result"]');
 if (!canvas || !output) throw new Error('Missing paint probe elements.');
 
+// Three's sync compute/render path leaves popErrorScope untracked. Chromium
+// (Linux SwiftShader in CI especially) can reject those as "Instance dropped"
+// after the probe has already published pixels. preventDefault keeps that
+// Dawn teardown from becoming a Playwright pageerror.
+window.addEventListener('unhandledrejection', (event) => {
+  const message = event.reason instanceof Error ? event.reason.message : String(event.reason);
+  if (message.includes('Instance dropped')) event.preventDefault();
+});
+
 const renderer = await createWebGPURenderer({
   canvas,
   antialias: false,
@@ -141,6 +150,12 @@ renderer.setRenderTarget(null);
 mesh.update(camera, renderer);
 await compileFor(null);
 renderer.render(scene, camera);
+const queue = (
+  renderer.backend as { device?: { queue?: { onSubmittedWorkDone?: () => Promise<void> } } }
+).device?.queue;
+if (typeof queue?.onSubmittedWorkDone === 'function') {
+  await queue.onSubmittedWorkDone();
+}
 
 output.textContent = JSON.stringify({
   backend: actual,

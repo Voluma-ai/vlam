@@ -21,9 +21,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
-- `createWebGPURenderer` retains the GPUAdapter for the owned device's
-  lifetime, so Chromium cannot reject three.js pipeline validation as
-  "Instance dropped in popErrorScope" after collecting the adapter. The
+- `createWebGPURenderer` keeps the GPUAdapter on the renderer (an ordinary
+  JS object) for the owned device's lifetime and swallows Dawn's
+  "Instance dropped in popErrorScope" teardown on that device, so three.js
+  pipeline validation cannot become an unhandled rejection after Chromium
+  collects a WebIDL wrapper or Linux SwiftShader drops the instance. The
   surface-aware paint probe compiles through three's awaited path and
   publishes results only after the canvas present.
 - Render-only WebGPU meshes initialize texture uploads and the lazy picking

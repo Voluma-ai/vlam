@@ -99,22 +99,48 @@ function ambientGpu(): WebGPURendererGpu | null {
  * Chromium can destroy the Dawn instance when a `GPUAdapter` is collected even
  * though the `GPUDevice` it created is still in use. Three's synchronous
  * `render()` / `compute()` path then rejects an untracked `popErrorScope` as
- * "Instance dropped". The device is the WeakMap key, so the adapter lives exactly
- * as long as the owned device.
+ * "Instance dropped". Pin the adapter on an ordinary JS owner (the renderer),
+ * not only the `GPUDevice` host object: Chromium's GC of WebIDL wrappers is
+ * not always tied to expandos or WeakMap keys on those wrappers.
  */
-const retainedGpuAdapters = new WeakMap<WebGPURendererGpuDevice, WebGPURendererGpuAdapter>();
+const retainedGpuAdapters = new WeakMap<object, WebGPURendererGpuAdapter>();
 
-function retainGpuAdapter(
-  device: WebGPURendererGpuDevice,
-  adapter: WebGPURendererGpuAdapter,
-): void {
-  retainedGpuAdapters.set(device, adapter);
+type GpuAdapterOwner = { __vlamGpuAdapter?: WebGPURendererGpuAdapter };
+
+function retainGpuAdapter(owner: object, adapter: WebGPURendererGpuAdapter): void {
+  retainedGpuAdapters.set(owner, adapter);
   try {
-    (
-      device as WebGPURendererGpuDevice & { __vlamGpuAdapter?: WebGPURendererGpuAdapter }
-    ).__vlamGpuAdapter = adapter;
+    (owner as GpuAdapterOwner).__vlamGpuAdapter = adapter;
   } catch {
     // Some GPUDevice host objects reject expandos; the WeakMap is the pin.
+  }
+}
+
+/**
+ * Three creates render and compute pipelines with a fire-and-forget
+ * `popErrorScope().then(...)`. If Dawn has already dropped the instance
+ * (adapter GC, Linux SwiftShader, dispose racing an in-flight compile), that
+ * promise rejects as an unhandled "Instance dropped" instead of resolving to
+ * `null` (no validation error). Swallow only that teardown; real validation
+ * failures still throw.
+ */
+function guardDroppedInstance(device: WebGPURendererGpuDevice): void {
+  const gpuDevice = device as WebGPURendererGpuDevice & {
+    popErrorScope?: () => Promise<unknown>;
+  };
+  const popErrorScope = gpuDevice.popErrorScope;
+  if (typeof popErrorScope !== 'function') return;
+  const guarded = function popErrorScopeGuarded(this: unknown): Promise<unknown> {
+    return Promise.resolve(popErrorScope.call(this)).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('Instance dropped')) return null;
+      throw error;
+    });
+  };
+  try {
+    gpuDevice.popErrorScope = guarded;
+  } catch {
+    // GPUDevice.popErrorScope may be non-writable; adapter retention still applies.
   }
 }
 
@@ -177,7 +203,8 @@ function retainGpuAdapter(
  *   ...powerOptions,
  *   device,
  * });
- * // Keep `adapter` reachable for as long as `device` is. Chromium can reject
+ * // Keep `adapter` on an ordinary JS object for as long as `device` is
+ * // (the renderer, not only the GPUDevice host object). Chromium can reject
  * // three's pipeline-validation `popErrorScope` with "Instance dropped" if the
  * // adapter is collected first.
  * ```
@@ -249,6 +276,7 @@ export async function createWebGPURenderer(
             requiredLimits: recommendedWebGpuRequiredLimits(adapter),
           });
           retainGpuAdapter(device, adapter);
+          guardDroppedInstance(device);
         } catch (error) {
           if (requireWebGpu) throw error;
           // The error object itself, not just a message: this is the value
@@ -260,7 +288,7 @@ export async function createWebGPURenderer(
     }
   }
 
-  return new WebGPURenderer({
+  const renderer = new WebGPURenderer({
     antialias: true,
     ...rendererOptions,
     ...powerOptions,
@@ -272,4 +300,8 @@ export async function createWebGPURenderer(
         ? { requiredLimits: recommendedWebGpuRequiredLimits(adapter) }
         : {}),
   });
+  // The renderer is a normal JS object, so this pin survives Chromium collecting
+  // a GPUDevice wrapper even while three still holds the C++ device.
+  if (adapter) retainGpuAdapter(renderer, adapter);
+  return renderer;
 }
