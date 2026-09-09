@@ -388,11 +388,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     hasSorter: () => this.sorter !== null,
     updateWorldMatrix: () => this.updateWorldMatrix(true, false),
     prepare: (camera, renderer) => {
-      this.flushPendingUploads(renderer);
+      // After render-only CPU release, do not flush or re-sort: both paths can
+      // re-read emptied `.array` / texture images and poison the WebGPU device.
+      // The last `update()` already left a valid GPU draw list.
+      if (!this.cpuStorageReleased) {
+        this.flushPendingUploads(renderer);
+        if (this.sorter !== null) this.requestSortIfNeeded(camera, renderer);
+      }
       this.refreshProjectionUniforms(camera, renderer);
-      // Deliberately not `createSorter`: a depth-tested pick needs a valid
-      // draw list, not a sorted one, and the identity list is valid.
-      if (this.sorter !== null) this.requestSortIfNeeded(camera, renderer);
     },
     setView: (camera, width, height) => this.writeViewUniforms(camera, width, height),
     applyPickGraph: (material) =>
@@ -2020,23 +2023,32 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /** Releases render-only mirrors once three has created their WebGPU resources. */
   private releaseRenderingOnlyCpuStorage(renderer: THREE.WebGPURenderer): void {
-    if (this.storageModeValue !== 'render-only' || this.cpuStorageReleased) return;
+    if (this.disposed || this.storageModeValue !== 'render-only' || this.cpuStorageReleased) return;
     this.bindRenderingOnlyRenderer(renderer, 'releaseCpuStorage');
     this.releasedCpuBytesValue += this.pool.releaseCpuMirrors(renderer);
     if (
       !this.renderingOnlyExtraTexturesReleased &&
       dataTexturesUploaded(renderer, this.renderingOnlyExtraTextures)
     ) {
-      this.releasedCpuBytesValue += releaseDataTextureMirrors(this.renderingOnlyExtraTextures);
+      this.releasedCpuBytesValue += releaseDataTextureMirrors(
+        this.renderingOnlyExtraTextures,
+        renderer,
+      );
       this.renderingOnlyExtraTexturesReleased = true;
     }
     this.releasedCpuBytesValue += this.renderingOnlyAttributeMirrors?.release(renderer) ?? 0;
   }
 
-  /** Releases render-only CPU images immediately after the first successful draw. */
+  /**
+   * Marks the first successful draw. CPU mirrors drop on a microtask so three
+   * can finish the current encoder; emptying images mid-pass poisons SwiftShader
+   * and pick readback then fails with mapAsync.
+   */
   override onAfterRender(renderer: WebGLRenderer): void {
+    const webgpu = renderer as unknown as THREE.WebGPURenderer;
     this.renderingOnlyHasDrawn = true;
-    this.releaseRenderingOnlyCpuStorage(renderer as unknown as THREE.WebGPURenderer);
+    this.bindRenderingOnlyRenderer(webgpu, 'releaseCpuStorage');
+    queueMicrotask(() => this.releaseRenderingOnlyCpuStorage(webgpu));
   }
 
   /**

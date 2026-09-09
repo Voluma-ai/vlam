@@ -28,6 +28,11 @@ function uploadedRenderer(): THREE.WebGPURenderer {
   return { backend } as unknown as THREE.WebGPURenderer;
 }
 
+async function afterFirstDraw(mesh: SplatMesh, renderer: THREE.WebGPURenderer): Promise<void> {
+  mesh.onAfterRender(renderer as unknown as WebGLRenderer);
+  await Promise.resolve();
+}
+
 describe('SplatMesh render-only storage', () => {
   it('accepts only an own static WebGPU-compatible mesh', () => {
     class DerivedSplatMesh extends SplatMesh {}
@@ -51,12 +56,12 @@ describe('SplatMesh render-only storage', () => {
     sharedPool.dispose();
   });
 
-  it('releases every float32 pool and index mirror after upload', () => {
+  it('releases every float32 pool and index mirror after upload', async () => {
     const mesh = new SplatMesh(splatData(), { storageMode: 'render-only' });
     const view = mesh.getUnifiedSourceView();
     const draw = mesh.geometry.getAttribute('splatIndex');
 
-    mesh.onAfterRender(uploadedRenderer() as unknown as WebGLRenderer);
+    await afterFirstDraw(mesh, uploadedRenderer());
 
     expect(mesh.cpuStorageReleased).toBe(true);
     expect(mesh.releasedCpuBytes).toBe(WIDTH * 68);
@@ -69,7 +74,7 @@ describe('SplatMesh render-only storage', () => {
     expect(() => mesh.dispose()).not.toThrow();
   });
 
-  it('releases additional float16 images and packed SH mirrors', () => {
+  it('releases additional float16 images and packed SH mirrors', async () => {
     const data: SplatData = {
       ...splatData(),
       shPacked: {
@@ -83,14 +88,14 @@ describe('SplatMesh render-only storage', () => {
       poolFloatTextures: 'float16',
     });
 
-    mesh.onAfterRender(uploadedRenderer() as unknown as WebGLRenderer);
+    await afterFirstDraw(mesh, uploadedRenderer());
 
     expect(mesh.cpuStorageReleased).toBe(true);
     expect(mesh.releasedCpuBytes).toBe(WIDTH * (84 + 64));
     mesh.dispose();
   });
 
-  it('releases a palette image retained by the mesh', () => {
+  it('releases a palette image retained by the mesh', async () => {
     const palette = new Float32Array(12);
     const mesh = new SplatMesh(
       {
@@ -100,7 +105,7 @@ describe('SplatMesh render-only storage', () => {
       { storageMode: 'render-only' },
     );
 
-    mesh.onAfterRender(uploadedRenderer() as unknown as WebGLRenderer);
+    await afterFirstDraw(mesh, uploadedRenderer());
 
     expect(mesh.cpuStorageReleased).toBe(true);
     expect(mesh.releasedCpuBytes).toBe(WIDTH * 68 + palette.byteLength);
@@ -136,13 +141,13 @@ describe('SplatMesh render-only storage', () => {
     mesh.dispose();
   });
 
-  it('stays bound to the first WebGPU renderer after releasing CPU storage', () => {
+  it('stays bound to the first WebGPU renderer after releasing CPU storage', async () => {
     const mesh = new SplatMesh(splatData(), { storageMode: 'render-only' });
     const first = uploadedRenderer();
     const second = uploadedRenderer();
     const camera = new THREE.PerspectiveCamera();
 
-    mesh.onAfterRender(first as unknown as WebGLRenderer);
+    await afterFirstDraw(mesh, first);
 
     expect(() => mesh.update(camera, second)).toThrow(/bound to its first WebGPU renderer/);
     expect(() => mesh.onAfterRender(first as unknown as WebGLRenderer)).not.toThrow();

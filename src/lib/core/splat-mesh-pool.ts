@@ -364,7 +364,7 @@ export class SplatPool {
     const textures = [...this.coreTextures, ...this.shPackedTextures];
     if (!dataTexturesUploaded(renderer, textures)) return 0;
 
-    let released = releaseDataTextureMirrors(textures);
+    let released = releaseDataTextureMirrors(textures, renderer);
     // Float16 textures own half-encoded images in addition to the authoritative
     // float32 centers/covarianceA backing. The other images alias backing.
     if (this.floatTextures === 'float16') {
