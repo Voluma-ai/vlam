@@ -61,6 +61,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - A headed browser regression renders surface-aware paint on WebGPU and forced
   WebGL2, checks all four depth × footprint selection outcomes, and asserts the
   painted channel changes output pixels.
+- Headed Chrome 152 validation on Windows covers transformed depth boundaries,
+  anisotropic footprint grazing, gap-free continuous strokes, and both the
+  bundled 149,120-splat goose and a 3.19 M-splat RAD capture on WebGPU and
+  forced WebGL2.
 
 - Extended the local Spark/VLAM benchmark with explicit supplied, proposed,
   controlled, and historical-reference configurations; 720p/1440p five-run

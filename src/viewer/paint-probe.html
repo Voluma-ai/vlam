@@ -2,6 +2,55 @@
 <html lang="en">
   <meta charset="utf-8" />
   <title>Surface-aware paint regression probe</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: system-ui, sans-serif;
+    }
+    body {
+      display: grid;
+      min-height: 100vh;
+      margin: 0;
+      place-content: center;
+      gap: 1rem;
+      background: #17171d;
+    }
+    canvas {
+      width: 480px;
+      height: 480px;
+      image-rendering: auto;
+      border: 1px solid #555;
+    }
+    output {
+      width: 480px;
+      overflow-wrap: anywhere;
+    }
+  </style>
+  <style>
+    html {
+      color-scheme: dark;
+      font: 16px system-ui, sans-serif;
+      background: #18171d;
+    }
+    body {
+      display: grid;
+      place-content: center;
+      min-height: 100vh;
+      margin: 0;
+    }
+    canvas {
+      width: 576px;
+      height: 576px;
+      image-rendering: pixelated;
+      border: 1px solid #57515f;
+    }
+    output {
+      display: block;
+      width: 576px;
+      margin-top: 1rem;
+      overflow-wrap: anywhere;
+    }
+  </style>
   <canvas id="canvas" width="96" height="96"></canvas>
   <output data-testid="result"></output>
   <script type="module" src="./paint-probe.ts"></script>

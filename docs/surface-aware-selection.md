@@ -98,11 +98,17 @@ replacement/clearing. A browser probe also renders a painted channel on WebGPU
 and forced WebGL2, asserts the four selection-mode results, and verifies the
 resulting pixel change.
 
-A headed 3.19 M-splat hotel RAD capture publishes a one-million-splat
-page-table cut and stays live through a paint gesture plus camera-driven
-replacement. That pass found an initial unpublished-frontier drain deadlock;
-the pager now has a focused regression test. The remaining manual matrix is
-continuous-stroke inspection on thin surfaces, foreground/background
-boundaries, grazing large anisotropic splats, and transformed meshes across
-small and largest-available static/classic-streamed captures. TypeScript and
-headless rendering alone cannot validate those subjective pixels.
+Final headed validation used Chrome 152 on a Windows desktop with WebGPU and
+forced WebGL2. The transformed probe visibly distinguishes all four modes:
+surface-center paints only the front mean, through-center also paints the
+deeper mean, surface-footprint adds the grazing anisotropic splat without
+crossing the depth discontinuity, and through-footprint paints all three.
+
+Continuous surface strokes were inspected on the bundled 149,120-splat goose
+and a 3.19 M-splat hotel RAD capture. They remained gap-free, stayed off the
+background across visible depth boundaries, and produced the same paint result
+on WebGPU and WebGL2. The hotel published a 999,999-splat page-table cut and
+stayed live through camera-driven replacement. That pass found an initial
+unpublished-frontier drain deadlock; the pager now has a focused regression
+test. Together with the automated readback-cancellation and streamed
+replacement coverage, this completes the story's validation matrix.

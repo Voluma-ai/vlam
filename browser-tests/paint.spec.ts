@@ -9,6 +9,7 @@ test('renders a surface-aware painted channel on both backends', async ({ page }
   await expect(result).not.toHaveText('', { timeout: 30_000 });
   const value = JSON.parse((await result.textContent()) ?? 'null') as {
     backend: string;
+    paintedMode: { depth: string; footprint: string };
     modes: {
       surfaceCenter: number;
       throughCenter: number;
@@ -22,6 +23,7 @@ test('renders a surface-aware painted channel on both backends', async ({ page }
 
   expect(errors).toEqual([]);
   expect(value.backend).toBe(backend);
+  expect(value.paintedMode).toEqual({ depth: 'surface', footprint: 'center' });
   expect(value.modes).toEqual({
     surfaceCenter: 1,
     throughCenter: 2,
