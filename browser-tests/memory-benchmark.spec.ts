@@ -13,7 +13,7 @@ async function waitForBenchmarkReport(page: Page): Promise<Record<string, unknow
   if (typeof report.error === 'string') {
     throw new Error(report.error);
   }
-  expect(errors, await page.locator('[data-testid="status"]').textContent()).toEqual([]);
+  expect(errors).toEqual([]);
   return report;
 }
 
