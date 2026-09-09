@@ -199,6 +199,30 @@ describe('StreamedSplatMesh persistent channels (M7.6)', () => {
     expect(channelValues(m, 'mask', 0, 6)).toEqual([255, 255, 255, 255, 0, 0]);
   });
 
+  it('replays a geometric stroke onto a newly resident LOD representation', () => {
+    const m = mesh();
+    const inner = internals(m);
+    m.definePersistentChannel('mask', { type: 'byte' });
+    inner.cache.set(0, { data: makeChunk(10), bytes: 0, lastUsed: 0 });
+    inner.appendRun(run(0, 0, 10), 0);
+    m.paintPersistentStroke(
+      'mask',
+      { paths: [[{ point: new THREE.Vector3(1, 0, 0), radius: 1.1 }]] },
+      { depth: 'through', footprint: 'center' },
+      7,
+    );
+
+    const entry = [...inner.resident.values()][0]!;
+    inner.removeRange(entry.handle);
+    inner.resident.clear();
+    inner.channels.get('mask')!.backing.fill(0);
+    // A different file models a fine/coarse replacement with different stable
+    // IDs but geometry in the same painted region.
+    inner.cache.set(1, { data: makeChunk(10), bytes: 0, lastUsed: 1 });
+    inner.appendRun(run(1, 0, 10), 1);
+    expect(channelValues(m, 'mask', 0, 5)).toEqual([7, 7, 7, 0, 0]);
+  });
+
   it('bounds the edit store and warns once past maxEdits', () => {
     const m = mesh();
     const inner = internals(m);

@@ -1745,6 +1745,26 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   }
 
   /**
+   * Batched form of {@link pick}. One bounded depth pass covers every input
+   * coordinate and returns results in the same order. Camera and viewport state
+   * are captured when called, so a queued brush stroke cannot drift to a later
+   * camera frame.
+   */
+  pickMany(
+    ndcs: readonly THREE.Vector2[],
+    camera: THREE.Camera,
+    renderer: THREE.WebGPURenderer,
+    options?: SplatPickOptions,
+  ): Promise<readonly (SplatPickResult | null)[]> {
+    if (this.disposed) return Promise.resolve(ndcs.map(() => null));
+    this.bindRenderingOnlyRenderer(renderer, 'pickMany');
+    const pick = () => this.picker.pickMany(ndcs, camera, renderer, options);
+    return this.renderingOnlyReleasePreparation
+      ? this.renderingOnlyReleasePreparation.then(pick, pick)
+      : pick();
+  }
+
+  /**
    * The resident splat center nearest a world point, within `radius` (world
    * units), or `null` if none. A synchronous CPU query over the pool's decoded
    * centers - no GPU round-trip - backed by a uniform grid rebuilt only when

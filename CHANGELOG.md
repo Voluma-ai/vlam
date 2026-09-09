@@ -31,11 +31,19 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
-- The demo hides paint and select-and-cut for streamed/LOD scenes, where edits
-  cannot be applied consistently across changing residency. Annotate and
-  measure remain available.
+- The demo keeps persistent paint available for classic streamed/LOD scenes and
+  hides only select-and-cut. RAD page-table scenes still hide paint because the
+  worker-owned slot map cannot yet persist channel edits by global splat ID.
 
 ### Added
+
+- Surface-aware painting now captures a continuous pointer stroke, resolves its
+  samples with one bounded `SplatMesh.pickMany` depth pass, splits paths at
+  misses and depth jumps, and exposes independent `surface`/`through` and
+  `center`/`footprint` controls. The public selection kernel tests tapered
+  world-space capsules and full ±3σ covariance footprints under transformed
+  meshes. Classic streamed meshes retain geometric strokes and replay them as
+  LOD runs are replaced or reloaded.
 
 - Extended the local Spark/VLAM benchmark with explicit supplied, proposed,
   controlled, and historical-reference configurations; 720p/1440p five-run

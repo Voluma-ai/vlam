@@ -166,6 +166,19 @@ their pre-displacement depth-sort order; modifiers run per splat, not per
 pixel. Pure-TSL modifiers run on both backends; a `wgslFn` escape hatch (as
 in `revealPreset`) is WebGPU-only.
 
+## Painting a channel with a surface-aware stroke
+
+The demo's paint highlight is a byte channel read by a modifier. Its input is
+now one immutable depth-picked stroke rather than repeated point-radius writes:
+`SplatMesh.pickMany` resolves pointer samples, then
+`selectBrushStrokeInData` from `@voluma/vlam/selection` returns the splat indices
+for one of four independent depth × target modes. `surface` stays near the
+picked depth while `through` selects the swept volume; `center` tests means and
+`footprint` includes each rendered ±3σ covariance ellipsoid.
+
+See [Surface-aware brush and selection](../surface-aware-selection.md) for the
+stroke contract, streamed replay behavior, and current RAD page-table limit.
+
 ## Proxy-mesh relighting (not a modifier)
 
 For PlayCanvas-style sun / shadow relighting of a baked capture, use core

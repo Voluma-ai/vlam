@@ -14,7 +14,7 @@
 export type ViewerTool = 'none' | 'paint' | 'annotate' | 'measure' | 'select';
 
 const VIEWER_TOOLS = new Set<ViewerTool>(['none', 'paint', 'annotate', 'measure', 'select']);
-const STREAMED_UNAVAILABLE_TOOLS = new Set<ViewerTool>(['paint', 'select']);
+const STREAMED_UNAVAILABLE_TOOLS = new Set<ViewerTool>(['select']);
 
 /** Parses `?tool=` from a share link; unknown values are ignored. */
 export function parseViewerTool(value: string | null | undefined): ViewerTool | null {

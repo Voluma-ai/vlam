@@ -73,6 +73,11 @@ import type {
   ChunkFetchScheduler,
 } from './chunk-fetch-scheduler';
 import type { ChunkCacheBudget, ChunkCacheHandle } from './chunk-cache-budget';
+import {
+  selectBrushStrokeInData,
+  type BrushStroke,
+  type BrushStrokeSelectionOptions,
+} from '../selection/brush-stroke';
 
 /** Vite's `?worker&inline` default export - a Worker subclass constructor. */
 type InlineWorkerCtor = new () => Worker;
@@ -522,6 +527,12 @@ interface PersistentChannel {
   readonly maxEdits: number;
   /** file → (local splat index within that chunk → value). */
   readonly edits: Map<number, Map<number, number>>;
+  /** Geometric edits replayed onto later coarse/fine representations. */
+  readonly strokes: Array<{
+    readonly stroke: BrushStroke;
+    readonly options: BrushStrokeSelectionOptions;
+    readonly value: number;
+  }>;
   total: number;
   warned: boolean;
 }
@@ -2120,10 +2131,10 @@ export class StreamedSplatMesh extends SplatMesh {
 
   /**
    * Declares a per-splat channel whose values **persist across LOD churn**:
-   * edits are stored sparsely keyed by `(chunk file, local index)` - a stable
-   * splat identity in the streaming design - and re-applied whenever a chunk
-   * is (re)appended. Paint a region with {@link paintPersistent}, orbit away
-   * until it is evicted, come back, and the values return.
+   * edits are stored sparsely keyed by `(chunk file, local index)` and geometric
+   * strokes are replayed whenever another coarse/fine run is appended. Paint a
+   * region with {@link paintPersistent}, orbit away until it is evicted, come
+   * back, and the same world-space region is painted on the new LOD cut.
    *
    * Wraps {@link SplatMesh.defineChannel}; read it from a modifier with
    * `ctx.channel(name)` as usual.
@@ -2135,6 +2146,7 @@ export class StreamedSplatMesh extends SplatMesh {
       fill: options.fill ?? 0,
       maxEdits: Math.max(1, Math.floor(options.maxEdits ?? 1_000_000)),
       edits: new Map(),
+      strokes: [],
       total: 0,
       warned: false,
     });
@@ -2142,47 +2154,69 @@ export class StreamedSplatMesh extends SplatMesh {
 
   /**
    * Sets a persistent channel to `value` for every currently-resident splat
-   * within `radius` (world units) of `worldPoint`, and records the edit so it
-   * survives eviction/reload. Splats whose chunk is not currently decoded on
-   * the CPU cannot be located and are skipped (they are usually far from the
-   * camera); their painted neighbours in resident chunks are unaffected.
-   *
-   * The radius assumes this mesh's world transform is rigid (rotation +
-   * translation, as the built-in format transforms are); a scaled mesh would
-   * distort the brush. Edit a persistent channel only through this method -
-   * direct {@link SplatMesh.writeChannel} writes are not recorded and are
-   * overwritten by the next re-apply.
+   * whose center is within `radius` (world units) of `worldPoint`. The
+   * world-space sphere remains correct under non-uniform mesh scale. The
+   * geometric edit is replayed on later resident LOD runs; direct
+   * {@link SplatMesh.writeChannel} writes are not recorded.
    *
    * @returns the number of splats edited this call.
    * @throws {Error} if the channel was not declared with
    *   {@link definePersistentChannel}.
    */
   paintPersistent(name: string, worldPoint: THREE.Vector3, radius: number, value: number): number {
+    return this.paintPersistentStroke(
+      name,
+      { paths: [[{ point: worldPoint.clone(), radius }]] },
+      { depth: 'through', footprint: 'center' },
+      value,
+    );
+  }
+
+  /**
+   * Applies and records a geometric brush stroke on a persistent channel.
+   * The immutable operation is replayed when other LOD runs become resident,
+   * so the painted region follows the surface rather than one transient cut.
+   *
+   * @returns the number of currently resident splats newly edited.
+   */
+  paintPersistentStroke(
+    name: string,
+    stroke: BrushStroke,
+    options: BrushStrokeSelectionOptions,
+    value: number,
+  ): number {
     const channel = this.persistentChannels.get(name);
     if (!channel) {
       throw new Error(
-        `StreamedSplatMesh.paintPersistent: channel "${name}" is not a persistent channel. ` +
+        `StreamedSplatMesh.paintPersistentStroke: channel "${name}" is not a persistent channel. ` +
           `Call definePersistentChannel("${name}") first.`,
       );
     }
-    _paintLocal.copy(worldPoint);
-    this.worldToLocal(_paintLocal);
-    const r2 = radius * radius;
+    if (this.frontierWorker) {
+      throw new Error(
+        'StreamedSplatMesh.paintPersistentStroke: RAD page-table painting is not supported; ' +
+          "load with foveationMode: 'prefix' or paint a fully loaded mesh.",
+      );
+    }
+    const snapshot = cloneBrushStroke(stroke);
+    channel.strokes.push({ stroke: snapshot, options: { ...options }, value });
+    this.updateWorldMatrix(true, false);
     let edited = 0;
     const touchedFiles = new Set<number>();
 
     for (const { run } of this.resident.values()) {
       const chunk = this.cache.get(run.file);
       if (!chunk) continue; // positions evicted from the CPU cache
-      const positions = chunk.data.positions;
+      const selected = selectBrushStrokeInData(
+        sliceSplatData(chunk.data, run.offset, run.count),
+        snapshot,
+        options,
+        this.matrixWorld,
+      );
       const fileEdits = channel.edits.get(run.file) ?? new Map<number, number>();
       let touched = false;
-      for (let k = 0; k < run.count; k++) {
-        const li = run.offset + k;
-        const px = (positions[li * 3 + 0] as number) - _paintLocal.x;
-        const py = (positions[li * 3 + 1] as number) - _paintLocal.y;
-        const pz = (positions[li * 3 + 2] as number) - _paintLocal.z;
-        if (px * px + py * py + pz * pz > r2) continue;
+      for (const localIndex of selected) {
+        const li = run.offset + localIndex;
         // First paint wins - keep the stored color/index for already-edited splats.
         if (fileEdits.has(li)) continue;
         if (channel.total >= channel.maxEdits) {
@@ -2231,6 +2265,7 @@ export class StreamedSplatMesh extends SplatMesh {
       );
     }
     channel.edits.clear();
+    channel.strokes.length = 0;
     channel.total = 0;
     for (const { run, handle } of this.resident.values()) {
       const data =
@@ -3457,6 +3492,29 @@ export class StreamedSplatMesh extends SplatMesh {
     run: LodRun,
     handle: SplatRange,
   ): void {
+    const chunk = this.cache.get(run.file);
+    if (chunk && channel.strokes.length > 0 && channel.total < channel.maxEdits) {
+      this.updateWorldMatrix(true, false);
+      const slice = sliceSplatData(chunk.data, run.offset, run.count);
+      const replayEdits = channel.edits.get(run.file) ?? new Map<number, number>();
+      for (const operation of channel.strokes) {
+        const selected = selectBrushStrokeInData(
+          slice,
+          operation.stroke,
+          operation.options,
+          this.matrixWorld,
+        );
+        for (const localIndex of selected) {
+          const fileIndex = run.offset + localIndex;
+          if (replayEdits.has(fileIndex)) continue;
+          if (channel.total >= channel.maxEdits) break;
+          replayEdits.set(fileIndex, operation.value);
+          channel.total++;
+        }
+        if (channel.total >= channel.maxEdits) break;
+      }
+      if (replayEdits.size > 0) channel.edits.set(run.file, replayEdits);
+    }
     const fileEdits = channel.edits.get(run.file);
     if (!fileEdits || fileEdits.size === 0) return;
     const data = channel.type === 'byte' ? new Uint8Array(run.count) : new Float32Array(run.count);
@@ -4187,7 +4245,19 @@ export class StreamedSplatMesh extends SplatMesh {
   }
 }
 
-const _paintLocal = new THREE.Vector3();
+/** Owns every mutable object a queued/replayed stroke depends on. */
+function cloneBrushStroke(stroke: BrushStroke): BrushStroke {
+  return {
+    paths: stroke.paths.map((path) =>
+      path.map((sample) => ({
+        point: sample.point.clone(),
+        radius: sample.radius,
+        ...(sample.viewDepth === undefined ? {} : { viewDepth: sample.viewDepth }),
+      })),
+    ),
+    ...(stroke.viewMatrix ? { viewMatrix: stroke.viewMatrix.clone() } : {}),
+  };
+}
 const _cameraWorldPos = new THREE.Vector3();
 const _cameraWorldQuat = new THREE.Quaternion();
 const _cameraLocal = new THREE.Vector3();

@@ -19,8 +19,8 @@ describe('parseViewerTool', () => {
 });
 
 describe('streamed tool availability', () => {
-  it('hides editing tools but keeps pick-only tools available', () => {
-    expect(isViewerToolAvailable('paint', true)).toBe(false);
+  it('keeps persistent paint but hides destructive separation', () => {
+    expect(isViewerToolAvailable('paint', true)).toBe(true);
     expect(isViewerToolAvailable('select', true)).toBe(false);
     expect(isViewerToolAvailable('annotate', true)).toBe(true);
     expect(isViewerToolAvailable('measure', true)).toBe(true);
@@ -34,7 +34,7 @@ describe('streamed tool availability', () => {
   });
 
   it('normalizes unsupported streamed deep links to camera controls', () => {
-    expect(normalizeViewerTool('paint', true)).toBe('none');
+    expect(normalizeViewerTool('paint', true)).toBe('paint');
     expect(normalizeViewerTool('select', true)).toBe('none');
     expect(normalizeViewerTool('measure', true)).toBe('measure');
     expect(normalizeViewerTool('paint', false)).toBe('paint');
