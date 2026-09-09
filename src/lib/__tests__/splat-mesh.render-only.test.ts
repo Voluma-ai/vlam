@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
 import type { WebGLRenderer } from 'three';
 import { SplatMesh } from '../core/splat-mesh';
@@ -25,7 +25,7 @@ function uploadedRenderer(): THREE.WebGPURenderer {
     get: (object: object) =>
       object instanceof THREE.DataTexture ? { texture: {} } : { buffer: {} },
   };
-  return { backend, initTexture: () => undefined } as unknown as THREE.WebGPURenderer;
+  return { backend, initTexture: vi.fn() } as unknown as THREE.WebGPURenderer;
 }
 
 async function afterFirstDraw(mesh: SplatMesh, renderer: THREE.WebGPURenderer): Promise<void> {
@@ -72,6 +72,16 @@ describe('SplatMesh render-only storage', () => {
     expect((view.covarianceATexture.image as { data: Float32Array }).data.byteLength).toBe(0);
     expect((view.covarianceBTexture.image as { data: Float32Array }).data.byteLength).toBe(0);
     expect(() => mesh.dispose()).not.toThrow();
+  });
+
+  it('initializes every pool texture through the renderer before releasing it', async () => {
+    const mesh = new SplatMesh(splatData(), { storageMode: 'render-only' });
+    const renderer = uploadedRenderer();
+
+    await afterFirstDraw(mesh, renderer);
+
+    expect(renderer.initTexture).toHaveBeenCalledTimes(4);
+    mesh.dispose();
   });
 
   it('releases additional float16 images and packed SH mirrors', async () => {

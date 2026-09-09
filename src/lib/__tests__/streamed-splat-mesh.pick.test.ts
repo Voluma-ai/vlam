@@ -106,6 +106,7 @@ function createMockRenderer(width = 200, height = 100): MockPickRenderer {
     clear: vi.fn(),
     copyTextureToTexture: vi.fn(),
     compute: vi.fn(),
+    compileAsync: vi.fn(async () => undefined),
     render: vi.fn((scene: THREE.Scene) => {
       const proxy = scene.children[0] as THREE.Mesh | undefined;
       const geometry = proxy?.geometry as THREE.InstancedBufferGeometry | undefined;
