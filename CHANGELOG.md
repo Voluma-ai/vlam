@@ -21,6 +21,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- RAD page-table plans now default to 16,000 pool writes, count relocation and
+  freed-tail work against that ceiling, and pace sparse relocations over bounded
+  slot windows. Queued atomic cuts continue across camera motion before the
+  latest coalesced view is solved, preserving the last complete visible cut
+  without starving a cinematic orbit. The existing `maxSplatsPerSwap` option
+  controls this ceiling explicitly; classic streaming retains its 32,000
+  default.
 - Compute-projection picking reads the full active list, so alternate-camera
   picks can hit splats culled from the main view without changing its draw.
 - `createWebGPURenderer` keeps the GPUAdapter on the renderer (an ordinary
@@ -44,11 +51,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
-- Validated RAD limit feedback in a headed RTX 3090 hotel-core orbit. The
-  page-table frontier held its 1M target with no uncovered or late swaps, no
-  cache eviction, and exact index coverage. An isolated repeat confirmed the
-  remaining upload-pacing tail (183.4 ms swap frame, 120.6 ms upload work), now
-  tracked separately rather than changing the stable limit-search policy.
+- Validated RAD page-table upload pacing in repeated headed RTX 3090 hotel-core
+  orbits. With `swapCap=16000`, the two normal-cadence samples reduced worst
+  attributed upload from the 120.6 ms baseline to 8.1 and 9.6 ms, retained exact
+  index coverage, reached the 1M frontier, and reported no holes, late chunks,
+  or cache evictions.
 - Contributor pushes now run the complete reproducible CI preflight locally;
   renderer-sensitive changes also run Chromium WebGPU in a pinned Linux
   Playwright container before they leave the workstation.

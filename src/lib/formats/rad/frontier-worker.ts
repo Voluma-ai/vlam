@@ -18,6 +18,7 @@
 import { FrontierPager, type PagerPlan } from './frontier-pager';
 import { frontierView, gatherGlobals, traverseFrontier } from './rad-frontier';
 import type { SplatData } from '../../core/splat-data';
+import { DEFAULT_PAGE_TABLE_WRITES_PER_PLAN } from '../../streaming/streaming-defaults';
 
 export type {
   FrontierChunkMessage,
@@ -42,6 +43,7 @@ const roots = new Set<number>();
 let pager: FrontierPager | null = null;
 let chunkSize = 65536;
 let cpuCacheBytes = 256 * 1024 * 1024;
+let maxPlanWrites = DEFAULT_PAGE_TABLE_WRITES_PER_PLAN;
 let totalBytes = 0;
 /** Files touched by the last frontier, protected from eviction. */
 let neededFiles = new Set<number>();
@@ -85,17 +87,16 @@ const BUDGET_SPEND_URGENT = 0.5;
  * the appends and (since evictions are paced with them) the swap-remove moves.
  *
  * Each traversal therefore still runs at the full solved cut; only its *delivery*
- * is spread over frames. ~60 k ≈ 9 ms of write per plan, plus at most as much
- * again in moves. Publishing must use the same eviction ceiling: finishing the
+ * is spread over frames. The host supplies the cap at initialization so its
+ * public streaming option governs this path too. Publishing must use the same
+ * eviction ceiling: finishing the
  * newcomer queue used to retire every deferred leaver in one uncapped plan
  * (hundreds of thousands of moves on a dense hotel orbit).
  */
-const MAX_PLAN_APPEND_SPLATS = 60_000;
-
 /**
  * Inputs of the last *full* plan, and the cache revision it saw.
  *
- * `MAX_PLAN_APPEND_SPLATS` bounds what one plan may *apply*, but the traversal
+ * `maxPlanWrites` bounds what one plan may *apply*, but the traversal
  * and the pager diff it rode on were O(whole frontier) and ran again for every
  * one of the ~66 plans a cold 4 M-splat frontier needs - quadratic, and the
  * reason `cest_ca.rad` sat at ~1.3 M of a 4 M budget. When nothing that decides
@@ -291,11 +292,14 @@ function protectPendingAppends(): void {
 function reschedule(msg: FrontierRescheduleMessage): void {
   if (!pager) return;
 
-  // Nothing that decides the frontier has moved and the last plan was held
-  // short: finish it, rather than recomputing an answer already in hand.
+  // Finish a publish-safe queued cut when the host asks, even if the latest
+  // camera has moved. The host coalesces that newer camera and sends it again
+  // after convergence; abandoning the queue every animation frame would make a
+  // conservative delivery cap starve forever during an orbit. Identical idle
+  // reschedules retain the original automatic drain behaviour.
   const key = planKey(msg);
-  if (key === lastPlanKey && pager.hasPendingDrain) {
-    const plan = pager.drain(MAX_PLAN_APPEND_SPLATS);
+  if ((msg.continuePendingPlan || key === lastPlanKey) && pager.hasPendingDrain) {
+    const plan = pager.drain(maxPlanWrites, maxPlanWrites, maxPlanWrites);
     protectPendingAppends();
     postPlan(msg.seq, plan, Uint32Array.from(lastTouched), lastLimit, Uint32Array.from(evict()));
     return;
@@ -373,7 +377,12 @@ function reschedule(msg: FrontierRescheduleMessage): void {
     pager.hasPublishedDisplay,
   );
 
-  const plan = pager.update(desiredGlobals, { maxAppends: MAX_PLAN_APPEND_SPLATS, publish });
+  const plan = pager.update(desiredGlobals, {
+    maxAppends: maxPlanWrites,
+    maxWrites: maxPlanWrites,
+    maxMoveSlotSpan: maxPlanWrites,
+    publish,
+  });
   protectPendingAppends();
 
   const touched = Uint32Array.from(
@@ -397,6 +406,7 @@ self.onmessage = (event: MessageEvent<FrontierRequest>): void => {
   if (msg.type === 'init') {
     chunkSize = msg.chunkSize;
     cpuCacheBytes = msg.cpuCacheBytes;
+    maxPlanWrites = msg.maxPlanWrites;
     pager = new FrontierPager(msg.capacity, chunkSize);
     solvedLimit = Number.POSITIVE_INFINITY;
     lastPlanKey = null;

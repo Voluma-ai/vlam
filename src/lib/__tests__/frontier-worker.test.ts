@@ -6,7 +6,7 @@ import type { FrontierPlanMessage, FrontierRequest } from '../formats/rad/fronti
  * The frontier worker's *delivery* behaviour, which is what decides how fast a
  * cold `.rad` reaches its budget.
  *
- * `MAX_PLAN_APPEND_SPLATS` bounds what one plan may apply, but the traversal and
+ * The configured plan cap bounds what one plan may apply, but the traversal and
  * pager diff behind it are O(whole frontier). Re-running both for each of the
  * ~66 plans a 4M-splat frontier needs is quadratic - the reason `cest_ca.rad`
  * sat at ~1.3M of a 4M budget. These tests pin the fix: an unchanged reschedule
@@ -36,9 +36,10 @@ function send(msg: FrontierRequest, transfer: Transferable[] = []): void {
 }
 
 const CHUNK_SIZE = 1024;
+const PLAN_WRITE_CAP = 16_000;
 /**
  * 200 coarse roots x 500 leaves = 100,000 leaves - comfortably past the worker's
- * 60,000-splat per-plan cap, so a cold load *must* take the truncate-then-drain
+ * configured per-plan cap, so a cold load *must* take the truncate-then-drain
  * path rather than converging in one plan.
  */
 const ROOTS = 200;
@@ -100,10 +101,11 @@ function sendTree(roots: number, fan: number): void {
   }
 }
 
-function reschedule(seq: number, camZ = 0): void {
+function reschedule(seq: number, camZ = 0, continuePendingPlan = false): void {
   send({
     type: 'reschedule',
     seq,
+    ...(continuePendingPlan ? { continuePendingPlan: true } : {}),
     cameraLocal: [0, 0, camZ],
     cameraForward: [0, 0, 1],
     coneFov0: 0,
@@ -132,6 +134,7 @@ describe('frontier worker delivery', () => {
       capacity: 200_000,
       chunkSize: CHUNK_SIZE,
       cpuCacheBytes: 8 * 1024 * 1024 * 1024,
+      maxPlanWrites: PLAN_WRITE_CAP,
     });
   });
 
@@ -169,6 +172,20 @@ describe('frontier worker delivery', () => {
     const before = traverseSpy.mock.calls.length;
     reschedule(2, 1); // camera stepped forward
     expect(traverseSpy.mock.calls.length).toBeGreaterThan(before);
+  });
+
+  it('finishes a queued cut while the host coalesces a moving camera', () => {
+    sendTree(ROOTS, FAN);
+    reschedule(1);
+    expect(plans.at(-1)?.converged).toBe(false);
+    const traversals = traverseSpy.mock.calls.length;
+
+    reschedule(2, 1, true);
+    const drain = plans.at(-1)!;
+    expect(traverseSpy.mock.calls.length).toBe(traversals);
+    expect(drain.appends.count + drain.moves.count + drain.degenerateCount).toBeLessThanOrEqual(
+      PLAN_WRITE_CAP,
+    );
   });
 
   it('finishes the pending drain before re-traversing for a newly cached chunk', () => {
@@ -230,6 +247,9 @@ describe('frontier worker delivery', () => {
       expect(unwritten).toBe(-1);
       expect(last.moves.globals).toHaveLength(last.moves.count);
       expect(last.appends.globals).toHaveLength(last.appends.count);
+      expect(last.moves.count + last.appends.count + last.degenerateCount).toBeLessThanOrEqual(
+        PLAN_WRITE_CAP,
+      );
       expect(last.gatherMissing).toBe(0);
       expect(last.dropped).toBe(0);
     } while (!last.converged && seq < 200);

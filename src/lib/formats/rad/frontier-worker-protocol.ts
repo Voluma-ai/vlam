@@ -55,6 +55,8 @@ export interface FrontierInitMessage {
   readonly capacity: number;
   readonly chunkSize: number;
   readonly cpuCacheBytes: number;
+  /** Most pool writes one plan may deliver, including freed-tail clears. */
+  readonly maxPlanWrites: number;
 }
 
 /**
@@ -88,6 +90,8 @@ export interface FrontierCacheBudgetMessage {
 export interface FrontierRescheduleMessage {
   readonly type: 'reschedule';
   readonly seq: number;
+  /** Finish the worker's publish-safe queued cut before solving this newer camera. */
+  readonly continuePendingPlan?: boolean;
   readonly cameraLocal: [number, number, number];
   /** Unit camera forward in mesh-local space. Detail falls off away from it -
    * the traversal foveates rather than frustum-culls, so the scene stays covered

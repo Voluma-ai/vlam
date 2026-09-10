@@ -3,8 +3,7 @@ import type { SplatRange } from '../core/splat-mesh';
 import type { SplatData } from '../core/splat-data';
 import type { LodRun } from './lod-scheduler';
 import { resolveCpuCacheBytes } from '../core/splat-budget';
-
-const APPEND_CAP = 32_000;
+import { DEFAULT_CLASSIC_SPLATS_PER_SWAP } from './streaming-defaults';
 
 /** One resident entry: the run description plus its pool handle. */
 type ResidentEntry = [string, { run: LodRun; handle: SplatRange }];
@@ -579,7 +578,7 @@ export function abortReason(signal: AbortSignal): Error {
 }
 
 export function validateAppendCap(value: number | undefined): number {
-  const cap = value ?? APPEND_CAP;
+  const cap = value ?? DEFAULT_CLASSIC_SPLATS_PER_SWAP;
   if (!Number.isInteger(cap) || cap <= 0) {
     throw new RangeError('StreamedSplatMesh maxSplatsPerSwap must be a positive integer.');
   }

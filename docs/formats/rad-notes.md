@@ -550,6 +550,39 @@ the roadmap carries a bounded-frame acceptance target. The raw benchmark JSON
 remains in the headed page output and the comparison artifacts stay local and
 ignored.
 
+### RTX 3090 page-table upload pacing (2026-09-10)
+
+Page-table delivery now resolves the existing `maxSplatsPerSwap` option to a
+16,000-write default (classic streaming remains 32,000). The worker applies the
+same ceiling to initial updates and queued drains. Appends, swap-remove moves,
+and freed-tail clears all spend that allowance; relocations are additionally
+kept inside a bounded destination-slot window so a sparse cut cannot dirty
+nearly every texture row. The host finishes the queued atomic cut across camera
+motion, then immediately solves the latest coalesced view. It never partially
+applies or publishes a plan.
+
+Two normal-cadence Chrome 152 / RTX 3090 runs repeated the same 1M hotel-core
+cinematic orbit with `swapCap=16000`, 45 seconds of warm-up, and a 30-second
+sample. Both reached the 1,000,000-splat frontier during warm-up. The moving cut
+at the second result snapshot contained 987,033 indices; it had reached 1M
+inside the sample and returned there immediately afterwards. Coverage was exact
+for every measured cut.
+
+| Signal | Repeat 1 | Repeat 2 |
+| --- | ---: | ---: |
+| Average FPS | 59.95 | 59.95 |
+| Frame p95 / p99 / worst | 16.8 / 16.9 / 17.5 ms | 16.8 / 16.9 / 17.7 ms |
+| Worst attributed CPU / upload | 9.1 / 8.1 ms | 10.2 / 9.6 ms |
+| Result-snapshot frontier | 1,000,000 | 987,033 |
+| Sort coverage errors | 0 duplicate / missing / foreign | 0 duplicate / missing / foreign |
+| HUD / cache | `hole 0`, `late 0`, 0 evictions | `hole 0`, `late 0`, 0 evictions |
+
+The upload-attributed acceptance ceiling was 50 ms; both repeats passed with
+more than 40 ms of margin, versus the 120.6 ms isolated baseline. A separate
+attempt with a 62-second background callback gap was discarded from frame
+statistics; its swap-attributed work nevertheless remained below 8 ms, which
+confirms the gap was not produced by a page-table upload.
+
 ## Other gaps / next steps
 - **Coordinate frame:** Spark's loader documents the 180°-X OpenCV→OpenGL
   correction (`quaternion.set(1, 0, 0, 0)`) for loaded splats, including `.rad`.
