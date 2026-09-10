@@ -52,6 +52,8 @@ function run(
   return {
     offset: 0,
     count: 100,
+    // Match real classic LCC runs; absent groups identify manifest octrees.
+    coverageGroup: partial.leafStart,
     ...partial,
   };
 }

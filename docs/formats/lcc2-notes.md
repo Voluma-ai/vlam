@@ -265,3 +265,28 @@ PRC law. Implications for us:
   permitted. Our adapter code is original (no XGRIDS code copied).
 - The `Dehaar` capture itself is **not redistributable**: `assets/` is
   gitignored; never commit it, and keep it out of any published demo.
+
+## Coverage during streaming
+
+LCC2 publishes each leaf-interval transaction independently. A ready subtree
+can refine while another downloads, and retreating or reducing the budget can
+publish a coarser cut. RAD's prefix quality gate does not apply to LCC2.
+
+Existing coverage remains visible until its complete replacement is ready.
+An uncovered region requests its pinned coarsest root-child tile ahead of
+refinement, even when its target is L0. Installing that shared ancestor replaces
+all overlapping descendants in one transaction; row-aligned capacity is checked
+first, overlapping staging is discarded, and subsequent swap groups are rebuilt
+against the new coverage. Ancestors and descendants never intentionally overlap.
+A failed fine tile leaves the coarse tile visible. These guarantees require
+available coarse data and enough pool capacity to hold it; unavailable coarse
+tiles cannot fill a hole. Mobile budgets and the initial coverage hold are unchanged.
+
+The regression suite exercises delayed and failed downloads, coarsening,
+independent subtrees, shared ancestors, and staging pressure, including eviction
+of CPU chunks after GPU staging. A Linux Chromium/WebGL2 visual check of cached
+Tempel at a 2,000,000 budget showed coverage at the reported camera and after
+turning, including 393×852 portrait and 852×393 landscape viewports. This was a
+settled-view check, not an iOS or throttled-network validation. WebGPU browser
+checks could not all pass on that host (adapter availability failures); physical
+iPhone Safari portrait/landscape validation remains pending.

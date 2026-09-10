@@ -564,6 +564,8 @@ interface PersistentChannel {
  */
 export class StreamedSplatMesh extends SplatMesh {
   private readonly scene: StreamedScene;
+  /** Only RAD prefixes need a global publish wave; manifest cuts are region-atomic. */
+  private readonly usesRadWave: boolean;
   private readonly loader = new ChunkLoader();
   /**
    * Cap the *classic* (non-page-table) chunk cache evicts against.
@@ -1232,6 +1234,7 @@ export class StreamedSplatMesh extends SplatMesh {
   ) {
     super({ capacity }, options);
     this.scene = scene;
+    this.usesRadWave = scene.chunkOptions?.some((chunk) => chunk?.format === 'rad-chunk') ?? false;
     this.budgetValue = budget;
     // The pool was allocated for the ceiling, so `setBudget` may climb to it.
     // Never below `budget` - that would make the mesh's own starting budget
@@ -2454,9 +2457,7 @@ export class StreamedSplatMesh extends SplatMesh {
     // keeps that coverage active while the live cut stages, then replaces it
     // atomically rather than drawing coarse and fine runs together.
     const liveRuns = holdingRuns ?? scheduledRuns;
-    const classicSource =
-      !holding && liveRuns.length > 0 && liveRuns.every((run) => run.coverageGroup !== undefined);
-    const swapRuns = !classicSource && !holding ? this.captureWaveRuns(liveRuns) : liveRuns;
+    const swapRuns = this.usesRadWave && !holding ? this.captureWaveRuns(liveRuns) : liveRuns;
     const desired = new Map<string, LodRun>();
     const desiredFiles = new Set<number>();
     for (const run of liveRuns) {
@@ -2533,29 +2534,39 @@ export class StreamedSplatMesh extends SplatMesh {
     // overlap; a group that cannot fully apply this tick (chunk still
     // fetching, append cap, pool pressure) is deferred whole, its old runs
     // still rendering.
-    const groups = holding
+    let groups = holding
       ? // Mesh is invisible during the hold, so L0 cell-atomicity (no holes) is
         // irrelevant - commit each frozen slice as it lands so a partial home
         // cell cannot block reveal behind sibling subchunks still fetching.
         buildHoldSwapGroups(toAdd)
       : buildSwapGroups(toAdd, toRemove);
     const classicLccGroups = !holding && isClassicLccSwapSet(groups);
-    // The generic RAD wave must land all replacement coverage before any
-    // retirements. Classic LCC already has per-slice coverage transactions;
-    // applying that global wave to it starves a ready visible L1+ slice behind
-    // every coarse shell elsewhere in the scene.
+    const pendingFetches = new Map<number, ClassicFetchWant>();
+    this.updateEnvironment(now, pendingFetches);
+
+    if (!this.usesRadWave && !classicLccGroups && !holding) {
+      // An octree fallback spans a whole ancestor, including ready siblings in
+      // other groups. Install coverage before committing any replacements, then
+      // rebuild transactions against the resulting cut to avoid double-draw.
+      for (const group of groups) {
+        if (
+          group.adds.some(
+            (run) =>
+              !this.cache.has(run.file) &&
+              this.staged.get(runKey(run))?.uploadedCount !== run.count,
+          )
+        ) {
+          this.substituteCoverage(group, now, pendingFetches, false);
+        }
+      }
+      groups = buildSwapGroups(
+        swapRuns.filter((run) => !this.resident.has(runKey(run))),
+        [...this.resident.entries()].filter(([key]) => !desired.has(key)),
+      );
+    }
     groups.sort((a, b) =>
       classicLccGroups ? compareClassicSwapGroups(a, b) : groupPriority(a) - groupPriority(b),
     );
-
-    // Classic path used to `requestChunk` in leafStart / group order, so far
-    // coarse pins filled the in-flight cap while the camera cell stayed on
-    // discs. Collect every miss this tick and flush nearest/finest first -
-    // same contract as the page-table `pageTableFetchPriority` path.
-    const pendingFetches = new Map<number, ClassicFetchWant>();
-    // Environment first: append it before coverage consumes pool rows, and
-    // enqueue its fetch ahead of LOD wants so the sky is not last in the pipe.
-    this.updateEnvironment(now, pendingFetches);
 
     // A `.rad` refinement splits across groups: leaf-interval overlap pairs an
     // octree parent with its children, but `.rad` keys runs by global splat
@@ -2571,7 +2582,7 @@ export class StreamedSplatMesh extends SplatMesh {
     // still-fetching prefetch, and activate adds together with their
     // retirements. Classic LCC keeps per-slice apply below - it already has
     // independent coverage for every cell.
-    if (!classicLccGroups && !holding) {
+    if (this.usesRadWave && !holding) {
       // Fetch-intent runs are excluded from the drawable cut so they cannot
       // delay it, but they still have to enter the pipe or discovery never
       // deepens past the first decoded prefix.
@@ -2588,42 +2599,26 @@ export class StreamedSplatMesh extends SplatMesh {
       this.applyRadWave(groups, liveRuns, now, pendingFetches);
     } else {
       let appended = 0;
-      let addsPending = false;
-      let poolPressure = false;
-      let held = false;
+      // Leaf-interval overlap already joins every replacement to its old
+      // coverage. Independent regions must never wait for a global wave.
       for (const group of groups) {
-        if (!classicLccGroups && group.removes.length > 0 && addsPending) {
-          // Bounded so the wait can never strand coverage: the replacements
-          // normally land within a few ticks, and past that the pool matters more
-          // than the seam.
-          if (
-            this.neverRetireCoverageEarly ||
-            (!poolPressure && this.retireHeldTicks < MAX_RETIRE_HELD_TICKS)
-          ) {
-            this.pendingWork = true;
-            held = true;
-            continue;
-          }
-          // Falling through here retires coverage whose replacement has *not*
-          // landed - the one deliberate hole in this path. Two causes, one
-          // consequence: the pool needs the rows more than the seam needs hiding
-          // (`poolPressure`), or the hold has run past MAX_RETIRE_HELD_TICKS. A
-          // higher budget makes the first likelier - more and larger groups in
-          // flight against a pool sized from the same budget - so this is the
-          // first thing to read when holes appear only at a raised budget.
-          this.fetchCountsValue.retiredEarly++;
-        }
         if (group.adds.length === 0) {
           this.applyGroup(group, now); // dropped regions: just free them
           continue;
         }
-        const missing = group.adds.filter((run) => !this.cache.has(run.file));
+        const missing = group.adds.filter(
+          (run) =>
+            !this.cache.has(run.file) && this.staged.get(runKey(run))?.uploadedCount !== run.count,
+        );
         // Resolved L0: skip coarse stand-in for empty gaps (keep prior coverage
         // on each sub-leaf until that slice's L0 commits). L1+: allow per-slice
         // coarsest substitute while that slice's target loads.
         // Startup hold never paints coarse for the critical set.
         const holdForTarget =
-          holding || (isWaitingOnFinest(group) && this.initialRevealHold !== 'hold-coverage');
+          holding ||
+          (classicLccGroups &&
+            isWaitingOnFinest(group) &&
+            this.initialRevealHold !== 'hold-coverage');
         if (missing.length > 0) {
           // Only keep re-scheduling if some missing chunk is still
           // recoverable (fetching or awaiting a retry); a group whose chunks
@@ -2642,12 +2637,11 @@ export class StreamedSplatMesh extends SplatMesh {
           // Far / L1+ gaps: install coarsest shell. L0 hold: do not fetch or
           // paint that shell - only the resolved L0 target is requested.
           // Startup hold: still stage any siblings already in cache (below).
-          if (!holding) {
+          if (!holding && classicLccGroups) {
             this.substituteCoverage(group, now, pendingFetches, holdForTarget);
           }
           if (recoverable) {
             this.pendingWork = true;
-            addsPending = true;
           }
           // During startup, continue into staging so available chunks upload
           // before every sibling is cached.
@@ -2657,7 +2651,6 @@ export class StreamedSplatMesh extends SplatMesh {
           // Keep pool headroom for the env tile; coverage stays cached until it
           // lands. Fetches for the frozen set are already queued above.
           this.pendingWork = true;
-          addsPending = true;
           continue;
         }
         const forceStage = holding || (this.stagedSwapsEnabled && group.addCount > this.appendCap);
@@ -2668,7 +2661,6 @@ export class StreamedSplatMesh extends SplatMesh {
             !group.adds.every((run) => this.staged.get(runKey(run))?.uploadedCount === run.count)
           ) {
             this.pendingWork = true;
-            addsPending = true;
             continue;
           }
           // Keep the old region for one additional frame when this tick wrote
@@ -2678,7 +2670,6 @@ export class StreamedSplatMesh extends SplatMesh {
           if (stagedNow > 0 && !holding) {
             this.deferNextSortRequest();
             this.pendingWork = true;
-            addsPending = true;
             continue;
           }
           this.commitStagedGroup(group);
@@ -2690,28 +2681,21 @@ export class StreamedSplatMesh extends SplatMesh {
         // one-frame hitch beats never applying it at all.
         if (!holding && appended > 0 && appended + group.addCount > this.appendCap) {
           this.pendingWork = true;
-          addsPending = true;
           continue;
         }
         // Startup hold always stages (above); if staging could not start, keep
         // pending rather than applying visible coverage while the viewer is gated.
         if (holding) {
           this.pendingWork = true;
-          addsPending = true;
           continue;
         }
         if (!this.applyGroup(group, now)) {
           this.pendingWork = true; // transient pool pressure; retry next tick
-          // Rows are the scarce resource now, so stop holding retirements back.
-          poolPressure = true;
           continue;
         }
         appended += group.addCount;
       }
-      // Counts only ticks that actually held something back, so reaching the bound
-      // releases the retirement and starts the count over rather than latching the
-      // gate off for the rest of the session.
-      this.retireHeldTicks = held ? this.retireHeldTicks + 1 : 0;
+      this.retireHeldTicks = 0;
     }
 
     this.flushClassicFetches(pendingFetches, this.scene.source.lodBaseDistance, holding);
@@ -3465,9 +3449,27 @@ export class StreamedSplatMesh extends SplatMesh {
   private applyGroup(group: SwapGroup, now: number): boolean {
     const rowSplats = (count: number): number =>
       Math.ceil(count / DATA_TEXTURE_WIDTH) * DATA_TEXTURE_WIDTH;
-    const needed = group.adds.reduce((sum, run) => sum + rowSplats(run.count), 0);
-    const freed = group.removes.reduce((sum, [, entry]) => sum + rowSplats(entry.run.count), 0);
+    const ready = (run: LodRun): boolean =>
+      this.staged.get(runKey(run))?.uploadedCount === run.count;
+    const unstaged = group.adds.filter((run) => !ready(run));
+    const partial = unstaged.flatMap((run) => {
+      const key = runKey(run);
+      const entry = this.staged.get(key);
+      return entry ? [{ key, entry }] : [];
+    });
+    const needed = unstaged.reduce((sum, run) => sum + rowSplats(run.count), 0);
+    const freed =
+      group.removes.reduce((sum, [, entry]) => sum + rowSplats(entry.run.count), 0) +
+      partial.reduce((sum, { entry }) => sum + rowSplats(entry.run.count), 0);
     if (needed > this.freeSplatCapacity + freed) return false;
+    // A camera change can merge staged groups into a transaction that no
+    // longer fits beside the old cut. Reclaim partial staging for the direct
+    // swap, but retain completed GPU ranges whose CPU chunks may be evicted.
+    if (unstaged.some((run) => !this.cache.has(run.file))) return false;
+    for (const { key, entry } of partial) {
+      this.removeRange(entry.handle);
+      this.staged.delete(key);
+    }
 
     for (const [key, entry] of group.removes) {
       if (!this.resident.has(key)) continue;
@@ -3475,7 +3477,15 @@ export class StreamedSplatMesh extends SplatMesh {
       this.resident.delete(key);
     }
     for (const run of group.adds) {
-      this.appendRun(run, now);
+      const key = runKey(run);
+      const entry = this.staged.get(key);
+      if (entry) {
+        this.setRangeActive(entry.handle, true);
+        this.resident.set(key, entry);
+        this.staged.delete(key);
+      } else {
+        this.appendRun(run, now);
+      }
     }
     return true;
   }
@@ -3679,9 +3689,8 @@ export class StreamedSplatMesh extends SplatMesh {
    * intentionally not "desired": the next reschedule swaps them for the
    * real level once its chunk has arrived.
    *
-   * Near-camera refinements (`distance <= lodBaseDistance`) skip the coarse
-   * paint and its pin fetch entirely - cold load requests only the target cut
-   * for that cell. Far gaps keep the shell.
+   * Classic LCC may explicitly hold for finest detail. Manifest octrees always
+   * fill gaps with coarse coverage, including near-camera regions.
    */
   private substituteCoverage(
     group: SwapGroup,
@@ -3731,10 +3740,13 @@ export class StreamedSplatMesh extends SplatMesh {
           continue;
         }
         if (!this.cache.has(run.file)) {
+          if (!this.failedFiles.has(run.file)) this.pendingWork = true;
           enqueueClassicFetch(
             pendingFetches,
             run.file,
-            classicFetchPhaseForCoverage(run, this.scene.source.lodBaseDistance),
+            !this.usesRadWave && run.coverageGroup === undefined
+              ? 'missing-coverage'
+              : classicFetchPhaseForCoverage(run, this.scene.source.lodBaseDistance),
             run,
           );
           // This is the one path in the substitute that gives up: the gap keeps
@@ -3749,19 +3761,35 @@ export class StreamedSplatMesh extends SplatMesh {
             Math.min(run.leafEnd, end) - Math.max(run.leafStart, cursor);
           continue;
         }
-        // A coarsest run may span beyond `[cursor, end)` - LCC2 root children
-        // cover whole subtrees and cannot be clipped to a leaf sub-interval.
-        // Octree intervals nest, so every resident run overlapping it lies
-        // fully inside it: remove those first (the whole region temporarily
-        // shows coarse), or their leaves would render twice - a bright flash
-        // for the fetch window, permanent if the missing chunk never loads.
-        for (const [key, entry] of this.resident) {
-          if (entry.run.leafStart < run.leafEnd && entry.run.leafEnd > run.leafStart) {
-            this.removeRange(entry.handle);
-            this.resident.delete(key);
-          }
+        // Shared ancestors cannot be clipped to a gap. Preflight their whole
+        // replacement before removing any visible descendant. Staging in this
+        // interval is obsolete once the ancestor covers it, and can free rows.
+        const overlaps = (other: LodRun): boolean =>
+          other.leafStart < run.leafEnd && other.leafEnd > run.leafStart;
+        const removes = [...this.resident.entries()].filter(([, entry]) => overlaps(entry.run));
+        const staged = [...this.staged.entries()].filter(([, entry]) => overlaps(entry.run));
+        const freed = [...removes, ...staged].reduce(
+          (sum, [, entry]) => sum + this.rowAlignedSplats(entry.run.count),
+          0,
+        );
+        if (this.rowAlignedSplats(run.count) > this.freeSplatCapacity + freed) {
+          this.pendingWork = true;
+          continue;
         }
-        this.appendRun(run, now);
+        for (const [key, entry] of staged) {
+          this.removeRange(entry.handle);
+          this.staged.delete(key);
+        }
+        this.applyGroup(
+          {
+            adds: [run],
+            removes,
+            leafStart: run.leafStart,
+            leafEnd: run.leafEnd,
+            addCount: run.count,
+          },
+          now,
+        );
       }
       offset = gapEnd;
     }
