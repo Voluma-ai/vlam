@@ -117,6 +117,28 @@ forces it off. The debug line's `SH n` reports the bands actually rendered.
 The conversion math, zero-padding, requantization, the pool's
 range-mismatch requantize, and the tile peek are covered by unit tests
 (`sh-pack.test.ts`, `splat-mesh.packed-sh.test.ts`, `sog-scene-shn.test.ts`,
-`peek-sog-sh.test.ts`). End-to-end visual A/B needs a Streamed SOG / `.lcc2`
-capture that actually carries shN; none is checked in (captures are
-gitignored), so on-device confirmation is pending such a fixture.
+`peek-sog-sh.test.ts`).
+
+Headed validation on 2026-09-09 used Chrome 152 on Windows 11 build 26200,
+an NVIDIA GeForce RTX 3090 (driver 595.79), and the gitignored Tempel `.lcc2`
+capture: 12,847,768 splats across five LOD levels, SH3, aggregate SHA-256
+`ca6e09f3b330e295b01ef6a45926a1bb81dd93cbd3957c51089ec754d0277438`.
+The fixed camera was `(-9.09, 1.65, 8.85)` toward
+`(-8.21, 1.67, 7.06)`, at 1280x720 with a five-second warm-up and 15-second
+sample.
+
+Explicit `?sh=0` and `?sh=3` stationary/orbit runs completed on WebGPU and
+forced WebGL2; an unset `?sh` resolved to SH3 on both. Every saved report used
+the requested backend, rendered nonblank front and orbit frames, and recorded
+zero GPU validation errors or device loss. At the same coarse cut, SH0 versus
+SH3 differed by about 9.5-10.1 mean 8-bit RGB steps per channel, while automatic
+versus forced SH3 was byte-identical on WebGL2 and within 0.04 mean steps on
+WebGPU. The SH3 wall, floor, and column response changed coherently with the
+camera rather than as a fixed tint.
+
+A live cinematic orbit then exercised LOD replacement beyond the fixed
+benchmark frames. WebGPU moved from 370,871 to 6,645,086 active splats and
+WebGL2 from 370,871 to 6,159,870, retaining `SH 3` with `hole 0` and `late 0`.
+No black gaps, neutral tiles, SH seams, or replacement flashes were visible.
+Raw JSON and screenshots remain under `.tmp/benchmark-results/`; the capture
+and generated artifacts are intentionally not committed.

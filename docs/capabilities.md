@@ -18,7 +18,7 @@ and [`architecture.md`](architecture.md).
 | **KSPLAT** | ✅ |, | ✅ file | ✅ | ✅ packed shN (SH degrees 1–2) | `parse-ksplat.test.ts` |, |
 | **SPZ** | ✅ |, | ✅ file | ✅ | ✅ packed shN when `shDegree` > 0 (caps at 3 bands) | `parse-spz.test.ts` |, |
 | **LCC** (`.lcc` / `meta.lcc`, v3–v5) |, | ✅ | ✅ manifest + siblings | ✅ | ⚠️ `Quality` profile: packed SH (`shBands`); `Portable` DC | `lcc.test.ts`, `parse-lcc.test.ts` | Quality vs Portable |
-| **LCC2** (XGRIDS tiles) |, | ✅ | ✅ manifest + `.sog` tiles | ✅ | ✅ peek tile `meta.json` `shN` (palette → packed; off on `smooth`) | `lcc2-*`, `peek-sog-sh` | octree LOD orbit |
+| **LCC2** (XGRIDS tiles) |, | ✅ | ✅ manifest + `.sog` tiles | ✅ | ✅ peek tile `meta.json` `shN` (palette → packed; off on `smooth`) | `lcc2-*`, `peek-sog-sh` | Tempel SH0/SH3 octree orbit (Chrome/Windows, WebGPU + WebGL2) |
 | **RAD** (Spark `.rad`) | ✅ whole-file ≤ ~16.7M leaves | ✅ prefix or **page-table** foveation | ✅ `.rad` folder (optional `.radc` chunks) | ✅ | ✅ packed SH when capture has `maxSh` | `parse-rad`, `rad-*`, `frontier-pager` | page-table fly-through |
 
 ### Format notes
