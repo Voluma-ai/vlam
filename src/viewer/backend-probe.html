@@ -5,14 +5,24 @@
   <canvas id="canvas" width="4" height="4"></canvas>
   <output data-testid="backend"></output>
   <output data-testid="pixel"></output>
+  <output data-testid="projection"></output>
   <script type="module">
     import * as THREE from 'three/webgpu';
     import { createWebGPURenderer, SplatMesh } from '../lib/core';
 
-    const requested = new URLSearchParams(location.search).get('backend');
+    const params = new URLSearchParams(location.search);
+    const requested = params.get('backend');
+    const projection = params.get('projection') ?? 'vertex';
     const canvas = document.querySelector('#canvas');
     const backend = document.querySelector('[data-testid="backend"]');
     const pixel = document.querySelector('[data-testid="pixel"]');
+    const projectionOutput = document.querySelector('[data-testid="projection"]');
+    addEventListener('error', (event) => {
+      projectionOutput.textContent = JSON.stringify({ error: String(event.error ?? event.message) });
+    });
+    addEventListener('unhandledrejection', (event) => {
+      projectionOutput.textContent = JSON.stringify({ error: String(event.reason) });
+    });
     if (requested !== 'webgpu' && requested !== 'webgl2') {
       throw new Error(`Unknown backend: ${requested}`);
     }
@@ -28,12 +38,15 @@
     const actual = renderer.backend.isWebGPUBackend ? 'webgpu' : 'webgl2';
     if (actual !== requested) throw new Error(`Requested ${requested}, initialized ${actual}.`);
 
-    const splats = new SplatMesh({
-      count: 1,
-      positions: new Float32Array([0, 0, 0]),
-      colors: new Uint8Array([255, 255, 255, 255]),
-      covariances: new Float32Array([0.04, 0, 0, 0.04, 0, 0.04]),
-    });
+    const splats = new SplatMesh(
+      {
+        count: 1,
+        positions: new Float32Array([0, 0, 0]),
+        colors: new Uint8Array([255, 255, 255, 255]),
+        covariances: new Float32Array([0.04, 0, 0, 0.04, 0, 0.04]),
+      },
+      { projectionStrategy: projection },
+    );
     const scene = new THREE.Scene();
     scene.add(splats);
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 10);
@@ -49,6 +62,10 @@
     renderer.setRenderTarget(null);
     backend.textContent = actual;
     pixel.textContent = Array.from(bytes).join(',');
+    projectionOutput.textContent = JSON.stringify({
+      ...splats.projectionStrategyStatus,
+      visibleCount: await splats.readGpuVisibleSplatCount(),
+    });
     target.dispose();
     splats.dispose();
     renderer.dispose();

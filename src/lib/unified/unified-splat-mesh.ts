@@ -16,7 +16,12 @@ import { resolveXrView } from '../core/xr-view';
 import { StorageMirrorReleaser } from '../core/storage-attribute-mirror';
 import type { SplatSorter } from '../core/sorter';
 import type { SplatSortMetric } from '../core/splat-mesh-types';
+import type { SplatProjectionStrategy } from '../core/splat-mesh-types';
 import { cameraVisibleSortRange, radialSortState } from '../core/splat-sort-bounds';
+import {
+  ProjectedSplatPipeline,
+  estimateProjectedSplatPeakBytes,
+} from '../core/projected-splat-pipeline';
 
 interface SourceRecord {
   source: SplatMesh;
@@ -88,6 +93,12 @@ export interface UnifiedSplatPickResult extends SplatPickResult {
  * @experimental May change in a minor release.
  */
 export interface UnifiedSplatMeshOptions {
+  /**
+   * Experimental mono WebGPU project-once/cull-before-sort path. Defaults to
+   * `'vertex'`; XR presentation deliberately uses the established per-eye
+   * vertex projection.
+   */
+  projectionStrategy?: SplatProjectionStrategy;
   /** Composite source colors in display (sRGB) space. Defaults to `false`. */
   srgbOutput?: boolean;
   /**
@@ -144,6 +155,9 @@ export class UnifiedSplatMesh extends THREE.Mesh {
    */
   private readonly mirrors: StorageMirrorReleaser;
   private readonly sorter: SplatSorter;
+  private readonly projectedSorter: SplatSorter | null;
+  private readonly projectedPipeline: ProjectedSplatPipeline | null;
+  private computeProjectionActive = false;
   private readonly renderer: THREE.WebGPURenderer;
   private readonly sources: SourceRecord[] = [];
   private previousLayout: LayoutEntry[] = [];
@@ -185,6 +199,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   private displayColorModifierValue: DisplayColorModifier | null = null;
   private readonly srgbOutput: boolean;
   private readonly sortMetric: SplatSortMetric;
+  private readonly projectionStrategyValue: SplatProjectionStrategy;
   private sourceMaxStdDev: number | null = null;
   private sourceAntialias: boolean | null = null;
   private sourceProjectedFilterProfile: 'default' | 'lcc' | null = null;
@@ -216,6 +231,37 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     const compensateProjectedLowPass = uniform(0);
     const dofFocusDistance = uniform(10);
     const dofAperture = uniform(0);
+    const projectionStrategy = options.projectionStrategy ?? 'vertex';
+    if (projectionStrategy !== 'vertex' && projectionStrategy !== 'compute') {
+      throw new RangeError('UnifiedSplatMesh: invalid projectionStrategy.');
+    }
+    if (projectionStrategy === 'compute') {
+      assertStorageBufferFitsDevice(renderer, capacity * 16, capacity);
+      // Account for the allocation peak up front even though the per-buffer
+      // binding limit is enforced independently above.
+      estimateProjectedSplatPeakBytes(capacity);
+    }
+    const projectedPipeline =
+      projectionStrategy === 'compute'
+        ? new ProjectedSplatPipeline({
+            renderer,
+            capacity,
+            centers: workBuffer.centers,
+            colors: workBuffer.colors,
+            covarianceA: workBuffer.covarianceA,
+            covarianceB: workBuffer.covarianceB,
+            focal,
+            viewport,
+            maxStdDev,
+            minSplatSizePx,
+            antialias,
+            projectedLowPassVariance,
+            compensateProjectedLowPass,
+            dofFocusDistance,
+            dofAperture,
+            sortMetric: options.sortMetric ?? 'depth',
+          })
+        : null;
     const order = new THREE.StorageInstancedBufferAttribute(new Float32Array(capacity), 1);
     const geometry = new THREE.InstancedBufferGeometry();
     geometry.setIndex([0, 1, 2, 0, 2, 3]);
@@ -235,6 +281,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         isotropicMix: workBuffer.isotropicMix,
         isotropicScreenRadius: workBuffer.isotropicScreenRadius,
         order,
+        ...(projectedPipeline ? { projected: projectedPipeline.buffers } : {}),
         focal,
         viewport,
         maxStdDev,
@@ -247,6 +294,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         displayColorModifier: null,
       }),
     );
+    if (projectedPipeline) geometry.setIndirect(projectedPipeline.buffers.drawArgs);
     const indices = new Uint32Array(capacity);
     for (let i = 0; i < capacity; i++) indices[i] = i;
     this.workBuffer = workBuffer;
@@ -261,11 +309,14 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.dofAperture = dofAperture;
     this.srgbOutput = options.srgbOutput ?? false;
     this.sortMetric = options.sortMetric ?? 'depth';
+    this.projectionStrategyValue = projectionStrategy;
     this.sortScheduler = new WebGpuSortScheduler(undefined, isFillConstrainedSplatDevice());
     this.orderAttribute = order;
     this.workSourceIndex = new THREE.StorageBufferAttribute(indices, 1);
     this.mirrors = new StorageMirrorReleaser([this.workSourceIndex, this.orderAttribute]);
     this.renderer = renderer;
+    this.projectedPipeline = projectedPipeline;
+    this.computeProjectionActive = projectedPipeline !== null;
     const sortInputs = {
       renderer,
       capacity,
@@ -281,6 +332,16 @@ export class UnifiedSplatMesh extends THREE.Mesh {
             sortMetric: this.sortMetric,
           })
         : new ComputeSorter({ ...sortInputs, sortMetric: this.sortMetric });
+    this.projectedSorter = projectedPipeline
+      ? new ComputeSorter({
+          ...sortInputs,
+          visibleIndexAttribute: projectedPipeline.buffers.visibleIndices,
+          projectedParametersAttribute: projectedPipeline.buffers.parameters,
+          visibleCountAttribute: projectedPipeline.buffers.visibleCount,
+          indirectDispatchAttribute: projectedPipeline.buffers.dispatchArgs,
+          sortMetric: this.sortMetric,
+        })
+      : null;
     this.frustumCulled = false;
     this.matrixAutoUpdate = false;
     this.matrix.identity();
@@ -290,6 +351,20 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   /** Fixed work-buffer splat capacity chosen at construction. */
   get capacity(): number {
     return this.workBuffer.capacity;
+  }
+
+  /** Requested projection strategy. */
+  get projectionStrategy(): SplatProjectionStrategy {
+    return this.projectionStrategyValue;
+  }
+
+  /** Strategy currently used by the draw (XR temporarily resolves to vertex). */
+  get effectiveProjectionStrategy(): SplatProjectionStrategy {
+    return this.computeProjectionActive ? 'compute' : 'vertex';
+  }
+
+  async readGpuVisibleSplatCount(): Promise<number | null> {
+    return this.projectedPipeline?.readVisibleCount() ?? null;
   }
 
   /** Registers a source. The caller keeps ownership and may still query it. */
@@ -572,6 +647,9 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     // the application camera would order the scene from wherever that camera
     // was left standing.
     const xrView = targetSize ? null : resolveXrView(camera, this.renderer);
+    this.setComputeProjectionActive(
+      this.projectedPipeline !== null && this.renderer.xr?.isPresenting !== true,
+    );
     const projectionCamera: THREE.Camera = xrView?.eye ?? camera;
     // One global sort from the head serves both eyes (see `xr-view.ts`).
     const viewCamera: THREE.Camera = xrView?.head ?? camera;
@@ -739,7 +817,21 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     // this. DoF is a live draw uniform and reaches neither branch.
     if (geometryInvalidated || layoutChanged) this.sortScheduler.invalidateContent();
 
-    if (offset > 0) {
+    if (this.computeProjectionActive && this.projectedPipeline && this.projectedSorter) {
+      this.projectedPipeline.prepare(
+        viewCamera.matrixWorldInverse,
+        projectionCamera.projectionMatrix,
+        offset,
+      );
+      if (offset > 0) {
+        this.projectedSorter.sort(
+          viewCamera.matrixWorldInverse,
+          offset,
+          this.bounds,
+          cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
+        );
+      }
+    } else if (offset > 0) {
       const now = performance.now();
       const viewInverse = viewCamera.matrixWorldInverse;
       const sortState =
@@ -763,7 +855,9 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         }
       }
     }
-    (this.geometry as THREE.InstancedBufferGeometry).instanceCount = offset;
+    (this.geometry as THREE.InstancedBufferGeometry).instanceCount = this.computeProjectionActive
+      ? this.workBuffer.capacity
+      : offset;
     // Both are uploaded by the first frame's gather/sort dispatches, and neither
     // is ever read back - see the field comment. The work buffer's own mirrors
     // are released by `WorkBufferGather.gather`.
@@ -773,6 +867,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    super.dispose();
     for (const record of this.sources) {
       record.gather.dispose();
       record.source.visible = record.originalVisible;
@@ -788,6 +883,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.sourceAntialias = null;
     this.sourceProjectedFilterProfile = null;
     this.sorter.dispose();
+    this.projectedSorter?.dispose();
+    this.projectedPipeline?.dispose();
     this.geometry.dispose();
     (this.material as THREE.Material).dispose();
     // The work buffer, its source-index list and the draw-order buffer are
@@ -803,6 +900,16 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       this.workSourceIndex,
       this.orderAttribute,
     ]);
+  }
+
+  private setComputeProjectionActive(active: boolean): void {
+    if (this.computeProjectionActive === active) return;
+    this.computeProjectionActive = active;
+    (this.geometry as THREE.InstancedBufferGeometry).setIndirect(
+      active ? (this.projectedPipeline?.buffers.drawArgs ?? null) : null,
+    );
+    this.rebuildDrawMaterial();
+    this.sortScheduler.invalidateContent();
   }
 
   private assertNotDisposed(operation: string): void {
@@ -823,6 +930,9 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       isotropicMix: this.workBuffer.isotropicMix,
       isotropicScreenRadius: this.workBuffer.isotropicScreenRadius,
       order: this.orderAttribute,
+      ...(this.computeProjectionActive && this.projectedPipeline
+        ? { projected: this.projectedPipeline.buffers }
+        : {}),
       focal: this.focal,
       viewport: this.viewport,
       maxStdDev: this.maxStdDev,

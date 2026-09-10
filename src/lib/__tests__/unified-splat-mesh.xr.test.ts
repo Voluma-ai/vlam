@@ -116,4 +116,19 @@ describe('UnifiedSplatMesh under XR presentation', () => {
     unified.dispose();
     mesh.dispose();
   });
+
+  it('switches requested compute projection off for XR presentation', () => {
+    const { renderer } = xrRenderer();
+    const mesh = source();
+    const unified = new UnifiedSplatMesh(renderer, 4, { projectionStrategy: 'compute' });
+    unified.addSource(mesh);
+    (mesh as unknown as { update: () => void }).update = vi.fn();
+
+    unified.update(new THREE.PerspectiveCamera());
+
+    expect(unified.projectionStrategy).toBe('compute');
+    expect(unified.effectiveProjectionStrategy).toBe('vertex');
+    unified.dispose();
+    mesh.dispose();
+  });
 });

@@ -47,6 +47,8 @@ describe('shared comparison configuration', () => {
       seconds: 30,
       preset: 'proposed',
       shEvaluation: 'auto',
+      projectionStrategy: 'vertex',
+      sortIntervalMs: undefined,
       msaa: false,
     });
     expect(
@@ -77,11 +79,19 @@ describe('shared comparison configuration', () => {
       'backend=metal',
       'shEvaluation=unknown',
       'mode=unknown',
+      'sortIntervalMs=-1',
+      'sortIntervalMs=NaN',
     ])
       expect(() => comparisonConfig('/vlam-benchmark.html', new URLSearchParams(query))).toThrow();
     expect(() =>
       comparisonConfig('/spark-benchmark.html', new URLSearchParams('backend=webgpu')),
     ).toThrow();
+    expect(
+      comparisonConfig(
+        '/vlam-benchmark.html',
+        new URLSearchParams('projectionStrategy=compute&sortIntervalMs=0'),
+      ),
+    ).toMatchObject({ projectionStrategy: 'compute', sortIntervalMs: 0 });
   });
   it('separates rotation, translation and settling for SH invalidation probes', () => {
     const pose = {

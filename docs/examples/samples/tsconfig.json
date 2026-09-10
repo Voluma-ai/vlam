@@ -32,6 +32,7 @@
     // Ambient declarations the library itself compiles with (WebGPU
     // navigator typing, the three.js zstd module shim).
     "../../../src/viewer/webgpu-env.d.ts",
-    "../../../src/lib/loaders/three-zstd.d.ts"
+    "../../../src/lib/loaders/three-zstd.d.ts",
+    "../../../src/lib/three-r186.d.ts"
   ]
 }

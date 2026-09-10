@@ -3,7 +3,9 @@ import {
   type SplatData,
   type SplatSortStrategy,
   type SplatStorageMode,
+  type SplatProjectionStrategy,
 } from '../lib/core';
+import { PROJECTED_SPLAT_FIXED_BYTES } from '../lib/core/projected-splat-pipeline';
 
 /** Byte counts for the arrays owned by one decoded {@link SplatData}. */
 export interface DecodedSplatMemory {
@@ -20,6 +22,11 @@ export interface MeshMemoryEstimate {
   readonly gpuBytes: number;
   readonly totalBytes: number;
   readonly paletteBytesPerSide: number;
+  readonly projectionCacheBytes: number;
+  readonly visibleListBytes: number;
+  readonly indirectArgumentBytes: number;
+  readonly projectionPeakCpuMirrorBytes: number;
+  readonly peakTotalBytes: number;
 }
 
 /** Counts every typed-array view retained by decoded splat data. */
@@ -57,6 +64,7 @@ export function estimateMeshMemory(
     readonly sortStrategy: SplatSortStrategy;
     readonly storageMode?: SplatStorageMode;
     readonly paletteBytes?: number;
+    readonly projectionStrategy?: SplatProjectionStrategy;
   },
 ): MeshMemoryEstimate {
   const estimateOptions = {
@@ -71,7 +79,13 @@ export function estimateMeshMemory(
   });
   const poolTotalBytes = estimateSplatPoolBytes(capacity, estimateOptions);
   const paletteBytesPerSide = options.paletteBytes ?? 0;
-  const gpuBytes = poolGpuBytes + paletteBytesPerSide;
+  const projectionCacheBytes = options.projectionStrategy === 'compute' ? capacity * 48 : 0;
+  const visibleListBytes = options.projectionStrategy === 'compute' ? capacity * 4 : 0;
+  const indirectArgumentBytes =
+    options.projectionStrategy === 'compute' ? PROJECTED_SPLAT_FIXED_BYTES : 0;
+  const projectionGpuBytes = projectionCacheBytes + visibleListBytes + indirectArgumentBytes;
+  const projectionPeakCpuMirrorBytes = projectionGpuBytes;
+  const gpuBytes = poolGpuBytes + paletteBytesPerSide + projectionGpuBytes;
   const editableCpuBackingBytes = poolTotalBytes - poolGpuBytes + paletteBytesPerSide;
   const releasedCpuBackingBytes =
     options.storageMode === 'render-only' ? editableCpuBackingBytes : 0;
@@ -82,5 +96,10 @@ export function estimateMeshMemory(
     gpuBytes,
     totalBytes: cpuBackingBytes + gpuBytes,
     paletteBytesPerSide,
+    projectionCacheBytes,
+    visibleListBytes,
+    indirectArgumentBytes,
+    projectionPeakCpuMirrorBytes,
+    peakTotalBytes: cpuBackingBytes + gpuBytes + projectionPeakCpuMirrorBytes,
   };
 }

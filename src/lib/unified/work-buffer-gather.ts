@@ -282,18 +282,21 @@ export class WorkBufferGather {
         const c0 = worldCovariance.mul(vec3(1, 0, 0));
         const c1 = worldCovariance.mul(vec3(0, 1, 0));
         const c2 = worldCovariance.mul(vec3(0, 0, 1));
+        const resolvedIsotropicMix =
+          stack.isotropicCovarianceMix === null ? float(0) : stack.isotropicCovarianceMix;
+        const resolvedIsotropicScreenRadius =
+          stack.isotropicCovarianceMix === null
+            ? float(0)
+            : (stack.isotropicScreenRadiusPx ?? float(0));
         outputCovA.element(target).assign(vec4(c0.x, c0.y, c0.z, c1.y));
-        outputCovB.element(target).assign(vec4(c1.z, c2.z, 0, 0));
-        outputIsotropicMix
+        // z/w were reserved. Packing the projection-only scalar state here
+        // keeps the follow-up projection pass below the portable WebGPU limit
+        // of eight storage buffers per shader stage.
+        outputCovB
           .element(target)
-          .assign(stack.isotropicCovarianceMix === null ? float(0) : stack.isotropicCovarianceMix);
-        outputIsotropicScreenRadius
-          .element(target)
-          .assign(
-            stack.isotropicCovarianceMix === null
-              ? float(0)
-              : (stack.isotropicScreenRadiusPx ?? float(0)),
-          );
+          .assign(vec4(c1.z, c2.z, resolvedIsotropicMix, resolvedIsotropicScreenRadius));
+        outputIsotropicMix.element(target).assign(resolvedIsotropicMix);
+        outputIsotropicScreenRadius.element(target).assign(resolvedIsotropicScreenRadius);
       });
     })().compute(sourceCapacity, [256]);
   }

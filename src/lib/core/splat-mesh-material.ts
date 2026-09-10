@@ -29,6 +29,8 @@ import {
   cameraProjectionMatrix,
   positionGeometry,
   screenUV,
+  instanceIndex,
+  storage,
   textureLoad,
   uint,
   uniformArray,
@@ -241,6 +243,15 @@ export function evaluateSplatSh(
 
 /** Everything the material graph reads, gathered by the mesh. */
 export interface SplatMaterialBuildInputs {
+  /** Unculled active list for the independent compute-projection pick draw. */
+  pickSource?: { indices: THREE.StorageBufferAttribute; capacity: number };
+  /** Display-only compute-projected records, indexed by pool slot. */
+  projected?: {
+    clipCenters: THREE.StorageBufferAttribute;
+    axes: THREE.StorageBufferAttribute;
+    parameters: THREE.StorageBufferAttribute;
+    capacity: number;
+  };
   /** Display-only generated final color; pick always reads the source color. */
   shFinalColor?: THREE.Texture;
   textures: SplatMaterialTextures;
@@ -355,7 +366,11 @@ export function applySplatMaterialGraph(
   const gaussianExponent = -0.5 * settings.maxStdDev * settings.maxStdDev;
 
   // Per-instance index -> texel coordinate in the data textures.
-  const splatIndex = attribute<'float'>('splatIndex', 'float').toInt();
+  const splatIndex = inputs.pickSource
+    ? storage(inputs.pickSource.indices, 'uint', inputs.pickSource.capacity)
+        .element(instanceIndex)
+        .toInt()
+    : attribute<'float'>('splatIndex', 'float').toInt();
   const splatTexel = ivec2(splatIndex.mod(textureWidth), splatIndex.div(textureWidth));
 
   // Varyings (computed in the vertex stage, constant across each quad).
@@ -490,6 +505,15 @@ export function applySplatMaterialGraph(
   // Visual fade (modifier alpha / original encoded alpha). Applied after LOD
   // falloff so a marker crossfade cannot reclassify a merged node as a leaf.
   const vVisualOpacity = settings.lodAlpha ? varying(float(1), 'vVisualOpacity') : null;
+  const projectedClip = inputs.projected
+    ? storage(inputs.projected.clipCenters, 'vec4', inputs.projected.capacity)
+    : null;
+  const projectedAxes = inputs.projected
+    ? storage(inputs.projected.axes, 'vec4', inputs.projected.capacity)
+    : null;
+  const projectedParameters = inputs.projected
+    ? storage(inputs.projected.parameters, 'vec4', inputs.projected.capacity)
+    : null;
 
   material.vertexNode = Fn(() => {
     const center = stack.offset === null ? localCenter : localCenter.add(stack.offset);
@@ -498,6 +522,27 @@ export function applySplatMaterialGraph(
 
     // Default: outside clip space, so culled splats emit no fragments.
     const clipPosition = vec4(0.0, 0.0, 2.0, 1.0).toVar();
+
+    if (projectedClip && projectedAxes && projectedParameters) {
+      const cachedClip = projectedClip.element(splatIndex);
+      const cachedAxes = projectedAxes.element(splatIndex);
+      const cachedParameters = projectedParameters.element(splatIndex);
+      opacityCompensation.assign(cachedParameters.x);
+      if (vAdjustedStdDev && vAlpha2 && vVisualOpacity) {
+        vAdjustedStdDev.assign(cachedParameters.y);
+        vAlpha2.assign(colorAfterSh.a.mul(2));
+        vVisualOpacity.assign(float(1));
+      }
+      const pixelOffset = cachedAxes.xy
+        .mul(positionGeometry.x)
+        .add(cachedAxes.zw.mul(positionGeometry.y));
+      const ndcCenter = cachedClip.xy.div(cachedClip.w);
+      return vec4(
+        ndcCenter.add(pixelOffset.mul(2).div(uniforms.viewport)),
+        cachedClip.z.div(cachedClip.w),
+        1,
+      );
+    }
 
     // Reject centers too far away for even the largest capped quad to reach
     // the viewport before fetching/projecting covariance. The exact footprint

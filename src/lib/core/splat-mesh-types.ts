@@ -17,6 +17,9 @@ export type ProjectedFilterProfile = 'default' | 'lcc';
 /** Canonical `.rad` foveation modes. */
 export type SplatFoveationMode = 'band' | 'frontier' | 'page-table';
 
+/** Where visible-splat projection is evaluated. */
+export type SplatProjectionStrategy = 'vertex' | 'compute';
+
 /** Resolve a caller-supplied foveation mode, defaulting when unset. */
 export function resolveSplatFoveationMode(
   mode: SplatFoveationMode | undefined,
@@ -78,6 +81,15 @@ export function resolveSplatPerformanceProfile(
 
 /** Construction options for {@link SplatMesh}. */
 export interface SplatMeshOptions {
+  /**
+   * Projection/culling path. `'vertex'` (default) is the established portable
+   * path. `'compute'` opts a supported mono WebGPU view into an experimental
+   * project-once, compact-before-sort pipeline; WebGL2, XR and unsupported
+   * material graphs resolve safely to vertex projection.
+   *
+   * @experimental Validate memory and GPU timings on the target workload.
+   */
+  projectionStrategy?: SplatProjectionStrategy;
   /**
    * CPU storage retained after the initial GPU upload.
    *

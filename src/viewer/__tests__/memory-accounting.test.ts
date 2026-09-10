@@ -83,4 +83,25 @@ describe('memory accounting', () => {
     expect(worker.cpuBackingBytes).toBeGreaterThan(webGpu.cpuBackingBytes);
     expect(worker.gpuBytes).toBeGreaterThan(0);
   });
+
+  it('reports compute projection steady and peak allocations explicitly', () => {
+    const vertex = estimateMeshMemory(100, {
+      floatTextures: 'float32',
+      packedShBands: 0,
+      sortStrategy: 'counting',
+    });
+    const compute = estimateMeshMemory(100, {
+      floatTextures: 'float32',
+      packedShBands: 0,
+      sortStrategy: 'counting',
+      projectionStrategy: 'compute',
+    });
+
+    expect(compute.projectionCacheBytes).toBe(4_800);
+    expect(compute.visibleListBytes).toBe(400);
+    expect(compute.indirectArgumentBytes).toBe(36);
+    expect(compute.gpuBytes - vertex.gpuBytes).toBe(5_236);
+    expect(compute.projectionPeakCpuMirrorBytes).toBe(5_236);
+    expect(compute.peakTotalBytes - compute.totalBytes).toBe(5_236);
+  });
 });

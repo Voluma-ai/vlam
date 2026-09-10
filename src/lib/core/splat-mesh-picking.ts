@@ -37,6 +37,8 @@ export interface SplatPickHost {
   getPickVisible(): boolean;
   /** Whether a sorter exists. A pick never creates one - see {@link prepare}. */
   hasSorter(): boolean;
+  /** Pick from the full active list instead of the display's GPU-culled list. */
+  usesUnculledPickList(): boolean;
   updateWorldMatrix(): void;
   /**
    * Brings the GPU to the state `update()` would leave it in: flush pending
@@ -67,6 +69,7 @@ export class SplatPicker {
   private readonly far = uniform(1000);
   private material: THREE.NodeMaterial | null = null;
   private proxy: THREE.Mesh | null = null;
+  private unculledGeometry: THREE.InstancedBufferGeometry | null = null;
   private target: THREE.RenderTarget | null = null;
   /** Renderer/material pair whose validation scopes compileAsync has drained. */
   private compiledRenderer: THREE.WebGPURenderer | null = null;
@@ -167,6 +170,8 @@ export class SplatPicker {
     this.material = null;
     this.scene.clear();
     this.proxy = null;
+    this.unculledGeometry?.dispose();
+    this.unculledGeometry = null;
     this.target?.dispose();
     this.target = null;
     this.pickCamera = null;
@@ -339,6 +344,22 @@ export class SplatPicker {
     }
     if (this.pickCamera === null || this.pickCamera.constructor !== camera.constructor) {
       this.pickCamera = camera.clone();
+    }
+    if (this.host.usesUnculledPickList()) {
+      if (!this.unculledGeometry) {
+        // Only copy the four-vertex quad: the pick shader reads the existing
+        // active-index buffer, independently of the display order and count.
+        this.unculledGeometry = new THREE.InstancedBufferGeometry();
+        this.unculledGeometry.setIndex(this.host.mesh.geometry.index!.clone());
+        this.unculledGeometry.setAttribute(
+          'position',
+          this.host.mesh.geometry.getAttribute('position').clone(),
+        );
+      }
+      this.unculledGeometry.instanceCount = this.host.getActiveCount();
+      this.proxy!.geometry = this.unculledGeometry;
+    } else {
+      this.proxy!.geometry = this.host.mesh.geometry;
     }
   }
 

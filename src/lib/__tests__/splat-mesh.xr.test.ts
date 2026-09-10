@@ -189,4 +189,20 @@ describe('SplatMesh.update under XR presentation', () => {
     expect(mvs[0]!.elements).toEqual(expected.elements);
     expect(internals(mesh).viewport.value.x).toBe(3360);
   });
+
+  it('resolves requested compute projection to the vertex path while presenting', () => {
+    const mesh = new SplatMesh(makeSplatData(4), { projectionStrategy: 'compute' });
+    meshes.push(mesh);
+    const sort = vi.fn(() => true);
+    internals(mesh).sorter = { kind: 'counting', sort, dispose: vi.fn() };
+    const renderer = xrRenderer([
+      eyeCamera(0.468, new THREE.Vector4(0, 0, 1680, 1760)),
+      eyeCamera(0.532, new THREE.Vector4(1680, 0, 1680, 1760)),
+    ]);
+
+    mesh.update(desktopCamera(), renderer);
+
+    expect(mesh.projectionStrategyStatus).toEqual({ effective: 'vertex', reason: 'xr' });
+    expect(sort).toHaveBeenCalledTimes(1);
+  });
 });
