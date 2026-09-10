@@ -76,6 +76,12 @@ import { radialSortState } from './splat-sort-bounds';
 import type { ShComputeCache } from './sh-compute-cache';
 import { StorageMirrorReleaser } from './storage-attribute-mirror';
 import { dataTexturesUploaded, releaseDataTextureMirrors } from './data-texture-mirror';
+import {
+  StandaloneProjectedSplatPipeline,
+  estimateProjectedSplatPeakBytes,
+  estimateProjectedSplatSteadyBytes,
+} from './projected-splat-pipeline';
+import { assertStorageBufferFitsDevice } from './webgpu-limits';
 
 interface UploadRowSpan {
   readonly start: number;
@@ -325,6 +331,15 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /** Created on the first update, when the renderer backend is known. */
   private sorter: SplatSorter | null = null;
+  private projectedSorter: ComputeSorter | null = null;
+  private projectedPipeline: StandaloneProjectedSplatPipeline | null = null;
+  private readonly projectionStrategyValue: NonNullable<SplatMeshOptions['projectionStrategy']>;
+  private computeProjectionActive = false;
+  private readonly projectionStrategyState = {
+    effective: 'vertex' as 'vertex' | 'compute',
+    reason: 'not-prepared',
+  };
+  private projectionPipelineFailed = false;
 
   /**
    * Set by a unified {@link MergedSplatMesh} subclass before the first sort: makes
@@ -386,6 +401,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     getViewportSize: () => this.viewport.value,
     getPickVisible: () => this.effectiveVisibility,
     hasSorter: () => this.sorter !== null,
+    usesUnculledPickList: () => this.computeProjectionActive,
     updateWorldMatrix: () => this.updateWorldMatrix(true, false),
     prepare: (camera, renderer) => {
       // After render-only CPU release, do not flush or re-sort: both paths can
@@ -393,17 +409,20 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       // The last `update()` already left a valid GPU draw list.
       if (!this.cpuStorageReleased) {
         this.flushPendingUploads(renderer);
-        if (this.sorter !== null) this.requestSortIfNeeded(camera, renderer);
+        if (!this.computeProjectionActive && this.sorter !== null) {
+          this.requestSortIfNeeded(camera, renderer);
+        }
       }
       this.refreshProjectionUniforms(camera, renderer);
     },
     setView: (camera, width, height) => this.writeViewUniforms(camera, width, height),
-    applyPickGraph: (material) =>
-      applySplatMaterialGraph(
-        material,
-        'pick',
-        this.graphInputs(this.materialInputs.textures, this.materialInputs.sh),
-      ),
+    applyPickGraph: (material) => {
+      const inputs = this.graphInputs(this.materialInputs.textures, this.materialInputs.sh);
+      if (this.computeProjectionActive) {
+        inputs.pickSource = { indices: this.sourceIndexAttribute, capacity: this.capacity };
+      }
+      applySplatMaterialGraph(material, 'pick', inputs);
+    },
   });
   /** Visibility supplied by an owning unified renderer for source-only picks. */
   private unifiedPickVisibility: boolean | null = null;
@@ -479,6 +498,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     const shEvaluation = options.shEvaluation ?? 'auto';
     if (!['auto', 'vertex', 'compute'].includes(shEvaluation)) {
       throw new RangeError('SplatMesh: invalid shEvaluation.');
+    }
+    const projectionStrategy = options.projectionStrategy ?? 'vertex';
+    if (projectionStrategy !== 'vertex' && projectionStrategy !== 'compute') {
+      throw new RangeError('SplatMesh: invalid projectionStrategy.');
     }
     // Mobile GPUs are fragment-bound, so several defaults below trade detail
     // no one can see for the fill rate they cost. Every one is overridable.
@@ -634,6 +657,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
     super(geometry, new THREE.NodeMaterial());
     this.shEvaluation = shEvaluation;
+    this.projectionStrategyValue = projectionStrategy;
     this.pool = pool;
     this.ownsPool = ownsPool;
     pool.register(this);
@@ -763,6 +787,45 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     return this.sortStrategyValue;
   }
 
+  /** Requested experimental projection strategy. */
+  get projectionStrategy(): NonNullable<SplatMeshOptions['projectionStrategy']> {
+    return this.projectionStrategyValue;
+  }
+
+  /** Resolved strategy and fallback reason after the most recent update. */
+  get projectionStrategyStatus(): Readonly<{
+    effective: 'vertex' | 'compute';
+    reason: string;
+  }> {
+    return this.projectionStrategyState;
+  }
+
+  /** Explicit projection-cache memory, excluding the existing sort buffers. */
+  get projectionMemoryBytes(): Readonly<{ steadyGpu: number; peakCpuAndGpu: number }> {
+    if (this.projectionStrategyValue !== 'compute') return { steadyGpu: 0, peakCpuAndGpu: 0 };
+    return {
+      steadyGpu: estimateProjectedSplatSteadyBytes(this.capacity),
+      peakCpuAndGpu: estimateProjectedSplatPeakBytes(this.capacity),
+    };
+  }
+
+  /** Asynchronously reads the last GPU-visible count for benchmark diagnostics. */
+  async readGpuVisibleSplatCount(): Promise<number | null> {
+    const pipeline = this.projectedPipeline;
+    return pipeline ? await pipeline.readVisibleCount() : null;
+  }
+
+  /** GPU submission counters for projection benchmark attribution. */
+  get projectionDispatchCounts(): Readonly<{
+    projection: number;
+    cull: number;
+    sort: number;
+  }> {
+    const projection = this.projectedPipeline?.projectionDispatches ?? 0;
+    const sort = this.projectedSorter?.submissionCount ?? 0;
+    return { projection, cull: projection, sort };
+  }
+
   /**
    * Replaces the sorter without reloading scene data. The previous sorter stays
    * active while the radix module loads; the latest request wins. Resolves once
@@ -780,8 +843,13 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     }
     if (this.disposed || revision !== this.sortStrategyRevision) return;
     const wasCpu = this.usesCpuDrawList();
+    this.setComputeProjectionActive(false);
     this.sorter?.dispose();
     this.sorter = null;
+    this.projectedSorter?.dispose();
+    this.projectedSorter = null;
+    this.projectedPipeline?.dispose();
+    this.projectedPipeline = null;
     this.sortStrategyValue = strategy;
     if (wasCpu !== this.usesCpuDrawList()) {
       this.drawListSorted = false;
@@ -802,6 +870,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   setPerformanceProfile(profile: SplatPerformanceProfile): void {
     if (profile === this.performanceProfileValue) return;
     this.performanceProfileValue = profile;
+    this.resetProjectedPipeline();
     this.buildMaterial(this.materialInputs.textures, this.materialInputs.sh);
   }
 
@@ -824,6 +893,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     const next = validateMaxStdDev(value);
     if (next === undefined || next === this.maxStdDevValue) return;
     this.maxStdDevValue = next;
+    this.resetProjectedPipeline();
     this.cachedUnifiedView = null;
     this.buildMaterial(this.materialInputs.textures, this.materialInputs.sh);
   }
@@ -1669,8 +1739,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     let sortAccepted = false;
     if (options.sort !== false) {
       const sortStartedAt = performance.now();
-      sortAccepted = this.requestSortIfNeeded(sortCamera, renderer);
+      sortAccepted = this.prepareProjectedSort(projectionCamera, sortCamera, renderer);
+      if (!sortAccepted) sortAccepted = this.requestSortIfNeeded(sortCamera, renderer);
       this.updateTimings.sortSubmitMs = performance.now() - sortStartedAt;
+    } else {
+      this.setComputeProjectionActive(false);
+      if (this.projectionStrategyValue === 'compute') {
+        this.projectionStrategyState.reason = 'unified-source';
+      }
     }
     this.prepareShEvaluation(renderer, false, sortAccepted, options.sort !== false);
   }
@@ -1991,6 +2067,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // documented WebGL2 limitation).
     const isWebGPU = (renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true;
     if (!isWebGPU) return false;
+    if (this.prepareProjectedSort(camera, camera, renderer)) return true;
     this.currentModelView.multiplyMatrices(camera.matrixWorldInverse, this.matrixWorld);
     this.refreshSortBounds();
     this.sorter ??= this.createSorter(renderer);
@@ -2132,11 +2209,16 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    super.dispose();
     if (this.shCacheRenderer) this.shCache?.dispose(this.shCacheRenderer);
     this.shCache = null;
     this.shCacheRenderer = null;
     this.sorter?.dispose();
     this.sorter = null;
+    this.projectedSorter?.dispose();
+    this.projectedSorter = null;
+    this.projectedPipeline?.dispose();
+    this.projectedPipeline = null;
     this.geometry.dispose();
     (this.material as THREE.Material).dispose();
     this.picker.dispose();
@@ -2740,11 +2822,16 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   }
 
   private buildMaterial(textures: SplatMaterialTextures, sh: SplatShInputs | null): void {
-    applySplatMaterialGraph(
-      this.material as THREE.NodeMaterial,
-      'display',
-      this.graphInputs(textures, sh),
-    );
+    const inputs = this.graphInputs(textures, sh);
+    if (this.computeProjectionActive && this.projectedPipeline) {
+      inputs.projected = {
+        clipCenters: this.projectedPipeline.buffers.clipCenters,
+        axes: this.projectedPipeline.buffers.axes,
+        parameters: this.projectedPipeline.buffers.parameters,
+        capacity: this.capacity,
+      };
+    }
+    applySplatMaterialGraph(this.material as THREE.NodeMaterial, 'display', inputs);
     // Keeps the two graphs in step; a no-op until the first pick builds one.
     this.picker.rebuildMaterial();
   }
@@ -2899,6 +2986,144 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         : this.shEvaluation === 'auto'
           ? 'apple-mac-auto'
           : 'explicit-compute';
+  }
+
+  /** Builds/runs the opt-in mono projection cache and its dense-list sorter. */
+  private prepareProjectedSort(
+    projectionCamera: THREE.Camera,
+    sortCamera: THREE.Camera,
+    renderer: THREE.WebGPURenderer,
+  ): boolean {
+    if (this.projectionStrategyValue !== 'compute') {
+      this.projectionStrategyState.effective = 'vertex';
+      this.projectionStrategyState.reason = 'explicit-vertex';
+      this.setComputeProjectionActive(false);
+      return false;
+    }
+    const webgpu = (renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true;
+    const reason = !webgpu
+      ? 'webgl'
+      : renderer.xr?.isPresenting
+        ? 'xr'
+        : this.unifiedPickVisibility !== null
+          ? 'unified-source'
+          : !this.ownsPool
+            ? 'shared-pool'
+            : this.perSourceSort !== null
+              ? 'source-placement'
+              : this.modifierList.length > 0
+                ? 'modifiers'
+                : this.sortStrategy !== 'counting'
+                  ? 'sort-strategy'
+                  : this.foveationMode === 'frontier' ||
+                      (this.foveationMode === 'band' &&
+                        (this.minSplatScreenRadius > 0 || this.maxSplatScreenRadius > 0))
+                    ? 'foveation'
+                    : this.projectionPipelineFailed
+                      ? 'initialization-failed'
+                      : null;
+    if (reason) {
+      this.projectionStrategyState.effective = 'vertex';
+      this.projectionStrategyState.reason = reason;
+      this.setComputeProjectionActive(false);
+      return false;
+    }
+    if (!this.projectedPipeline) {
+      try {
+        // clip centers, axes and parameters are the largest added bindings.
+        assertStorageBufferFitsDevice(renderer, this.capacity * 16, this.capacity);
+        this.projectedPipeline = new StandaloneProjectedSplatPipeline(renderer, {
+          capacity: this.capacity,
+          sourceIndex: this.sourceIndexAttribute,
+          centersTexture: this.materialInputs.textures.centersTexture,
+          colorsTexture: this.materialInputs.textures.colorsTexture,
+          covarianceATexture: this.materialInputs.textures.covarianceATexture,
+          covarianceBTexture: this.materialInputs.textures.covarianceBTexture,
+          dataTextureWidth: SplatMesh.DATA_TEXTURE_WIDTH,
+          focal: this.focal,
+          viewport: this.viewport,
+          maxStdDev: this.maxStdDev,
+          minSplatSizePx: this.minSplatSizePx,
+          antialias: this.antialias,
+          projectedLowPassVariance: this.projectedFilterProfile === 'lcc' ? 0.1 : 0.3,
+          compensateProjectedLowPass: this.antialias || this.projectedFilterProfile === 'lcc',
+          dofFocusDistance: this.dofFocusDistance,
+          dofAperture: this.dofAperture,
+          maxAspect: this.maxSplatAspect,
+          lodAlpha: this.lodAlpha,
+          performanceProfile: this.performanceProfileValue,
+          sortMetric: this.sortMetric,
+        });
+        this.projectedSorter = new ComputeSorter({
+          renderer,
+          capacity: this.capacity,
+          centersTexture: this.centersTexture,
+          dataTextureWidth: SplatMesh.DATA_TEXTURE_WIDTH,
+          splatIndexAttribute: this.splatIndexAttribute,
+          sourceIndexAttribute: this.sourceIndexAttribute,
+          visibleIndexAttribute: this.projectedPipeline.buffers.visibleIndices,
+          projectedParametersAttribute: this.projectedPipeline.buffers.parameters,
+          visibleCountAttribute: this.projectedPipeline.buffers.visibleCount,
+          indirectDispatchAttribute: this.projectedPipeline.buffers.dispatchArgs,
+          sortMetric: this.sortMetric,
+        });
+      } catch (error) {
+        this.projectedSorter?.dispose();
+        this.projectedSorter = null;
+        this.projectedPipeline?.dispose();
+        this.projectedPipeline = null;
+        this.projectionPipelineFailed = true;
+        this.projectionStrategyState.effective = 'vertex';
+        this.projectionStrategyState.reason = 'initialization-failed';
+        warn(
+          `SplatMesh: compute projection unavailable; keeping vertex projection. ${String(error)}`,
+        );
+        this.setComputeProjectionActive(false);
+        return false;
+      }
+    }
+    this.setComputeProjectionActive(true);
+    this.currentModelView.multiplyMatrices(sortCamera.matrixWorldInverse, this.matrixWorld);
+    this.refreshSortBounds();
+    this.projectedPipeline.prepare(
+      this.currentModelView,
+      projectionCamera.projectionMatrix,
+      this.activeCount,
+    );
+    if (this.activeCount > 0) {
+      this.projectedSorter!.sort(
+        this.currentModelView,
+        this.activeCount,
+        this.boundingSphereLocal,
+        cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
+      );
+    }
+    this.projectionStrategyState.effective = 'compute';
+    this.projectionStrategyState.reason = 'explicit-compute';
+    return true;
+  }
+
+  private setComputeProjectionActive(active: boolean): void {
+    if (this.computeProjectionActive === active) return;
+    this.computeProjectionActive = active;
+    this.picker.markNeedsUpdate();
+    (this.geometry as THREE.InstancedBufferGeometry).setIndirect(
+      active ? (this.projectedPipeline?.buffers.drawArgs ?? null) : null,
+    );
+    if (this.materialInputs) {
+      this.buildMaterial(this.materialInputs.textures, this.materialInputs.sh);
+      (this.material as THREE.Material).needsUpdate = true;
+    }
+    this.invalidateSort();
+  }
+
+  private resetProjectedPipeline(): void {
+    this.setComputeProjectionActive(false);
+    this.projectedSorter?.dispose();
+    this.projectedSorter = null;
+    this.projectedPipeline?.dispose();
+    this.projectedPipeline = null;
+    this.projectionPipelineFailed = false;
   }
 
   private requestSortIfNeeded(camera: THREE.Camera, renderer: THREE.WebGPURenderer): boolean {

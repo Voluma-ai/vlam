@@ -45,6 +45,7 @@ export async function createComparisonVlam(
   const resolvedSortMetric = config.sortMetric ?? (controlled || proposed ? 'radial' : undefined);
   const meshOptions = {
     shEvaluation: config.shEvaluation,
+    projectionStrategy: config.projectionStrategy,
     orientation: 'source' as const,
     ...(aligned
       ? ({
@@ -58,6 +59,7 @@ export async function createComparisonVlam(
     ...(resolvedMaxStdDev === undefined ? {} : { maxStdDev: resolvedMaxStdDev }),
     ...(resolvedSortMetric === undefined ? {} : { sortMetric: resolvedSortMetric }),
     ...(config.sortStrategy === undefined ? {} : { sortStrategy: config.sortStrategy }),
+    ...(config.sortIntervalMs === undefined ? {} : { sortIntervalMs: config.sortIntervalMs }),
     ...(config.sh === undefined ? {} : { shBands: config.sh }),
   };
   // Decode / open the manifest before allocating a GPU device so a fetch failure
@@ -163,13 +165,15 @@ export async function createComparisonVlam(
       srgbOutput: view.srgbOutput,
       sortMetric: resolvedSortMetric ?? 'depth',
       sortStrategy,
-      sortIntervalMs: 'library adaptive default',
+      sortIntervalMs: config.sortIntervalMs ?? 'library adaptive default',
       resolvedSortIntervalMs: automaticSortIntervalMs(sourceSplats, isMobile),
       lod: streamed,
       radStrategy: mesh instanceof StreamedSplatMesh ? mesh.radStrategy : null,
       outputColorSpace: renderer.outputColorSpace,
       msaa: renderer.samples,
       shEvaluation: config.shEvaluation,
+      projectionStrategy: config.projectionStrategy,
+      projectionMemory: mesh.projectionMemoryBytes,
       requestedBackend: config.backend,
     },
     differences: [
@@ -310,10 +314,22 @@ export async function createComparisonVlam(
   });
   captureTarget.texture.colorSpace = renderer.outputColorSpace;
   const adapterInfo = backend.device?.adapterInfo;
+  let gpuVisibleCount: number | null = null;
   return {
     canvas: renderer.domElement,
     diagnostics: () => ({
       ...shEvaluationDiagnostics(mesh),
+      projection: {
+        requested: mesh.projectionStrategy,
+        ...mesh.projectionStrategyStatus,
+        visibleCount: gpuVisibleCount,
+        visibleRatio:
+          gpuVisibleCount === null || mesh.activeSplatCount === 0
+            ? null
+            : gpuVisibleCount / mesh.activeSplatCount,
+        memory: mesh.projectionMemoryBytes,
+        dispatches: mesh.projectionDispatchCounts,
+      },
       deviceErrors: [...deviceErrors],
       deviceLost,
     }),
@@ -357,6 +373,7 @@ export async function createComparisonVlam(
       await timer.finish();
       // Initial sort completion only; never wait for the GPU in the measured loop.
       await renderer.getArrayBufferAsync(view.sourceIndex);
+      gpuVisibleCount = await mesh.readGpuVisibleSplatCount();
     },
     async capture(camera) {
       const previousTarget = renderer.getRenderTarget();
@@ -375,6 +392,7 @@ export async function createComparisonVlam(
         config.width,
         config.height,
       );
+      gpuVisibleCount = await mesh.readGpuVisibleSplatCount();
       const rowBytes = config.width * 4;
       const sourceStride =
         config.height > 1 ? (source.byteLength - rowBytes) / (config.height - 1) : rowBytes;

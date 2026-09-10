@@ -45,6 +45,12 @@ export function createWorkBufferMaterial(options: {
   isotropicMix: THREE.StorageBufferAttribute;
   isotropicScreenRadius: THREE.StorageBufferAttribute;
   order: THREE.StorageInstancedBufferAttribute;
+  /** Compute-projected records; absent keeps the established vertex path. */
+  projected?: {
+    clipCenters: THREE.StorageBufferAttribute;
+    axes: THREE.StorageBufferAttribute;
+    parameters: THREE.StorageBufferAttribute;
+  };
   focal: Vec2Uniform;
   viewport: Vec2Uniform;
   maxStdDev: FloatUniform;
@@ -69,6 +75,15 @@ export function createWorkBufferMaterial(options: {
   const covarianceB = storage(options.covarianceB, 'vec4', options.capacity);
   const isotropicMix = storage(options.isotropicMix, 'float', options.capacity);
   const isotropicScreenRadius = storage(options.isotropicScreenRadius, 'float', options.capacity);
+  const projectedClip = options.projected
+    ? storage(options.projected.clipCenters, 'vec4', options.capacity)
+    : null;
+  const projectedAxes = options.projected
+    ? storage(options.projected.axes, 'vec4', options.capacity)
+    : null;
+  const projectedParameters = options.projected
+    ? storage(options.projected.parameters, 'vec4', options.capacity)
+    : null;
   const workColor = varying(vec4(1, 1, 1, 1), 'vWorkColor');
   const quadPosition = varying(positionGeometry.xy, 'vWorkQuadPosition');
   const opacityCompensation = varying(float(1), 'vWorkOpacityCompensation');
@@ -88,6 +103,22 @@ export function createWorkBufferMaterial(options: {
     const drawable = centerSample.w.greaterThan(0);
     displayOpacity.assign(centerSample.w);
     workColor.assign(colors.element(workIndex));
+    if (projectedClip && projectedAxes && projectedParameters) {
+      const clipCenter = projectedClip.element(workIndex);
+      const cachedAxes = projectedAxes.element(workIndex);
+      const cachedParameters = projectedParameters.element(workIndex);
+      opacityCompensation.assign(cachedParameters.x);
+      adjustedStdDev.assign(cachedParameters.y);
+      const pixelOffset = cachedAxes.xy
+        .mul(positionGeometry.x)
+        .add(cachedAxes.zw.mul(positionGeometry.y));
+      const ndcCenter = clipCenter.xy.div(clipCenter.w);
+      return vec4(
+        ndcCenter.add(pixelOffset.mul(2).div(options.viewport)),
+        clipCenter.z.div(clipCenter.w),
+        1,
+      );
+    }
     const viewCenter = modelViewMatrix.mul(vec4(center, 1.0)).toVar();
     const clipCenter = cameraProjectionMatrix.mul(viewCenter).toVar();
     const covA = covarianceA.element(workIndex);

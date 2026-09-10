@@ -94,17 +94,21 @@ export class ComputeSorter implements SplatSorter {
   private readonly histogramPass: THREE.ComputeNode;
   private readonly scanBlocksPass: THREE.ComputeNode;
   private readonly scanBlockSumsPass: THREE.ComputeNode;
+  private readonly scanSuperBlockSumsPass: THREE.ComputeNode;
   private readonly addBlockSumOffsetsPass: THREE.ComputeNode;
   private readonly addOffsetsPass: THREE.ComputeNode;
   private readonly scatterPass: THREE.ComputeNode;
   /** All stages in dependency order, submitted as one WebGPU compute pass. */
   private readonly sortPasses: THREE.ComputeNode[];
+  private readonly indirectDispatchAttribute: THREE.IndirectStorageBufferAttribute | null;
   /** Sorter-owned working buffers, released on {@link dispose}. */
   private readonly workingAttributes: THREE.StorageBufferAttribute[];
   /** Frees the JS mirrors three keeps behind the GPU-only working buffers. */
   private readonly mirrors: StorageMirrorReleaser;
   /** Set by {@link dispose}; makes a second dispose a no-op. */
   private disposed = false;
+  /** Accepted sort submissions; benchmark diagnostics only. */
+  submissionCount = 0;
 
   /** Rows of the model-view matrix used by the selected sort metric. */
   private readonly viewRow0 = uniform(new THREE.Vector4());
@@ -134,6 +138,14 @@ export class ComputeSorter implements SplatSorter {
     splatIndexAttribute: THREE.StorageInstancedBufferAttribute;
     /** Pool indices of the active splats (first `activeCount` entries). */
     sourceIndexAttribute: THREE.StorageBufferAttribute;
+    /** Dense GPU-written indices to sort instead of the CPU active list. */
+    visibleIndexAttribute?: THREE.StorageBufferAttribute;
+    /** Projection parameters whose `.w` is the cached sort key. */
+    projectedParametersAttribute?: THREE.StorageBufferAttribute;
+    /** GPU-written visible count shared with the projection pass. */
+    visibleCountAttribute?: THREE.StorageBufferAttribute;
+    /** GPU-written dispatch dimensions for the per-splat stages. */
+    indirectDispatchAttribute?: THREE.IndirectStorageBufferAttribute;
     /** Per-source world transform for a unified pool; omit for a single mesh. */
     perSource?: PerSourceSortTransform;
     /** Camera-space ordering key. Default `'depth'`. */
@@ -153,6 +165,7 @@ export class ComputeSorter implements SplatSorter {
     }
 
     this.renderer = renderer;
+    this.indirectDispatchAttribute = options.indirectDispatchAttribute ?? null;
     this.sortMetric = options.sortMetric ?? 'depth';
     this.histogramBucketCount = ComputeSorter.bucketCountFor(capacity);
 
@@ -188,16 +201,27 @@ export class ComputeSorter implements SplatSorter {
       BUCKET_COUNT / BLOCK_SIZE / BLOCK_SIZE,
     );
     const buckets = storage(bucketsAttribute, 'uint', capacity);
-    const sourceIndex = storage(options.sourceIndexAttribute, 'uint', capacity);
+    const sourceIndex = storage(
+      options.visibleIndexAttribute ?? options.sourceIndexAttribute,
+      'uint',
+      capacity,
+    );
     const order = storage(options.splatIndexAttribute, 'float', capacity);
     const workCenters = centersBuffer ? storage(centersBuffer, 'vec4', capacity) : null;
+    const projectedParameters = options.projectedParametersAttribute
+      ? storage(options.projectedParametersAttribute, 'vec4', capacity)
+      : null;
+    const visibleCount = options.visibleCountAttribute
+      ? storage(options.visibleCountAttribute, 'uint', 1).toAtomic()
+      : null;
 
     this.clearPass = Fn(() => {
       atomicStore(histogram.element(instanceIndex), uint(0));
     })().compute(this.histogramBucketCount, [BLOCK_SIZE]);
 
     this.histogramPass = Fn(() => {
-      If(float(instanceIndex).lessThan(this.activeCount), () => {
+      const count = visibleCount ? atomicLoad(visibleCount.element(0)).toFloat() : this.activeCount;
+      If(float(instanceIndex).lessThan(count), () => {
         const poolIndex = int(sourceIndex.element(instanceIndex));
         const texel = centersTexture
           ? ivec2(
@@ -222,8 +246,9 @@ export class ComputeSorter implements SplatSorter {
             ).worldCenter
           : center;
         const viewZ = this.viewRow2.xyz.dot(depthPoint).add(this.viewRow2.w);
-        const sortValue =
-          this.sortMetric === 'radial'
+        const sortValue = projectedParameters
+          ? projectedParameters.element(poolIndex).w
+          : this.sortMetric === 'radial'
             ? this.viewRow0.xyz
                 .dot(depthPoint)
                 .add(this.viewRow0.w)
@@ -273,7 +298,7 @@ export class ComputeSorter implements SplatSorter {
       superBlockSums.element(instanceIndex).assign(runningTotal);
     })().compute(BUCKET_COUNT / BLOCK_SIZE / BLOCK_SIZE, [64]);
 
-    const scanSuperBlockSums = Fn(() => {
+    this.scanSuperBlockSumsPass = Fn(() => {
       If(instanceIndex.equal(uint(0)), () => {
         const runningTotal = uint(0).toVar();
         Loop(BUCKET_COUNT / BLOCK_SIZE / BLOCK_SIZE, ({ i }) => {
@@ -299,7 +324,8 @@ export class ComputeSorter implements SplatSorter {
     // Ascending view-space z puts the most negative (farthest) splats
     // first: back-to-front, matching the CPU sorter.
     this.scatterPass = Fn(() => {
-      If(float(instanceIndex).lessThan(this.activeCount), () => {
+      const count = visibleCount ? atomicLoad(visibleCount.element(0)).toFloat() : this.activeCount;
+      If(float(instanceIndex).lessThan(count), () => {
         const poolIndex = sourceIndex.element(instanceIndex);
         const bucket = buckets.element(instanceIndex);
         const destination = atomicAdd(histogram.element(bucket), uint(1));
@@ -312,7 +338,7 @@ export class ComputeSorter implements SplatSorter {
       this.histogramPass,
       this.scanBlocksPass,
       this.scanBlockSumsPass,
-      scanSuperBlockSums,
+      this.scanSuperBlockSumsPass,
       this.addBlockSumOffsetsPass,
       this.addOffsetsPass,
       this.scatterPass,
@@ -345,6 +371,7 @@ export class ComputeSorter implements SplatSorter {
     visibleRange?: SplatSortRange | null,
   ): boolean {
     if (activeCount === 0) return true;
+    this.submissionCount++;
 
     const m = modelView.elements;
     this.viewRow0.value.set(m[0], m[4], m[8], m[12]);
@@ -371,7 +398,23 @@ export class ComputeSorter implements SplatSorter {
     this.scanBlockSumsPass.count = blockCount / ComputeSorter.BLOCK_SIZE;
     this.addBlockSumOffsetsPass.count = blockCount;
     this.addOffsetsPass.count = buckets;
-    this.renderer.compute(this.sortPasses);
+    if (this.indirectDispatchAttribute) {
+      // Projection/finalization submitted immediately before this call writes
+      // the dimensions. Separate submissions are the synchronization boundary:
+      // no workgroup polling or cross-dispatch scheduling assumptions.
+      this.renderer.compute(this.clearPass);
+      this.renderer.compute(this.histogramPass, this.indirectDispatchAttribute);
+      this.renderer.compute([
+        this.scanBlocksPass,
+        this.scanBlockSumsPass,
+        this.scanSuperBlockSumsPass,
+        this.addBlockSumOffsetsPass,
+        this.addOffsetsPass,
+      ]);
+      this.renderer.compute(this.scatterPass, this.indirectDispatchAttribute);
+    } else {
+      this.renderer.compute(this.sortPasses);
+    }
     // The working buffers are GPU-only: the histogram is zeroed by `clearPass`
     // and read atomically on the GPU, and `buckets` never leaves it. Three keeps
     // a JS mirror of each anyway - 4 B per allocated histogram bucket, plus

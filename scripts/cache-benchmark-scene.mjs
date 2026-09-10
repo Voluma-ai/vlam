@@ -96,6 +96,10 @@ function radHeader(bytes) {
     count: meta.count,
     shBands: meta.shN?.bands ?? 0,
     camera: { target, position: [target[0], target[1], target[2] + radius * 2.5] },
+    visibilityPoses: {
+      interior: { target, position: [target[0], target[1], target[2] + radius * 0.35] },
+      overview: { target, position: [target[0], target[1], target[2] + radius * 2.5] },
+    },
   };
   if (!cached) {
     await writeFile(new URL('goose.sog.partial', root), bytes);
@@ -141,6 +145,10 @@ function radHeader(bytes) {
     lodSplats: lcc2.lodSplats,
     // Docs-example interior view, already in the LCC2→Three basis both engines use.
     camera: { position: [-9.09, 1.65, 8.85], target: [-8.21, 1.67, 7.06] },
+    visibilityPoses: {
+      interior: { position: [-9.09, 1.65, 8.85], target: [-8.21, 1.67, 7.06] },
+      overview: { position: [-11.73, 1.59, 14.22], target: [-8.21, 1.67, 7.06] },
+    },
   };
   await writeFile(new URL('Tempel.json', root), `${JSON.stringify(manifest, null, 2)}\n`);
   console.log(`Tempel: ${manifest.count} splats, SHA-256 ${manifest.sha256}`);
@@ -161,6 +169,10 @@ function radHeader(bytes) {
     shBands: header.shBands,
     // Headed hotel-core orbit (Y-up / 180°-X), matching docs/formats/rad-notes.md.
     camera: { position: [56.68, 14.91, 0.48], target: [-33.32, -5.1, 0.48] },
+    visibilityPoses: {
+      interior: { position: [-15, -1, 0.48], target: [-33.32, -5.1, 0.48] },
+      overview: { position: [56.68, 14.91, 0.48], target: [-33.32, -5.1, 0.48] },
+    },
   };
   await writeFile(new URL('hotel.json', root), `${JSON.stringify(manifest, null, 2)}\n`);
   console.log(

@@ -71,6 +71,9 @@ Canvas CSS can shrink the displayed image without changing GPU resolution.
 | `maxStdDev` | preset | Explicit quad extent diagnostic, in Gaussian standard deviations |
 | `sortMetric` | preset | `depth` or `radial` |
 | `sortStrategy` | library default | VLAM-only `counting`, `radix`, `exact`, or `worker` diagnostic |
+| `sortIntervalMs` | library adaptive default | VLAM-only cadence override; use `0` for the projection A/B's every-changed-frame pass |
+| `projectionStrategy` | `vertex` | VLAM-only experimental `vertex` or `compute` projection path |
+| `visibilityPose` | unset | Cached `interior` or `overview` pose used by the projection A/B |
 | `msaa` | `0` (`1` for `supplied`) | Renderer MSAA control |
 | `gpuTimestamps=0` | enabled | Disable timestamp instrumentation; primary suite runs set this to `0` |
 | `position`, `target` | cached scene pose | Paired comma-separated world-space vectors |
@@ -97,6 +100,32 @@ packed attributes, its native alpha/frustum/radius thresholds and asynchronous
 worker sorting. VLAM retains its float covariance pool, SOG SH palette and
 adaptive GPU counting-sort schedule. Record those differences when interpreting
 motion quality and cost; never change VLAM's default sorter to improve a score.
+
+### Compute-projection prototype result (Windows/NVIDIA, 2026-09-09)
+
+The first promotion gate used Chrome 152 WebGPU on the reported NVIDIA Ampere
+adapter, the 149,120-splat goose fixture, 1280×720, 3σ/depth/counting sort,
+five seconds of warm-up and ten seconds of orbit sampling. Five alternating
+vertex/compute repetitions used `sortIntervalMs=0`. The rows below are the
+median of each run's reported percentile; raw JSON and fixed-pose screenshots
+are retained under `.tmp/benchmark-results/` with label
+`r186-projection-ab-sort0` (the first pair used `r186-projection-ab`).
+
+| Pose | GPU-visible ratio | Vertex paired GPU median / p95 | Compute paired GPU median / p95 | Frame median / p95 / p99 | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Interior | 27.4% (10.1% at the fixed starting view) | 0.98 / 2.23 ms | 1.38 / 2.88 ms | 16.70 / 16.80 / 16.90 ms for both | Fail: GPU median regressed 40.8%; frame p95 did not improve |
+| Overview | 100% | 3.28 / 3.47 ms | 3.47 / 4.59 ms | 16.70 / 16.80 / 16.90 ms for both | Fail: GPU median regressed 5.8% and GPU p95 regressed 32.3% |
+
+All ten compute runs had nonblank fixed captures, no WebGPU validation errors,
+no rejected timestamp samples and no device loss. The capacity-sized cache
+added 7,774,244 steady GPU bytes and 15,548,488 bytes at the upload peak.
+Goose's normal adaptive counting-sort interval resolves to 0 ms, so it cannot
+provide a distinct adaptive-cadence comparison. A larger non-streamed or
+unified capture is still required for that scheduling measurement; streamed
+Tempel/hotel currently select the documented unsupported-foveation fallback.
+One attempted browser-background cadence run was throttled to one callback per
+second and is invalid; it is not included above. This evidence rejects default
+promotion, so `projectionStrategy: 'vertex'` remains the default.
 
 ### Supplied application baselines
 

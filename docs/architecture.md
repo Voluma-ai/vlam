@@ -80,6 +80,7 @@ src/
  sorter.ts depth-sorter interface (`kind` discriminator)
  sort-scheduler.ts adaptive sort cadence by active count (see README)
  compute-sorter.ts GPU counting sort, 8 TSL compute passes (WebGPU)
+ projected-splat-pipeline.ts experimental project-once cull, dense list + indirect args
  radix-sort.ts radix constants + reference CPU sort (verification)
  radix-sorter.ts experimental GPU radix sorter (lazy-loaded)
  worker-sorter.ts CPU counting sort in a worker (WebGL2 fallback)
@@ -214,6 +215,7 @@ error messages, and comments stay strictly professional.
 | TSL typings are stricter than runtime | Use `attribute<'float'>('name', 'float')`, `.toInt()`, `.toMat3()` instead of the loosely-typed constructor forms. `StorageBufferAttribute` wants a typed array in TS, not `(count, itemSize, Type)`. |
 | Atomics in TSL | `storage(attr, 'uint', n).toAtomic()`; `atomicAdd(ptr.element(i), v)` returns the old value and can be captured directly. |
 | Dynamic dispatch | `renderer.compute(node, dispatchSize)` exists for dynamic counts; kernel `count` is otherwise baked at build time. |
+| Portable storage-binding count | The unified projection and dense-list compaction are separate dispatches. Gather packs isotropic mix/radius into reserved covariance lanes, keeping projection at 7 storage bindings and compaction at 3 under WebGPU's portable baseline of 8. Do not fuse them without rechecking `maxStorageBuffersPerShaderStage`. |
 | `splatIndex` is float32 | Exact for indices ≤ 2²⁴ (~16.7M splats). Fine today; revisit for larger scenes. |
 | Output color space | Source formats store display-ready sRGB colors; the splat material converts them to the renderer's linear working space in-shader (`colorSpaceToWorking`, see `core/splat-mesh.ts`). The renderer keeps the default `SRGBColorSpace` output, so standard meshes share the canvas untouched. |
 | Hidden/embedded previews report 1 FPS | An embedded browser pane often reports `visibilityState: "hidden"`, so rAF is throttled (often fully paused). Drive `splats.update()` + `renderer.render()` manually and time `update()` synchronously; `PerformanceObserver('longtask')` is polluted by background-tab pauses, so it over-reports. |

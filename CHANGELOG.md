@@ -21,6 +21,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- Compute-projection picking reads the full active list, so alternate-camera
+  picks can hit splats culled from the main view without changing its draw.
 - `createWebGPURenderer` keeps the GPUAdapter on the renderer (an ordinary
   JS object) for the owned device's lifetime and swallows Dawn's
   "Instance dropped in popErrorScope" teardown on that device, so three.js
@@ -42,6 +44,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- Upgraded the runtime peer to three.js r186 (`three >=0.186.0`). The temporary
+  `@types/three@0.185.4` pin is isolated behind one declaration shim until the
+  r186 declarations publish; `SplatMesh` and `UnifiedSplatMesh` now forward
+  disposal to `Object3D.dispose()` as required by the r186 migration.
 - Validated streamed palette SH with the 12.85M-splat SH3 Tempel `.lcc2`
   capture in headed Chrome/Windows on WebGPU and forced WebGL2. Explicit SH0,
   explicit SH3, and automatic tile detection resolved correctly; SH remained
@@ -59,6 +65,18 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 
 ### Added
+
+- Added experimental `projectionStrategy: 'compute'` for standalone and
+  unified mono WebGPU rendering. It projects once, footprint-culls into a dense
+  GPU list, sorts cached keys through GPU-written indirect dispatch, and draws
+  with GPU-written indexed arguments. Vertex projection remains the default
+  and is the deliberate WebGL2, WebXR, modifier/source-placement and unsupported
+  foveation fallback. Benchmarks now record projection resolution, visible
+  ratio, explicit cache memory, dispatches, and paired render+compute GPU time.
+  The first five-pair Windows/NVIDIA gate rejected default promotion: paired
+  GPU median regressed 40.8% at 27.4% visibility and 5.8% at 100% visibility,
+  with no frame-p95 improvement. The opt-in remains available for continued
+  profiling while the existing vertex path stays the default.
 
 - Surface-aware painting now captures a continuous pointer stroke, resolves its
   samples with one bounded `SplatMesh.pickMany` depth pass, splits paths at

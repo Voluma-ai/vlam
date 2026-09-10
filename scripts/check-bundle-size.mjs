@@ -31,7 +31,10 @@ import { fileURLToPath } from 'node:url';
 const BUDGET_GZIP_BYTES = {
   '.': 80_000,
   './loaders': 40_000,
-  './static-lod': 80_000,
+  // Rebasing from 80 kB: the opt-in projection cache is shared by every
+  // SplatMesh subclass, including StaticLodSplatMesh. Measured at 81.7 kB
+  // after the r186/compute-projection work; retain roughly 15% review room.
+  './static-lod': 94_000,
   './relighting': 50_000,
   './streaming': 160_000,
   './unified': 80_000,

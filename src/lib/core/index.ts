@@ -40,6 +40,7 @@ export {
   type SplatStorageMode,
   type SplatPerformanceProfile,
   type SplatFoveationMode,
+  type SplatProjectionStrategy,
   type SplatRange,
   type SplatPickOptions,
   type SplatPickResult,

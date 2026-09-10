@@ -20,6 +20,7 @@ interface Manifest {
   count: number;
   shBands: number;
   camera: ComparisonPose;
+  visibilityPoses?: Partial<Record<'interior' | 'overview', ComparisonPose>>;
 }
 const params = new URLSearchParams(location.search);
 const status = document.querySelector<HTMLElement>('#status')!;
@@ -87,10 +88,18 @@ async function run(): Promise<void> {
   if (!environmentResponse.ok)
     throw new Error('Benchmark requires the repository development server.');
   const environment: unknown = await environmentResponse.json();
+  const selectedFixedPose = config.visibilityPose
+    ? manifest.visibilityPoses?.[config.visibilityPose]
+    : undefined;
+  if (config.visibilityPose && !selectedFixedPose) {
+    throw new Error(
+      'Scene cache is stale. Re-run npm run benchmark:cache for fixed visibility poses.',
+    );
+  }
   const pose =
     config.position && config.target
       ? { position: config.position, target: config.target }
-      : manifest.camera;
+      : (selectedFixedPose ?? manifest.camera);
   for (const engine of ['spark', 'vlam'] as const) {
     const link = document.createElement('a');
     link.textContent = `Open ${engine.toUpperCase()} at this camera`;
@@ -203,6 +212,11 @@ async function run(): Promise<void> {
     }
     await active.finish();
     const gpu = active.gpu();
+    const computeByFrame = new Map(gpu.compute.map((sample) => [sample.frame, sample.ms]));
+    const pairedGpu = gpu.render.map((sample) => ({
+      frame: sample.frame,
+      ms: sample.ms + (computeByFrame.get(sample.frame) ?? 0),
+    }));
     const frameSummary = summarize(session.frameTimes);
     const result = {
       schemaVersion: 1,
@@ -257,12 +271,14 @@ async function run(): Promise<void> {
         rejected: gpu.rejected ?? 0,
         render: summarize(gpu.render.map((sample) => sample.ms)),
         compute: summarize(gpu.compute.map((sample) => sample.ms)),
+        pairedTotal: summarize(pairedGpu.map((sample) => sample.ms)),
       },
       raw: {
         frameIntervalsMs: session.frameTimes,
         cpuUpdateAndRenderMs: cpu,
         gpuRender: [...gpu.render],
         gpuCompute: [...gpu.compute],
+        gpuPairedTotal: pairedGpu,
         dispatchFrames,
       },
       visualValidation: [] as {

@@ -21,3 +21,9 @@ export {
   WORK_BUFFER_CENTERS_BYTES_PER_SPLAT,
   WORK_BUFFER_BYTES_PER_SLOT,
 } from './unified-work-buffer';
+export {
+  estimateProjectedSplatSteadyBytes,
+  estimateProjectedSplatPeakBytes,
+  PROJECTED_SPLAT_BYTES_PER_SLOT,
+  PROJECTED_SPLAT_FIXED_BYTES,
+} from '../core/projected-splat-pipeline';

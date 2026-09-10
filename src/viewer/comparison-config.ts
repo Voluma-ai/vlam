@@ -18,8 +18,12 @@ export interface ComparisonConfig {
   preset: 'supplied' | 'proposed' | 'controlled' | 'reference' | 'defaults' | 'matched';
   mode: 'stationary' | 'orbit' | 'rotate' | 'translate' | 'settle';
   shEvaluation: 'auto' | 'vertex' | 'compute';
+  projectionStrategy: 'vertex' | 'compute';
+  visibilityPose: 'interior' | 'overview' | undefined;
   sortMetric: 'depth' | 'radial' | undefined;
   sortStrategy: 'counting' | 'radix' | 'exact' | 'worker' | undefined;
+  /** VLAM-only override; undefined keeps the library's adaptive cadence. */
+  sortIntervalMs: number | undefined;
   maxStdDev: number | undefined;
   /** VLAM only: `webgpu` (default) or forced `webgl`. Spark is always WebGL2. */
   backend: 'webgpu' | 'webgl';
@@ -42,6 +46,13 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
     const value = Number(params.get(key));
     if (!Number.isFinite(value) || value <= 0 || value > max)
       throw new Error(`Invalid ${key}: expected a positive number up to ${max}.`);
+    return value;
+  };
+  const nonNegative = (key: string, max: number): number | undefined => {
+    if (!params.has(key)) return undefined;
+    const value = Number(params.get(key));
+    if (!Number.isFinite(value) || value < 0 || value > max)
+      throw new Error(`Invalid ${key}: expected a non-negative number up to ${max}.`);
     return value;
   };
   const vector = (key: string): [number, number, number] | undefined => {
@@ -67,6 +78,8 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
     backend: ['webgpu', 'webgl'],
     mode: ['stationary', 'orbit', 'rotate', 'translate', 'settle'],
     shEvaluation: ['auto', 'vertex', 'compute'],
+    projectionStrategy: ['vertex', 'compute'],
+    visibilityPose: ['interior', 'overview'],
     sortMetric: ['depth', 'radial'],
     sortStrategy: ['counting', 'radix', 'exact', 'worker'],
     msaa: ['0', '1'],
@@ -86,8 +99,12 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
     preset,
     mode: (params.get('mode') ?? 'stationary') as ComparisonConfig['mode'],
     shEvaluation: (params.get('shEvaluation') ?? 'auto') as ComparisonConfig['shEvaluation'],
+    projectionStrategy: (params.get('projectionStrategy') ??
+      'vertex') as ComparisonConfig['projectionStrategy'],
+    visibilityPose: params.get('visibilityPose') as ComparisonConfig['visibilityPose'],
     sortMetric: params.get('sortMetric') as ComparisonConfig['sortMetric'],
     sortStrategy: params.get('sortStrategy') as ComparisonConfig['sortStrategy'],
+    sortIntervalMs: nonNegative('sortIntervalMs', 60_000),
     maxStdDev: params.has('maxStdDev') ? positive('maxStdDev', 3, 8) : undefined,
     backend,
     width: Math.max(1, Math.floor(positive('width', 1280, 4096))),

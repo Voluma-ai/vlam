@@ -46,6 +46,7 @@ and [`architecture.md`](architecture.md).
 | --- | --- | --- | --- | --- | --- |
 | Core splat draw (EWA, ±3σ, premul α) | ✅ | ✅ |, | material tests | demo orbit |
 | Depth sort (counting / radix adaptive) | ✅ GPU | ✅ CPU worker | ✅ work-buffer sort | `compute-sorter`, `sort-worker` | `?verifySort=1` |
+| Compute projection + cull before sort | ⚠️ experimental opt-in; mono counting-sort path | ✅ deliberate vertex fallback | ⚠️ opt-in after gather | `projection.spec.ts`, `projected-splat-pipeline`, `*.xr.test.ts` | `?projectionStrategy=compute`; physical-device benchmark pending |
 | Sort within-bucket inversions | ⚠️ expected | ⚠️ radix stable; GPU counting may tie | ⚠️ same | sorter tests | invisible if &lt; bucket width |
 | Streamed LOD / budget | ✅ | ✅ | ✅ per-source cut gathered | streamed-splat-mesh.* | `?budget=` |
 | Shared budget across meshes (`BudgetGovernor`) | ✅ weighted split via `setBudget`; flat-leaf, octree-cut and RAD page-table paths | ✅ same | ⚠️ per-source meshes registrable | `budget-governor.test.ts` | 3× Hotel RAD camera A/B (Chrome/macOS WebGPU) |

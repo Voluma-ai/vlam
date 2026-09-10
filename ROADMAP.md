@@ -64,6 +64,16 @@ selection features until their benefits are measured and visually validated.
   with most splats visible. Verify footprint-aware edge culling, exact index
   coverage, standalone/unified rendering, and per-view/XR correctness. Keep
   the current path until the additional compute/storage cost earns its place.
+  **Prototype status:** implemented as the experimental
+  `projectionStrategy: 'compute'` opt-in for standalone and unified mono
+  WebGPU. Exact dense coverage, footprint-aware edge culling, indirect
+  arguments, pixels, WebGL2 fallback and XR fallback have automated coverage.
+  Five alternating Windows/NVIDIA runs met the requested 27.4% interior and
+  100% overview visibility bands, but failed the evidence gate: paired GPU
+  median regressed 40.8% and 5.8%, respectively, while frame p95 did not
+  improve. The 7.77 MB steady cache also remains an explicit cost. A larger
+  supported capture is still needed to measure nonzero adaptive cadence;
+  `'vertex'` remains the default.
 - **Stochastic transparency during movement** — experiment with opt-in
   sort-free fragment coverage while navigating heavy scenes, then restore
   sorted blending when motion settles and for captures. Any automatic policy
