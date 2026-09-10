@@ -270,7 +270,10 @@ export class RadixSorter implements SplatSorter {
       const rankedScatter = Fn(() => {
         const thread = invocationLocalIndex;
         const group = workgroupId.x;
-        const maskBase = group.mul(uint(MASK_WORDS_PER_GROUP));
+        // Materialize before the valid-lane branch: TSL otherwise caches this
+        // expression inside that branch, leaving inactive groups with base 0
+        // when they clear masks below and racing the first group's scatter.
+        const maskBase = group.mul(uint(MASK_WORDS_PER_GROUP)).toVar();
         If(thread.lessThan(uint(DIGIT_COUNT)), () => {
           digitOffsets.element(thread).assign(uint(0));
         });

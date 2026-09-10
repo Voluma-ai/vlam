@@ -346,15 +346,13 @@ export class ComputeSorter implements SplatSorter {
   }
 
   /**
-   * Buckets to actually use for `activeCount` splats, rounded up to a power of
-   * two so block indexing stays exact.
-   *
-   * The histogram is allocated once for the pool's worst case. Sizing each
-   * dispatch to the live splat count keeps the design's ~1-bucket-per-splat
-   * depth resolution while skipping work on buckets no splat can land in.
+   * Keep the allocated depth resolution while a streaming pool fills. A coarse
+   * cover can span the whole scene with few splats; reducing the bucket count
+   * with the live count makes overlapping splats tie and shimmer until detail
+   * arrives. Only the histogram/scatter work scales with the active count.
    */
-  private effectiveBucketCount(activeCount: number): number {
-    return Math.min(ComputeSorter.bucketCountFor(activeCount), this.histogramBucketCount);
+  private effectiveBucketCount(): number {
+    return this.histogramBucketCount;
   }
 
   /** Rounds a pool or live-splat count to the supported power-of-two range. */
@@ -379,7 +377,7 @@ export class ComputeSorter implements SplatSorter {
     this.viewRow2.value.set(m[2], m[6], m[10], m[14]);
     this.activeCount.value = activeCount;
 
-    const buckets = this.effectiveBucketCount(activeCount);
+    const buckets = this.effectiveBucketCount();
     const range = intersectSortRange(
       sceneSortRange(modelView, bounds, this.sortMetric, this.viewCenter),
       visibleRange,

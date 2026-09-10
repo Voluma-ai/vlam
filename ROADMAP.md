@@ -27,21 +27,10 @@ These are candidates for future work, not 1.0 release requirements. Preserve
 the WebGL2 fallback, the three.js-only library dependency, portable compute,
 and the verified rendering math.
 
-For 1.0, the most useful early work is a memory baseline and small fixes for
-unnecessary retained copies that it identifies. Brush lifecycle or stale-pick
-fixes discovered during existing selection validation also fit stabilization.
-Neither adds a release gate; defer new storage modes, rendering paths, and
+Brush lifecycle or stale-pick fixes discovered during existing selection
+validation fit stabilization. Defer new storage modes, rendering paths, and
 selection features until their benefits are measured and visually validated.
 
-- **Lower retained scene memory** — measure peak loading memory, settled CPU
-  backing, and GPU allocations separately on representative static and streamed
-  scenes. GPU scratch mirrors are already released; local PLY input already
-  uses windowed reads. Target remaining scene-data copies and investigate an
-  opt-in rendering-only storage mode. Retain data needed by CPU queries,
-  painting, pool compaction, and WebGL2 sorting. **Acceptance:** demonstrate
-  lower peak or settled memory against a recorded baseline, with lifecycle,
-  query, editing, and fallback checks. Upstream JS-heap savings are not a
-  total-memory estimate or a predicted VLAM gain.
 - **Experimental radix sorter: r186 workgroup atomics** — after the separate
   upgrade establishes three.js r186 as the minimum supported version, replace
   the global-storage ranking bitmasks in

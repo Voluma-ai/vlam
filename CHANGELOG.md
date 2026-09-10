@@ -21,6 +21,21 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- Radix sorting initializes each workgroup's mask address before testing active
+  lanes, preventing empty groups from clearing group zero's masks during sparse
+  loading. This fixes duplicate splat indices and the Temple LCC2 demo's loading
+  spots/streaks in both `radix` and `exact` modes; streaming GPU regressions cover
+  first sorts, growing counts, and removals. The probe copies `splatIndex` after
+  the draw that consumes it; Chromium Linux SwiftShader still drops Dawn on that
+  GPUBuffer readback, so the case stays an expected failure there.
+- GPU counting sort keeps the pool's allocated depth resolution during loading,
+  preventing coarse LCC2 coverage from turning spotty or glittering before finer
+  tiles arrive. No additional histogram memory is allocated; sparse streaming
+  frames perform the full allocated scan instead of reducing its precision.
+- The isolated scene-memory harness now serves its loader module workers with
+  the required embedder policy, frames oriented captures from world-space
+  bounds, accepts reproducible fixed cameras, and waits for a substantial,
+  stable streamed cut instead of accepting a transient idle gap.
 - RAD page-table plans now default to 16,000 pool writes, count relocation and
   freed-tail work against that ceiling, and pace sparse relocations over bounded
   slot windows. Queued atomic cuts continue across camera motion before the
@@ -51,6 +66,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- Closed the retained-scene-memory validation on an RTX 3090 with repeated
+  fresh-tab Goose, 8.72M SH3 SOG, 12.85M Tempel LCC2, 3.19M-leaf Hotel RAD,
+  and generated 1M SH3 PLY runs across WebGPU and forced WebGL2. Render-only
+  WebGPU released exactly the deterministic CPU backing with unchanged GPU
+  allocation and successful post-release picking; no total-browser-memory
+  improvement is claimed.
 - Validated RAD page-table upload pacing in repeated headed RTX 3090 hotel-core
   orbits. With `swapCap=16000`, the two normal-cadence samples reduced worst
   attributed upload from the 120.6 ms baseline to 8.1 and 9.6 ms, retained exact

@@ -38,6 +38,8 @@ Useful query parameters:
 | `budget` | positive splat count; `1000000` | Streamed active budget |
 | `maxBudget` | positive splat count; `budget` | Streamed pool ceiling |
 | `settleSeconds` | positive seconds; `30` | Maximum streaming settle wait |
+| `settleMinActive` | positive splat count; `1` | Required resident cut before a streamed run may settle |
+| `position`, `target` | paired `x,y,z` vectors; framed | Fixed world-space camera for reproducible cuts |
 | `uaMemory` | `1` / `0`; `1` | Disable slow browser-wide checkpoints for smoke tests |
 | `syntheticSplats` | positive count; `64` | Size of the `scene=synthetic` CI smoke |
 
@@ -153,6 +155,65 @@ sorting on supported GPU strategies. CPU queries, range or channel mutation,
 compaction, shared storage, unified sources, worker sorting, and WebGL2 throw
 explicit errors. The released mesh is bound to its first WebGPU renderer and
 must be reconstructed after renderer replacement or device loss.
+
+## RTX 3090 closure record — 2026-09-10
+
+This matrix used Windows NT 10.0.26200.9278 (25H2), Chrome
+152.0.7977.83, an NVIDIA GeForce RTX 3090 (24,576 MiB, driver 595.79),
+VLAM 0.7.2 at commit `9965a9b86578d72bfbfc86e2f014082ab3ce5ada`, and
+three.js r186. WebGPU reported the NVIDIA Ampere adapter; WebGL2 rows were
+forced explicitly. All runs used float32 pools, source SH, counting sort on
+WebGPU, the worker sorter on WebGL2, and no exposed GC. Streamed rows used a
+1,000,000-splat budget and ceiling, an 800,000-splat minimum resident cut, a
+120-second limit, and the cached fixed camera. Each row is three alternating
+fresh-tab runs.
+
+| Scene / mode | Backend | Active / capacity | Load median (range), ms | CPU backing, bytes | Released CPU, bytes | GPU, bytes | Stream cache, bytes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Goose editable | WebGPU | 149,120 / 149,504 | 244 (238–286) | 10,166,272 | 0 | 10,682,624 | 0 |
+| Goose render-only | WebGPU | 149,120 / 149,504 | 239 (235–240) | 0 | 10,166,272 | 10,682,624 | 0 |
+| Goose editable | WebGL2 | 149,120 / 149,504 | 652 (652–663) | 17,006,592 | 0 | 8,372,224 | 0 |
+| Langenthal SH3 editable | WebGPU | 8,724,225 / 8,724,480 | 9,547 (8,519–9,727) | 608,993,280 | 0 | 590,938,368 | 0 |
+| Langenthal SH3 render-only | WebGPU | 8,724,225 / 8,724,480 | 9,686 (8,413–9,842) | 0 | 608,993,280 | 590,938,368 | 0 |
+| Tempel SH3 streamed | WebGPU | 929,298 / 1,501,184 | 247 (192–264) | 198,156,288 | 0 | 200,605,952 | 151,402,600 |
+| Tempel SH3 streamed | WebGL2 | 929,298 / 1,501,184 | 574 (289–2,522) | 264,470,528 | 0 | 180,142,080 | 151,402,600 |
+| Hotel SH3 RAD streamed | WebGPU | 999,999 / 1,501,184 | 552 (517–1,058) | 198,156,288 | 0 | 200,605,952 | 461,452,090 |
+| Generated SH3 PLY editable | WebGPU | 1,000,000 / 1,001,472 | 3,833 (3,673–3,970) | 132,194,304 | 0 | 132,448,512 | 0 |
+| Generated SH3 PLY render-only | WebGPU | 1,000,000 / 1,001,472 | 3,847 (3,773–4,018) | 0 | 132,194,304 | 132,448,512 | 0 |
+| Generated SH3 PLY editable | WebGL2 | 1,000,000 / 1,001,472 | 3,885 (3,881–4,120) | 176,521,216 | 0 | 120,176,640 | 0 |
+
+Capture identities were Goose `d494f057…e1723eb50` (1,797,493 bytes),
+Langenthal `01c6efa1…d2cb6056` (121,633,146 bytes), Tempel
+`ca6e09f3…d0277438` (233,111,420 aggregate bytes), and Hotel
+`413381d9…a129f773` (202,177,968 bytes; 3,189,208 leaves / 4,195,019 nodes).
+The ignored 252,001,551-byte PLY was generated with chunked writes as a
+deterministic every-fourth-record sample of a valid local float SH3 capture,
+with one neutral centre-pick sentinel; it has 1,000,000 records, all 45
+`f_rest_*` fields, and SHA-256
+`8e2dc7258996fcaae77d243f6313dafcd93105ccc15cedfd94d5eb76682adb11`.
+
+Every run requested and reported the named backend, produced a nonblank live
+canvas, had no JavaScript page error or device loss, and reached zero active
+splats after disposal. All streamed runs settled below 120 seconds with zero
+failed chunks, evictions, uncovered swaps, or cache-full events. Tempel's
+optional discovery probe for `data/3dgs/0_0.sog` returned its expected 404 and
+was cancelled; the selected LCC2 chunks completed and `failedChunkCount`
+remained zero. The PLY also completed three load → settle → dispose cycles in
+one tab and three fresh-tab runs.
+
+For all three render-only scenes, the released byte count exactly matched the
+editable CPU backing and explicit GPU allocation was unchanged. A GPU pick hit
+after release in every run. The existing lifecycle tests also retain explicit
+rejections for queries, editing, dynamic/shared/unified use, worker sorting,
+and WebGL2, while editable/streamed tests retain query, channel update,
+compaction, residency, and WebGL2 sorting coverage.
+
+No browser-memory improvement is claimed. The browser-wide API was too slow
+for the full matrix, exposed GC was unavailable, and main-isolate heap ranges
+did not isolate the released backing. The closure claim is therefore limited
+to the exact deterministic CPU-backing reductions above. Live WebGPU and
+forced-WebGL2 output was inspected on this desktop; no additional physical
+device was used.
 
 ## Acceptance for further reductions
 
