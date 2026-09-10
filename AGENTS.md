@@ -24,8 +24,10 @@ kept authoritative so this one does not drift.
 - **Headless verification bar.** Run `npm test`, `npm run test:browser`,
   `npm run lint`, `npm run build`, `npm run docs:check`, and
   `npm run docs:samples`. Browser checks need the one-time
-  `npx playwright install chromium` setup. Public JSDoc is rendered into the
-  generated site; do not commit TypeDoc output.
+  `npx playwright install chromium` setup. Before pushing, run
+  `npm run preflight`; renderer-sensitive pushes additionally run the pinned
+  Linux/SwiftShader browser suite through Docker. Public JSDoc is rendered
+  into the generated site; do not commit TypeDoc output.
 - **Never commit** `node_modules/`, `dist/`, large scene captures, or internal
  strategy documents. Non-redistributable test scenes stay on local disks.
 - **Do not widen the public API casually.** `src/lib/core/index.ts` is curated;

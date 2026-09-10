@@ -83,7 +83,7 @@ jobs:
       - run: npx playwright install --with-deps chromium
       # Each project asserts the backend it requested. WebGPU setup failures
       # therefore fail rather than silently exercising the WebGL2 fallback.
-      - run: npm run test:browser
+      - run: npm run test:browser -- --workers=2
 
   # Scans the working tree (--no-git), so it blocks new secrets in tracked
   # files regardless of how the history was rewritten.

@@ -1,0 +1,3 @@
+# Run every reproducible CI gate before publishing commits. Renderer-sensitive
+# pushes also run Chromium WebGPU in the pinned Linux Playwright container.
+node scripts/pre-push.mjs
