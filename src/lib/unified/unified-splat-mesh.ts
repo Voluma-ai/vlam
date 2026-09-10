@@ -364,7 +364,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   }
 
   async readGpuVisibleSplatCount(): Promise<number | null> {
-    return this.projectedPipeline?.readVisibleCount() ?? null;
+    const pipeline = this.projectedPipeline;
+    return pipeline ? await pipeline.readVisibleCount() : null;
   }
 
   /** Registers a source. The caller keeps ownership and may still query it. */

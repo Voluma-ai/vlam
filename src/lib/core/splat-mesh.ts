@@ -811,7 +811,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /** Asynchronously reads the last GPU-visible count for benchmark diagnostics. */
   async readGpuVisibleSplatCount(): Promise<number | null> {
-    return this.projectedPipeline?.readVisibleCount() ?? null;
+    const pipeline = this.projectedPipeline;
+    return pipeline ? await pipeline.readVisibleCount() : null;
   }
 
   /** GPU submission counters for projection benchmark attribution. */
