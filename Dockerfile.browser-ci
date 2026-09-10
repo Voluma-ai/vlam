@@ -1,0 +1,13 @@
+ARG PLAYWRIGHT_VERSION
+FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble
+
+WORKDIR /workspace
+ENV CI=true
+ENV HUSKY=0
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+
+CMD ["npm", "run", "test:browser", "--", "--workers=2"]

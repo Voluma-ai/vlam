@@ -44,6 +44,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- Contributor pushes now run the complete reproducible CI preflight locally;
+  renderer-sensitive changes also run Chromium WebGPU in a pinned Linux
+  Playwright container before they leave the workstation.
+
 - Upgraded the runtime peer to three.js r186 (`three >=0.186.0`). The temporary
   `@types/three@0.185.4` pin is isolated behind one declaration shim until the
   r186 declarations publish; `SplatMesh` and `UnifiedSplatMesh` now forward
