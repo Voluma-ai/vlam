@@ -18,7 +18,15 @@ Git history, not in this queue.
 
 ## Later
 
-- **RAD limit feedback** — assess refinement pacing during the RAD headed comparison.
+- **RAD page-table upload pacing** — the RTX 3090 headed limit-feedback pass
+  held a 1M frontier without holes or oscillation, but isolated 30-second
+  orbits repeatedly contained 183–200 ms swap frames dominated by 121–138 ms
+  of texture upload work.
+  Bound sparse-page upload preparation per frame without delaying the first
+  complete cut indefinitely. **Acceptance:** repeat the same hotel-core 1M
+  page-table orbit with exact index coverage, `hole 0` / `late 0`, no cache
+  churn, and no upload-attributed frame above 50 ms. See the
+  [RAD format notes](docs/formats/rad-notes.md#rtx-3090-limit-feedback-pacing-2026-09-10).
 - **1.0 stabilization** — freeze the API, finalize migration notes, changelog,
   and release tag after the checks above pass.
 

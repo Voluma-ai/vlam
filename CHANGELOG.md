@@ -44,6 +44,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- Validated RAD limit feedback in a headed RTX 3090 hotel-core orbit. The
+  page-table frontier held its 1M target with no uncovered or late swaps, no
+  cache eviction, and exact index coverage. An isolated repeat confirmed the
+  remaining upload-pacing tail (183.4 ms swap frame, 120.6 ms upload work), now
+  tracked separately rather than changing the stable limit-search policy.
 - Contributor pushes now run the complete reproducible CI preflight locally;
   renderer-sensitive changes also run Chromium WebGPU in a pinned Linux
   Playwright container before they leave the workstation.
