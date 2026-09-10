@@ -19,6 +19,7 @@ import {
   type ClassicFetchWant,
   type SwapGroup,
 } from './streamed-splat-mesh-utils';
+import { DEFAULT_PAGE_TABLE_WRITES_PER_PLAN } from './streaming-defaults';
 export * from './streamed-splat-mesh-utils';
 import * as THREE from 'three/webgpu';
 import {
@@ -351,8 +352,10 @@ export interface StreamedSplatMeshOptions extends SplatMeshOptions {
    */
   experimentalStagedSwaps?: boolean;
   /**
-   * Maximum splats copied into the pool per LOD mutation tick. Defaults to
-   * 32,000; lower debug values trade refinement latency for shorter frames.
+   * Maximum splats copied into the pool per LOD mutation tick. Classic
+   * streaming defaults to 32,000; RAD page-table delivery defaults to 16,000.
+   * An explicit value controls either path. Lower debug values trade refinement
+   * latency for shorter frames.
    */
   maxSplatsPerSwap?: number;
   /**
@@ -581,6 +584,8 @@ export class StreamedSplatMesh extends SplatMesh {
   /** Classic LCC must keep old cell coverage while a replacement is pending. */
   private readonly neverRetireCoverageEarly: boolean;
   private readonly appendCap: number;
+  /** Worker-side RAD plan cap; separate default, shared explicit override. */
+  private readonly pageTableWriteCap: number;
   private readonly onPerformanceEvent: ((event: StreamedSplatPerformanceEvent) => void) | undefined;
   private compactionCount = 0;
 
@@ -750,6 +755,8 @@ export class StreamedSplatMesh extends SplatMesh {
    * dropped. `pageTableInFlight` coalesces to one outstanding traversal. */
   private pageTableSeq = 0;
   private pageTableInFlight = false;
+  /** Finish the worker's current bounded cut before solving the latest camera. */
+  private pageTableContinuePending = false;
   private pageTableDisposed = false;
   /** Terminal page-table worker fault; retained for hosts to present recovery UI. */
   private streamingErrorValue: SplatLoadError | null = null;
@@ -1237,6 +1244,8 @@ export class StreamedSplatMesh extends SplatMesh {
     this.stagedSwapsEnabled = options.experimentalStagedSwaps !== false;
     this.neverRetireCoverageEarly = neverRetireCoverageEarly;
     this.appendCap = validateAppendCap(options.maxSplatsPerSwap);
+    this.pageTableWriteCap =
+      options.maxSplatsPerSwap === undefined ? DEFAULT_PAGE_TABLE_WRITES_PER_PLAN : this.appendCap;
     const holdCoverage =
       options.initialReveal === 'hold-coverage' && this.scene.source.coverageRunsFor !== undefined;
     const holdNearL0 = options.initialReveal === 'hold-near-l0' && neverRetireCoverageEarly;
@@ -1392,6 +1401,7 @@ export class StreamedSplatMesh extends SplatMesh {
         capacity: this.pagerSlots,
         chunkSize: scene.chunkSize ?? 65536,
         cpuCacheBytes: this.cacheLimitBytes,
+        maxPlanWrites: this.pageTableWriteCap,
       });
       // Seed the worker with the chunk the scene builder already decoded. The
       // tree roots are derived from chunk 0, so without this every traversal up
@@ -3956,6 +3966,7 @@ export class StreamedSplatMesh extends SplatMesh {
     this.postToWorker({
       type: 'reschedule',
       seq: ++this.pageTableSeq,
+      ...(this.pageTableContinuePending ? { continuePendingPlan: true } : {}),
       cameraLocal: [cameraLocal.x, cameraLocal.y, cameraLocal.z],
       cameraForward: [forwardLocal.x, forwardLocal.y, forwardLocal.z],
       ...this.pageTableFoveation,
@@ -4039,7 +4050,16 @@ export class StreamedSplatMesh extends SplatMesh {
         plan.displayGeneration ?? this.pageTableDisplayGeneration + 1;
       this.invalidateSort();
     }
+    const continuedOlderPlan = this.pageTableContinuePending;
     this.frontierConverged = plan.converged;
+    this.pageTableContinuePending = !plan.converged;
+    if (continuedOlderPlan && plan.converged) {
+      // The drain deliberately ignored the newer camera bundled with its
+      // request. Re-solve that coalesced view immediately instead of waiting
+      // for the idle timer or another movement threshold.
+      this.pendingWork = true;
+      this.lastScheduleTime = -Infinity;
+    }
     this.pendingFrontierSplats = plan.pendingFrontierSplats ?? 0;
     this.staleResidentSplats = plan.staleResidentSplats ?? 0;
     this.lastPlanAppends = plan.lastPlanAppends ?? plan.appends.count;

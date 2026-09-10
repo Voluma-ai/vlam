@@ -429,6 +429,66 @@ describe('FrontierPager', () => {
       expect(slab.residentSet()).toEqual(new Set(next));
     });
 
+    it('bounds total pool writes while replacing a full slab', () => {
+      const p = new FrontierPager(200);
+      const slab = new SlabModel(200);
+      slab.apply(p.update(Array.from({ length: 200 }, (_v, i) => i)));
+      const next = Array.from({ length: 200 }, (_v, i) => 10_000 + i);
+
+      let plan = p.update(next, {
+        maxAppends: CAP,
+        maxWrites: CAP,
+        maxMoveSlotSpan: CAP,
+      });
+      let rounds = 0;
+      for (;;) {
+        expect(plan.appends.length + plan.moves.length + plan.degenerateCount).toBeLessThanOrEqual(
+          CAP,
+        );
+        if (plan.moves.length > 1) {
+          const movedSlots = plan.moves.map((move) => move.slot);
+          expect(Math.max(...movedSlots) - Math.min(...movedSlots)).toBeLessThan(CAP);
+        }
+        expect(plan.dropped).toBe(0);
+        slab.apply(plan);
+        expect(slab.residentSet().size).toBe(plan.count);
+        if (!plan.truncated) break;
+        expect(++rounds).toBeLessThan(100);
+        plan = p.drain(CAP, CAP, CAP);
+      }
+
+      expect(slab.residentSet()).toEqual(new Set(next));
+    });
+
+    it('paces sparse relocations without over-admitting replacements', () => {
+      const p = new FrontierPager(1_000);
+      const slab = new SlabModel(1_000);
+      const before = Array.from({ length: 1_000 }, (_v, i) => i);
+      slab.apply(p.update(before));
+      const next = before.filter((global) => global % 10 !== 0);
+      next.push(...Array.from({ length: 100 }, (_v, i) => 10_000 + i));
+
+      let plan = p.update(next, {
+        maxAppends: CAP,
+        maxWrites: CAP,
+        maxMoveSlotSpan: CAP,
+      });
+      let rounds = 0;
+      for (;;) {
+        expect(plan.count).toBeLessThanOrEqual(1_000);
+        expect(plan.appends.length + plan.moves.length + plan.degenerateCount).toBeLessThanOrEqual(
+          CAP,
+        );
+        slab.apply(plan);
+        expect(slab.residentSet().size).toBe(plan.count);
+        if (!plan.truncated) break;
+        expect(++rounds).toBeLessThan(100);
+        plan = p.drain(CAP, CAP, CAP);
+      }
+
+      expect(slab.residentSet()).toEqual(new Set(next));
+    });
+
     it('paces publish-retire of a large stale prefix across plans', () => {
       // Hotel-orbit hitch: stage the whole replacement with publish:false, then
       // one publish:true plan used to swap-remove every deferred leaver at once

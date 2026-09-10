@@ -48,6 +48,9 @@ class RecordingWorker {
   get lastReschedule(): Record<string, unknown> | undefined {
     return [...this.posted].reverse().find((m) => m['type'] === 'reschedule');
   }
+  get init(): Record<string, unknown> | undefined {
+    return this.posted.find((m) => m['type'] === 'init');
+  }
 }
 
 interface MeshFixture {
@@ -179,6 +182,50 @@ describe('StreamedSplatMesh page-table governance', () => {
     meshes.push(mesh);
     return mesh;
   }
+
+  it('defaults page-table plans to 16k without changing the classic 32k cap', () => {
+    track(
+      makeMesh({
+        foveated: true,
+        options: { foveationMode: 'page-table' },
+      }),
+    );
+    expect(RecordingWorker.last?.init?.['maxPlanWrites']).toBe(16_000);
+
+    const classic = track(makeMesh());
+    const internals = classic as unknown as { appendCap: number };
+    expect(internals.appendCap).toBe(32_000);
+  });
+
+  it('forwards an explicit swap cap to the page-table worker', () => {
+    track(
+      makeMesh({
+        foveated: true,
+        options: { foveationMode: 'page-table', maxSplatsPerSwap: 4_096 },
+      }),
+    );
+    expect(RecordingWorker.last?.init?.['maxPlanWrites']).toBe(4_096);
+    expect(() =>
+      makeMesh({
+        foveated: true,
+        options: { foveationMode: 'page-table', maxSplatsPerSwap: 0 },
+      }),
+    ).toThrow(/positive integer/);
+  });
+
+  it('asks the worker to finish a bounded cut before replacing it for camera motion', () => {
+    const mesh = track(
+      makeMesh({
+        foveated: true,
+        options: { foveationMode: 'page-table' },
+      }),
+    );
+    const internals = mesh as unknown as { pageTableContinuePending: boolean };
+    internals.pageTableContinuePending = true;
+
+    reschedulePageTable(mesh, 1000);
+    expect(RecordingWorker.last?.lastReschedule?.['continuePendingPlan']).toBe(true);
+  });
 
   it('drives the frontier draw target from the governed budget', () => {
     const mesh = track(

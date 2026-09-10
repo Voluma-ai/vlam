@@ -18,7 +18,6 @@ Git history, not in this queue.
 
 ## Later
 
-- **RAD limit feedback** — assess refinement pacing during the RAD headed comparison.
 - **1.0 stabilization** — freeze the API, finalize migration notes, changelog,
   and release tag after the checks above pass.
 

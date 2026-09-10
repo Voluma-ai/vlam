@@ -30,6 +30,10 @@ import {
   type CollisionMeshTile,
   type StreamedSplatPerformanceEvent,
 } from '../lib/streaming';
+import {
+  DEFAULT_CLASSIC_SPLATS_PER_SWAP,
+  DEFAULT_PAGE_TABLE_WRITES_PER_PLAN,
+} from '../lib/streaming/streaming-defaults';
 import { createDemoEffects } from './effects';
 import {
   createPaintTool,
@@ -4205,7 +4209,11 @@ async function main(): Promise<void> {
             sortStrategy: splats.sortStrategy,
             performanceProfile,
             sortIntervalMs: sortIntervalMs ?? 'automatic',
-            swapCap: swapCap ?? 32_000,
+            swapCap:
+              swapCap ??
+              (splats instanceof StreamedSplatMesh && splats.radStrategy === 'page-table'
+                ? DEFAULT_PAGE_TABLE_WRITES_PER_PLAN
+                : DEFAULT_CLASSIC_SPLATS_PER_SWAP),
             ...benchmarkResult,
             computeGpuMs: latestComputeGpuMs,
             renderGpuMs: latestRenderGpuMs,

@@ -498,6 +498,91 @@ streak artifacts (`.tmp/rad-parity/spark-hotel-settle2.png`). Close this row
 with Spark’s own `npm run` / vendor three, matching camera, and a visual A/B
 against the VLAM shots above — do not treat the streak frame as a VLAM defect.
 
+### RTX 3090 limit-feedback pacing (2026-09-10)
+
+Chrome 152 on Windows, NVIDIA RTX 3090, AC power, commit
+`272d431123b623e7509787108dcd700cf3c0493d`. The cached
+`HOTEL.clean.comp-lod.rad` hash was
+`413381d93b452a77d75e7998f89836db0df740127f995bf94f4d5126a129f773`.
+
+Two headed four-run hotel slices compared Spark 2.1.0 WebGL2 with VLAM WebGPU
+at the same fixed poses and proposed 1280×720 settings. Both had normal callback
+cadence. Spark held its native 2.5M page table near 59 FPS. VLAM's moderate-scene
+prefix reader refined from 0.82–1.17M to 2.66M or the full 3.19M during the
+15-second orbit and reached 38.31–49.49 observed FPS; its frame p95/p99 was
+33.4–50.0 / 50.1–66.8 ms. The fixed front and orbit captures matched in
+framing, orientation, coverage and settled detail, with no black holes. Suite
+IDs: `78001a56-13cd-448d-abc1-811b564d0a28` and
+`065db0a8-8408-463d-b7fb-e11ee6a4d899`; artifacts are under their ignored
+`.tmp/benchmark-results/` directories.
+
+That automatic comparison selects the prefix reader on this discrete desktop,
+so a second headed run pinned `budget=1000000`,
+`foveationMode=page-table`, and `foveationDraw=1000000` at the documented
+hotel-core camera. After a 15-second warm-up, its 30-second cinematic orbit
+reported:
+
+| Signal | Result |
+| --- | ---: |
+| Frontier | 998,477 / 1,000,000 splats; `hole 0`, `late 0` |
+| Cache | 440 / 471 MiB; 0 evictions |
+| Frame pacing | 57.68 FPS average; 16.8 / 16.9 / 200.3 ms p95 / p99 / worst |
+| Swap vs non-swap frame mean | 18.38 / 16.70 ms |
+| Worst attributed CPU / upload | 138.9 / 138.4 ms |
+| Sort coverage | 998,477 indices; 0 duplicates, missing, or foreign indices |
+
+An isolated repeat ran after the full preflight had released the machine. It
+used a single renderer tab and extended warm-up to 45 seconds so the timed
+30-second orbit began at the settled 1,000,000-splat frontier. It again recorded
+an upload-dominated tail: a 183.4 ms swap frame with 121.0 ms CPU and 120.6 ms
+upload work. The run averaged 56.28 FPS with 16.8 / 33.4 ms p95 / p99, exact
+1,000,000-index coverage, `hole 0`, `late 0`, and 0 evictions. Its overall
+216.9 ms worst frame carried no swap event, so only the attributed 183.4 ms
+frame is evidence for the page-table issue. This reproduction rules out the
+original hitch being solely concurrent test load.
+
+The limit feedback therefore converged without oscillation, budget overflow,
+uncovered swaps, or cache churn. Do not change its 1.6× search step from this
+evidence. Refinement is not yet consistently smooth, however: rare sparse-page
+texture uploads dominate the visible tail even though p99 remains on the 60 Hz
+floor. The follow-up is upload preparation/pacing, not frontier-limit policy;
+the roadmap carries a bounded-frame acceptance target. The raw benchmark JSON
+remains in the headed page output and the comparison artifacts stay local and
+ignored.
+
+### RTX 3090 page-table upload pacing (2026-09-10)
+
+Page-table delivery now resolves the existing `maxSplatsPerSwap` option to a
+16,000-write default (classic streaming remains 32,000). The worker applies the
+same ceiling to initial updates and queued drains. Appends, swap-remove moves,
+and freed-tail clears all spend that allowance; relocations are additionally
+kept inside a bounded destination-slot window so a sparse cut cannot dirty
+nearly every texture row. The host finishes the queued atomic cut across camera
+motion, then immediately solves the latest coalesced view. It never partially
+applies or publishes a plan.
+
+Two normal-cadence Chrome 152 / RTX 3090 runs repeated the same 1M hotel-core
+cinematic orbit with `swapCap=16000`, 45 seconds of warm-up, and a 30-second
+sample. Both reached the 1,000,000-splat frontier during warm-up. The moving cut
+at the second result snapshot contained 987,033 indices; it had reached 1M
+inside the sample and returned there immediately afterwards. Coverage was exact
+for every measured cut.
+
+| Signal | Repeat 1 | Repeat 2 |
+| --- | ---: | ---: |
+| Average FPS | 59.95 | 59.95 |
+| Frame p95 / p99 / worst | 16.8 / 16.9 / 17.5 ms | 16.8 / 16.9 / 17.7 ms |
+| Worst attributed CPU / upload | 9.1 / 8.1 ms | 10.2 / 9.6 ms |
+| Result-snapshot frontier | 1,000,000 | 987,033 |
+| Sort coverage errors | 0 duplicate / missing / foreign | 0 duplicate / missing / foreign |
+| HUD / cache | `hole 0`, `late 0`, 0 evictions | `hole 0`, `late 0`, 0 evictions |
+
+The upload-attributed acceptance ceiling was 50 ms; both repeats passed with
+more than 40 ms of margin, versus the 120.6 ms isolated baseline. A separate
+attempt with a 62-second background callback gap was discarded from frame
+statistics; its swap-attributed work nevertheless remained below 8 ms, which
+confirms the gap was not produced by a page-table upload.
+
 ## Other gaps / next steps
 - **Coordinate frame:** Spark's loader documents the 180°-X OpenCV→OpenGL
   correction (`quaternion.set(1, 0, 0, 0)`) for loaded splats, including `.rad`.

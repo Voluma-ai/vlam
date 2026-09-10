@@ -73,6 +73,14 @@ export interface PagerUpdateOptions {
    */
   readonly maxAppends?: number;
   /**
+   * Maximum pool writes in this plan (appends, swap-remove moves, and freed-tail
+   * degeneration). Replacing one slot can cost both an eviction and an append;
+   * retiring one can cost both a move and a tail clear.
+   */
+  readonly maxWrites?: number;
+  /** Maximum destination-slot span covered by this plan's relocations. */
+  readonly maxMoveSlotSpan?: number;
+  /**
    * When true (the default), a plan that has seated every newcomer also retires
    * the previous cut and advances {@link PagerPlan.displayCount}. When false,
    * the drawn prefix stays put: replacements accumulate on the tail until a
@@ -80,6 +88,62 @@ export interface PagerUpdateOptions {
    * asked for, the cache is full, or the camera moved).
    */
   readonly publish?: boolean;
+}
+
+/** Admits free-tail appends at one write each, then replacements at two writes. */
+function admittedWithinWriteBudget(
+  wanted: number,
+  seatable: number,
+  headroom: number,
+  maxAppends: number,
+  maxWrites: number,
+): number {
+  const free = Math.min(wanted, seatable, headroom, maxAppends, maxWrites);
+  const replacements = Math.floor(Math.max(0, maxWrites - free) / 2);
+  return Math.min(wanted, seatable, maxAppends, free + replacements);
+}
+
+/** Eviction ceiling that leaves room for relocations and any freed-tail clears. */
+function evictionsWithinWriteBudget(admitted: number, maxWrites: number): number {
+  if (!Number.isFinite(maxWrites)) return Infinity;
+  // Up to `admitted` evictions are paired with appends and do not shrink the
+  // slab: one move plus one append. Evictions beyond that also clear one freed
+  // tail slot, so their worst-case cost is two writes each.
+  const paired = Math.min(admitted, Math.max(0, maxWrites - admitted));
+  const retiring = Math.floor(Math.max(0, maxWrites) / 2);
+  return retiring > admitted ? retiring : paired;
+}
+
+/**
+ * Keeps sparse relocations from dirtying every texture row in one upload.
+ * Globals already pulled out by an earlier swap-remove are ignored; otherwise
+ * at least the first queued eviction is admitted so every drain makes progress.
+ */
+function evictionsWithinSlotSpan(
+  globals: readonly number[],
+  start: number,
+  count: number,
+  slotOf: ReadonlyMap<number, number>,
+  maxSpan: number,
+): number {
+  if (!Number.isFinite(maxSpan) || count <= 1) return count;
+  let admitted = 0;
+  let minSlot = Infinity;
+  let maxSlot = -Infinity;
+  for (let i = 0; i < count; i++) {
+    const slot = slotOf.get(globals[start + i] as number);
+    if (slot === undefined) {
+      admitted++;
+      continue;
+    }
+    const nextMin = Math.min(minSlot, slot);
+    const nextMax = Math.max(maxSlot, slot);
+    if (admitted > 0 && nextMax - nextMin >= maxSpan) break;
+    minSlot = nextMin;
+    maxSlot = nextMax;
+    admitted++;
+  }
+  return admitted;
 }
 
 export class FrontierPager {
@@ -260,7 +324,7 @@ export class FrontierPager {
    * the one being asked for; any new {@link update}, {@link resize} or
    * {@link clear} discards it.
    */
-  drain(maxAppends: number): PagerPlan {
+  drain(maxAppends: number, maxWrites = Infinity, maxMoveSlotSpan = Infinity): PagerPlan {
     const prevCount = this.count;
     const moves: PagerMove[] = [];
     const remainingNew = this.queuedNewcomers.length - this.queuedNewcomerIndex;
@@ -276,16 +340,30 @@ export class FrontierPager {
     const remainingTailStale = Math.max(0, this.queuedTailStaleCount - this.queuedStaleIndex);
     const remainingPrefixStale = remainingStale - remainingTailStale;
     const seatable = headroom + (this.queuedPublish ? remainingStale : remainingTailStale);
-    const admitted = Math.min(remainingNew - dropped, maxAppends, seatable);
+    let admitted = admittedWithinWriteBudget(
+      remainingNew - dropped,
+      seatable,
+      headroom,
+      maxAppends,
+      maxWrites,
+    );
     const remainingNewAfter = remainingNew - dropped - admitted;
-    const evictCount = this.evictBudget(
+    const wantedEvictions = this.evictBudget(
       admitted,
       remainingNewAfter,
       remainingTailStale,
       remainingPrefixStale,
       this.queuedPublish,
-      maxAppends,
+      Math.min(maxAppends, evictionsWithinWriteBudget(admitted, maxWrites)),
     );
+    const evictCount = evictionsWithinSlotSpan(
+      this.queuedStale,
+      this.queuedStaleIndex,
+      wantedEvictions,
+      this.slotOf,
+      maxMoveSlotSpan,
+    );
+    admitted = Math.min(admitted, headroom + evictCount);
 
     for (let k = 0; k < evictCount; k++) {
       this.evictGlobal(this.queuedStale[this.queuedStaleIndex + k] as number, moves);
@@ -430,6 +508,8 @@ export class FrontierPager {
     //    caller did not write.
     let truncated = false;
     const maxAppends = options?.maxAppends ?? Infinity;
+    const maxWrites = options?.maxWrites ?? Infinity;
+    const maxMoveSlotSpan = options?.maxMoveSlotSpan ?? Infinity;
     this.queuedPublish = options?.publish ?? true;
     if (Number.isFinite(maxAppends)) {
       const newcomers: number[] = [];
@@ -445,22 +525,36 @@ export class FrontierPager {
       const headroom = this.capacity - this.count;
       const staleCount = tailStale.length + prefixStale.length;
       const seatable = headroom + (this.queuedPublish ? staleCount : tailStale.length);
-      const admitted = Math.min(newcomers.length, maxAppends, seatable);
+      let admitted = admittedWithinWriteBudget(
+        newcomers.length,
+        seatable,
+        headroom,
+        maxAppends,
+        maxWrites,
+      );
       const remainingNewAfter = newcomers.length - admitted;
-      const evictCount = this.evictBudget(
+      const wantedEvictions = this.evictBudget(
         admitted,
         remainingNewAfter,
         tailStale.length,
         prefixStale.length,
         this.queuedPublish,
-        maxAppends,
+        Math.min(maxAppends, evictionsWithinWriteBudget(admitted, maxWrites)),
       );
+      const evictOrder = [...tailStale, ...prefixStale];
+      const evictCount = evictionsWithinSlotSpan(
+        evictOrder,
+        0,
+        wantedEvictions,
+        this.slotOf,
+        maxMoveSlotSpan,
+      );
+      admitted = Math.min(admitted, headroom + evictCount);
       const staleToRetire = this.queuedPublish ? staleCount : tailStale.length;
       truncated = admitted < newcomers.length || evictCount < staleToRetire;
       const holdingPublishedPrefix = !this.queuedPublish && prefixStale.length > 0;
       if (truncated || holdingPublishedPrefix) {
         // Evict tail stale first so hold never swap-removes into the drawn prefix.
-        const evictOrder = [...tailStale, ...prefixStale];
         const keep = new Set<number>();
         for (let i = evictCount; i < evictOrder.length; i++) keep.add(evictOrder[i] as number);
         for (const g of desiredSet) if (this.slotOf.has(g)) keep.add(g);
