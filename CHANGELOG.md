@@ -25,7 +25,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   lanes, preventing empty groups from clearing group zero's masks during sparse
   loading. This fixes duplicate splat indices and the Temple LCC2 demo's loading
   spots/streaks in both `radix` and `exact` modes; streaming GPU regressions cover
-  first sorts, growing counts, and removals.
+  first sorts, growing counts, and removals. The probe copies `splatIndex` after
+  the draw that consumes it; Chromium Linux SwiftShader still drops Dawn on that
+  GPUBuffer readback, so the case stays an expected failure there.
 - GPU counting sort keeps the pool's allocated depth resolution during loading,
   preventing coarse LCC2 coverage from turning spotty or glittering before finer
   tiles arrive. No additional histogram memory is allocated; sparse streaming
