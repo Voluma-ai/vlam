@@ -30,7 +30,6 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   preventing coarse LCC2 coverage from turning spotty or glittering before finer
   tiles arrive. No additional histogram memory is allocated; sparse streaming
   frames perform the full allocated scan instead of reducing its precision.
-
 - The isolated scene-memory harness now serves its loader module workers with
   the required embedder policy, frames oriented captures from world-space
   bounds, accepts reproducible fixed cameras, and waits for a substantial,
