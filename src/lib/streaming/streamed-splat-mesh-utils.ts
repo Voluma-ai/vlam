@@ -209,7 +209,7 @@ export function compareClassicSwapGroups(a: SwapGroup, b: SwapGroup): number {
 
 /** One classic-path chunk want, ranked before {@link StreamedSplatMesh} issues it. */
 export type ClassicFetchPhase =
-  'environment' | 'finest-target' | 'coverage' | 'target' | 'background';
+  'environment' | 'missing-coverage' | 'finest-target' | 'coverage' | 'target' | 'background';
 
 export interface ClassicFetchWant {
   /** Cross-mesh scheduler kind derived from {@link phase}. */
@@ -251,6 +251,8 @@ function classicFetchPhaseRank(phase: ClassicFetchPhase): number {
   switch (phase) {
     case 'environment':
       return -1;
+    case 'missing-coverage':
+      return -0.5;
     case 'finest-target':
       return 0;
     case 'coverage':
@@ -503,6 +505,7 @@ export function compareClassicFetches(
   const envB = b.phase === 'environment' ? 0 : 1;
   return (
     envA - envB ||
+    Number(b.phase === 'missing-coverage') - Number(a.phase === 'missing-coverage') ||
     classA - classB ||
     finestA - finestB ||
     screenA - screenB ||

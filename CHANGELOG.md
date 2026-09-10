@@ -21,6 +21,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- LCC2 and streamed SOG publish independent region swaps instead of entering
+  RAD's global quality gate, allowing distant coverage and lower-detail cuts
+  after navigation or budget changes. Missing LCC2 regions request pinned
+  coarse coverage before refinement; shared ancestors replace descendants
+  atomically with capacity checks and rebuilt swap groups. Physical iPhone
+  Safari validation remains pending.
+
 - Radix sorting initializes each workgroup's mask address before testing active
   lanes, preventing empty groups from clearing group zero's masks during sparse
   loading. This fixes duplicate splat indices and the Temple LCC2 demo's loading
