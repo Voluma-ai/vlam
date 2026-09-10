@@ -1,0 +1,86 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Streaming sort probe</title>
+<canvas id="canvas"></canvas>
+<pre id="result"></pre>
+<script type="module">
+  import * as THREE from 'three/webgpu';
+  import { createWebGPURenderer, SplatMesh } from '../lib/core';
+  const output = document.querySelector('#result');
+  try {
+    const renderer = await createWebGPURenderer({
+      canvas: document.querySelector('canvas'),
+      requireWebGpu: true,
+      antialias: false,
+    });
+    renderer.setSize(4, 4, false);
+    await renderer.init();
+    const strategy = new URLSearchParams(location.search).get('sort') ?? 'counting';
+    const mesh = new SplatMesh({ capacity: 500000 }, { sortIntervalMs: 0 });
+    await mesh.setSortStrategy(strategy);
+    const scene = new THREE.Scene();
+    scene.add(mesh);
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
+    let serial = 0;
+    function data(count) {
+      const positions = new Float32Array(count * 3),
+        colors = new Uint8Array(count * 4),
+        covariances = new Float32Array(count * 6);
+      for (let i = 0; i < count; i++) {
+        positions[i * 3] = 100;
+        positions[i * 3 + 2] = -1 - ((serial++ * 7919) % 100000) / 100;
+        colors[i * 4 + 3] = 255;
+        covariances[i * 6] = covariances[i * 6 + 3] = covariances[i * 6 + 5] = 0.001;
+      }
+      return { count, positions, colors, covariances };
+    }
+    const reports = [];
+    const handles = [];
+    // Start below the old 65,536-bucket threshold, then grow and leave a hole.
+    // Depths are 0.01 apart: the allocated histogram resolves them, while the
+    // former active-count histogram collapses adjacent depths on the first sort.
+    for (let step = 0; step < 6; step++) {
+      if (step === 4) mesh.removeRange(handles[1]);
+      handles.push(mesh.appendRange(data(63017 + step * 111)));
+      mesh.update(camera, renderer);
+      const before = new Float32Array(
+        await renderer.getArrayBufferAsync(mesh.geometry.getAttribute('splatIndex')),
+      );
+      renderer.render(scene, camera);
+      const order = new Float32Array(
+        await renderer.getArrayBufferAsync(mesh.geometry.getAttribute('splatIndex')),
+      );
+      const count = mesh.activeCount,
+        source = mesh.sourceIndexAttribute.array;
+      const active = new Set(source.slice(0, count)),
+        seen = new Set();
+      let invalid = 0,
+        duplicates = 0,
+        inversions = 0,
+        last = -Infinity;
+      for (let i = 0; i < count; i++) {
+        const slot = order[i];
+        if (!active.has(slot)) invalid++;
+        if (seen.has(slot)) duplicates++;
+        seen.add(slot);
+        const z = mesh.backing.centers[slot * 4 + 2];
+        if (z < last - (strategy === 'counting' ? 0.005 : 0.001)) inversions++;
+        last = z;
+      }
+      reports.push({
+        step,
+        count,
+        invalid,
+        duplicates,
+        inversions,
+        beforeDuplicates: count - new Set(before.slice(0, count)).size,
+        changed: order.slice(0, count).filter((v, i) => v !== before[i]).length,
+      });
+    }
+    output.textContent = JSON.stringify(reports);
+    mesh.dispose();
+    renderer.dispose();
+  } catch (error) {
+    output.textContent = String(error.stack ?? error);
+  }
+</script>

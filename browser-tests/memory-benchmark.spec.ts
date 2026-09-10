@@ -50,6 +50,33 @@ test('records and disposes a static scene memory run', async ({ page }, testInfo
   });
 });
 
+test('loads a real scene through the isolated loader worker', async ({ page }, testInfo) => {
+  const backend = testInfo.project.name === 'chromium-webgpu' ? 'webgpu' : 'webgl';
+  await page.goto(
+    `/src/viewer/memory-benchmark.html?scene=/goose.sog&backend=${backend}&uaMemory=0&position=0,0,1.5&target=0,0,0`,
+  );
+
+  const report = (await waitForBenchmarkReport(page)) as {
+    configuration: {
+      sourceFormat: string;
+      cameraPosition: [number, number, number];
+      cameraTarget: [number, number, number];
+    };
+    scene: { activeSplats: number; settleTimedOut: boolean };
+    measured: { checkpoints: { phase: string; activeSplats: number }[] };
+  };
+
+  expect(report.configuration.sourceFormat).toBe('sog');
+  expect(report.configuration.cameraPosition).toEqual([0, 0, 1.5]);
+  expect(report.configuration.cameraTarget).toEqual([0, 0, 0]);
+  expect(report.scene.activeSplats).toBe(149_120);
+  expect(report.scene.settleTimedOut).toBe(false);
+  expect(report.measured.checkpoints.at(-1)).toMatchObject({
+    phase: 'after-dispose',
+    activeSplats: 0,
+  });
+});
+
 test('releases render-only CPU scene storage on WebGPU', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'chromium-webgpu', 'render-only storage requires WebGPU');
   const runtimePlatform = await page.evaluate(() => navigator.platform);

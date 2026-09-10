@@ -86,6 +86,16 @@ function numberParam(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function vectorParam(name: string): [number, number, number] | undefined {
+  const raw = params.get(name);
+  if (raw === null) return undefined;
+  const values = raw.split(',').map(Number);
+  if (values.length !== 3 || values.some((value) => !Number.isFinite(value))) {
+    throw new Error(`${name} must be three comma-separated finite numbers.`);
+  }
+  return values as [number, number, number];
+}
+
 function shBandsParam(): 0 | 1 | 2 | 3 | undefined {
   const value = params.get('sh');
   return value === '0' || value === '1' || value === '2' || value === '3'
@@ -184,8 +194,20 @@ async function checkpoint(phase: string, mesh: SplatMesh | null): Promise<Memory
   };
 }
 
-function frameCamera(mesh: SplatMesh, camera: THREE.PerspectiveCamera): void {
-  const bounds = mesh.computeSplatBounds();
+function frameCamera(
+  mesh: SplatMesh,
+  camera: THREE.PerspectiveCamera,
+  position?: [number, number, number],
+  target?: [number, number, number],
+): void {
+  if (position && target) {
+    camera.position.fromArray(position);
+    camera.lookAt(new THREE.Vector3().fromArray(target));
+    camera.updateMatrixWorld();
+    return;
+  }
+  mesh.updateWorldMatrix(true, false);
+  const bounds = mesh.computeSplatBounds().applyMatrix4(mesh.matrixWorld);
   const center = bounds.getCenter(new THREE.Vector3());
   const radius = Math.max(bounds.getSize(new THREE.Vector3()).length() * 0.5, 0.1);
   camera.position.set(center.x, center.y, center.z + radius * 2.5);
@@ -200,13 +222,36 @@ async function renderUntilSettled(
   renderer: THREE.WebGPURenderer,
 ): Promise<{ frames: number; timedOut: boolean }> {
   const timeoutAt = performance.now() + numberParam('settleSeconds', 30) * 1000;
+  const streamed = mesh instanceof StreamedSplatMesh;
+  const expectedActive = streamed
+    ? Math.min(
+        Math.floor(numberParam('settleMinActive', 1)),
+        mesh.contentSplatCount ?? Number.POSITIVE_INFINITY,
+      )
+    : 0;
   let frames = 0;
+  let stableFrames = 0;
+  let previousActive = -1;
+  let previousCacheBytes = -1;
   do {
     mesh.update(camera, renderer);
     renderer.render(scene, camera);
     frames++;
-    if (!(mesh instanceof StreamedSplatMesh) || (!mesh.isStreaming && frames >= 2)) {
+    if (!streamed && frames >= 2) {
       return { frames, timedOut: false };
+    }
+    if (streamed) {
+      const active = mesh.activeSplatCount;
+      const cacheBytes = mesh.fetchCounts.cacheBytes;
+      const stable =
+        !mesh.isStreaming &&
+        active >= expectedActive &&
+        active === previousActive &&
+        cacheBytes === previousCacheBytes;
+      stableFrames = stable ? stableFrames + 1 : 0;
+      previousActive = active;
+      previousCacheBytes = cacheBytes;
+      if (stableFrames >= 10) return { frames, timedOut: false };
     }
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   } while (performance.now() < timeoutAt);
@@ -224,6 +269,11 @@ function downloadJson(report: unknown): void {
 
 async function runBenchmark(source: { url: string } | { file: File }): Promise<void> {
   if (sampleTimer !== undefined) throw new Error('A memory benchmark is already running.');
+  const cameraPosition = vectorParam('position');
+  const cameraTarget = vectorParam('target');
+  if (Boolean(cameraPosition) !== Boolean(cameraTarget)) {
+    throw new Error('Supply both position and target.');
+  }
   status.textContent = 'Initializing renderer…';
   result.textContent = '';
   download.disabled = true;
@@ -302,7 +352,7 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
     const loadMs = performance.now() - loadStartedAt;
     checkpoints.push(await checkpoint('after-mesh-construction', mesh));
     scene.add(mesh);
-    frameCamera(mesh, camera);
+    frameCamera(mesh, camera, cameraPosition, cameraTarget);
     samplePhase = 'first-render';
     status.textContent = 'Uploading and settling scene…';
     // The benchmark tears its renderer down immediately after reporting. Use
@@ -312,7 +362,6 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
     await renderer.compileAsync(scene, camera);
     const settle = await renderUntilSettled(mesh, scene, camera, renderer);
     checkpoints.push(await checkpoint('after-first-settle', mesh));
-
     // Static caller-owned SplatData is released here. The earlier checkpoint
     // records the retained-input case; the next one isolates the mesh itself.
     retainedDecoded.data = null;
@@ -379,11 +428,14 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
         storageMode,
         requestedSort,
         requestedShBands: requestedShBands ?? 'source',
+        cameraPosition: cameraPosition ?? 'framed',
+        cameraTarget: cameraTarget ?? 'framed',
         budget: kind === 'streamed' ? Math.floor(numberParam('budget', 1_000_000)) : null,
         maxBudget:
           kind === 'streamed'
             ? Math.floor(numberParam('maxBudget', numberParam('budget', 1_000_000)))
             : null,
+        settleMinActive: kind === 'streamed' ? Math.floor(numberParam('settleMinActive', 1)) : null,
       },
       scene: {
         loadMs,

@@ -42,6 +42,16 @@ function memoryBenchmarkIsolation(): Plugin {
           res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
           res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
         }
+        // An isolated document's module worker needs its own embedder policy;
+        // without it Chromium blocks the response before the loader can report
+        // a format-specific error. These are the only workers the harness may
+        // construct, and the header is inert for non-isolated viewer pages.
+        if (
+          pathname === '/src/lib/loaders/load-worker.ts' ||
+          pathname === '/src/lib/loaders/one-shot-worker.ts'
+        ) {
+          res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+        }
         next();
       });
     },

@@ -82,7 +82,7 @@ describe('ComputeSorter', () => {
 
   it('dispatches only the buckets a small scene can reach', () => {
     sorter = makeSorter();
-    // 17 splats round up to 32 buckets, which the floor lifts to 2¹⁶.
+    // The small pool allocation stays at the 2¹⁶ bucket floor.
     sorter.sort(new THREE.Matrix4(), 17, new THREE.Sphere(new THREE.Vector3(), 1));
 
     const internals = internalsOf(sorter);
@@ -108,8 +108,7 @@ describe('ComputeSorter', () => {
 
     expect(internals.histogramBucketCount).toBe(expectedBuckets);
     expect(internals.workingAttributes[0]!.array).toHaveLength(expectedBuckets);
-    // The histogram-consuming passes are built for the pool allocation; sort()
-    // later narrows only their dispatch counts to the active resident set.
+    // Histogram passes keep the pool's depth resolution throughout streaming.
     expect(internals.clearPass.count).toBe(expectedBuckets);
     expect(internals.scanBlocksPass.count).toBe(expectedBuckets / BLOCK_SIZE);
     expect(internals.addOffsetsPass.count).toBe(expectedBuckets);
@@ -117,7 +116,7 @@ describe('ComputeSorter', () => {
     candidate.dispose();
   });
 
-  it('grows and shrinks the bucket range without reallocating the histogram', () => {
+  it('preserves depth resolution as the active cover grows and shrinks', () => {
     const capacity = MIN_BUCKETS * 2;
     sorter = makeSorter(vi.fn(), capacity);
     const internals = internalsOf(sorter);
@@ -126,9 +125,9 @@ describe('ComputeSorter', () => {
     const histogramArray = histogram!.array;
 
     for (const [activeCount, buckets] of [
-      [17, MIN_BUCKETS],
+      [17, MIN_BUCKETS * 2],
       [70_000, MIN_BUCKETS * 2],
-      [17, MIN_BUCKETS],
+      [17, MIN_BUCKETS * 2],
     ] as const) {
       sorter.sort(new THREE.Matrix4(), activeCount, bounds);
 
