@@ -4,6 +4,7 @@ import {
   capProjectedEigenvaluesToScreenRadius,
   equalizeProjectedEigenvalues,
   isSplatFootprintInFrustum,
+  isSplatContributionVisible,
   projectSplatCovariance,
   filterSplatCovariance,
   projectedSplatEigenvalues,
@@ -64,6 +65,10 @@ export function createWorkBufferMaterial(options: {
   /** Core projected-2D DoF focus plane. Live; `0` aperture disables. */
   dofFocusDistance: FloatUniform;
   dofAperture: FloatUniform;
+  /** SuperSplat-style on-screen diameter cull in px; `0` disables. */
+  minPixelSize?: number;
+  /** SuperSplat-style opacity × major × minor cull; `0` disables. */
+  minContribution?: number;
   /** Optional display-only RGB transform; omitted adds no fragment work. */
   displayColorModifier?: DisplayColorModifier | null;
 }): THREE.NodeMaterial {
@@ -194,7 +199,17 @@ export function createWorkBufferMaterial(options: {
     // Modifier-hidden / zero-opacity entries (displayOpacity=0) share the
     // clipped destination so they generate no fragments while keeping a stable sort slot.
     const inFrustum = isSplatFootprintInFrustum(clipCenter, options.viewport, major, minor);
-    return inFrustum.and(drawable).select(clipPosition, vec4(0, 0, 2, 1));
+    const contributionVisible = isSplatContributionVisible(
+      colors.element(workIndex).a,
+      major,
+      minor,
+      options.minPixelSize ?? 0,
+      options.minContribution ?? 0,
+    );
+    return inFrustum
+      .and(drawable)
+      .and(contributionVisible)
+      .select(clipPosition, vec4(0, 0, 2, 1));
   })();
   material.fragmentNode = Fn(() => {
     const squaredDistance = quadPosition.dot(quadPosition);

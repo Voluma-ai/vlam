@@ -32,6 +32,8 @@ Open these paths on the dev server printed by the last command:
 /vlam-benchmark.html?preset=reference&mode=stationary&backend=webgl
 /spark-benchmark.html?scene=hotel&mode=orbit
 /vlam-benchmark.html?scene=hotel&mode=orbit
+/vlam-benchmark.html?scene=Kauz-sh2&preset=reference&mode=orbit
+/playcanvas-benchmark.html?scene=Kauz-sh2&preset=reference&mode=orbit
 /vlam-benchmark.html?scene=Langenthal-Manola4A&preset=reference&mode=orbit&projectionStrategy=compute&sortIntervalMs=0&visibilityPose=interior
 /playcanvas-benchmark.html?scene=Langenthal-Manola4A&preset=reference&mode=orbit&visibilityPose=interior
 ```
@@ -41,9 +43,10 @@ hotel-core Spark `.rad` once to the ignored `.tmp/benchmark-assets/` directory
 and records SHA-256, byte size, splat count, SH bands and canonical camera in
 a JSON manifest. Both viewers fetch that same local copy so tile URLs and
 `.rad` byte ranges resolve without remote CORS. It also prepares the
-repository's small `goose.sog` fixture (`?scene=goose`) and the local
+repository's small `goose.sog` fixture (`?scene=goose`), the 1,827,467-splat
+SH2 `Kauz_sh2.crop.sog` capture (`?scene=Kauz-sh2`), and the local
 8,724,225-splat SH3 `Langenthal-Manola4A.sog` capture
-(`?scene=Langenthal-Manola4A`) when that file is already cached or reachable
+(`?scene=Langenthal-Manola4A`) when those files are already cached or reachable
 from `assets.voluma.ai`.
 Re-running the command verifies/recreates metadata from the cached bytes;
 it does not silently replace the capture with a newer remote asset.
@@ -64,19 +67,27 @@ whole. Goose and hotel both get a 180° X rotation. For other views, set both
 `position=x,y,z` and `target=x,y,z` in world coordinates. The page's renderer
 links preserve the resolved camera, so a pose can be shared exactly.
 The standalone harness normally uses a 45° vertical field of view and near/far
-0.01/10000. `preset=supplied` uses the supplied application's 60° and
+0.01/10000. Kauz is a non-streamed, 1,827,467-splat SH2 spatial crop, framed
+from its SOG bounds like goose. `preset=supplied` uses the supplied application's 60° and
 0.01/500 camera plus renderer MSAA. All configurations use a black background,
 fixed drawing buffer, pixel ratio 1 and no tone mapping.
 Canvas CSS can shrink the displayed image without changing GPU resolution.
+
+Kauz is the intermediate static-format corpus entry: the uploaded SOG is
+downloaded from `https://assets.voluma.ai/jack/v/Kauz_sh2.crop.sog`, and its
+manifest pins the 1,827,467-splat SH2 bytes, SHA-256, and two visually inspected
+aerial poses. It is evaluated first as an explicit vertex/compute comparison;
+the conservative automatic rule remains vertex until repeated measurements
+justify a lower threshold.
 
 ### Presets and controls
 
 | Parameter | Default | Purpose |
 | --- | --- | --- |
 | `preset` | `proposed` | `supplied`, `proposed`, `controlled`, or `reference`; legacy `defaults` and `matched` remain accepted |
-| `mode` | `stationary` | `stationary`, `orbit`, position-preserving `rotate`, `translate`, or five seconds of orbit then `settle` |
+| `mode` | `stationary` | `stationary`, `orbit`, position-preserving `rotate`, `translate`, or five seconds of orbit in warm-up then `settle` |
 | `shEvaluation` | `auto` | VLAM SH evaluation: `vertex` or generated final `compute`; `auto` selects the latter on identified Apple Silicon Macs and alongside a qualifying automatic compute-projection choice |
-| `scene` | `Tempel` | Cached `.lcc2` capture, `goose`, streamed `hotel` (`.rad`), or `Langenthal-Manola4A` |
+| `scene` | `Tempel` | Cached `.lcc2` capture, `goose`, `Kauz-sh2`, streamed `hotel` (`.rad`), or `Langenthal-Manola4A` |
 | `width`, `height` | `1280`, `720` | Drawing-buffer pixels, at pixel ratio 1 |
 | `warmup`, `seconds` | `5`, `30` | Warm-up and measured seconds after initial load/sort |
 | `sh=0..3` | source | Benchmark-only SH band cap; `0` is the suite's disabled diagnostic |
@@ -109,6 +120,8 @@ The four named configurations are deliberately separate:
 `defaults` remains the old native-default comparison and `matched` is an alias
 for the old 3σ/depth `reference` behavior so saved links continue to work.
 Spark's global `enableLod` alone does not mean the source has an LOD tree.
+`mode=settle` extends a shorter requested warm-up to five seconds, so its
+timed sample begins only after the fixed orbit completes.
 
 These are aligned visual settings, not identical implementations. Spark retains
 packed attributes, its native alpha/frustum/radius thresholds and asynchronous
@@ -272,8 +285,9 @@ RGBA8 SH cache only for the measured cohort: a static, own-pool, unmodified,
 mono WebGPU mesh with counting sort, at least 8M SH splats, PlayCanvas-style
 2 px / 3 contribution culls, the measured NVIDIA Ampere adapter class, and an
 estimated peak projection-plus-cache allocation within 1 GiB. The estimate
-includes temporary projection mirrors and 2048-wide SH-cache row padding; the
-budget is a conservative application cap, not a claim about available VRAM.
+includes temporary projection mirrors, the dense projected-sorter's histogram
+and bucket-buffer mirrors, and 2048-wide SH-cache row padding; the budget is a
+conservative application cap, not a claim about available VRAM.
 Hosts can tighten or disable this path with
 `projectionMemoryBudgetBytes` (set `0` to force the automatic decision to
 vertex) while explicit `projectionStrategy: 'compute'` remains an override.
@@ -289,9 +303,149 @@ material rebuilds. `performanceProfile: 'quality'` or
 `projectionStrategy: 'vertex'` is the full-detail escape hatch.
 
 The automatic rule is intentionally narrower than the acceptance target. The
-only qualifying device/capture remains Langenthal-Manola4A on RTX 3090; a
-1–2M whole-file SH corpus and a second GPU class are still required before the
-threshold is broadened.
+Kauz SH2 result now covers the 1–2M whole-file band, but its incompatible
+median and tail outcomes do not broaden eligibility. A second GPU class is
+still required before the threshold is broadened.
+
+#### Default automatic-policy retest (Linux/RTX 3090, 2026-09-13)
+
+Native Chromium 152 on an NVIDIA GeForce RTX 3090 ran five alternating
+PlayCanvas/VLAM repetitions for each fixed Langenthal-Manola4A pose. Every run
+used the identical 8,724,225-splat SH3 SOG, 1280×720 viewport, WebGPU timestamp
+queries, five seconds of warm-up, and twenty seconds of sampling. Both engines
+used their default 2 px / 3 contribution thresholds; VLAM used its ordinary
+`balanced` + `projectionStrategy: 'auto'` defaults. Pooled percentiles below
+are calculated from the raw timestamp samples, rather than from rounded
+per-run summaries. PlayCanvas resolved every submitted timing sample with no
+rejections; all fixed captures in both engines were nonblank.
+
+| Pose | VLAM effective path | VLAM GPU median / p95 | PlayCanvas GPU median / p95 | VLAM / PlayCanvas frame p95 | Result |
+| --- | --- | ---: | ---: | ---: | --- |
+| Interior | auto → compute | 5.07 / 5.19 ms | 5.82 / 7.32 ms | 16.8 / 19.0 ms | Within the 10% / 15% GPU and frame bound |
+| Overview | auto → compute | 3.62 / 5.93 ms | 5.79 / 6.50 ms | 20.0 / 19.4 ms | Within the bound; one paired run had slower browser callback pacing |
+
+VLAM kept its one-time `auto-large-static-discrete-sh` decision for every
+repetition. Its final projected-list counts were 935,868 (interior) and
+1,395,561 (overview); the PlayCanvas adapter currently records source count,
+not its post-cull survivor count, so those figures are not directly comparable.
+The revised estimate was 505,413,924 B steady GPU and 1,010,827,848 B peak
+CPU+GPU, including projected-sorter scratch and first-upload mirrors. This is
+evidence for the single static desktop cohort only: nonblank fixed captures do
+not prove pixel equivalence, and the repeated motion, cull-free, smaller-scene,
+streaming, native-format, and second-GPU gates remain open. Local raw archives
+are labelled `auto-parity-interior-rerun-2026-09-13` and
+`auto-parity-overview-2026-09-13`.
+
+#### Visible-list SH-cache refresh (Linux/RTX 3090, 2026-09-13)
+
+The earlier overview-orbit default-policy retest found the remaining measured
+miss: VLAM paired GPU p95 was 14.07 ms against PlayCanvas's 9.95 ms. Its raster
+p95 was only 2.14 ms; the periodic full-pool SH-cache refresh was 12.34 ms
+p95. A diagnostic with SH disabled held the same projection/sort path to 3.88
+ms compute p95, identifying cache refresh granularity rather than
+rasterization or the projected sorter as the bottleneck.
+
+The cache now evaluates the projector's GPU-written dense survivor list with
+its indirect workgroup count on camera/view refreshes. It retains a full
+pool-indexed pass for initial, content, and graph invalidations, so a splat is
+initialized before it can enter a later view. This adds no persistent buffer:
+the list and indirect arguments already belong to the projected pipeline.
+
+Five fresh alternating repetitions per engine used the same ordinary default
+protocol as above, now in `mode=orbit`. All fixed captures were nonblank;
+PlayCanvas resolved every submitted GPU timing with no rejections. The native
+hardware probe separately compares cached and vertex-SH pixels through camera
+changes. Pooled raw GPU timestamps show:
+
+| Pose | VLAM paired GPU median / p95 | PlayCanvas GPU median / p95 | VLAM / PlayCanvas frame p95 | Result |
+| --- | ---: | ---: | ---: | --- |
+| Interior | 5.20 / 6.81 ms | 5.66 / 10.86 ms | 22.20 / 20.64 ms | Within the GPU and frame bounds |
+| Overview | 5.35 / 7.80 ms | 5.55 / 9.90 ms | 22.00 / 20.50 ms | Within the GPU and frame bounds |
+
+The updated overview compute p95 is 5.75 ms (12.34 ms before the change); its
+paired p95 is consequently below the reference rather than 41% above it.
+Each VLAM run performed 113–117 visible-list cache refreshes during sampling.
+The 18 ms callback cadence in these foreground desktop runs is a browser
+pacing caveat shared by both engines, which is why the GPU timestamp samples,
+not FPS, decide the gate. Raw archives are labelled
+`auto-parity-orbit-interior-visible-cache-2026-09-13` and
+`auto-parity-orbit-overview-visible-cache-2026-09-13`.
+
+#### Small static fallback check (Linux/RTX 3090, 2026-09-13)
+
+Goose is a 149,120-splat SH0 whole-file SOG, so it is deliberately outside the
+large-SH compute cohort. Five **order-balanced** default stationary repetitions
+(the first engine alternated between repetitions) confirmed the locked
+`auto-small-static-scene` vertex decision rather than allocating a projected
+list and cache. Pooled GPU timestamps were VLAM 0.87 ms median / 1.11 ms p95
+against PlayCanvas 1.01 ms / 1.40 ms p95; frame p95 was 16.8 ms for both
+engines. Every fixed capture was nonblank and PlayCanvas resolved every
+submitted timing sample.
+
+An earlier one-sided execution order produced 18–19 ms callback pacing and is
+superseded by this order-balanced result. Goose therefore passes the measured
+small-scene fallback gate, but it remains a single SH0 scene and is not evidence
+for broadening the large-SH automatic compute cohort. Raw archives are labelled
+`auto-parity-goose-stationary-order-balanced-2026-09-13`.
+
+#### Intermediate static SH2 check — Kauz (Linux/RTX 3090, 2026-09-13)
+
+[`Kauz_sh2.crop.sog`](https://assets.voluma.ai/jack/v/Kauz_sh2.crop.sog) is
+an unrelated, 1,827,467-splat, palette-SH2 whole-file SOG. The cache command
+pins SHA-256 `0350f6d9d04a9eb1d111dae979543d35226e0a7bee9d5b14d69d866ddbe3408c`
+and two visually inspected aerial poses: a closer house/field view and an
+elevated overview. Five alternating PlayCanvas/VLAM repetitions per pose used
+1280×720, ordinary 2 px / 3 contribution culls, five seconds of warm-up, and
+twenty seconds of orbit sampling. VLAM used explicit compute projection plus
+the SH cache; PlayCanvas resolved every submitted timestamp with no rejection.
+All fixed captures were nonblank.
+
+| Pose | VLAM visible count / ratio | VLAM paired GPU median / p95 | PlayCanvas GPU median / p95 | VLAM / PlayCanvas frame p95 | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| House / field | 554,929 / 30.4% | 4.33 / 4.96 ms | 3.67 / 6.14 ms | 16.8 / 16.8 ms | p95 and frame pass; median is 18.1% slower, so fails the 10% gate |
+| Elevated overview | 380,462 / 20.8% | 2.48 / 8.08 ms | 4.25 / 5.64 ms | 21.7 / 18.4 ms | Median wins 41.6%; compute p95 (+43.3%) and frame p95 (+17.9%) fail |
+
+The 110.9 MiB steady / 221.7 MiB first-upload projection allocation is within
+the policy budget. It does not qualify this cohort for `auto`: no single locked
+mode meets both the median and tail bound across its two poses. The current
+vertex fallback is therefore retained. An SH-disabled overview diagnostic still
+reported 8.39 ms paired p95 (6.29 ms compute p95), and a 33 ms SH-cache cadence
+experiment reported 7.95 ms paired p95; the remaining tail is projector/cull/
+counting-sort work, not SH-cache frequency. The sorter deliberately keeps at
+least one depth bucket per visible splat to avoid rendering-order popping, so
+that invariant was not weakened. Raw archives are labelled
+`kauz-sh2-interior-alternating-2026-09-13` and
+`kauz-sh2-overview-alternating-2026-09-13`.
+
+A follow-up 5-second-warm-up / 8-second overview pass profile on the same
+native adapter retained each resolved compute submission before grouping it by
+frame. The projector batch (reset, project, finalize) was 0.36 ms median /
+2.96 ms p95; histogram and scatter were 0.06 / 0.32 ms and 0.05 / 0.11 ms;
+the scan batch was 0.39 / 1.24 ms; and visible-list SH was 0.43 / 1.36 ms.
+The highest frames raised several of those batches together (for example,
+9.03 ms at one frame: 2.96 ms projector, 3.25 ms scans and 2.34 ms SH), so a
+visible-list atomic-compaction prototype was rejected rather than retained on
+a single attribution theory. Archive:
+`kauz-sh2-overview-pass-profile-smoke-2026-09-13`.
+
+#### Streaming automatic-fallback smoke (Linux/RTX 3090, 2026-09-13)
+
+One native 1280×720 interior-orbit run was taken for each locally cached
+streamed format after five seconds of warm-up and twenty seconds of sampling.
+Both preserve the conservative vertex path:
+
+| Scene / format | Auto result | Active-splat range | Paired GPU median / p95 | Frame p95 | Lifecycle result |
+| --- | --- | ---: | ---: | ---: | --- |
+| Tempel LCC2 | vertex / `auto-dynamic-or-shared-pool` | 2.91M–6.65M | 5.75 / 8.63 ms | 33.30 ms | Nonblank captures; no device errors; 206 timed sorts |
+| Hotel RAD | vertex / `auto-dynamic-or-shared-pool` | 0.47M–3.19M | 4.29 / 7.00 ms | 16.80 ms | Nonblank captures; no device errors; 504 timed sorts |
+
+Neither run allocated projected-list or SH-cache storage. These are lifecycle
+and fallback checks, not reference-parity results: the PlayCanvas adapter does
+not load LCC2/RAD and its whole-file GSplat path cannot represent the same
+streaming/LOD behavior. They therefore do not satisfy the repeated streaming
+performance or pixel-equivalence gates. Raw archives are labelled
+`streaming-temple-auto-orbit-2026-09-13` and
+`streaming-hotel-auto-orbit-2026-09-13`.
 
 #### Stationary projected-list reuse (Linux/RTX 3090, 2026-09-13)
 
@@ -308,19 +462,31 @@ for two camera changes followed by two identical updates. This confirms
 submission reuse, not a cross-scene performance claim; the broader repeated
 motion/corpus protocol remains outstanding.
 
+#### Move-to-settle timing correction (Linux/RTX 3090, 2026-09-13)
+
+The comparison harness previously subtracted warm-up time from all motion
+modes. That caused `mode=settle` to begin its five-second orbit at the first
+timed frame, despite the mode's intended move-then-static sample. It now runs
+that orbit from the first warm-up frame and extends a shorter requested warm-up
+to five seconds. A native Chromium 152/RTX 3090 Langenthal overview run with a
+six-second warm-up and twenty seconds of sampling recorded zero sampled SH and
+sort dispatches (and zero timestamped compute samples); the 34 camera/view
+refreshes occurred during warm-up. The capture was nonblank with no WebGPU
+errors. Archive: `auto-parity-overview-settle-six-second-warmup-2026-09-13`.
+
 `sortIntervalMs=0` still sorts and therefore refreshes SH every moved frame
 (~520–600 dispatches). Overview compute+cache paired GPU stays 19.75 ms with
 frame p95 33.40 ms, so the cache cannot pay for itself when the sort interval
 is zero. Goose paired GPU is vertex 1.82 ms, compute 2.20 ms, PlayCanvas
 1.99 ms; the 149k gate is unchanged because there is no SH to cache.
 
-The remaining PlayCanvas overview gap is not SH cadence: VLAM's counting
-sort is already cheaper than PlayCanvas scatter (~2.4 vs 3.1 ms), but the
-projector is still 52 B/slot (PlayCanvas 32 B) and rasterization is 7.00 vs
-3.72 ms at 99.9% visible. A later `projectionStrategy: 'auto'` should be a
-one-time first-prepare choice from capability, splat count and the 466 MiB
-combined budget, never a mid-session switch. An intermediate 1–2M whole-file
-SOG is still missing from this matrix.
+The cull-free, moving overview gap above remains the relevant all-visible
+stress finding: VLAM's counting sort is already cheaper than PlayCanvas scatter
+(~2.4 vs 3.1 ms), but the projector is still 52 B/slot (PlayCanvas 32 B) and
+rasterization is 7.00 vs 3.72 ms at 99.9% visible. The automatic rule is a
+one-time first-prepare choice for the validated balanced stationary cohort, not
+a claim to solve that stress case. Kauz now fills the intermediate 1–2M
+whole-file SOG slot in this matrix and isolates a separate projected-path tail.
 
 ```text
 /vlam-benchmark.html?scene=Langenthal-Manola4A&preset=reference&mode=orbit&width=1280&height=720&warmup=5&seconds=10&projectionStrategy=compute&shEvaluation=compute&visibilityPose=overview&gpuTimestamps=1
@@ -755,6 +921,9 @@ Read measurements separately:
   with warm-up and invalidated generations excluded. Idle stationary compute
   is unavailable, not a zero-duration sort. The r185 query-pool adapter checks
   frame identities to reject cached values and has attribution tests.
+  Raw `gpuRenderPasses` and `gpuComputePasses` retain the individual resolved
+  submissions as well, so a tail can be diagnosed without mistaking a grouped
+  total for one kernel.
 - **Spark GPU:** every eighth measured synchronous render call, using
   `EXT_disjoint_timer_query_webgl2`. This includes synchronous auto-update GPU
   work but excludes work deferred outside that call and CPU worker execution.

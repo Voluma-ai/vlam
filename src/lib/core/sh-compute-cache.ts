@@ -1,6 +1,17 @@
 /** Internal, opt-in SH preparation for standalone WebGPU meshes. */
 import * as THREE from 'three/webgpu';
-import { Fn, If, instanceIndex, int, ivec2, textureLoad, textureStore, vec4 } from 'three/tsl';
+import {
+  Fn,
+  If,
+  atomicLoad,
+  instanceIndex,
+  int,
+  ivec2,
+  storage,
+  textureLoad,
+  textureStore,
+  vec4,
+} from 'three/tsl';
 import {
   boolUniform,
   evaluateSplatSh,
@@ -17,6 +28,9 @@ export const SH_CACHE_SETTLE_MS = 150;
 export class ShComputeCache {
   readonly finalColor: THREE.Texture;
   readonly pass: THREE.ComputeNode;
+  /** Camera/view refresh over the projector's GPU-visible pool indices. */
+  private readonly visiblePass: THREE.ComputeNode | null;
+  private readonly visibleDispatchArgs: THREE.IndirectStorageBufferAttribute | null;
   readonly bytes: number;
   readonly enabled = boolUniform();
   private readonly cullToView = boolUniform();
@@ -40,6 +54,7 @@ export class ShComputeCache {
     motionFallbacks: 0,
     sortCadenceDeferrals: 0,
     viewCadenceRefreshes: 0,
+    visibleListRefreshes: 0,
     lastInvalidation: 'initial',
     phase: 'unprepared',
   };
@@ -54,6 +69,10 @@ export class ShComputeCache {
     localCameraPosition: Vec3Uniform;
     localViewProjection: THREE.UniformNode<'mat4', THREE.Matrix4>;
     frustumMargin: Vec2Uniform;
+    /** Projector output; absent on the established vertex-projection path. */
+    visibleIndices?: THREE.StorageBufferAttribute;
+    visibleCount?: THREE.StorageBufferAttribute;
+    visibleDispatchArgs?: THREE.IndirectStorageBufferAttribute;
   }) {
     this.bytes = options.capacity * SH_CACHE_BYTES_PER_SPLAT;
     this.localViewProjection = options.localViewProjection;
@@ -91,6 +110,42 @@ export class ShComputeCache {
       });
     })().compute(options.capacity, [256]);
     this.pass.name = 'vlam-sh-final-color';
+    this.visibleDispatchArgs = options.visibleDispatchArgs ?? null;
+    if (options.visibleIndices && options.visibleCount && this.visibleDispatchArgs) {
+      const visibleIndices = storage(options.visibleIndices, 'uint', options.capacity);
+      const visibleCount = storage(options.visibleCount, 'uint', 1).toAtomic();
+      const visiblePass = Fn(() => {
+        // The indirect dispatch rounds up to a workgroup. Keep the tail from
+        // indexing the dense list past the projector's GPU-written count.
+        If(instanceIndex.lessThan(atomicLoad(visibleCount.element(0))), () => {
+          const poolIndex = visibleIndices.element(instanceIndex);
+          const index = int(poolIndex);
+          const pixel = ivec2(
+            index.mod(int(options.dataTextureWidth)),
+            index.div(int(options.dataTextureWidth)),
+          );
+          const base = textureLoad(options.colorsTexture, pixel);
+          const center = textureLoad(options.centersTexture, pixel).xyz;
+          const rgb = evaluateSplatSh(
+            options.sh,
+            { covarianceBTexture: options.covarianceBTexture },
+            pixel,
+            center.sub(options.localCameraPosition).normalize(),
+          );
+          textureStore(output, pixel, vec4(base.rgb.add(rgb).clamp(0, 1), base.a));
+        });
+      })().compute(1, [256]);
+      // The public TSL typing accepts a scalar count, while the WebGPU backend
+      // also accepts an indirect dispatch attribute. Clear that scalar before
+      // first compilation so it does not inject a one-invocation early return;
+      // `renderer.compute(visiblePass, dispatchArgs)` supplies the dimensions.
+      visiblePass.count = null;
+      visiblePass.dispatchSize = [1, 1, 1];
+      this.visiblePass = visiblePass;
+      this.visiblePass.name = 'vlam-sh-final-color-visible';
+    } else {
+      this.visiblePass = null;
+    }
   }
 
   /** Source order is deliberately absent: a sort never changes pool-indexed colors. */
@@ -151,8 +206,19 @@ export class ShComputeCache {
       this.diagnostics.phase = 'cache-between-sorts';
       return 'cache-between-sorts';
     }
-    this.cullToView.value = reason === 'camera-or-view';
-    renderer.compute(this.pass);
+    // Projection has already compacted the exact draw survivors and written
+    // an indirect workgroup count. Refreshing only that list avoids walking a
+    // multi-million-slot SH texture for a small view. The full path remains
+    // mandatory for initial/content/graph refreshes, where every pool-indexed
+    // entry must become valid before it can first enter the view.
+    const refreshVisibleList = reason === 'camera-or-view' && this.visiblePass !== null;
+    this.cullToView.value = reason === 'camera-or-view' && !refreshVisibleList;
+    if (refreshVisibleList) {
+      renderer.compute(this.visiblePass, this.visibleDispatchArgs!);
+      this.diagnostics.visibleListRefreshes++;
+    } else {
+      renderer.compute(this.pass);
+    }
     if (reason === 'camera-or-view' && !refreshForSort) {
       this.diagnostics.viewCadenceRefreshes++;
     }
@@ -192,6 +258,7 @@ export class ShComputeCache {
     this.disposed = true;
     void renderer;
     this.pass.dispose();
+    this.visiblePass?.dispose();
     this.finalColor.dispose();
   }
 }

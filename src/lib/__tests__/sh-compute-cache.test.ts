@@ -229,6 +229,38 @@ describe('pool-indexed SH compute cache', () => {
     cache.dispose(r);
     texture.dispose();
   });
+
+  it('refreshes the GPU-projected survivors through their indirect dispatch', () => {
+    const gpu = renderer();
+    const r = gpu as unknown as THREE.WebGPURenderer;
+    const texture = new THREE.DataTexture(new Float32Array(4), 1, 1);
+    const visibleIndices = new THREE.StorageBufferAttribute(new Uint32Array(8), 1);
+    const visibleCount = new THREE.StorageBufferAttribute(new Uint32Array([3]), 1);
+    const dispatchArgs = new THREE.IndirectStorageBufferAttribute(new Uint32Array([1, 1, 1]), 1);
+    const cache = new ShComputeCache({
+      capacity: 8,
+      centersTexture: texture,
+      colorsTexture: texture,
+      covarianceBTexture: texture,
+      dataTextureWidth: 1,
+      sh: { mode: 'palette', bands: 1, paletteTexture: texture },
+      localCameraPosition: uniform(new THREE.Vector3()),
+      localViewProjection: uniform(new THREE.Matrix4()),
+      frustumMargin: uniform(new THREE.Vector2(3, 3)),
+      visibleIndices,
+      visibleCount,
+      visibleDispatchArgs: dispatchArgs,
+    });
+    const camera = new THREE.Vector3(0, 0, 3);
+    cache.prepare(r, 8, camera, 0, 0, 0);
+    cache.prepare(r, 8, camera.set(1, 0, 3), 0, 0, 1, false, true, true);
+    expect(gpu.compute).toHaveBeenCalledTimes(2);
+    expect(gpu.compute.mock.calls[0]).toHaveLength(1);
+    expect(gpu.compute.mock.calls[1]?.[1]).toBe(dispatchArgs);
+    expect(cache.snapshot()).toMatchObject({ visibleListRefreshes: 1 });
+    cache.dispose(r);
+    texture.dispose();
+  });
 });
 
 describe('SH path selection and mesh lifecycle', () => {

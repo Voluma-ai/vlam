@@ -22,6 +22,41 @@ import { intersectSortRange, sceneSortRange, type SplatSortRange } from './splat
 import { StorageMirrorReleaser } from './storage-attribute-mirror';
 import type { uniformArray } from 'three/tsl';
 
+/** Counting-sort histogram slots retained for exact depth quantization. */
+export const COMPUTE_SORTER_MAX_BUCKET_COUNT = 1 << 22;
+/** Smallest histogram retained for a sparse projected list. */
+export const COMPUTE_SORTER_MIN_BUCKET_COUNT = 1 << 16;
+const COMPUTE_SORTER_BLOCK_SIZE = 256;
+
+/**
+ * GPU bytes retained by a counting sorter's private histogram, scans, and
+ * per-splat bucket buffer. It excludes the caller-owned source/order buffers.
+ */
+export function estimateComputeSorterSteadyBytes(capacity: number): number {
+  if (!Number.isFinite(capacity) || capacity < 0) {
+    throw new RangeError('Compute sorter capacity must be a non-negative finite number.');
+  }
+  const splats = Math.floor(capacity);
+  const bucketCount = computeSorterBucketCount(splats);
+  const blockSums = COMPUTE_SORTER_MAX_BUCKET_COUNT / COMPUTE_SORTER_BLOCK_SIZE;
+  const superBlockSums = blockSums / COMPUTE_SORTER_BLOCK_SIZE;
+  return (bucketCount + blockSums + superBlockSums + splats) * Uint32Array.BYTES_PER_ELEMENT;
+}
+
+/** CPU mirrors coexist with the first GPU upload, so price the observable peak. */
+export function estimateComputeSorterPeakBytes(capacity: number): number {
+  return estimateComputeSorterSteadyBytes(capacity) * 2;
+}
+
+function computeSorterBucketCount(count: number): number {
+  const exponent = Math.ceil(Math.log2(Math.max(1, count)));
+  const rounded = 2 ** exponent;
+  return Math.min(
+    Math.max(rounded, COMPUTE_SORTER_MIN_BUCKET_COUNT),
+    COMPUTE_SORTER_MAX_BUCKET_COUNT,
+  );
+}
+
 /**
  * Optional per-source world transform for a unified {@link MergedSplatMesh} pool.
  * When present, each splat's center is transformed to world space by its
@@ -78,14 +113,8 @@ export interface PerSourceSortTransform {
  */
 export class ComputeSorter implements SplatSorter {
   readonly kind = 'counting' as const;
-  private static readonly BUCKET_COUNT = 1 << 22;
-  private static readonly BLOCK_SIZE = 256;
-
-  /**
-   * Smallest bucket count a sort will dispatch. Below this the fixed passes
-   * are already cheap, and the floor keeps every block-scan index exact.
-   */
-  private static readonly MIN_BUCKET_COUNT = 1 << 16;
+  private static readonly BUCKET_COUNT = COMPUTE_SORTER_MAX_BUCKET_COUNT;
+  private static readonly BLOCK_SIZE = COMPUTE_SORTER_BLOCK_SIZE;
 
   private readonly renderer: THREE.WebGPURenderer;
   /** Histogram slots reserved for this pool; never changes as residency changes. */
@@ -378,9 +407,7 @@ export class ComputeSorter implements SplatSorter {
 
   /** Rounds a pool or live-splat count to the supported power-of-two range. */
   private static bucketCountFor(count: number): number {
-    const exponent = Math.ceil(Math.log2(Math.max(1, count)));
-    const rounded = 2 ** exponent;
-    return Math.min(Math.max(rounded, ComputeSorter.MIN_BUCKET_COUNT), ComputeSorter.BUCKET_COUNT);
+    return computeSorterBucketCount(count);
   }
 
   sort(

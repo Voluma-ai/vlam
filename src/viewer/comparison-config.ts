@@ -1,7 +1,13 @@
 import { PerspectiveCamera, Vector3 } from 'three';
 
 /** Cached captures the standalone comparison pages can load. */
-export const COMPARISON_SCENES = ['Tempel', 'goose', 'hotel', 'Langenthal-Manola4A'] as const;
+export const COMPARISON_SCENES = [
+  'Tempel',
+  'goose',
+  'hotel',
+  'Langenthal-Manola4A',
+  'Kauz-sh2',
+] as const;
 export type ComparisonScene = (typeof COMPARISON_SCENES)[number];
 
 /** How the comparison adapters open a cached asset URL. */
@@ -137,6 +143,28 @@ export interface ComparisonPose {
   target: [number, number, number];
 }
 
+/** Duration of the orbit before a `settle` run starts its static sample. */
+export const COMPARISON_SETTLE_MOTION_MS = 5_000;
+
+/** Ensure a move-to-settle warm-up cannot begin sampling while the camera moves. */
+export function comparisonWarmupMs(warmupMs: number, mode: ComparisonConfig['mode']): number {
+  return mode === 'settle' ? Math.max(warmupMs, COMPARISON_SETTLE_MOTION_MS) : warmupMs;
+}
+
+/**
+ * Keeps ordinary motion out of warm-up while allowing `settle` to finish before
+ * sampling begins. A move-to-settle run is otherwise just an orbit that starts
+ * moving at the measurement boundary, which reverses the scenario it claims to
+ * measure.
+ */
+export function comparisonMotionElapsedMs(
+  elapsedMs: number,
+  warmupMs: number,
+  mode: ComparisonConfig['mode'],
+): number {
+  return mode === 'settle' ? elapsedMs : Math.max(0, elapsedMs - warmupMs);
+}
+
 /** Apply an identical, elapsed-time orbit independent of renderer frame rate. */
 export function applyComparisonCamera(
   camera: PerspectiveCamera,
@@ -147,7 +175,7 @@ export function applyComparisonCamera(
   const target = new Vector3(...pose.target);
   const offset = new Vector3(...pose.position).sub(target);
   const mode = typeof motion === 'boolean' ? (motion ? 'orbit' : 'stationary') : motion;
-  const time = mode === 'settle' ? Math.min(elapsedMs, 5000) : elapsedMs;
+  const time = mode === 'settle' ? Math.min(elapsedMs, COMPARISON_SETTLE_MOTION_MS) : elapsedMs;
   if (mode === 'orbit' || mode === 'settle')
     offset.applyAxisAngle(new Vector3(0, 1, 0), time * 0.00012);
   camera.position.copy(target).add(offset);

@@ -1,5 +1,6 @@
 /** Conservative one-time policy for the experimental compute projection path. */
 import { PROJECTED_SPLAT_BYTES_PER_SLOT } from './projected-splat-pipeline';
+import { estimateComputeSorterPeakBytes } from './compute-sorter';
 
 /** The only measured automatic cohort is the 8.72M-splat Langenthal capture. */
 export const AUTO_PROJECTION_MIN_SPLATS = 8_000_000;
@@ -33,11 +34,11 @@ export interface AutomaticProjectionPolicyInput {
 export interface AutomaticProjectionPolicyResult {
   readonly strategy: 'vertex' | 'compute';
   readonly reason: string;
-  /** Projection peak plus padded RGBA8 SH cache; existing sorter memory is excluded. */
+  /** Projection, projected-sorter, and padded RGBA8 SH-cache peak. */
   readonly requiredMemoryBytes: number;
 }
 
-/** Prices the allocations the automatic compute-and-cache path adds to a mesh. */
+/** Prices every allocation the automatic compute-and-cache path adds to a mesh. */
 export function estimateAutomaticProjectionMemoryBytes(capacity: number): number {
   if (!Number.isFinite(capacity) || capacity < 0) {
     throw new RangeError('Splat capacity must be a non-negative finite number.');
@@ -48,7 +49,15 @@ export function estimateAutomaticProjectionMemoryBytes(capacity: number): number
   // Storage-attribute mirrors coexist with the GPU buffers until the first
   // successful submission retires them, so price the observable peak rather
   // than treating retained GPU buffers as the whole allocation.
-  return splats * PROJECTED_SPLAT_BYTES_PER_SLOT * 2 + shCacheBytes;
+  // Compute projection creates its own dense-list counting sorter. Its bucket
+  // buffer/histogram are not part of the vertex-path sorter and its CPU mirrors
+  // coexist with their first GPU upload, so omitting them can accept a policy
+  // decision that exceeds the caller's stated cap.
+  return (
+    splats * PROJECTED_SPLAT_BYTES_PER_SLOT * 2 +
+    estimateComputeSorterPeakBytes(splats) +
+    shCacheBytes
+  );
 }
 
 /**

@@ -171,6 +171,56 @@ const picking = {
 };
 standalone.dispose();
 
+// The unified draw owns a separate material/projector. Keep a rendered
+// regression here so its shared contribution policy cannot silently diverge
+// from a standalone source again.
+const cullData = {
+  count: 1,
+  positions: new Float32Array([0, 0, 0]),
+  colors: new Uint8Array([255, 255, 255, 255]),
+  // At this 64 px view the ±3σ diameter is below the balanced 2 px floor.
+  covariances: new Float32Array([0.0001, 0, 0, 0.0001, 0, 0.0001]),
+};
+const hasVisiblePixels = (pixels: Uint8Array): boolean =>
+  pixels.some((channel, index) => index % 4 !== 3 && channel > 1);
+const renderCulledStandalone = async (
+  performanceProfile: 'balanced' | 'quality',
+): Promise<boolean> => {
+  const mesh = new SplatMesh(cullData, { performanceProfile, projectionStrategy: 'vertex' });
+  try {
+    mesh.update(camera, renderer);
+    return hasVisiblePixels(await drawPixels(mesh));
+  } finally {
+    mesh.dispose();
+  }
+};
+const renderCulledUnified = async (
+  performanceProfile: 'balanced' | 'quality',
+  projectionStrategy: 'auto' | 'compute' = 'auto',
+): Promise<boolean> => {
+  const sourceMesh = new SplatMesh(cullData, {
+    performanceProfile,
+    projectionStrategy: 'vertex',
+  });
+  const mesh = new UnifiedSplatMesh(renderer, 1, { performanceProfile, projectionStrategy });
+  try {
+    mesh.addSource(sourceMesh);
+    mesh.update(camera);
+    return hasVisiblePixels(await drawPixels(mesh));
+  } finally {
+    mesh.dispose();
+    sourceMesh.dispose();
+  }
+};
+const unifiedContributionCulling = {
+  standaloneBalancedVisible: await renderCulledStandalone('balanced'),
+  unifiedBalancedVisible: await renderCulledUnified('balanced'),
+  standaloneQualityVisible: await renderCulledStandalone('quality'),
+  unifiedQualityVisible: await renderCulledUnified('quality'),
+  unifiedComputeBalancedVisible: await renderCulledUnified('balanced', 'compute'),
+  unifiedComputeQualityVisible: await renderCulledUnified('quality', 'compute'),
+};
+
 let renderOnlyPicking: { released: boolean; backZ: number | null } | null = null;
 if (new URLSearchParams(location.search).get('renderOnly') === '1') {
   const renderOnly = new SplatMesh(data, {
@@ -357,6 +407,7 @@ output.textContent = JSON.stringify({
   },
   standalone: standaloneResult,
   unified: unifiedResult,
+  unifiedContributionCulling,
   picking,
   renderOnlyPicking,
   gooseParity: {

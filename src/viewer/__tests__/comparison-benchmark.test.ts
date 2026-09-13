@@ -4,9 +4,11 @@ import {
   applyComparisonCamera,
   comparisonAssetKind,
   comparisonConfig,
+  comparisonMotionElapsedMs,
   comparisonSuite,
   comparisonSuiteOptions,
   comparisonSuiteUrl,
+  comparisonWarmupMs,
   comparisonUrl,
   summarize,
 } from '../comparison-config';
@@ -62,6 +64,9 @@ describe('shared comparison configuration', () => {
     expect(
       comparisonConfig('/vlam-benchmark.html', new URLSearchParams('scene=Langenthal-Manola4A')),
     ).toMatchObject({ scene: 'Langenthal-Manola4A' });
+    expect(
+      comparisonConfig('/vlam-benchmark.html', new URLSearchParams('scene=Kauz-sh2')),
+    ).toMatchObject({ scene: 'Kauz-sh2' });
     expect(comparisonAssetKind('/benchmark-assets/Tempel/Tempel.lcc2')).toBe('lcc2');
     expect(comparisonAssetKind('/benchmark-assets/hotel/HOTEL.clean.comp-lod.rad')).toBe('rad');
     expect(comparisonAssetKind('/benchmark-assets/goose.sog')).toBe('file');
@@ -137,6 +142,15 @@ describe('shared comparison configuration', () => {
       ),
     ).toMatchObject({ shEvaluation: 'compute', mode: 'settle' });
   });
+
+  it('finishes move-to-settle motion during warm-up, not timed sampling', () => {
+    expect(comparisonMotionElapsedMs(2_000, 5_000, 'orbit')).toBe(0);
+    expect(comparisonMotionElapsedMs(2_000, 5_000, 'settle')).toBe(2_000);
+    expect(comparisonMotionElapsedMs(7_000, 5_000, 'settle')).toBe(7_000);
+    expect(comparisonWarmupMs(1_000, 'settle')).toBe(5_000);
+    expect(comparisonWarmupMs(7_000, 'settle')).toBe(7_000);
+    expect(comparisonWarmupMs(1_000, 'orbit')).toBe(1_000);
+  });
   it('reproduces camera matrices and preserves poses in comparison links', () => {
     const pose = { position: [4, 2, 8], target: [1, 0, 1] } as const;
     const mutable = {
@@ -208,9 +222,14 @@ describe('WebGPU sample attribution', () => {
     timer.frame(2, true);
     await timer.finish();
     expect(timer.samples.render).toEqual([{ frame: 2, ms: 5 }]);
+    expect(timer.passes.render).toEqual([
+      { frame: 2, key: 'a:f11', ms: 2 },
+      { frame: 2, key: 'b:f11', ms: 3 },
+    ]);
     await timer.finish();
     expect(resolve).toHaveBeenCalledTimes(1);
     expect(timer.samples.compute).toEqual([]);
+    expect(timer.passes.compute).toEqual([]);
   });
   it('discards in-flight results after a visibility reset and unsupported timing', async () => {
     const pool: ComparisonQueryPool = {

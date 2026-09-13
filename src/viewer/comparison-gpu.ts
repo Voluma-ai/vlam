@@ -4,6 +4,12 @@ export interface GpuSample {
   ms: number;
 }
 
+/** A resolved individual backend pass, retained for post-run tail diagnosis. */
+export interface GpuPassSample extends GpuSample {
+  /** Three.js timestamp context identity; stable only within the archived run. */
+  key: string;
+}
+
 /** Every submitted GPU frame is resolved or explicitly rejected before reporting. */
 export interface GpuSampleAccounting {
   submitted: number;
@@ -168,6 +174,8 @@ export interface ComparisonQueryPool {
 /** Collect each resolved frame, rather than treating a batch's last value as every frame. */
 export class ComparisonWebGpuTimer {
   readonly samples = { render: [] as GpuSample[], compute: [] as GpuSample[] };
+  /** Individual timestamped submissions, before the per-frame totals are collapsed. */
+  readonly passes = { render: [] as GpuPassSample[], compute: [] as GpuPassSample[] };
   private eligible = new Map<string, number>();
   private seen = new Set<string>();
   private generation = 0;
@@ -199,6 +207,7 @@ export class ComparisonWebGpuTimer {
     this.generation++;
     this.eligible.clear();
     this.samples.render.length = this.samples.compute.length = 0;
+    this.passes.render.length = this.passes.compute.length = 0;
   }
 
   /** Readback is awaited only after timed rendering stops. */
@@ -218,6 +227,7 @@ export class ComparisonWebGpuTimer {
         await this.resolve(kind);
         const totals = new Map<number, number>();
         const invalid = new Set<number>();
+        const passes = new Map<number, GpuPassSample[]>();
         for (const key of keys) {
           const id = `${kind}/${key}`;
           const frame = this.eligible.get(id);
@@ -233,10 +243,19 @@ export class ComparisonWebGpuTimer {
             ms < 0
           ) {
             invalid.add(frame);
-          } else totals.set(frame, (totals.get(frame) ?? 0) + ms);
+          } else {
+            totals.set(frame, (totals.get(frame) ?? 0) + ms);
+            const framePasses = passes.get(frame);
+            const sample = { frame, key, ms };
+            if (framePasses) framePasses.push(sample);
+            else passes.set(frame, [sample]);
+          }
         }
-        for (const [frame, ms] of totals)
-          if (!invalid.has(frame)) this.samples[kind].push({ frame, ms });
+        for (const [frame, ms] of totals) {
+          if (invalid.has(frame)) continue;
+          this.samples[kind].push({ frame, ms });
+          this.passes[kind].push(...(passes.get(frame) ?? []));
+        }
       }),
     )
       .then(() => undefined)

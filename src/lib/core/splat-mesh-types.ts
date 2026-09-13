@@ -115,10 +115,11 @@ export interface SplatMeshOptions {
   projectionStrategy?: SplatProjectionStrategy;
   /**
    * Maximum additional bytes the `'auto'` projection path may allocate for its
-   * cache peak and padded RGBA8 SH cache. Defaults to 1 GiB on its measured
-   * NVIDIA Ampere cohort. This is an application policy cap, not a report of
-   * available GPU memory; set `0` to force auto to retain vertex projection.
-   * Explicit `'compute'` remains an override and is not constrained by it.
+   * projected-list/cache peak, projected-sorter scratch and padded RGBA8 SH
+   * cache. Defaults to 1 GiB on its measured NVIDIA Ampere cohort. This is an
+   * application policy cap, not a report of available GPU memory; set `0` to
+   * force auto to retain vertex projection. Explicit `'compute'` remains an
+   * override and is not constrained by it.
    */
   projectionMemoryBudgetBytes?: number;
   /**
@@ -491,6 +492,10 @@ export interface UnifiedSourceView {
   readonly maxStdDev: number;
   /** Screen-space minimum splat radius, px (0 = off). */
   readonly minSplatSizePx: number;
+  /** Resolved contribution cull diameter, px (0 = off). */
+  readonly minPixelSize: number;
+  /** Resolved opacity × major × minor contribution cull (0 = off). */
+  readonly minContribution: number;
   readonly antialias: boolean;
   /** Construction-time projected-footprint policy shared by one unified pass. */
   readonly projectedFilterProfile: ProjectedFilterProfile;

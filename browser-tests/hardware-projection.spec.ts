@@ -34,6 +34,14 @@ test('verifies projection and SH caching on a non-software WebGPU adapter', asyn
     gooseParity: {
       projectionDispatches: number | null;
     };
+    unifiedContributionCulling: {
+      standaloneBalancedVisible: boolean;
+      unifiedBalancedVisible: boolean;
+      standaloneQualityVisible: boolean;
+      unifiedQualityVisible: boolean;
+      unifiedComputeBalancedVisible: boolean;
+      unifiedComputeQualityVisible: boolean;
+    };
   };
   await testInfo.attach('hardware-environment.json', {
     body: JSON.stringify(value.hardware, null, 2),
@@ -58,6 +66,14 @@ test('verifies projection and SH caching on a non-software WebGPU adapter', asyn
   // without changing any projector input. A third/fourth compute projection
   // here would be redundant work and would defeat the static-scene policy.
   expect(value.gooseParity.projectionDispatches).toBe(2);
+  expect(value.unifiedContributionCulling).toEqual({
+    standaloneBalancedVisible: false,
+    unifiedBalancedVisible: false,
+    standaloneQualityVisible: true,
+    unifiedQualityVisible: true,
+    unifiedComputeBalancedVisible: false,
+    unifiedComputeQualityVisible: true,
+  });
   for (let pose = 0; pose < 2; pose++) {
     expect(value.shParity.vertex[pose]![0]! - value.shParity.base[pose]![0]!).toBeGreaterThan(30);
     for (let channel = 0; channel < 4; channel++) {

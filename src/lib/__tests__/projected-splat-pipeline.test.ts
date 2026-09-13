@@ -3,6 +3,10 @@ import { uniform } from 'three/tsl';
 import { describe, expect, it } from 'vitest';
 import { SplatMesh } from '../core/splat-mesh';
 import {
+  estimateComputeSorterPeakBytes,
+  estimateComputeSorterSteadyBytes,
+} from '../core/compute-sorter';
+import {
   estimateProjectedSplatPeakBytes,
   estimateProjectedSplatSteadyBytes,
   StandaloneProjectedSplatPipeline,
@@ -30,10 +34,12 @@ describe('compute projection configuration', () => {
     expect(auto.projectionMemoryBytes).toEqual({ steadyGpu: 0, peakCpuAndGpu: 0 });
     expect(compute.projectionStrategy).toBe('compute');
     expect(compute.projectionMemoryBytes.steadyGpu).toBe(
-      estimateProjectedSplatSteadyBytes(compute.capacity),
+      estimateProjectedSplatSteadyBytes(compute.capacity) +
+        estimateComputeSorterSteadyBytes(compute.capacity),
     );
     expect(compute.projectionMemoryBytes.peakCpuAndGpu).toBe(
-      estimateProjectedSplatPeakBytes(compute.capacity),
+      estimateProjectedSplatPeakBytes(compute.capacity) +
+        estimateComputeSorterPeakBytes(compute.capacity),
     );
     auto.dispose();
     compute.dispose();
@@ -98,6 +104,12 @@ describe('automatic compute-projection policy', () => {
       estimateAutomaticProjectionMemoryBytes(measured.capacity),
     );
     expect(result.requiredMemoryBytes).toBeLessThanOrEqual(measured.memoryBudgetBytes);
+  });
+
+  it('rejects a near-cap workload once projected-sorter scratch is included', () => {
+    const result = resolveAutomaticProjectionStrategy({ ...measured, capacity: 9_900_000 });
+    expect(result).toMatchObject({ strategy: 'vertex', reason: 'auto-memory-budget' });
+    expect(result.requiredMemoryBytes).toBeGreaterThan(measured.memoryBudgetBytes);
   });
 
   it.each([

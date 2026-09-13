@@ -443,6 +443,7 @@ export async function createComparisonVlam(
     gpu() {
       return {
         ...timer.samples,
+        passes: timer.passes,
         supported: timer.enabled,
         coverage:
           'All timestamped render/compute passes, grouped by submitted frame; no CPU or queue wait time',

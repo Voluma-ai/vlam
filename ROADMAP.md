@@ -74,8 +74,10 @@ selection features until their benefits are measured and visually validated.
   content and DoF state, so an unchanged compute view reuses its indirect list
   without falling back to a vertex sort; the native RTX 3090 stationary probe
   records zero sampled projection, cull, sort and SH submissions. An
-  intermediate 1–2M whole-file SOG and a second GPU class are still
-  needed before the auto threshold can broaden; shrinking the 52 B/slot
+  intermediate 1.83M SH2 Kauz SOG now exercises the missing scene-size band,
+  but its median/tail split rules out a broader automatic cohort on this GPU;
+  a second GPU class is still needed before the auto threshold can broaden.
+  Shrinking the 52 B/slot
   projection cache toward PlayCanvas' 32 B is separate.
 - **Stochastic transparency during movement** — experiment with opt-in
   sort-free fragment coverage while navigating heavy scenes, then restore

@@ -31,6 +31,8 @@ import type { SplatModifier } from './splat-modifier';
 import type { SplatSorter } from './sorter';
 import {
   ComputeSorter,
+  estimateComputeSorterPeakBytes,
+  estimateComputeSorterSteadyBytes,
   releaseRendererAttributes,
   type PerSourceSortTransform,
 } from './compute-sorter';
@@ -859,7 +861,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     return this.projectionStrategyState;
   }
 
-  /** Explicit projection-cache memory, excluding the existing sort buffers. */
+  /** Additional projected-list and projected-sorter memory, excluding SH cache storage. */
   get projectionMemoryBytes(): Readonly<{ steadyGpu: number; peakCpuAndGpu: number }> {
     if (
       this.projectionStrategyValue === 'vertex' ||
@@ -868,8 +870,12 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       return { steadyGpu: 0, peakCpuAndGpu: 0 };
     }
     return {
-      steadyGpu: estimateProjectedSplatSteadyBytes(this.capacity),
-      peakCpuAndGpu: estimateProjectedSplatPeakBytes(this.capacity),
+      steadyGpu:
+        estimateProjectedSplatSteadyBytes(this.capacity) +
+        estimateComputeSorterSteadyBytes(this.capacity),
+      peakCpuAndGpu:
+        estimateProjectedSplatPeakBytes(this.capacity) +
+        estimateComputeSorterPeakBytes(this.capacity),
     };
   }
 
@@ -1442,6 +1448,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       cached.hasSourcePlacement === (this.perSourceSort !== null) &&
       cached.centersTexture === this.centersTexture &&
       cached.colorsTexture === this.materialInputs.textures.colorsTexture &&
+      cached.minPixelSize === this.minPixelSize &&
+      cached.minContribution === this.minContribution &&
       this.cachedUnifiedViewMatrixWorld.equals(this.matrixWorld) &&
       this.cachedUnifiedViewLocalBounds.equals(this.boundingSphereLocal)
     ) {
@@ -1470,6 +1478,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       srgbOutput: this.srgbOutput,
       maxStdDev: this.maxStdDev,
       minSplatSizePx: this.minSplatSizePx,
+      minPixelSize: this.minPixelSize,
+      minContribution: this.minContribution,
       antialias: this.antialias,
       projectedFilterProfile: this.projectedFilterProfile,
       // Fixed at construction, so it needs no cache-invalidation key.
@@ -3145,6 +3155,18 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           localCameraPosition: this.localCameraPosition,
           localViewProjection: this.shViewProjection,
           frustumMargin: this.frustumMargin,
+          // Compute projection has already compacted the current draw
+          // survivors before SH preparation runs. Let camera/view cache
+          // refreshes use that list and its GPU-written indirect count rather
+          // than walking every pool slot; vertex projection keeps the full
+          // cache path by omitting these borrowed projector buffers.
+          ...(this.computeProjectionActive && this.projectedPipeline
+            ? {
+                visibleIndices: this.projectedPipeline.buffers.visibleIndices,
+                visibleCount: this.projectedPipeline.buffers.visibleCount,
+                visibleDispatchArgs: this.projectedPipeline.buffers.dispatchArgs,
+              }
+            : {}),
         });
         this.shCacheSh = sh;
         this.shCacheRenderer = renderer;

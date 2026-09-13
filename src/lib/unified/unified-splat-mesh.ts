@@ -15,8 +15,13 @@ import { estimateLargestStorageBufferBytes } from './unified-work-buffer';
 import { resolveXrView } from '../core/xr-view';
 import { StorageMirrorReleaser } from '../core/storage-attribute-mirror';
 import type { SplatSorter } from '../core/sorter';
-import type { SplatSortMetric } from '../core/splat-mesh-types';
-import type { SplatProjectionStrategy } from '../core/splat-mesh-types';
+import {
+  resolveProjectedContributionCulls,
+  resolveSplatPerformanceProfile,
+  type SplatPerformanceProfile,
+  type SplatProjectionStrategy,
+  type SplatSortMetric,
+} from '../core/splat-mesh-types';
 import { cameraVisibleSortRange, radialSortState } from '../core/splat-sort-bounds';
 import {
   ProjectedSplatPipeline,
@@ -101,6 +106,16 @@ export interface UnifiedSplatMeshOptions {
    * XR presentation always uses the established per-eye vertex projection.
    */
   projectionStrategy?: SplatProjectionStrategy;
+  /**
+   * Contribution-culling profile used by the shared unified draw. Defaults to
+   * the same device-aware profile as {@link SplatMesh}; every source must
+   * resolve to the same contribution thresholds.
+   */
+  performanceProfile?: SplatPerformanceProfile;
+  /** Override the shared SuperSplat-style on-screen diameter cull in px. */
+  minPixelSize?: number;
+  /** Override the shared opacity × major × minor cull. */
+  minContribution?: number;
   /** Composite source colors in display (sRGB) space. Defaults to `false`. */
   srgbOutput?: boolean;
   /**
@@ -193,6 +208,9 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   private readonly viewport: Vec2Uniform;
   private readonly maxStdDev: FloatUniform;
   private readonly minSplatSizePx: FloatUniform;
+  /** Shared construction-time contribution thresholds, baked into both paths. */
+  private readonly minPixelSize: number;
+  private readonly minContribution: number;
   private readonly antialias: FloatUniform;
   private readonly projectedLowPassVariance: FloatUniform;
   private readonly compensateProjectedLowPass: FloatUniform;
@@ -234,6 +252,12 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     const compensateProjectedLowPass = uniform(0);
     const dofFocusDistance = uniform(10);
     const dofAperture = uniform(0);
+    const performanceProfile = resolveSplatPerformanceProfile(options.performanceProfile);
+    const contributionCulls = resolveProjectedContributionCulls({
+      minPixelSize: validateContributionCull(options.minPixelSize, 'minPixelSize'),
+      minContribution: validateContributionCull(options.minContribution, 'minContribution'),
+      performanceProfile,
+    });
     const projectionStrategy = options.projectionStrategy ?? 'auto';
     if (
       projectionStrategy !== 'auto' &&
@@ -266,6 +290,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
             compensateProjectedLowPass,
             dofFocusDistance,
             dofAperture,
+            minPixelSize: contributionCulls.minPixelSize,
+            minContribution: contributionCulls.minContribution,
             sortMetric: options.sortMetric ?? 'depth',
           })
         : null;
@@ -298,6 +324,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         compensateProjectedLowPass,
         dofFocusDistance,
         dofAperture,
+        minPixelSize: contributionCulls.minPixelSize,
+        minContribution: contributionCulls.minContribution,
         displayColorModifier: null,
       }),
     );
@@ -309,6 +337,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.viewport = viewport;
     this.maxStdDev = maxStdDev;
     this.minSplatSizePx = minSplatSizePx;
+    this.minPixelSize = contributionCulls.minPixelSize;
+    this.minContribution = contributionCulls.minContribution;
     this.antialias = antialias;
     this.projectedLowPassVariance = projectedLowPassVariance;
     this.compensateProjectedLowPass = compensateProjectedLowPass;
@@ -412,6 +442,11 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     }
     if (view.srgbOutput !== this.srgbOutput) {
       throw new Error("UnifiedSplatMesh: every source must use the renderer's srgbOutput setting.");
+    }
+    if (view.minPixelSize !== this.minPixelSize || view.minContribution !== this.minContribution) {
+      throw new Error(
+        'UnifiedSplatMesh: every source must use the same contribution-culling settings.',
+      );
     }
     if (this.sourceMaxStdDev === null) {
       this.sourceMaxStdDev = view.maxStdDev;
@@ -925,6 +960,13 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   }
 
   private setComputeProjectionActive(active: boolean): void {
+    // `ProjectedSplatPipeline` is retained across an XR session, but XR draws
+    // through the established per-eye vertex path. Diagnostics must describe
+    // that live path rather than the construction-time requested mode.
+    if (this.projectedPipeline) {
+      this.projectionStrategyState.effective = active ? 'compute' : 'vertex';
+      this.projectionStrategyState.reason = active ? 'explicit-compute' : 'xr';
+    }
     if (this.computeProjectionActive === active) return;
     this.computeProjectionActive = active;
     (this.geometry as THREE.InstancedBufferGeometry).setIndirect(
@@ -964,6 +1006,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       compensateProjectedLowPass: this.compensateProjectedLowPass,
       dofFocusDistance: this.dofFocusDistance,
       dofAperture: this.dofAperture,
+      minPixelSize: this.minPixelSize,
+      minContribution: this.minContribution,
       displayColorModifier: this.displayColorModifierValue,
     });
     previous.dispose();
@@ -1001,4 +1045,11 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       workBuffer: this.workBuffer,
     });
   }
+}
+
+function validateContributionCull(value: number | undefined, name: string): number | undefined {
+  if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
+    throw new RangeError(`UnifiedSplatMesh ${name} must be a finite number >= 0.`);
+  }
+  return value;
 }

@@ -3,9 +3,11 @@ import { RenderBenchmarkSession } from './render-benchmark-session';
 import {
   applyComparisonCamera,
   comparisonConfig,
+  comparisonMotionElapsedMs,
   comparisonSuite,
   comparisonSuiteOptions,
   comparisonSuiteUrl,
+  comparisonWarmupMs,
   comparisonUrl,
   summarize,
   type ComparisonPose,
@@ -149,7 +151,8 @@ async function run(): Promise<void> {
     view.replaceChildren(active.canvas);
     status.textContent = `${suiteLabel}Waiting for the initial sort…`;
     await active.settle(camera);
-    const session = new RenderBenchmarkSession(config.warmup * 1000, config.seconds * 1000);
+    const warmupMs = comparisonWarmupMs(config.warmup * 1000, config.mode);
+    const session = new RenderBenchmarkSession(warmupMs, config.seconds * 1000);
     const cpu: number[] = [],
       draws: number[] = [],
       activeCounts: number[] = [];
@@ -180,7 +183,7 @@ async function run(): Promise<void> {
             applyComparisonCamera(
               camera,
               pose,
-              Math.max(0, state.elapsedMs - config.warmup * 1000),
+              comparisonMotionElapsedMs(state.elapsedMs, warmupMs, config.mode),
               config.mode,
             );
             const before = state.sampling ? active.diagnostics?.() : undefined;
@@ -283,6 +286,8 @@ async function run(): Promise<void> {
         cpuUpdateAndRenderMs: cpu,
         gpuRender: [...gpu.render],
         gpuCompute: [...gpu.compute],
+        gpuRenderPasses: [...(gpu.passes?.render ?? [])],
+        gpuComputePasses: [...(gpu.passes?.compute ?? [])],
         gpuPairedTotal: pairedGpu,
         dispatchFrames,
       },

@@ -94,6 +94,10 @@ export class ProjectedSplatPipeline {
     compensateProjectedLowPass: FloatUniform;
     dofFocusDistance: FloatUniform;
     dofAperture: FloatUniform;
+    /** SuperSplat-style diameter cull in px (0 = off). */
+    minPixelSize: number;
+    /** SuperSplat-style opacity × area cull (0 = off). */
+    minContribution: number;
     sortMetric: 'depth' | 'radial';
   }) {
     this.renderer = options.renderer;
@@ -205,6 +209,15 @@ export class ProjectedSplatPipeline {
             options.viewport,
             projectedAxes.major,
             projectedAxes.minor,
+          ),
+        )
+        .and(
+          isSplatContributionVisible(
+            colorData.element(workIndex).a,
+            projectedAxes.major,
+            projectedAxes.minor,
+            options.minPixelSize,
+            options.minContribution,
           ),
         );
       {
