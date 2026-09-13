@@ -2180,14 +2180,14 @@ async function main(): Promise<void> {
       splats.initialRevealState.status === 'pending'
     ) {
       const hold = splats.initialRevealState;
-      if (chrome.overlay) overlay.textContent = 'Loading coverage…';
+      if (chrome.overlay) overlay.textContent = 'Preparing initial view…';
       if (chrome.status && status && statusText) {
         status.classList.add('visible', 'progress');
         status.classList.remove('error');
         const total = Math.max(1, hold.totalSplats);
         const fraction = Math.min(1, hold.stagedSplats / total);
         statusText.textContent =
-          `Coverage ${hold.readyGroups}/${hold.totalGroups} cells · ` +
+          `Initial view ${hold.readyGroups}/${hold.totalGroups} cells · ` +
           `${hold.stagedSplats.toLocaleString('en-US')} / ${hold.totalSplats.toLocaleString('en-US')}`;
         if (statusBar) statusBar.style.width = `${Math.round(fraction * 100)}%`;
       }

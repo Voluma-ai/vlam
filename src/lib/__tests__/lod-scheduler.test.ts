@@ -787,6 +787,38 @@ describe('LodScheduler', () => {
       expect(runs[0]).toMatchObject({ file: 1, coverageGroup: 1, level: 1 });
     });
 
+    it('holds the whole coarse scene when the initial view spans several cells', () => {
+      const background: LodLeaf = {
+        ...cell(
+          3,
+          new THREE.Box3(new THREE.Vector3(100, -1, -6), new THREE.Vector3(102, 1, -1)),
+          13,
+          3,
+        ),
+        lods: [
+          { file: 13, offset: 0, count: 100 },
+          { file: 23, offset: 0, count: 50 },
+          { file: 3, offset: 0, count: 10 },
+        ],
+      };
+      const source = schedulerOf([
+        cell(0, new THREE.Box3(new THREE.Vector3(-1, -1, -6), new THREE.Vector3(1, 1, -1)), 10, 0),
+        cell(1, new THREE.Box3(new THREE.Vector3(2, -1, -6), new THREE.Vector3(4, 1, -1)), 11, 1),
+        cell(2, new THREE.Box3(new THREE.Vector3(-4, -1, -6), new THREE.Vector3(-2, 1, -1)), 12, 2),
+        background,
+      ]);
+      const view = viewFrom(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1));
+      const runs = runsFor(source, view);
+      expect(runs.map((run) => run.file)).toEqual([0, 1, 2, 3]);
+      expect(runs.map((run) => run.level)).toEqual([1, 1, 1, 2]);
+
+      // A pool that cannot comfortably carry every coarse cell keeps the
+      // camera-directed hold; it must not turn a feasible first paint into a
+      // capacity-degraded reveal.
+      source.budget = 20;
+      expect(runsFor(source, view)).toHaveLength(3);
+    });
+
     it('ignores the environment leaf (no coverage group) even when its bounds fill the view', () => {
       const env: LodLeaf = {
         bounds: new THREE.Box3(

@@ -82,6 +82,40 @@ describe('swap group ordering', () => {
     expect(groups.every((g) => g.removes.length === 1)).toBe(true);
   });
 
+  it('replaces a shared coarse LCC run with all overlapping slices in one transaction', () => {
+    const coarse: LodRun = {
+      file: 0,
+      level: 2,
+      offset: 0,
+      count: 30,
+      leafStart: 0,
+      leafEnd: 3,
+      coverageGroup: 42,
+    };
+    const finer = [0, 1, 2].map((leaf): LodRun => ({
+      file: leaf + 1,
+      level: 1,
+      offset: 0,
+      count: 100,
+      leafStart: leaf,
+      leafEnd: leaf + 1,
+      coverageGroup: 42,
+    }));
+    const groups = buildSwapGroups(finer, [['coarse', { run: coarse, handle: { count: 30 } }]]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.adds).toEqual(finer);
+    expect(groups[0]?.removes.map(([key]) => key)).toEqual(['coarse']);
+    expect(groups[0]).toMatchObject({ leafStart: 0, leafEnd: 3 });
+
+    const reverse = buildSwapGroups(
+      [coarse],
+      finer.map((run, leaf) => [`fine-${leaf}`, { run, handle: { count: 100 } }]),
+    );
+    expect(reverse).toHaveLength(1);
+    expect(reverse[0]?.adds).toEqual([coarse]);
+    expect(reverse[0]?.removes).toHaveLength(3);
+  });
+
   it('keeps a parent in the same group as non-overlapping children it contains', () => {
     const parent = run(5, 0, 20);
     const left = run(0, 0, 5);

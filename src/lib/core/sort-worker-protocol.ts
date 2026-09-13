@@ -25,6 +25,8 @@ export interface WriteMessage {
 
 export interface SortMessage {
   type: 'sort';
+  /** Identity of the immutable scene snapshot being sorted. */
+  requestId: number;
   /** Camera-space ordering key. */
   sortMetric: 'depth' | 'radial';
   /** Column-major 4×4 model-view matrix elements. */
@@ -32,6 +34,8 @@ export interface SortMessage {
   /** Active ranges as (start, count) pairs of pool splat indices, in
    * active-list order. */
   spans: Uint32Array;
+  /** Exact active pool-index list for a captured publication. */
+  indices?: Uint32Array;
   /** Optional column-major source matrices, four columns per source. */
   matrices?: Float32Array;
   /** Pre-intersected scene/camera key range; clamps invisible outliers. */
@@ -40,6 +44,8 @@ export interface SortMessage {
 
 export interface OrderMessage {
   type: 'order';
+  /** Echoes {@link SortMessage.requestId}; never infer identity from slots. */
+  requestId: number;
   /** Active pool splat indices, ordered back-to-front. */
   order: Uint32Array;
 }

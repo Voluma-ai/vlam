@@ -39,7 +39,8 @@ import type { SplatDatasetSource } from '../../streaming/dataset-source';
  * is one contiguous slice of it. A cell whose finest level runs to millions of
  * splats (~90 MB) is **sub-chunked**: the cell becomes K sub-leaves, each
  * level partitioned K ways at shared boundaries, every `(cell, level, i)`
- * slice its own ranged chunk. Sub-leaves from one physical cell share an
+ * slice its own ranged chunk except a small coarsest level, which shares one
+ * chunk across the cell. Sub-leaves from one physical cell share an
  * atomic budget group: they stream independently, but the scheduler never
  * mixes their LOD levels. Some writers preserve spatial locality in record
  * order, for which independently budgeting slices would create rectangular
@@ -116,6 +117,29 @@ export async function buildLccScene(
     chunkOptions.push(chunk);
     return chunkUrls.length - 1;
   };
+  const addDataChunk = (label: string, start: number, count: number): number =>
+    addChunk(label, {
+      format: 'lcc-bin',
+      lcc: {
+        kind: 'splats',
+        start,
+        length: count * LCC_RECORD_BYTES,
+        stride: LCC_RECORD_BYTES,
+        scale: manifest.scale,
+        ...(shBands === undefined
+          ? {}
+          : {
+              sh: {
+                bands: shBands,
+                range: manifest.shcoef,
+                source: 'sidecar' as const,
+                // shcoef.bin is aligned 2:1 with data.bin. The worker derives
+                // the sidecar byte range from this chunk's start and length.
+                url: shUrl as string,
+              },
+            }),
+      },
+    });
 
   const leaves: LodLeaf[] = [];
   const pinnedFiles = new Set<number>();
@@ -144,8 +168,9 @@ export async function buildLccScene(
   // cell does not refine mid-ladder while a sibling is still coarse. This is
   // load-bearing for captures whose record order has spatial locality: mixing
   // levels within a cell would remove a compact patch rather than merely
-  // thinning density. Each sub-leaf pins its own slice of the coarsest level
-  // as substitute coverage while finer data lands farther out.
+  // thinning density. Each sub-leaf pins its coarsest available slice as
+  // substitute coverage while finer data lands farther out. Small coarsest
+  // slices share one file so a broad first paint can fetch one range per cell.
   const levelCount = manifest.totalLevel;
   for (let cellIndex = 0; cellIndex < index.length; cellIndex++) {
     const cell = index[cellIndex] as LccIndexCell;
@@ -160,6 +185,31 @@ export async function buildLccScene(
       }
     }
     const subLeaves = Math.max(1, Math.ceil(finestCount / SUBCHUNK_SPLATS));
+    // The coarse level of a split cell is small but was fetched in K separate
+    // tiny ranges. A broad-scene first paint needs every coarse cell; one
+    // shared chunk per cell avoids hundreds of requests and lets adjacent
+    // sub-leaves coalesce back into one drawable run. Keep oversized coarse
+    // levels split to preserve the per-request upload bound.
+    let sharedCoarseLevel = -1;
+    for (let level = levelCount - 1; level >= 0; level--) {
+      const count = (cell.levels[level] as LccIndexCell['levels'][number]).count;
+      if (count > 0 && count <= SUBCHUNK_SPLATS) {
+        sharedCoarseLevel = level;
+        break;
+      }
+      if (count > SUBCHUNK_SPLATS) break;
+    }
+    const sharedCoarseRange =
+      sharedCoarseLevel < 0 || subLeaves === 1
+        ? undefined
+        : (cell.levels[sharedCoarseLevel] as LccIndexCell['levels'][number]);
+    const sharedCoarseFile = sharedCoarseRange
+      ? addDataChunk(
+          `${dataUrl}#c${cell.cellX}_${cell.cellY}-l${sharedCoarseLevel}`,
+          sharedCoarseRange.byteOffset,
+          sharedCoarseRange.count,
+        )
+      : -1;
     for (let sub = 0; sub < subLeaves; sub++) {
       const lods: (LodRange | undefined)[] = new Array<LodRange | undefined>(levelCount).fill(
         undefined,
@@ -184,30 +234,11 @@ export async function buildLccScene(
         const label = `${dataUrl}#c${cell.cellX}_${cell.cellY}-l${level}${
           subLeaves > 1 ? `.${sub}` : ''
         }`;
-        const file = addChunk(label, {
-          format: 'lcc-bin',
-          lcc: {
-            kind: 'splats',
-            start: range.byteOffset + lo * LCC_RECORD_BYTES,
-            length: (hi - lo) * LCC_RECORD_BYTES,
-            stride: LCC_RECORD_BYTES,
-            scale: manifest.scale,
-            ...(shBands === undefined
-              ? {}
-              : {
-                  sh: {
-                    bands: shBands,
-                    range: manifest.shcoef,
-                    source: 'sidecar' as const,
-                    // shcoef.bin is aligned 2:1 with data.bin - 64 bytes per
-                    // splat against 32 - so each slice's SH is its own doubled
-                    // byte range, which the loader derives from `start`/`length`.
-                    url: shUrl as string,
-                  },
-                }),
-          },
-        });
-        lods[level] = { file, offset: 0, count: hi - lo };
+        const shared = sharedCoarseFile >= 0 && level === sharedCoarseLevel;
+        const file = shared
+          ? sharedCoarseFile
+          : addDataChunk(label, range.byteOffset + lo * LCC_RECORD_BYTES, hi - lo);
+        lods[level] = { file, offset: shared ? lo : 0, count: hi - lo };
         // Levels ascend finest-to-coarsest, so the last written is the
         // coarsest this sub-leaf carries.
         coarsestFile = file;

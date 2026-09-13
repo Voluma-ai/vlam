@@ -8,15 +8,31 @@ import type { SortWorkerRequest, OrderMessage } from './sort-worker-protocol';
 import SortWorker from './sort-worker?worker&inline';
 import { logError } from './logging';
 
+/** Immutable inputs for one worker request, supplied by a dynamic mesh. */
+export interface WorkerSortSnapshot {
+  readonly requestId: number;
+  readonly spans: Uint32Array;
+  readonly indices: Uint32Array;
+  /** Center deltas captured with the snapshot, not live pool views. */
+  readonly centerWrites: readonly {
+    start: number;
+    centers: Float32Array;
+    sourceIds?: Float32Array;
+  }[];
+}
+
 /**
  * Stable CPU radix sorter in a Web Worker. Used by the WebGL2 fallback and,
  * when explicitly selected, alongside WebGPU rendering for Spark-like sort
  * cadence. Works for static and dynamic-capacity meshes alike: the worker
- * keeps a mirror of the pool's centers and sorts only the active spans.
+ * keeps a mirror of the pool's centers. Dynamic hosts additionally provide an
+ * immutable active-index snapshot, so compaction and slot reuse cannot change
+ * what a request means while the worker is busy.
  *
- * One sort runs at a time; requests that arrive while the worker is busy
- * are declined so the caller retries with the then-current camera on a
- * later frame.
+ * One sort/publication runs at a time; requests that arrive while the worker
+ * is busy or its completed snapshot awaits render preparation are declined.
+ * This is the backpressure that guarantees an older complete snapshot still
+ * makes forward progress during continuous loading.
  */
 export class WorkerSorter implements SplatSorter {
   readonly kind = 'worker' as const;
@@ -34,6 +50,8 @@ export class WorkerSorter implements SplatSorter {
   private lastSubmittedAt = -Infinity;
   private lastCompletedAt = -Infinity;
   private lastLatencyMs = Number.NaN;
+  private inFlightRequestId: number | null = null;
+  private nextRequestId = 0;
 
   constructor(host: WorkerSorterHost, sortMetric: SplatSortMetric = 'depth') {
     this.host = host;
@@ -41,17 +59,17 @@ export class WorkerSorter implements SplatSorter {
     this.splatIndexAttribute = host.splatIndexAttribute;
     this.worker = new SortWorker();
     this.worker.onmessage = (event: MessageEvent<OrderMessage>) => {
-      this.applyOrder(event.data.order);
+      this.applyOrder(event.data);
     };
     // Without these, one worker-side exception would leave `inFlight` stuck
     // true and silently freeze depth ordering for the rest of the session.
     this.worker.onerror = (event: ErrorEvent) => {
       logError('sort worker error - retrying on a later frame.', event.message);
-      this.inFlight = false;
+      this.failInFlight();
     };
     this.worker.onmessageerror = () => {
       logError('sort worker message deserialization failed.');
-      this.inFlight = false;
+      this.failInFlight();
     };
     const init: SortWorkerRequest = { type: 'init', capacity: host.capacity };
     this.worker.postMessage(init);
@@ -65,19 +83,26 @@ export class WorkerSorter implements SplatSorter {
     bounds: THREE.Sphere,
     visibleRange?: SplatSortRange | null,
   ): boolean {
-    if (this.disposed || this.inFlight) return false;
+    if (this.disposed || this.inFlight || this.host.hasPendingPublication?.()) return false;
+    const snapshot = this.host.captureSnapshot?.();
+    if (this.host.captureSnapshot && !snapshot) return false;
     this.inFlight = true;
+    const requestId = snapshot?.requestId ?? ++this.nextRequestId;
+    this.inFlightRequestId = requestId;
     this.submittedCount++;
     this.lastSubmittedAt = performance.now();
 
-    this.pushCenters(this.host.takeDirtyRows());
-    const spans = this.host.getActiveSpans();
+    if (snapshot) this.pushCenterWrites(snapshot.centerWrites);
+    else this.pushCenters(this.host.takeDirtyRows());
+    const spans = snapshot?.spans ?? this.host.getActiveSpans();
     this.sentSpans = spans;
     const message: SortWorkerRequest = {
       type: 'sort',
+      requestId,
       sortMetric: this.sortMetric,
       modelView: new Float32Array(modelView.elements),
       spans,
+      indices: snapshot?.indices,
       matrices: this.host.perSource ? new Float32Array(this.host.perSource.matrices) : undefined,
       sortRange: intersectSortRange(
         sceneSortRange(modelView, bounds, this.sortMetric),
@@ -127,14 +152,37 @@ export class WorkerSorter implements SplatSorter {
     }
   }
 
-  private applyOrder(order: Uint32Array): void {
+  private pushCenterWrites(
+    rows: readonly { start: number; centers: Float32Array; sourceIds?: Float32Array }[],
+  ): void {
+    for (const row of rows) {
+      const message: SortWorkerRequest = {
+        type: 'write',
+        start: row.start,
+        centers: row.centers,
+        sourceIds: row.sourceIds,
+      };
+      // This is also the immutable GPU-upload source for the pending
+      // publication, so it deliberately stays owned by the main thread.
+      this.worker.postMessage(message);
+    }
+  }
+
+  private applyOrder(message: OrderMessage): void {
+    if (message.requestId !== this.inFlightRequestId) return;
+    const order = message.order;
     this.inFlight = false;
+    this.inFlightRequestId = null;
     this.completedCount++;
     this.lastCompletedAt = performance.now();
     this.lastLatencyMs = this.lastCompletedAt - this.lastSubmittedAt;
     // An order event already dispatched when dispose ran still lands here;
     // writing it would flag a post-dispose GPU upload on the dead draw list.
     if (this.disposed) return;
+    if (this.host.onOrderReady) {
+      this.host.onOrderReady(message.requestId, order);
+      return;
+    }
     // A reply computed against an outdated active set must not overwrite the
     // identity draw list `rebuildActiveList` wrote for the new one - it would
     // resurrect the pool slots of a just-removed range for several frames.
@@ -161,6 +209,13 @@ export class WorkerSorter implements SplatSorter {
     // SplatMesh.commitActiveListMutation).
     this.host.onOrderApplied?.();
   }
+
+  private failInFlight(): void {
+    const requestId = this.inFlightRequestId;
+    this.inFlight = false;
+    this.inFlightRequestId = null;
+    if (requestId !== null) this.host.onSortFailure?.(requestId);
+  }
 }
 
 /** What the sorter needs from its mesh; see SplatMesh.createSorter. */
@@ -179,6 +234,10 @@ export interface WorkerSorterHost {
   readonly splatIndexAttribute: THREE.InstancedBufferAttribute;
   /** Drains the row spans written since the last call. */
   takeDirtyRows(): { start: number; count: number }[];
+  /** Captures the exact pending scene that a worker reply may publish. */
+  captureSnapshot?(): WorkerSortSnapshot | null;
+  /** True while a completed snapshot is waiting for render preparation. */
+  hasPendingPublication?(): boolean;
   /** Active ranges as (start, count) pool-index pairs, active-list order. */
   getActiveSpans(): Uint32Array;
   /**
@@ -187,4 +246,8 @@ export interface WorkerSorterHost {
    * resync - not patch - it on the next active-list mutation.
    */
   onOrderApplied?(): void;
+  /** Queues a completed immutable snapshot; the host publishes it before drawing. */
+  onOrderReady?(requestId: number, order: Uint32Array): void;
+  /** Restores dirty coverage after an asynchronous worker failure. */
+  onSortFailure?(requestId: number): void;
 }

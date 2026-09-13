@@ -367,24 +367,22 @@ describe('buildLccScene', () => {
       stubFetch({ index: bigIndex() });
       const scene = await buildLccScene(bigManifest(), BASE, OPTIONS);
 
-      // K = ceil(300k / 128k) = 3 sub-leaves; every present level splits
-      // 3 ways with a dedicated chunk per (level, sub) - labels carry `.i`.
+      // K = ceil(300k / 128k) = 3 sub-leaves. The tiny coarsest level is one
+      // shared fetch; finer levels keep dedicated per-slice chunks.
       expect(scene.chunkUrls).toEqual([
+        'https://example.test/capture/data.bin#c0_0-l2',
         'https://example.test/capture/data.bin#c0_0-l0.0',
         'https://example.test/capture/data.bin#c0_0-l1.0',
-        'https://example.test/capture/data.bin#c0_0-l2.0',
         'https://example.test/capture/data.bin#c0_0-l0.1',
         'https://example.test/capture/data.bin#c0_0-l1.1',
-        'https://example.test/capture/data.bin#c0_0-l2.1',
         'https://example.test/capture/data.bin#c0_0-l0.2',
         'https://example.test/capture/data.bin#c0_0-l1.2',
-        'https://example.test/capture/data.bin#c0_0-l2.2',
       ]);
 
       // Per level: slices are 32-byte aligned, contiguous, disjoint, and tile
       // the index range exactly (counts partition).
       const levelStart = [0, 300_000 * 32, 360_000 * 32];
-      for (let level = 0; level < LEVELS; level++) {
+      for (let level = 0; level < LEVELS - 1; level++) {
         const slices = scene.chunkUrls
           .map((url, file) => ({ url, file }))
           .filter(({ url }) => url.includes(`-l${level}.`))
@@ -400,21 +398,24 @@ describe('buildLccScene', () => {
         }
         expect(total).toBe(BIG.levels[level]);
       }
+      expect(lccOf(scene.chunkOptions![0])).toMatchObject({
+        start: levelStart[2],
+        length: BIG.levels[2]! * 32,
+      });
+      expect(scene.source.coarsestRunsFor(0, 3)).toMatchObject([
+        { file: 0, level: 2, offset: 0, count: BIG.levels[2], leafStart: 0, leafEnd: 3 },
+      ]);
     });
 
     it('keeps the pool size and coverage floor sums identical to unsplit', async () => {
       stubFetch({ index: bigIndex() });
       const scene = await buildLccScene(bigManifest(), BASE, OPTIONS);
       expect(scene.maxResidentSplats).toBe(300_000);
-      // Coarsest level (10 splats) splits 3/3/4 across the sub-leaves; each
-      // slice is pinned and the floor sums back to the unsplit total.
+      // Coarsest level (10 splats) splits 3/3/4 across the sub-leaves, but
+      // all three ranges share one pinned fetch.
       expect(scene.minimumCoverageSplats).toBe(10);
       const pinnedLabels = [...scene.pinnedFiles].map((f) => scene.chunkUrls[f]);
-      expect(pinnedLabels.sort()).toEqual([
-        'https://example.test/capture/data.bin#c0_0-l2.0',
-        'https://example.test/capture/data.bin#c0_0-l2.1',
-        'https://example.test/capture/data.bin#c0_0-l2.2',
-      ]);
+      expect(pinnedLabels).toEqual(['https://example.test/capture/data.bin#c0_0-l2']);
     });
 
     it('lets a sub-leaf missing a tiny coarse level pin its finest present slice', async () => {
@@ -425,17 +426,15 @@ describe('buildLccScene', () => {
       stubFetch({ index: bigIndex([300_000, 2, 0]) });
       const scene = await buildLccScene(bigManifest([300_000, 2, 0]), BASE, OPTIONS);
       expect(scene.chunkUrls).toEqual([
+        'https://example.test/capture/data.bin#c0_0-l1',
         'https://example.test/capture/data.bin#c0_0-l0.0',
         'https://example.test/capture/data.bin#c0_0-l0.1',
-        'https://example.test/capture/data.bin#c0_0-l1.1',
         'https://example.test/capture/data.bin#c0_0-l0.2',
-        'https://example.test/capture/data.bin#c0_0-l1.2',
       ]);
       const pinnedLabels = [...scene.pinnedFiles].map((f) => scene.chunkUrls[f]);
       expect(pinnedLabels.sort()).toEqual([
         'https://example.test/capture/data.bin#c0_0-l0.0', // no l1 slice: pins its l0
-        'https://example.test/capture/data.bin#c0_0-l1.1',
-        'https://example.test/capture/data.bin#c0_0-l1.2',
+        'https://example.test/capture/data.bin#c0_0-l1',
       ]);
       expect(scene.minimumCoverageSplats).toBe(100_000 + 1 + 1);
     });

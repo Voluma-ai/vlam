@@ -651,6 +651,10 @@ export class LodScheduler implements LodSource {
    *
    * Nearby groups (`distance ≤ lodBaseDistance · lodMultiplier`) freeze at
    * finest+1 (L1 when L0 exists). Farther in-view groups freeze at coarsest.
+   * A view that includes multiple physical cells also holds every other cell
+   * at coarsest when that floor is comfortably within budget. Otherwise the
+   * first frame can claim complete coverage while large parts of a broad
+   * scene are still absent. Single-cell views keep the camera-directed hold.
    * Startup never waits for L0.
    */
   coverageRunsFor(
@@ -691,6 +695,24 @@ export class LodScheduler implements LodSource {
       if (nearestLeaf < 0) return [];
       picked.add(this.coverageGroups[nearestLeaf] as number);
     }
+    const inView = new Set(picked);
+    // A broad view spans several cells. Its first paint needs the whole coarse
+    // floor, including cells whose wide splats reach into the image from just
+    // outside the nominal cell frustum. A single-cell view should still paint
+    // promptly, and a tight budget cannot afford a whole-scene hold.
+    if (inView.size >= 3) {
+      let coarseTotal = 0;
+      for (let j = 0; j < n; j++) {
+        if ((this.coverageGroups[j] as number) < 0) continue;
+        coarseTotal += (this.leaves[j] as LodLeaf).lods[this.maxLevel[j] as number]?.count ?? 0;
+      }
+      if (coarseTotal <= this.budget * 0.5) {
+        for (let j = 0; j < n; j++) {
+          const group = this.coverageGroups[j] as number;
+          if (group >= 0) picked.add(group);
+        }
+      }
+    }
     const nearHorizon = this.lodBaseDistance * this.lodMultiplier;
     const runs: LodRun[] = [];
     let i = 0;
@@ -710,7 +732,7 @@ export class LodScheduler implements LodSource {
         const finest = this.minLevel[j] as number;
         if (finest < groupFinest) groupFinest = finest;
       }
-      if (groupDist <= nearHorizon) {
+      if (inView.has(group) && groupDist <= nearHorizon) {
         runs.push(...this.runsAtLevelFor(i, end, groupFinest + 1));
       } else {
         runs.push(...this.coarsestRunsFor(i, end));
