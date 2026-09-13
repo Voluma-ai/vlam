@@ -152,7 +152,9 @@ export interface SplatMeshOptions {
    * WebGL2 always uses the CPU worker. On WebGPU the worker is never
    * selected unless the host passes `'worker'` explicitly (A/B only);
    * Spark comparison is load speed and LOD quality, not Spark's async
-   * sort cadence. `'radix'` is the 24-bit GPU key path; `'exact'`
+   * sort cadence. Worker-sorted views publish data, count, and order together
+   * after the worker reply, so streaming changes become visible asynchronously
+   * but never expose a mismatched intermediate scene. `'radix'` is the 24-bit GPU key path; `'exact'`
    * lazy-loads a 32-bit Float32-depth GPU radix path. The first frames
    * may skip GPU radix sorting until the module resolves.
    * Merged pools honor the same strategy, applying each source's live
@@ -385,7 +387,7 @@ export type SplatSortMetric = 'depth' | 'radial';
 
 /** Controls optional work during a per-frame source update. */
 export interface SplatUpdateOptions {
-  /** Leave sorting to {@link UnifiedSplatMesh}; uploads and LOD state still update. */
+  /** Skip sorting this update; unified sources still upload, while standalone worker views retain their published snapshot. */
   sort?: boolean;
 }
 

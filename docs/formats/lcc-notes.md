@@ -100,12 +100,16 @@ disjoint splat sets, not nested cuts like `.lcc2`. That is exactly the flat
 A cell's finest level runs to millions of splats (Casino's cell (1,0) level 0 is
 2.9M = 92.6 MB), so `buildLccScene` splits big cells: K =
 `ceil(finestPresentLevelCount / 128_000)` sub-leaves, every present level
-partitioned K ways at shared floor boundaries, each `(cell, level, i)` slice its
-own ranged chunk (label suffix `.i`, only on split cells). Dedicated files per
-slice mean the scheduler's runs never coalesce across sub-leaves. All sub-leaves
-from one physical cell share a scheduler budget group: detail still streams in
+partitioned K ways at shared floor boundaries. Finer `(cell, level, i)` slices
+keep their own ranged chunks (label suffix `.i`, only on split cells). A
+coarsest level of at most 128k splats uses one ranged chunk for the whole cell;
+its sub-leaves reference contiguous offsets in that file and coalesce into one
+drawable run. This reduces a broad first paint to one coarse request per cell.
+All sub-leaves from one physical cell share a scheduler budget group: detail still streams in
 slice by slice, with pinned coarse coverage while each finer slice arrives, but
-budget promotion/demotion selects one cut for the entire cell. The 2:1
+budget promotion/demotion selects one cut for the entire cell. A shared coarse
+run switches to finer slices as one visible transaction; once the cell has
+separate resident slices, later refinements can switch slice by slice. The 2:1
 `shcoef.bin` derivation works for any sub-range unchanged.
 
 Record order is **not reliably spatially uncorrelated across writers**. Two
@@ -175,7 +179,12 @@ Per-cell L0 commits are atomic, but many nearby cells finishing one after
 another still looks like empty tiles filling in. The library default
 `StreamedSplatMeshOptions.initialReveal: 'hold-coverage'` (same as `.lcc2`;
 other streamed formats remain `'progressive'`) hides the mesh until every
-**in-view** physical cell has covering coverage resident. Nearby cells
+**in-view** physical cell has covering coverage resident. When at least three
+physical cells are selected and the whole coarse floor uses no more than half
+the splat budget, the hold also includes every other cell at coarsest. This
+keeps a broad first frame from showing large missing patches while their
+coarse chunks are still pending. A one- or two-cell view and a tight budget
+keep the camera-directed hold. Nearby selected cells
 (AABB distance ≤ `lodBaseDistance · lodMultiplier`, the L0+L1 bands) freeze
 at finest+1 (L1 when L0 exists — startup never waits for L0). Farther in-view
 cells freeze at coarsest. Classic LCC cells tile X/Y and span the full scene

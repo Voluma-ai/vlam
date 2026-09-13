@@ -141,10 +141,16 @@ dynamic-capacity (`new SplatMesh({ capacity })`, an empty pool filled with
 `StreamedSplatMesh extends SplatMesh` drives that pool within a per-device
 splat budget from any streamed source: a Streamed SOG (`lod-meta.json`)
 manifest, XGRIDS LCC (`.lcc`, manifest v3–v5), `.lcc2`, or Spark `.rad`. Both
-modes work on both backends: the WebGL2 fallback's CPU sort worker mirrors the
-pool centers and sorts the active spans. Packed per-splat shN survives streamed
-appends; only callers that append palette-backed `SplatData` directly to a
-dynamic shared pool lose shN, because per-file palettes cannot be merged there.
+modes work on both backends. The WebGL2 fallback (and explicit WebGPU worker
+strategy) captures one immutable publication snapshot, sends its centers and
+active indices to the CPU sort worker, then publishes its changed texture rows,
+packed SH/channels, count, and order together during render preparation. Until
+then it keeps the last complete scene visible (or draws zero before the first
+publication). This boundary is intentional latency, not removable overhead:
+never upload pending rows, patch the draw list, or change instance count on a
+worker path outside it. Packed per-splat shN survives streamed appends; only
+callers that append palette-backed `SplatData` directly to a dynamic shared pool
+lose shN, because per-file palettes cannot be merged there.
 
 The demo consumes the library through the published entries (`src/lib/core/index.ts`
 and the optional subpaths) - if the demo needs something those entries do not
@@ -224,6 +230,7 @@ error messages, and comments stay strictly professional.
 | Chromium drops Dawn if `GPUAdapter` is collected | `createWebGPURenderer` pins the adapter on the renderer (a normal JS object) and guards `device.popErrorScope` so three's fire-and-forget pipeline validation cannot reject as `"Instance dropped in popErrorScope"`. Holding only the `GPUDevice` host object is not enough; Linux SwiftShader in CI is the usual repro. |
 | Sort precision scales with scene size | The GPU sort buckets depth linearly across the whole scene's range, so a big scene gives coarse near-camera buckets → thousands of overlapping splats tie → they reshuffle as the camera moves (popping on grass/foliage). It uses 2²² buckets (sub-splat-width) so ties stay coplanar and invisible. Do NOT switch to a multi-pass LSD radix: the parallel `atomicAdd` scatter is **not** stable, so pass 2 scrambles pass 1's order (only the top bits end up sorted). The CPU worker's sequential scatter *is* stable, so it can and does use a 2-pass 24-bit radix. |
 | WebGPU never defaults to the CPU sort worker | Spark matching is load speed and LOD quality. `sortStrategy: 'worker'` on WebGPU is an explicit A/B opt-in (`?sort=worker` in the demo). Do not switch the demo or library default to the worker to "match Spark's lower-frequency sort": at millions of splats that lags hundreds of ms behind the camera. |
+| Worker snapshots publish atomically | **Do not optimize this boundary away.** A worker request owns copied dirty core/SH/channel rows and an exact active-index list, identified by a generation rather than slot spans. The old published textures, order, and count remain visible until that reply is prepared; then all three advance together. Slot reuse (especially RAD), compaction, or continuous loading make range equality insufficient. Keep one snapshot in flight/awaiting publication; on error restore row coverage and retry. Deterministic delayed-reply tests are the regression lock. |
 | Never assume the initial texture upload covers later writes | The backends upload a `needsUpdate` texture at different moments (WebGL: first render, even with 0 instances). Only constructor-time pool writes may ride the initial upload; every post-construction write must go through the staging-copy flush, or the skipped rows render invisible (a rectangular "hole" of alpha-0 splats). |
 | Staging upload heights thrash an exact-size LRU | Page-table RAD plans dirty many non-adjacent row spans with distinct heights. Cache staging textures by power-of-two height buckets and copy only the live rows via `copyTextureToTexture` `srcRegion` (`Box2`); an exact-height LRU of a few slots will allocate dozens of textures per flush and spike `swapUploadWorstMs`. |
 | Publish-retire must share the per-plan splat cap | `maxAppends` paced newcomers, but once the queue emptied with `publish: true` the pager retired every deferred leaver in one plan. Cap that eviction half too (`FrontierPager.evictBudget`); otherwise hotel-orbit `planTimings.worstApplyMs` spikes to ~150 ms on 300 k+ moves. |

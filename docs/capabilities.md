@@ -180,9 +180,10 @@ the version you install (`>= 0.185.0` is the peer range).
 standalone rendering, static `SplatMesh`, streamed `StreamedSplatMesh`,
 static `MergedSplatMesh` inter-sort, picking, and spatial queries all work, but
 not full parity: no heterogeneous `UnifiedSplatMesh`, no `wgslFn`-only
-effect presets such as `revealPreset`, multi-view via an async worker sort,
-and streamed sorting can flicker under camera motion (ROADMAP L5). The exact
-list is the [WebGL2 scope statement](#webgl2-scope-statement) below.
+effect presets such as `revealPreset` and synchronous per-view ordering. Its
+async worker sort deliberately delays a changed stream until a full snapshot
+can publish; it retains the previous complete scene rather than flickering.
+The exact list is the [WebGL2 scope statement](#webgl2-scope-statement) below.
 
 **Mobile caveats.** Mobile devices get different defaults, not a different
 code path: `performanceProfile: 'smooth'`, `maxStdDev: 3`, a 1.5 px minimum splat
@@ -392,9 +393,10 @@ inter-sort, picking, and position queries. It is **not** full feature parity:
  init and fall back to standalone meshes / static `MergedSplatMesh`.
 - No `revealPreset` / other `wgslFn`-only presets.
 - Multi-view uses async worker sort between sequential draws.
-- Streamed LCC / Streamed SOG / RAD: CPU worker sort can flicker under camera
- motion (ROADMAP **L5**). WebGPU sorting is the supported path for those
- formats until the fallback is polished.
+- Streamed LCC / Streamed SOG / RAD publish CPU-worker snapshots
+ asynchronously. The last complete scene remains visible until matching data,
+ order, and count are ready, so detail can lag one worker request but does not
+ flash during a replacement or LOD swap.
 
 Force with `?backend=webgl` in the demo.
 
