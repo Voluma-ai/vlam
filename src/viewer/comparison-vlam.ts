@@ -57,6 +57,8 @@ export async function createComparisonVlam(
         } as const)
       : {}),
     ...(resolvedMaxStdDev === undefined ? {} : { maxStdDev: resolvedMaxStdDev }),
+    ...(config.minPixelSize === undefined ? {} : { minPixelSize: config.minPixelSize }),
+    ...(config.minContribution === undefined ? {} : { minContribution: config.minContribution }),
     ...(resolvedSortMetric === undefined ? {} : { sortMetric: resolvedSortMetric }),
     ...(config.sortStrategy === undefined ? {} : { sortStrategy: config.sortStrategy }),
     ...(config.sortIntervalMs === undefined ? {} : { sortIntervalMs: config.sortIntervalMs }),
@@ -173,6 +175,8 @@ export async function createComparisonVlam(
       msaa: renderer.samples,
       shEvaluation: config.shEvaluation,
       projectionStrategy: config.projectionStrategy,
+      minPixelSize: mesh.minPixelSize,
+      minContribution: mesh.minContribution,
       projectionMemory: mesh.projectionMemoryBytes,
       requestedBackend: config.backend,
     },
@@ -360,7 +364,10 @@ export async function createComparisonVlam(
       // Lazy module loading must finish before timed warm-up starts. A fallback
       // remains explicit in diagnostics instead of masquerading as compute SH.
       const deadline = performance.now() + 30000;
-      while (shEvaluationDiagnostics(mesh).reason === 'loading-compute-module') {
+      while (
+        shEvaluationDiagnostics(mesh).reason === 'loading-compute-module' ||
+        mesh.projectionStrategyStatus.reason === 'loading-sh-cache-module'
+      ) {
         if (performance.now() > deadline) throw new Error('SH compute initialization timed out.');
         await new Promise((resolve) => setTimeout(resolve, 16));
         mesh.update(camera, renderer);
@@ -368,6 +375,10 @@ export async function createComparisonVlam(
       // A second identical update signals the settled pose to the adaptive
       // scheduler, bypassing its moving-camera cadence outside timed sampling.
       mesh.update(camera, renderer);
+      // Automatic projection resolves only once a renderer/device is known.
+      // Refresh the initially-declared metadata here so archived runs report
+      // the actual memory decision rather than its pre-device zero placeholder.
+      baseMetadata.settings.projectionMemory = mesh.projectionMemoryBytes;
       renderer.render(scene, camera);
       timer.frame(-1, false);
       await timer.finish();

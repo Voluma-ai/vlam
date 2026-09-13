@@ -69,6 +69,16 @@ describe('supportsUnifiedSplatMesh', () => {
 });
 
 describe('UnifiedSplatMesh', () => {
+  it('accepts the library auto default and keeps unified rendering on vertex projection', () => {
+    const unified = new UnifiedSplatMesh(mockRenderer(), 1);
+    expect(unified.projectionStrategy).toBe('auto');
+    expect(unified.projectionStrategyStatus).toEqual({
+      effective: 'vertex',
+      reason: 'auto-unified-source',
+    });
+    unified.dispose();
+  });
+
   it('rejects render-only sources before mutating registration state', () => {
     const renderer = mockRenderer();
     const mesh = source({ storageMode: 'render-only' });

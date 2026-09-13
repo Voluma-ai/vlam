@@ -22,13 +22,17 @@ import {
   capProjectedEigenvaluesToScreenRadius,
   equalizeProjectedEigenvalues,
   filterSplatCovariance,
+  isSplatContributionVisible,
   isSplatFootprintInFrustum,
+  packRgba8ToFloat,
   projectedSplatAxes,
   projectedSplatEigenvalues,
   projectedSplatEigenvector,
   projectSplatCovariance,
   radSplatStdDev,
 } from './splat-render-math';
+import { evaluateSplatSh } from './splat-mesh-material';
+import type { SplatShInputs, Vec3Uniform } from './splat-material-types';
 import { MAX_SPLAT_RADIUS_PX } from './splat-frustum';
 import { releaseRendererAttributes } from './compute-sorter';
 import { StorageMirrorReleaser } from './storage-attribute-mirror';
@@ -43,7 +47,7 @@ export interface ProjectedSplatBuffers {
   readonly clipCenters: THREE.StorageBufferAttribute;
   /** major.xy, minor.xy in drawing-buffer pixels. */
   readonly axes: THREE.StorageBufferAttribute;
-  /** opacity compensation, adjusted stddev, reserved, cached sort key. */
+  /** opacity compensation, adjusted stddev, packed color or visibility, cached sort key. */
   readonly parameters: THREE.StorageBufferAttribute;
   /** Dense work-buffer indices, one entry per visible splat. */
   readonly visibleIndices: THREE.StorageBufferAttribute;
@@ -293,6 +297,8 @@ export function estimateProjectedSplatPeakBytes(capacity: number): number {
 /** Texture-backed counterpart used by an unmodified standalone SplatMesh. */
 export class StandaloneProjectedSplatPipeline {
   readonly buffers: ProjectedSplatBuffers;
+  /** True when this projector packed SH into `parameters.z`. */
+  readonly packedColor: boolean;
   private readonly modelView = uniform(new THREE.Matrix4());
   private readonly projection = uniform(new THREE.Matrix4());
   private readonly resetPass: THREE.ComputeNode;
@@ -323,10 +329,14 @@ export class StandaloneProjectedSplatPipeline {
       dofAperture: FloatUniform;
       maxAspect: number;
       lodAlpha: boolean;
-      performanceProfile: 'quality' | 'smooth';
+      minPixelSize: number;
+      minContribution: number;
       sortMetric: 'depth' | 'radial';
+      localCameraPosition: Vec3Uniform;
+      sh: SplatShInputs | null;
     },
   ) {
+    this.packedColor = options.sh !== null;
     const clipCenters = new THREE.StorageBufferAttribute(new Float32Array(options.capacity * 4), 4);
     const axes = new THREE.StorageBufferAttribute(new Float32Array(options.capacity * 4), 4);
     const parameters = new THREE.StorageBufferAttribute(new Float32Array(options.capacity * 4), 4);
@@ -404,7 +414,8 @@ export class StandaloneProjectedSplatPipeline {
         options.maxAspect > 0
           ? lambda1.min(lambda2.mul(options.maxAspect * options.maxAspect))
           : lambda1;
-      const originalAlpha = textureLoad(options.colorsTexture, texel).a;
+      const baseColor = textureLoad(options.colorsTexture, texel);
+      const originalAlpha = baseColor.a;
       const stdDev = options.lodAlpha
         ? radSplatStdDev(originalAlpha.mul(2), float(options.maxStdDev))
         : float(options.maxStdDev);
@@ -423,30 +434,32 @@ export class StandaloneProjectedSplatPipeline {
         projectedAxes.major,
         projectedAxes.minor,
       );
-      const contributionVisible =
-        options.performanceProfile === 'smooth'
-          ? originalAlpha
-              .greaterThanEqual(1 / 255)
-              .and(
-                projectedAxes.major
-                  .length()
-                  .max(projectedAxes.minor.length())
-                  .mul(2)
-                  .greaterThanEqual(2),
-              )
-              .and(
-                originalAlpha
-                  .mul(projectedAxes.major.length())
-                  .mul(projectedAxes.minor.length())
-                  .greaterThanEqual(3),
-              )
-          : float(1).greaterThan(0);
+      const contributionVisible = isSplatContributionVisible(
+        originalAlpha,
+        projectedAxes.major,
+        projectedAxes.minor,
+        options.minPixelSize,
+        options.minContribution,
+      );
       If(footprintVisible.and(contributionVisible), () => {
         clipData.element(poolIndex).assign(clipCenter);
         axesData.element(poolIndex).assign(vec4(projectedAxes.major, projectedAxes.minor));
         const sortKey =
           options.sortMetric === 'radial' ? viewCenter.xyz.length().negate() : viewCenter.z;
-        parameterData.element(poolIndex).assign(vec4(opacityCompensation, stdDev, 0, sortKey));
+        const shRgb = options.sh
+          ? evaluateSplatSh(
+              options.sh,
+              { covarianceBTexture: options.covarianceBTexture },
+              texel,
+              center.sub(options.localCameraPosition).normalize(),
+            )
+          : vec3(0);
+        const packedColor = packRgba8ToFloat(
+          vec4(baseColor.rgb.add(shRgb).clamp(0.0, 1.0), originalAlpha),
+        );
+        parameterData
+          .element(poolIndex)
+          .assign(vec4(opacityCompensation, stdDev, packedColor, sortKey));
         const destination = atomicAdd(counter.element(0), uint(1));
         visibleData.element(destination).assign(poolIndex);
       });

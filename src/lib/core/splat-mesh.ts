@@ -1,6 +1,7 @@
 import {
   MAX_SH_BANDS,
   resolveSplatPerformanceProfile,
+  resolveProjectedContributionCulls,
   type ProjectedFilterProfile,
   type SplatChannelOptions,
   type SplatChannelType,
@@ -35,7 +36,7 @@ import {
 } from './compute-sorter';
 import { WorkerSorter } from './worker-sorter';
 import { WebGpuSortScheduler, validateSortIntervalMs } from './sort-scheduler';
-import { detectSplatDeviceProfile } from './splat-budget';
+import { classifySplatGpuClass, detectSplatDeviceProfile } from './splat-budget';
 import { encodeFloat32ToHalf } from './half-float';
 import { SplatPicker } from './splat-mesh-picking';
 import { clampDepthOfFieldSettings, type DepthOfFieldSettings } from './depth-of-field';
@@ -82,6 +83,10 @@ import {
   estimateProjectedSplatSteadyBytes,
 } from './projected-splat-pipeline';
 import { assertStorageBufferFitsDevice } from './webgpu-limits';
+import {
+  DEFAULT_AUTO_PROJECTION_MEMORY_BUDGET_BYTES,
+  resolveAutomaticProjectionStrategy,
+} from './projection-strategy-policy';
 
 interface UploadRowSpan {
   readonly start: number;
@@ -333,7 +338,27 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private sorter: SplatSorter | null = null;
   private projectedSorter: ComputeSorter | null = null;
   private projectedPipeline: StandaloneProjectedSplatPipeline | null = null;
+  /**
+   * State of the most recent projected-list submission. Unlike
+   * {@link lastSortedState}, this deliberately includes the projection and
+   * raster inputs: the compute projector both culls and writes per-splat
+   * screen-space data, so a stationary depth key alone is not enough to reuse
+   * it safely.
+   */
+  private readonly lastProjectedModelView = new THREE.Matrix4().makeScale(0, 0, 0);
+  private readonly lastProjectedProjection = new THREE.Matrix4().makeScale(0, 0, 0);
+  private projectedActiveListVersion = -1;
+  private projectedContentRevision = -1;
+  private projectedActiveCount = -1;
+  private projectedViewportX = Number.NaN;
+  private projectedViewportY = Number.NaN;
+  private projectedDofFocusDistance = Number.NaN;
+  private projectedDofAperture = Number.NaN;
   private readonly projectionStrategyValue: NonNullable<SplatMeshOptions['projectionStrategy']>;
+  private readonly projectionMemoryBudgetBytes: number;
+  /** Auto selection is deliberately made once, never retuned from camera motion. */
+  private automaticProjectionStrategy: 'vertex' | 'compute' | null = null;
+  private automaticProjectionReason = 'auto-pending';
   private computeProjectionActive = false;
   private readonly projectionStrategyState = {
     effective: 'vertex' as 'vertex' | 'compute',
@@ -464,6 +489,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private maxStdDevValue: number;
   /** Screen-space minimum splat radius in px; baked into the material graph. */
   private readonly minSplatSizePx: number;
+  /** Optional contribution culls; unset follows the performance profile. */
+  private readonly minPixelSizeOption: number | undefined;
+  private readonly minContributionOption: number | undefined;
   /** Mip-Splatting 2D antialiasing filter; baked into the material graph. */
   private readonly antialias: boolean;
   /** Format-selected low-pass and opacity-compensation policy. */
@@ -499,10 +527,17 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (!['auto', 'vertex', 'compute'].includes(shEvaluation)) {
       throw new RangeError('SplatMesh: invalid shEvaluation.');
     }
-    const projectionStrategy = options.projectionStrategy ?? 'vertex';
-    if (projectionStrategy !== 'vertex' && projectionStrategy !== 'compute') {
+    const projectionStrategy = options.projectionStrategy ?? 'auto';
+    if (
+      projectionStrategy !== 'auto' &&
+      projectionStrategy !== 'vertex' &&
+      projectionStrategy !== 'compute'
+    ) {
       throw new RangeError('SplatMesh: invalid projectionStrategy.');
     }
+    const projectionMemoryBudgetBytes = validateProjectionMemoryBudget(
+      options.projectionMemoryBudgetBytes,
+    );
     // Mobile GPUs are fragment-bound, so several defaults below trade detail
     // no one can see for the fill rate they cost. Every one is overridable.
     // The footprint floor addresses the low-resolution mobile coverage case,
@@ -518,6 +553,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // enough to leave dark gaps. The shader floor grows those undersized discs
     // without increasing fill for the rest; callers can still disable it with 0.
     const minSplatSizePx = validateMinSplatSizePx(options.minSplatSizePx) ?? (isMobile ? 1.5 : 0);
+    const minPixelSize = validateContributionCull(options.minPixelSize, 'minPixelSize');
+    const minContribution = validateContributionCull(options.minContribution, 'minContribution');
     const isStatic = !('capacity' in source);
     const capacity = isStatic ? source.count : source.capacity;
     if (capacity <= 0) throw new Error('SplatMesh capacity must be positive.');
@@ -658,6 +695,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     super(geometry, new THREE.NodeMaterial());
     this.shEvaluation = shEvaluation;
     this.projectionStrategyValue = projectionStrategy;
+    this.projectionMemoryBudgetBytes = projectionMemoryBudgetBytes;
+    if (projectionStrategy === 'auto') this.projectionStrategyState.reason = 'auto-pending';
     this.pool = pool;
     this.ownsPool = ownsPool;
     pool.register(this);
@@ -668,6 +707,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.performanceProfileValue = resolveSplatPerformanceProfile(options.performanceProfile);
     this.maxStdDevValue = maxStdDev;
     this.minSplatSizePx = minSplatSizePx;
+    this.minPixelSizeOption = minPixelSize;
+    this.minContributionOption = minContribution;
     // Explicit option wins; otherwise honor the source scene's flag (SOG meta).
     this.antialias = options.antialias ?? (isStatic ? (source.antialias ?? false) : false);
     this.projectedFilterProfile = options.projectedFilterProfile ?? 'default';
@@ -782,6 +823,24 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     return this.performanceProfileValue;
   }
 
+  /** Resolved on-screen diameter cull in px (0 = off). */
+  get minPixelSize(): number {
+    return this.resolvedContributionCulls().minPixelSize;
+  }
+
+  /** Resolved opacity × major × minor cull (0 = off). */
+  get minContribution(): number {
+    return this.resolvedContributionCulls().minContribution;
+  }
+
+  private resolvedContributionCulls(): { minPixelSize: number; minContribution: number } {
+    return resolveProjectedContributionCulls({
+      minPixelSize: this.minPixelSizeOption,
+      minContribution: this.minContributionOption,
+      performanceProfile: this.performanceProfileValue,
+    });
+  }
+
   /** Selected sorting strategy. WebGL2 always uses the worker fallback. */
   get sortStrategy(): SplatSortStrategy {
     return this.sortStrategyValue;
@@ -802,7 +861,12 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /** Explicit projection-cache memory, excluding the existing sort buffers. */
   get projectionMemoryBytes(): Readonly<{ steadyGpu: number; peakCpuAndGpu: number }> {
-    if (this.projectionStrategyValue !== 'compute') return { steadyGpu: 0, peakCpuAndGpu: 0 };
+    if (
+      this.projectionStrategyValue === 'vertex' ||
+      (this.projectionStrategyValue === 'auto' && this.automaticProjectionStrategy !== 'compute')
+    ) {
+      return { steadyGpu: 0, peakCpuAndGpu: 0 };
+    }
     return {
       steadyGpu: estimateProjectedSplatSteadyBytes(this.capacity),
       peakCpuAndGpu: estimateProjectedSplatPeakBytes(this.capacity),
@@ -1739,8 +1803,18 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     let sortAccepted = false;
     if (options.sort !== false) {
       const sortStartedAt = performance.now();
-      sortAccepted = this.prepareProjectedSort(projectionCamera, sortCamera, renderer);
-      if (!sortAccepted) sortAccepted = this.requestSortIfNeeded(sortCamera, renderer);
+      sortAccepted = this.prepareProjectedSort(
+        projectionCamera,
+        sortCamera,
+        renderer,
+        this.orderIsForeign,
+      );
+      // A live compute projector may intentionally have nothing new to
+      // submit. Its cached projected list remains valid; do not immediately
+      // replace it with the vertex path's full depth sort.
+      if (!sortAccepted && !this.computeProjectionActive) {
+        sortAccepted = this.requestSortIfNeeded(sortCamera, renderer);
+      }
       this.updateTimings.sortSubmitMs = performance.now() - sortStartedAt;
     } else {
       this.setComputeProjectionActive(false);
@@ -1748,7 +1822,25 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         this.projectionStrategyState.reason = 'unified-source';
       }
     }
-    this.prepareShEvaluation(renderer, false, sortAccepted, options.sort !== false);
+    // Compute projection sorts every frame for culling; pool-indexed SH does
+    // not. Reuse the vertex-path sort cadence so the cache still refreshes on
+    // camera motion rather than every projector dispatch.
+    let refreshShForSort = sortAccepted;
+    if (this.computeProjectionActive && options.sort !== false) {
+      const now = performance.now();
+      this.writeSortState(sortCamera);
+      refreshShForSort = this.sortScheduler.shouldSubmit(
+        this.currentSortState,
+        this.lastSortedState,
+        this.activeCount,
+        now,
+      );
+      if (refreshShForSort) {
+        this.lastSortedState.copy(this.currentSortState);
+        this.sortScheduler.markAccepted(now);
+      }
+    }
+    this.prepareShEvaluation(renderer, false, refreshShForSort, options.sort !== false);
   }
 
   /** Returns the render-preparation CPU timings for the current update. */
@@ -2068,6 +2160,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     const isWebGPU = (renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true;
     if (!isWebGPU) return false;
     if (this.prepareProjectedSort(camera, camera, renderer)) return true;
+    // The secondary view already owns the current projected order. Avoid a
+    // redundant vertex sort when its projector submission was safely skipped.
+    if (this.computeProjectionActive) return false;
     this.currentModelView.multiplyMatrices(camera.matrixWorldInverse, this.matrixWorld);
     this.refreshSortBounds();
     this.sorter ??= this.createSorter(renderer);
@@ -2814,6 +2909,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         foveationMode: this.foveationMode,
         maxAspect: this.maxSplatAspect,
         lodAlpha: this.lodAlpha,
+        minPixelSize: this.resolvedContributionCulls().minPixelSize,
+        minContribution: this.resolvedContributionCulls().minContribution,
       },
       // The live map: a rebuild after defineChannel must see the new entry.
       channels: this.channels,
@@ -2829,6 +2926,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         axes: this.projectedPipeline.buffers.axes,
         parameters: this.projectedPipeline.buffers.parameters,
         capacity: this.capacity,
+        packedColor: this.projectedPipeline.packedColor,
       };
     }
     applySplatMaterialGraph(this.material as THREE.NodeMaterial, 'display', inputs);
@@ -2846,14 +2944,22 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     (this.material as THREE.Material).needsUpdate = true;
   }
 
-  /** Apple Silicon Macs use generated final color; every other auto cohort stays vertex. */
-  private prepareShEvaluation(
-    renderer: THREE.WebGPURenderer,
-    force = false,
-    refreshForSort = false,
-    reuseBetweenSorts = false,
-  ): void {
-    const backend = renderer.backend as unknown as {
+  private webGpuBackend(renderer: THREE.WebGPURenderer): {
+    isWebGPUBackend?: boolean;
+    device?: {
+      adapterInfo?: {
+        vendor?: string;
+        architecture?: string;
+        device?: string;
+        description?: string;
+        isFallbackAdapter?: boolean;
+      };
+      limits?: {
+        maxTextureDimension2D?: number;
+      };
+    };
+  } {
+    return renderer.backend as unknown as {
       isWebGPUBackend?: boolean;
       device?: {
         adapterInfo?: {
@@ -2861,13 +2967,73 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           architecture?: string;
           device?: string;
           description?: string;
+          isFallbackAdapter?: boolean;
         };
         limits?: {
           maxTextureDimension2D?: number;
         };
       };
     };
+  }
+
+  /** Resolves and locks the auto projection decision from reusable scene and device signals. */
+  private resolvedProjectionStrategy(renderer: THREE.WebGPURenderer): 'vertex' | 'compute' {
+    if (this.projectionStrategyValue !== 'auto') return this.projectionStrategyValue;
+    if (this.automaticProjectionStrategy !== null) return this.automaticProjectionStrategy;
+    const backend = this.webGpuBackend(renderer);
     const adapterInfo = backend.device?.adapterInfo;
+    const hasAdapterIdentity =
+      adapterInfo !== undefined &&
+      (adapterInfo.isFallbackAdapter === true ||
+        [
+          adapterInfo.vendor,
+          adapterInfo.architecture,
+          adapterInfo.device,
+          adapterInfo.description,
+        ].some((value) => typeof value === 'string' && value.length > 0));
+    const adapterText = [
+      adapterInfo?.vendor,
+      adapterInfo?.architecture,
+      adapterInfo?.device,
+      adapterInfo?.description,
+    ]
+      .join(' ')
+      .toLowerCase();
+    const culls = this.resolvedContributionCulls();
+    const result = resolveAutomaticProjectionStrategy({
+      capacity: this.capacity,
+      hasSh: this.materialInputs.sh !== null,
+      hasBalancedContributionCulls: culls.minPixelSize >= 2 && culls.minContribution >= 3,
+      isStatic: this.isStatic,
+      ownsPool: this.ownsPool,
+      isWebGpu: backend.isWebGPUBackend === true,
+      isXr: renderer.xr?.isPresenting === true,
+      isUnifiedSource: this.unifiedPickVisibility !== null,
+      hasSourcePlacement: this.perSourceSort !== null,
+      hasModifiers: this.modifierList.length > 0,
+      usesCountingSort: this.sortStrategy === 'counting',
+      usesFoveation:
+        this.foveationMode === 'frontier' ||
+        (this.foveationMode === 'band' &&
+          (this.minSplatScreenRadius > 0 || this.maxSplatScreenRadius > 0)),
+      gpuClass: hasAdapterIdentity ? classifySplatGpuClass(adapterInfo) : undefined,
+      // Only NVIDIA Ampere has the full measured static-SH corpus so far.
+      // A generic discrete adapter is not evidence that this policy will win.
+      isValidatedDeviceClass:
+        /nvidia/.test(adapterText) && /ampere|ga10[2-9]|rtx\s*30/.test(adapterText),
+      isMobile: detectSplatDeviceProfile()?.isMobile === true,
+      memoryBudgetBytes: this.projectionMemoryBudgetBytes,
+    });
+    this.automaticProjectionStrategy = result.strategy;
+    this.automaticProjectionReason = result.reason;
+    return result.strategy;
+  }
+
+  /** Apple Silicon and auto-selected desktop compute paths use generated final color. */
+  private shEvaluationWantsCompute(renderer: THREE.WebGPURenderer): boolean {
+    if (this.shEvaluation === 'compute') return true;
+    if (this.shEvaluation !== 'auto') return false;
+    const adapterInfo = this.webGpuBackend(renderer).device?.adapterInfo;
     const adapterText = [
       adapterInfo?.vendor,
       adapterInfo?.architecture,
@@ -2887,40 +3053,73 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       (platform === 'macOS' || /mac/i.test(platform)) &&
       (nav?.maxTouchPoints ?? 0) <= 1 &&
       (adapterText.includes('apple') || adapterText.includes('metal'));
-    const useCompute =
-      this.shEvaluation === 'compute' || (this.shEvaluation === 'auto' && appleMac);
+    return (
+      appleMac ||
+      (this.projectionStrategyValue === 'auto' && this.automaticProjectionStrategy === 'compute')
+    );
+  }
+
+  /**
+   * Synchronous SH-cache capability gate shared by evaluation and projection.
+   * Independent of `shEvaluation` so both call sites agree within a frame.
+   */
+  private shComputeCacheIneligibleReason(renderer: THREE.WebGPURenderer): string | null {
+    const backend = this.webGpuBackend(renderer);
+    const sh = this.materialInputs.sh;
+    const limits = backend.device?.limits;
+    const bytes = this.capacity * 4;
+    const shCacheHeight = Math.ceil(this.capacity / SplatMesh.DATA_TEXTURE_WIDTH);
+    if (backend.isWebGPUBackend !== true) return 'webgl';
+    if (!this.isStatic || !this.ownsPool) return 'dynamic-or-shared-pool';
+    if (this.perSourceSort !== null) return 'source-placement';
+    if (this.modifierList.length > 0) return 'modifiers';
+    if (this.unifiedPickVisibility !== null) return 'unified-source';
+    if (renderer.xr?.isPresenting) return 'xr';
+    if (sh === null) return 'sh-disabled';
+    if (!limits || shCacheHeight > (limits.maxTextureDimension2D ?? Number.POSITIVE_INFINITY)) {
+      return 'device-limits';
+    }
+    if (bytes > SH_COMPUTE_CACHE_VALIDATED_MAX_BYTES) return 'workload-limit';
+    if (this.shCacheFailed) return 'initialization-failed';
+    return null;
+  }
+
+  /** True when this frame's vertex stage will sample the SH cache for color. */
+  private shCacheWillSupplyColor(renderer: THREE.WebGPURenderer): boolean {
+    return (
+      this.shEvaluationWantsCompute(renderer) &&
+      this.shComputeCacheIneligibleReason(renderer) === null
+    );
+  }
+
+  private ensureShCacheModule(): void {
+    if (this.ShCacheCtor || this.shCacheLoading) return;
+    this.shCacheLoading = true;
+    void import('./sh-compute-cache')
+      .then(({ ShComputeCache }) => {
+        if (!this.disposed) this.ShCacheCtor = ShComputeCache;
+      })
+      .catch((error: unknown) => {
+        this.shCacheFailed = true;
+        warn(`SplatMesh: SH compute module failed; keeping vertex SH. ${String(error)}`);
+      });
+  }
+
+  /** Apple Silicon Macs use generated final color; every other auto cohort stays vertex. */
+  private prepareShEvaluation(
+    renderer: THREE.WebGPURenderer,
+    force = false,
+    refreshForSort = false,
+    reuseBetweenSorts = false,
+  ): void {
+    const useCompute = this.shEvaluationWantsCompute(renderer);
     if (!useCompute) {
       this.shEvaluationState.reason =
         this.shEvaluation === 'auto' ? 'unvalidated-auto-device' : 'explicit-vertex';
       return;
     }
     const sh = this.materialInputs.sh;
-    const limits = backend.device?.limits;
-    const bytes = this.capacity * 4;
-    const shCacheHeight = Math.ceil(this.capacity / SplatMesh.DATA_TEXTURE_WIDTH);
-    const reason =
-      backend.isWebGPUBackend !== true
-        ? 'webgl'
-        : !this.isStatic || !this.ownsPool
-          ? 'dynamic-or-shared-pool'
-          : this.perSourceSort !== null
-            ? 'source-placement'
-            : this.modifierList.length > 0
-              ? 'modifiers'
-              : this.unifiedPickVisibility !== null
-                ? 'unified-source'
-                : renderer.xr?.isPresenting
-                  ? 'xr'
-                  : sh === null
-                    ? 'sh-disabled'
-                    : !limits ||
-                        shCacheHeight > (limits.maxTextureDimension2D ?? Number.POSITIVE_INFINITY)
-                      ? 'device-limits'
-                      : bytes > SH_COMPUTE_CACHE_VALIDATED_MAX_BYTES
-                        ? 'workload-limit'
-                        : this.shCacheFailed
-                          ? 'initialization-failed'
-                          : null;
+    const reason = this.shComputeCacheIneligibleReason(renderer);
     if (reason !== null || sh === null) {
       this.shEvaluationState.reason = reason ?? 'sh-disabled';
       this.clearShCache();
@@ -2928,17 +3127,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     }
     if (!this.ShCacheCtor) {
       this.shEvaluationState.reason = 'loading-compute-module';
-      if (!this.shCacheLoading) {
-        this.shCacheLoading = true;
-        void import('./sh-compute-cache')
-          .then(({ ShComputeCache }) => {
-            if (!this.disposed) this.ShCacheCtor = ShComputeCache;
-          })
-          .catch((error: unknown) => {
-            this.shCacheFailed = true;
-            warn(`SplatMesh: SH compute module failed; keeping vertex SH. ${String(error)}`);
-          });
-      }
+      this.ensureShCacheModule();
       return;
     }
     if (this.shCache && (this.shCacheSh !== sh || this.shCacheRenderer !== renderer)) {
@@ -2983,9 +3172,13 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.shEvaluationState.reason =
       phase === 'cache-between-sorts'
         ? 'camera-motion-cached'
-        : this.shEvaluation === 'auto'
-          ? 'apple-mac-auto'
-          : 'explicit-compute';
+        : this.computeProjectionActive
+          ? this.projectionStrategyValue === 'auto'
+            ? 'auto-projection-cache'
+            : 'compute-projection-cache'
+          : this.shEvaluation === 'auto'
+            ? 'apple-mac-auto'
+            : 'explicit-compute';
   }
 
   /** Builds/runs the opt-in mono projection cache and its dense-list sorter. */
@@ -2993,14 +3186,19 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     projectionCamera: THREE.Camera,
     sortCamera: THREE.Camera,
     renderer: THREE.WebGPURenderer,
+    force = false,
   ): boolean {
-    if (this.projectionStrategyValue !== 'compute') {
+    const requestedStrategy = this.resolvedProjectionStrategy(renderer);
+    if (requestedStrategy !== 'compute') {
       this.projectionStrategyState.effective = 'vertex';
-      this.projectionStrategyState.reason = 'explicit-vertex';
+      this.projectionStrategyState.reason =
+        this.projectionStrategyValue === 'auto'
+          ? this.automaticProjectionReason
+          : 'explicit-vertex';
       this.setComputeProjectionActive(false);
       return false;
     }
-    const webgpu = (renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true;
+    const webgpu = this.webGpuBackend(renderer).isWebGPUBackend === true;
     const reason = !webgpu
       ? 'webgl'
       : renderer.xr?.isPresenting
@@ -3028,6 +3226,18 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       this.setComputeProjectionActive(false);
       return false;
     }
+    const cacheSuppliesColor = this.shCacheWillSupplyColor(renderer);
+    if (cacheSuppliesColor && !this.ShCacheCtor) {
+      this.ensureShCacheModule();
+      this.projectionStrategyState.effective = 'vertex';
+      this.projectionStrategyState.reason = 'loading-sh-cache-module';
+      this.setComputeProjectionActive(false);
+      return false;
+    }
+    const wantPackedColor = !cacheSuppliesColor && this.materialInputs.sh !== null;
+    if (this.projectedPipeline && this.projectedPipeline.packedColor !== wantPackedColor) {
+      this.resetProjectedPipeline();
+    }
     if (!this.projectedPipeline) {
       try {
         // clip centers, axes and parameters are the largest added bindings.
@@ -3051,8 +3261,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           dofAperture: this.dofAperture,
           maxAspect: this.maxSplatAspect,
           lodAlpha: this.lodAlpha,
-          performanceProfile: this.performanceProfileValue,
+          ...this.resolvedContributionCulls(),
           sortMetric: this.sortMetric,
+          localCameraPosition: this.localCameraPosition,
+          sh: wantPackedColor ? this.materialInputs.sh : null,
         });
         this.projectedSorter = new ComputeSorter({
           renderer,
@@ -3084,6 +3296,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     }
     this.setComputeProjectionActive(true);
     this.currentModelView.multiplyMatrices(sortCamera.matrixWorldInverse, this.matrixWorld);
+    if (!this.needsProjectedSort(projectionCamera, force)) {
+      this.projectionStrategyState.effective = 'compute';
+      this.projectionStrategyState.reason =
+        this.projectionStrategyValue === 'auto'
+          ? this.automaticProjectionReason
+          : 'explicit-compute';
+      return false;
+    }
     this.refreshSortBounds();
     this.projectedPipeline.prepare(
       this.currentModelView,
@@ -3097,15 +3317,41 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         this.boundingSphereLocal,
         cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
       );
+      this.refreshProjectedVisibleCountHint();
     }
+    this.recordProjectedSort(projectionCamera);
+    this.sortedActiveListVersion = this.activeListVersion;
+    this.orderIsForeign = false;
     this.projectionStrategyState.effective = 'compute';
-    this.projectionStrategyState.reason = 'explicit-compute';
+    this.projectionStrategyState.reason =
+      this.projectionStrategyValue === 'auto' ? this.automaticProjectionReason : 'explicit-compute';
     return true;
+  }
+
+  private projectedVisibleCountRead: Promise<void> | null = null;
+
+  private refreshProjectedVisibleCountHint(): void {
+    const pipeline = this.projectedPipeline;
+    const sorter = this.projectedSorter;
+    if (!pipeline || !sorter || this.projectedVisibleCountRead) return;
+    const pending = pipeline
+      .readVisibleCount()
+      .then((count) => {
+        if (this.projectedSorter === sorter) sorter.setVisibleCountHint(count);
+      })
+      .catch(() => {
+        /* A lost device or disposed pipeline is reported by the next update. */
+      })
+      .finally(() => {
+        if (this.projectedVisibleCountRead === pending) this.projectedVisibleCountRead = null;
+      });
+    this.projectedVisibleCountRead = pending;
   }
 
   private setComputeProjectionActive(active: boolean): void {
     if (this.computeProjectionActive === active) return;
     this.computeProjectionActive = active;
+    if (!active) this.invalidateProjectedSortCache();
     this.picker.markNeedsUpdate();
     (this.geometry as THREE.InstancedBufferGeometry).setIndirect(
       active ? (this.projectedPipeline?.buffers.drawArgs ?? null) : null,
@@ -3119,11 +3365,53 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   private resetProjectedPipeline(): void {
     this.setComputeProjectionActive(false);
+    this.invalidateProjectedSortCache();
     this.projectedSorter?.dispose();
     this.projectedSorter = null;
     this.projectedPipeline?.dispose();
     this.projectedPipeline = null;
     this.projectionPipelineFailed = false;
+    this.projectedVisibleCountRead = null;
+  }
+
+  /** Returns whether culling, projected attributes, or list order need rebuilding. */
+  private needsProjectedSort(projectionCamera: THREE.Camera, force: boolean): boolean {
+    return (
+      force ||
+      !this.lastProjectedModelView.equals(this.currentModelView) ||
+      !this.lastProjectedProjection.equals(projectionCamera.projectionMatrix) ||
+      this.projectedActiveListVersion !== this.activeListVersion ||
+      this.projectedContentRevision !== this.contentRevision ||
+      this.projectedActiveCount !== this.activeCount ||
+      this.projectedViewportX !== this.viewport.value.x ||
+      this.projectedViewportY !== this.viewport.value.y ||
+      this.projectedDofFocusDistance !== this.dofFocusDistance.value ||
+      this.projectedDofAperture !== this.dofAperture.value
+    );
+  }
+
+  /** Captures every input consumed by the projected compute passes. */
+  private recordProjectedSort(projectionCamera: THREE.Camera): void {
+    this.lastProjectedModelView.copy(this.currentModelView);
+    this.lastProjectedProjection.copy(projectionCamera.projectionMatrix);
+    this.projectedActiveListVersion = this.activeListVersion;
+    this.projectedContentRevision = this.contentRevision;
+    this.projectedActiveCount = this.activeCount;
+    this.projectedViewportX = this.viewport.value.x;
+    this.projectedViewportY = this.viewport.value.y;
+    this.projectedDofFocusDistance = this.dofFocusDistance.value;
+    this.projectedDofAperture = this.dofAperture.value;
+  }
+
+  /** Makes the next compute-projection update rebuild all projected buffers. */
+  private invalidateProjectedSortCache(): void {
+    this.projectedActiveListVersion = -1;
+    this.projectedContentRevision = -1;
+    this.projectedActiveCount = -1;
+    this.projectedViewportX = Number.NaN;
+    this.projectedViewportY = Number.NaN;
+    this.projectedDofFocusDistance = Number.NaN;
+    this.projectedDofAperture = Number.NaN;
   }
 
   private requestSortIfNeeded(camera: THREE.Camera, renderer: THREE.WebGPURenderer): boolean {
@@ -3356,6 +3644,21 @@ function validateMinSplatSizePx(value: number | undefined): number | undefined {
     throw new RangeError('SplatMesh minSplatSizePx must be a finite number >= 0.');
   }
   return value;
+}
+
+function validateContributionCull(value: number | undefined, name: string): number | undefined {
+  if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
+    throw new RangeError(`SplatMesh ${name} must be a finite number >= 0.`);
+  }
+  return value;
+}
+
+function validateProjectionMemoryBudget(value: number | undefined): number {
+  const budget = value ?? DEFAULT_AUTO_PROJECTION_MEMORY_BUDGET_BYTES;
+  if (!Number.isFinite(budget) || budget < 0) {
+    throw new RangeError('SplatMesh projectionMemoryBudgetBytes must be a finite number >= 0.');
+  }
+  return budget;
 }
 
 /** Validates a screen-radius cull override; `0`/unset both mean "off". */

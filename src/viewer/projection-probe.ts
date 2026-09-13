@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu';
 import { createWebGPURenderer, SplatMesh } from '../lib/core';
 import { loadSplatData } from '../lib/loaders';
 import { UnifiedSplatMesh } from '../lib/unified';
+import { shEvaluationDiagnostics } from './sh-evaluation-diagnostics';
 
 const output = document.querySelector<HTMLOutputElement>('[data-testid="result"]');
 const canvas = document.querySelector<HTMLCanvasElement>('#canvas');
@@ -16,6 +17,19 @@ addEventListener('unhandledrejection', (event) => {
 const renderer = await createWebGPURenderer({ canvas, antialias: false, requireWebGpu: true });
 renderer.setSize(64, 64, false);
 await renderer.init();
+const backend = renderer.backend as unknown as {
+  isWebGPUBackend?: boolean;
+  device?: {
+    adapterInfo?: {
+      vendor?: string;
+      architecture?: string;
+      device?: string;
+      description?: string;
+      driver?: string;
+      isFallbackAdapter?: boolean;
+    };
+  };
+};
 const positions = new Float32Array([
   0,
   0,
@@ -179,7 +193,9 @@ const gooseCamera = new THREE.PerspectiveCamera(45, 16 / 9, 0.01, 10_000);
 gooseCamera.position.set(-0.0004366189241409302, 0.00006721913814544678, 1.5563988874388157);
 gooseCamera.lookAt(-0.0004366189241409302, 0.00006721913814544678, 0.00020229816436767578);
 gooseCamera.updateMatrixWorld();
-const renderGoose = async (projectionStrategy: 'vertex' | 'compute'): Promise<Uint8Array> => {
+const renderGoose = async (
+  projectionStrategy: 'vertex' | 'compute',
+): Promise<{ pixels: Uint8Array; projectionDispatches: number | null }> => {
   const mesh = new SplatMesh(gooseData, {
     orientation: 'source',
     projectionStrategy,
@@ -210,6 +226,9 @@ const renderGoose = async (projectionStrategy: 'vertex' | 'compute'): Promise<Ui
   gooseCamera.lookAt(target);
   gooseCamera.updateMatrixWorld();
   mesh.update(gooseCamera, renderer);
+  if (projectionStrategy === 'compute' && mesh.projectionStrategyStatus.effective !== 'compute') {
+    throw new Error(`Compute projection fell back: ${mesh.projectionStrategyStatus.reason}`);
+  }
   renderer.render(scene, gooseCamera);
   gooseCamera.position.copy(front);
   gooseCamera.lookAt(target);
@@ -218,21 +237,124 @@ const renderGoose = async (projectionStrategy: 'vertex' | 'compute'): Promise<Ui
   mesh.update(gooseCamera, renderer);
   mesh.update(gooseCamera, renderer);
   const pixels = await drawPixels(mesh, gooseCamera, 1280, 720);
+  const pipeline = mesh as unknown as {
+    projectedPipeline: { projectionDispatches: number } | null;
+  };
+  const projectionDispatches = pipeline.projectedPipeline?.projectionDispatches ?? null;
   scene.remove(mesh);
   mesh.dispose();
-  return pixels;
+  return { pixels, projectionDispatches };
 };
 const gooseVertex = await renderGoose('vertex');
 const gooseCompute = await renderGoose('compute');
 let gooseDifferentChannels = 0;
 let gooseMaxChannelDifference = 0;
-for (let i = 0; i < gooseVertex.length; i++) {
-  const difference = Math.abs(gooseVertex[i]! - gooseCompute[i]!);
-  if (difference > 0) gooseDifferentChannels++;
-  gooseMaxChannelDifference = Math.max(gooseMaxChannelDifference, difference);
+for (let i = 0; i < gooseVertex.pixels.length; i++) {
+  const computeDifference = Math.abs(gooseVertex.pixels[i]! - gooseCompute.pixels[i]!);
+  if (computeDifference > 0) gooseDifferentChannels++;
+  gooseMaxChannelDifference = Math.max(gooseMaxChannelDifference, computeDifference);
 }
+
+// Goose has no SH, so use a small view-dependent fixture to exercise the
+// cache-plus-projection color path and its refresh after camera movement.
+const shPalette = new Float32Array(192 * 4);
+// The camera looks along -Z. A negative Z coefficient therefore adds red at
+// both poses; a smaller X term keeps the two results visibly view-dependent
+// rather than accidentally clamping either pose to black.
+shPalette[4] = -0.5;
+shPalette[8] = 0.3;
+const shData = {
+  count: 1,
+  positions: new Float32Array([0, 0, 0]),
+  colors: new Uint8Array([80, 100, 120, 255]),
+  covariances: new Float32Array([0.04, 0, 0, 0.04, 0, 0.04]),
+  sh: {
+    bands: 1,
+    labels: new Uint32Array(1),
+    palette: shPalette,
+    paletteWidth: 192,
+    paletteHeight: 1,
+  },
+};
+const shCamera = new THREE.PerspectiveCamera(90, 1, 0.1, 10);
+const renderSh = async (
+  projectionStrategy: 'vertex' | 'compute',
+  shEvaluation: 'vertex' | 'compute',
+  shBands: 0 | 1 = 1,
+): Promise<{ pixels: number[][]; dispatches: number; packedColor: boolean | null }> => {
+  const mesh = new SplatMesh(shData, {
+    projectionStrategy,
+    shEvaluation,
+    shBands,
+    sortIntervalMs: 0,
+    srgbOutput: true,
+  });
+  const pixels: number[][] = [];
+  try {
+    for (const x of [0, 1]) {
+      shCamera.position.set(x, 0, 2);
+      shCamera.lookAt(0, 0, 0);
+      shCamera.updateMatrixWorld();
+      mesh.update(shCamera, renderer);
+      const deadline = performance.now() + 30_000;
+      while (
+        shEvaluationDiagnostics(mesh).reason === 'loading-compute-module' ||
+        mesh.projectionStrategyStatus.reason === 'loading-sh-cache-module'
+      ) {
+        if (performance.now() > deadline)
+          throw new Error('SH projection probe initialization timed out.');
+        await new Promise((resolve) => setTimeout(resolve, 16));
+        mesh.update(shCamera, renderer);
+      }
+      if (
+        projectionStrategy === 'compute' &&
+        mesh.projectionStrategyStatus.effective !== 'compute'
+      ) {
+        throw new Error(`SH projection probe fell back: ${mesh.projectionStrategyStatus.reason}`);
+      }
+      if (shEvaluation === 'compute' && shEvaluationDiagnostics(mesh).resolved !== 'compute') {
+        throw new Error(`SH cache probe fell back: ${shEvaluationDiagnostics(mesh).reason}`);
+      }
+      const image = await drawPixels(mesh, shCamera);
+      pixels.push(Array.from(image.slice((32 * 64 + 32) * 4, (32 * 64 + 33) * 4)));
+    }
+    const pipeline = mesh as unknown as { projectedPipeline: { packedColor: boolean } | null };
+    return {
+      pixels,
+      dispatches: shEvaluationDiagnostics(mesh).dispatches,
+      packedColor: pipeline.projectedPipeline?.packedColor ?? null,
+    };
+  } finally {
+    mesh.dispose();
+  }
+};
+const shBase = await renderSh('vertex', 'vertex', 0);
+const shVertex = await renderSh('vertex', 'vertex');
+const shComputeCache = await renderSh('compute', 'compute');
+const drawingBuffer = renderer.getDrawingBufferSize(new THREE.Vector2());
+const adapter = backend.device?.adapterInfo;
+const adapterText = [adapter?.vendor, adapter?.architecture, adapter?.device, adapter?.description]
+  .filter((value): value is string => typeof value === 'string')
+  .join(' ')
+  .toLowerCase();
 renderer.dispose();
 output.textContent = JSON.stringify({
+  hardware: {
+    browser: navigator.userAgent,
+    backend: backend.isWebGPUBackend === true ? 'webgpu' : 'other',
+    adapter: {
+      vendor: adapter?.vendor ?? null,
+      architecture: adapter?.architecture ?? null,
+      device: adapter?.device ?? null,
+      description: adapter?.description ?? null,
+      driver: adapter?.driver ?? null,
+      isFallback: adapter?.isFallbackAdapter ?? null,
+    },
+    isSoftware:
+      adapter?.isFallbackAdapter === true ||
+      /swiftshader|llvmpipe|software|fallback/.test(adapterText),
+    viewport: { width: drawingBuffer.x, height: drawingBuffer.y },
+  },
   standalone: standaloneResult,
   unified: unifiedResult,
   picking,
@@ -240,5 +362,15 @@ output.textContent = JSON.stringify({
   gooseParity: {
     differentChannels: gooseDifferentChannels,
     maxChannelDifference: gooseMaxChannelDifference,
+    // One move to the orbit pose and one return to the front pose. The two
+    // following stationary updates must reuse the projected list.
+    projectionDispatches: gooseCompute.projectionDispatches,
+  },
+  shParity: {
+    base: shBase.pixels,
+    vertex: shVertex.pixels,
+    computeCache: shComputeCache.pixels,
+    cacheDispatches: shComputeCache.dispatches,
+    projectorPackedColor: shComputeCache.packedColor,
   },
 });

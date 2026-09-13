@@ -120,6 +120,11 @@ export class ComputeSorter implements SplatSorter {
   private readonly activeCount = uniform(0);
   /** Highest bucket index this sort uses; see {@link effectiveBucketCount}. */
   private readonly bucketMax = uniform(0);
+  /**
+   * One-frame-stale GPU-visible count for compute projection. Zero keeps the
+   * capacity-sized histogram so streaming covers still get full depth resolution.
+   */
+  private visibleCountHint = 0;
 
   private readonly viewCenter = new THREE.Vector3();
   private readonly sortMetric: SplatSortMetric;
@@ -346,12 +351,28 @@ export class ComputeSorter implements SplatSorter {
   }
 
   /**
+   * One-frame-stale GPU-visible count from compute projection. Shrinks the
+   * histogram/scan dispatches when most splats are culled. Ignored without an
+   * indirect projection dispatch so streaming covers keep full depth resolution.
+   */
+  setVisibleCountHint(count: number): void {
+    this.visibleCountHint = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  }
+
+  /**
    * Keep the allocated depth resolution while a streaming pool fills. A coarse
    * cover can span the whole scene with few splats; reducing the bucket count
    * with the live count makes overlapping splats tie and shimmer until detail
-   * arrives. Only the histogram/scatter work scales with the active count.
+   * arrives. Only compute projection, which already compacted to survivors,
+   * may shrink the histogram work using {@link setVisibleCountHint}.
    */
   private effectiveBucketCount(): number {
+    if (this.indirectDispatchAttribute && this.visibleCountHint > 0) {
+      return Math.min(
+        this.histogramBucketCount,
+        ComputeSorter.bucketCountFor(this.visibleCountHint),
+      );
+    }
     return this.histogramBucketCount;
   }
 

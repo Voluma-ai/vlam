@@ -18,7 +18,7 @@ export type ProjectedFilterProfile = 'default' | 'lcc';
 export type SplatFoveationMode = 'band' | 'frontier' | 'page-table';
 
 /** Where visible-splat projection is evaluated. */
-export type SplatProjectionStrategy = 'vertex' | 'compute';
+export type SplatProjectionStrategy = 'auto' | 'vertex' | 'compute';
 
 /** Resolve a caller-supplied foveation mode, defaulting when unset. */
 export function resolveSplatFoveationMode(
@@ -76,20 +76,51 @@ export function resolveSplatPerformanceProfile(
   explicit?: SplatPerformanceProfile,
   profile: SplatDeviceProfile | undefined = detectSplatDeviceProfile(),
 ): SplatPerformanceProfile {
-  return explicit ?? (isFillConstrainedSplatDevice(profile) ? 'smooth' : 'quality');
+  return explicit ?? (isFillConstrainedSplatDevice(profile) ? 'smooth' : 'balanced');
+}
+
+/**
+ * Resolves compute-projection contribution culls. Explicit values win;
+ * otherwise `balanced` and `smooth` match PlayCanvas (`minPixelSize: 2`,
+ * `minContribution: 3`) and full-detail `quality` leaves both tests off.
+ */
+export function resolveProjectedContributionCulls(options: {
+  minPixelSize?: number;
+  minContribution?: number;
+  performanceProfile: SplatPerformanceProfile;
+}): { minPixelSize: number; minContribution: number } {
+  const contributionCulling =
+    options.performanceProfile === 'smooth' || options.performanceProfile === 'balanced';
+  return {
+    minPixelSize: options.minPixelSize ?? (contributionCulling ? 2 : 0),
+    minContribution: options.minContribution ?? (contributionCulling ? 3 : 0),
+  };
 }
 
 /** Construction options for {@link SplatMesh}. */
 export interface SplatMeshOptions {
   /**
-   * Projection/culling path. `'vertex'` (default) is the established portable
-   * path. `'compute'` opts a supported mono WebGPU view into an experimental
-   * project-once, compact-before-sort pipeline; WebGL2, XR and unsupported
-   * material graphs resolve safely to vertex projection.
+   * Projection/culling path. `'auto'` (default) makes one conservative
+   * construction-lifetime decision: it selects the measured high-count static
+   * SH path on the validated NVIDIA Ampere desktop class, within the configured
+   * allocation budget, and otherwise retains portable vertex projection.
+   * `'compute'` explicitly opts a supported mono WebGPU view into an
+   * experimental project-once, compact-before-sort pipeline; WebGL2, XR and
+   * unsupported material graphs resolve safely to vertex projection. When the
+   * SH compute cache is also eligible, the projector skips SH and the vertex
+   * stage samples the cached color.
    *
    * @experimental Validate memory and GPU timings on the target workload.
    */
   projectionStrategy?: SplatProjectionStrategy;
+  /**
+   * Maximum additional bytes the `'auto'` projection path may allocate for its
+   * cache peak and padded RGBA8 SH cache. Defaults to 1 GiB on its measured
+   * NVIDIA Ampere cohort. This is an application policy cap, not a report of
+   * available GPU memory; set `0` to force auto to retain vertex projection.
+   * Explicit `'compute'` remains an override and is not constrained by it.
+   */
+  projectionMemoryBudgetBytes?: number;
   /**
    * CPU storage retained after the initial GPU upload.
    *
@@ -122,8 +153,9 @@ export interface SplatMeshOptions {
    * bindings. Moving views refresh the same conservative frustum as the draw
    * shader whenever the GPU sorter accepts a new order and reuse it between
    * sorts; the initial full pass keeps pure rotation exact at a fixed eye.
-   * Unsupported paths, modifiers, XR and insufficient device limits retain
-   * vertex SH.
+   * The cache stays active under `projectionStrategy: 'compute'`: the projector
+   * skips SH and the vertex stage samples the cached color. Unsupported paths,
+   * modifiers, XR and insufficient device limits retain vertex SH.
    * Does not change SH bands, visual quality or sorting cadence.
    * @experimental Validate the device, browser and workload before opting in.
    */
@@ -173,11 +205,13 @@ export interface SplatMeshOptions {
    */
   sortMetric?: SplatSortMetric;
   /**
-   * Render-quality policy. `smooth` rejects negligible projected contributions.
+   * Render-quality policy. `balanced` rejects negligible projected
+   * contributions while preserving source SH; it is the desktop default.
+   * `smooth` additionally suppresses default SH for fill-constrained devices.
    *
-   * The default is device-aware: `smooth` on mobile (where rejecting splats too
-   * small or too faint to see is worth far more than it costs), `quality`
-   * everywhere else. Passing a value opts out of the detection.
+   * The default is device-aware: `smooth` on mobile and fill-constrained
+   * desktops, `balanced` elsewhere. `quality` is the full-detail escape
+   * hatch. Passing a value opts out of the detection.
    */
   performanceProfile?: SplatPerformanceProfile;
   /**
@@ -216,6 +250,25 @@ export interface SplatMeshOptions {
    * small on the target device. An explicit `0` always disables the floor.
    */
   minSplatSizePx?: number;
+  /**
+   * Drop projected splats whose on-screen diameter is below this many pixels.
+   * Independent of {@link minSplatSizePx}, which grows small splats instead of
+   * rejecting them. `0` (the full-detail `quality` default) disables the test.
+   * Unset follows {@link performanceProfile}: `balanced` and `smooth` use 2
+   * px, matching PlayCanvas.
+   *
+   * Applied by the compute projection pass and the vertex contribution cull.
+   */
+  minPixelSize?: number;
+  /**
+   * Drop projected splats whose opacity × major-px × minor-px is below this.
+   * `0` (the full-detail `quality` default) disables the test. Unset follows
+   * {@link performanceProfile}: `balanced` and `smooth` use 3, matching
+   * PlayCanvas.
+   *
+   * Applied by the compute projection pass and the vertex contribution cull.
+   */
+  minContribution?: number;
   /**
    * Apply the Mip-Splatting 2D antialiasing filter - the screen-space low-pass
    * dilation plus the opacity compensation that conserves each Gaussian's
@@ -452,8 +505,8 @@ export interface UnifiedSourceView {
   readonly contentRevision: number;
 }
 
-/** Quality-compatible rendering or smoother contribution-culling rendering. */
-export type SplatPerformanceProfile = 'quality' | 'smooth';
+/** Full detail, SH-preserving balanced culls, or mobile smooth rendering. */
+export type SplatPerformanceProfile = 'quality' | 'balanced' | 'smooth';
 
 /**
  * Options for {@link SplatMesh.pick}.

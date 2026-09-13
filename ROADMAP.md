@@ -56,12 +56,27 @@ selection features until their benefits are measured and visually validated.
   `projectionStrategy: 'compute'` opt-in for standalone and unified mono
   WebGPU. Exact dense coverage, footprint-aware edge culling, indirect
   arguments, pixels, WebGL2 fallback and XR fallback have automated coverage.
-  Five alternating Windows/NVIDIA runs met the requested 27.4% interior and
-  100% overview visibility bands, but failed the evidence gate: paired GPU
-  median regressed 40.8% and 5.8%, respectively, while frame p95 did not
-  improve. The 7.77 MB steady cache also remains an explicit cost. A larger
-  supported capture is still needed to measure nonzero adaptive cadence;
-  `'vertex'` remains the default.
+  Goose (149k, no SH) failed the first evidence gate: paired GPU median
+  regressed 40.8% interior / 5.8% overview. Langenthal-Manola4A indoor
+  (8,724,225 SH3, RTX 3090) wins the mezzanine (paired GPU 11.81 → 7.20 ms,
+  21% visible) and missed vsync on the close exterior overview (frame p95
+  16.80 → 33.40 ms at 99.9% visible) until `ShComputeCache` stayed active
+  under compute projection. With the library adaptive sort cadence the
+  overview paired GPU is 18.62 → 11.10 ms and frame p95 returns to 16.80 ms;
+  interior compute+cache is 5.23 ms paired against PlayCanvas 5.98 ms
+  cull-free. `projectionStrategy: 'auto'` now makes a one-time choice for the
+  measured >=8M static SH NVIDIA Ampere cohort, with a 1 GiB configurable
+  peak-allocation cap; unknown/unsupported cases retain vertex. The
+  default desktop profile is SH-preserving `balanced` (2 px / 3 contribution
+  culls), while `quality` remains full detail. Goose still regresses, and
+  `sortIntervalMs=0` still refreshes SH every frame so the overview misses
+  vsync. The projector records model/view, projection, viewport, active-list,
+  content and DoF state, so an unchanged compute view reuses its indirect list
+  without falling back to a vertex sort; the native RTX 3090 stationary probe
+  records zero sampled projection, cull, sort and SH submissions. An
+  intermediate 1–2M whole-file SOG and a second GPU class are still
+  needed before the auto threshold can broaden; shrinking the 52 B/slot
+  projection cache toward PlayCanvas' 32 B is separate.
 - **Stochastic transparency during movement** — experiment with opt-in
   sort-free fragment coverage while navigating heavy scenes, then restore
   sorted blending when motion settles and for captures. Any automatic policy

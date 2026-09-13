@@ -11,8 +11,10 @@ import {
   summarize,
 } from '../comparison-config';
 import {
+  ComparisonPlayCanvasTimer,
   ComparisonWebGlTimer,
   ComparisonWebGpuTimer,
+  type ComparisonPlayCanvasProfiler,
   type ComparisonQueryPool,
 } from '../comparison-gpu';
 
@@ -47,7 +49,7 @@ describe('shared comparison configuration', () => {
       seconds: 30,
       preset: 'proposed',
       shEvaluation: 'auto',
-      projectionStrategy: 'vertex',
+      projectionStrategy: 'auto',
       sortIntervalMs: undefined,
       msaa: false,
     });
@@ -57,6 +59,9 @@ describe('shared comparison configuration', () => {
     expect(
       comparisonConfig('/vlam-benchmark.html', new URLSearchParams('scene=hotel')),
     ).toMatchObject({ scene: 'hotel' });
+    expect(
+      comparisonConfig('/vlam-benchmark.html', new URLSearchParams('scene=Langenthal-Manola4A')),
+    ).toMatchObject({ scene: 'Langenthal-Manola4A' });
     expect(comparisonAssetKind('/benchmark-assets/Tempel/Tempel.lcc2')).toBe('lcc2');
     expect(comparisonAssetKind('/benchmark-assets/hotel/HOTEL.clean.comp-lod.rad')).toBe('rad');
     expect(comparisonAssetKind('/benchmark-assets/goose.sog')).toBe('file');
@@ -92,6 +97,18 @@ describe('shared comparison configuration', () => {
         new URLSearchParams('projectionStrategy=compute&sortIntervalMs=0'),
       ),
     ).toMatchObject({ projectionStrategy: 'compute', sortIntervalMs: 0 });
+    expect(
+      comparisonConfig(
+        '/vlam-benchmark.html',
+        new URLSearchParams('minPixelSize=2&minContribution=3'),
+      ),
+    ).toMatchObject({ minPixelSize: 2, minContribution: 3 });
+    expect(
+      comparisonConfig('/playcanvas-benchmark.html', new URLSearchParams('scene=goose')),
+    ).toMatchObject({ engine: 'playcanvas', backend: 'webgpu', scene: 'goose' });
+    expect(() =>
+      comparisonConfig('/playcanvas-benchmark.html', new URLSearchParams('backend=webgl')),
+    ).toThrow();
   });
   it('separates rotation, translation and settling for SH invalidation probes', () => {
     const pose = {
@@ -240,6 +257,58 @@ describe('WebGPU sample attribution', () => {
     timer.frame(2, true);
     await timer.finish();
     expect(timer.samples.render).toEqual([]);
+  });
+});
+
+describe('PlayCanvas GPU sample attribution', () => {
+  function profilerFixture(): {
+    profiler: ComparisonPlayCanvasProfiler;
+    allocations: Map<number, readonly string[]>;
+  } {
+    const allocations = new Map<number, readonly string[]>();
+    return {
+      allocations,
+      profiler: {
+        pastFrameAllocations: allocations,
+        report: vi.fn(),
+      },
+    };
+  }
+
+  it('retains equal-duration reports by their submitted renderVersion', () => {
+    const { profiler, allocations } = profilerFixture();
+    const timer = new ComparisonPlayCanvasTimer(true, profiler);
+    timer.frame(101, 1, true);
+    allocations.set(101, ['RenderPassForward']);
+    profiler.report(101, [2.5]);
+    timer.frame(102, 2, true);
+    allocations.set(102, ['RenderPassForward']);
+    profiler.report(102, [2.5]);
+    expect(timer.samples).toEqual([
+      { frame: 1, ms: 2.5 },
+      { frame: 2, ms: 2.5 },
+    ]);
+    expect(timer.accounting).toEqual({ submitted: 2, resolved: 2, rejected: 0, pending: 0 });
+    expect(timer.passMedians()).toEqual({ Forward: { medianMs: 2.5, frames: 2 } });
+    timer.dispose();
+  });
+
+  it('drains a delayed report and labels absent timing results as rejected', async () => {
+    const { profiler, allocations } = profilerFixture();
+    const timer = new ComparisonPlayCanvasTimer(true, profiler);
+    timer.frame(201, 1, true);
+    timer.frame(202, 2, true);
+    let drainFrames = 0;
+    await timer.finish(() => {
+      drainFrames++;
+      if (drainFrames === 1) {
+        allocations.set(201, ['RenderPassForward']);
+        profiler.report(201, [3]);
+      }
+    });
+    expect(timer.samples).toEqual([{ frame: 1, ms: 3 }]);
+    expect(timer.accounting).toEqual({ submitted: 2, resolved: 1, rejected: 1, pending: 0 });
+    timer.dispose();
   });
 });
 

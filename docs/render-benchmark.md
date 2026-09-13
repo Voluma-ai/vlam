@@ -14,16 +14,26 @@ npm run benchmark:cache
 npm run dev
 ```
 
+If another local VitePress instance already occupies port 5170, start this
+isolated harness on a different port without stopping it:
+
+```bash
+VLAM_DEV_PORT=5171 npm run dev
+```
+
 Open these paths on the dev server printed by the last command:
 
 ```text
 /spark-benchmark.html
 /vlam-benchmark.html
+/playcanvas-benchmark.html
 /spark-benchmark.html?preset=controlled&mode=orbit
 /vlam-benchmark.html?preset=controlled&mode=orbit
 /vlam-benchmark.html?preset=reference&mode=stationary&backend=webgl
 /spark-benchmark.html?scene=hotel&mode=orbit
 /vlam-benchmark.html?scene=hotel&mode=orbit
+/vlam-benchmark.html?scene=Langenthal-Manola4A&preset=reference&mode=orbit&projectionStrategy=compute&sortIntervalMs=0&visibilityPose=interior
+/playcanvas-benchmark.html?scene=Langenthal-Manola4A&preset=reference&mode=orbit&visibilityPose=interior
 ```
 
 The cache command downloads Tempel (`.lcc2` plus its SOG tiles) and the
@@ -31,7 +41,10 @@ hotel-core Spark `.rad` once to the ignored `.tmp/benchmark-assets/` directory
 and records SHA-256, byte size, splat count, SH bands and canonical camera in
 a JSON manifest. Both viewers fetch that same local copy so tile URLs and
 `.rad` byte ranges resolve without remote CORS. It also prepares the
-repository's small `goose.sog` fixture (`?scene=goose`).
+repository's small `goose.sog` fixture (`?scene=goose`) and the local
+8,724,225-splat SH3 `Langenthal-Manola4A.sog` capture
+(`?scene=Langenthal-Manola4A`) when that file is already cached or reachable
+from `assets.voluma.ai`.
 Re-running the command verifies/recreates metadata from the cached bytes;
 it does not silently replace the capture with a newer remote asset.
 
@@ -62,8 +75,8 @@ Canvas CSS can shrink the displayed image without changing GPU resolution.
 | --- | --- | --- |
 | `preset` | `proposed` | `supplied`, `proposed`, `controlled`, or `reference`; legacy `defaults` and `matched` remain accepted |
 | `mode` | `stationary` | `stationary`, `orbit`, position-preserving `rotate`, `translate`, or five seconds of orbit then `settle` |
-| `shEvaluation` | `auto` | VLAM SH evaluation: `vertex` or generated final `compute`; `auto` selects the latter on identified Apple Silicon Macs |
-| `scene` | `Tempel` | Cached `.lcc2` capture, `goose`, or streamed `hotel` (`.rad`) |
+| `shEvaluation` | `auto` | VLAM SH evaluation: `vertex` or generated final `compute`; `auto` selects the latter on identified Apple Silicon Macs and alongside a qualifying automatic compute-projection choice |
+| `scene` | `Tempel` | Cached `.lcc2` capture, `goose`, streamed `hotel` (`.rad`), or `Langenthal-Manola4A` |
 | `width`, `height` | `1280`, `720` | Drawing-buffer pixels, at pixel ratio 1 |
 | `warmup`, `seconds` | `5`, `30` | Warm-up and measured seconds after initial load/sort |
 | `sh=0..3` | source | Benchmark-only SH band cap; `0` is the suite's disabled diagnostic |
@@ -72,7 +85,9 @@ Canvas CSS can shrink the displayed image without changing GPU resolution.
 | `sortMetric` | preset | `depth` or `radial` |
 | `sortStrategy` | library default | VLAM-only `counting`, `radix`, `exact`, or `worker` diagnostic |
 | `sortIntervalMs` | library adaptive default | VLAM-only cadence override; use `0` for the projection A/B's every-changed-frame pass |
-| `projectionStrategy` | `vertex` | VLAM-only experimental `vertex` or `compute` projection path |
+| `projectionStrategy` | `auto` | VLAM `auto`, full-detail `vertex`, or explicit experimental `compute` projection path |
+| `minPixelSize` | profile | VLAM contribution cull: drop splats whose on-screen diameter is below this many px |
+| `minContribution` | profile | VLAM contribution cull: drop splats whose opacity × major × minor is below this |
 | `visibilityPose` | unset | Cached `interior` or `overview` pose used by the projection A/B |
 | `msaa` | `0` (`1` for `supplied`) | Renderer MSAA control |
 | `gpuTimestamps=0` | enabled | Disable timestamp instrumentation; primary suite runs set this to `0` |
@@ -124,8 +139,200 @@ provide a distinct adaptive-cadence comparison. A larger non-streamed or
 unified capture is still required for that scheduling measurement; streamed
 Tempel/hotel currently select the documented unsupported-foveation fallback.
 One attempted browser-background cadence run was throttled to one callback per
-second and is invalid; it is not included above. This evidence rejects default
-promotion, so `projectionStrategy: 'vertex'` remains the default.
+second and is invalid; it is not included above. This evidence rejected an
+unconditional compute default; the later cache and balanced-cull policy is
+deliberately narrower.
+
+### Langenthal compute-projection follow-up (Linux/RTX 3090, 2026-09-11)
+
+The 8,724,225-splat SH3 capture `Langenthal-Manola4A.sog` is an indoor
+climbing hall. AABB-center / sphere-radius cameras sit above the occupied
+floors and look at the exterior; the cached poses are a mezzanine looking
+into the hall (`visibilityPose=interior`, 21.0% / 1.83M splats in view) and
+a close outside orbit that still fills the frame (`overview`, 99.9%
+visible). Register it with `npm run benchmark:cache`. Protocol: Chrome 152
+WebGPU on NVIDIA GeForce RTX 3090, 1280×720, `preset=reference`, `mode=orbit`,
+five seconds of warm-up and ten seconds of sampling. Five alternating
+vertex/compute repetitions used `sortIntervalMs=0`. Rows are the median of
+each run's reported percentile; archives use label `langenthal-indoor-parity`.
+
+| Pose | GPU-visible ratio | Vertex paired GPU median / p95 | Compute paired GPU median / p95 | Frame median / p95 | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Interior | 21.0% (1.83M) | 11.81 / 12.08 ms | 7.20 / 7.73 ms | 16.70 / 16.80 ms for both | GPU paired −39.0%; frame p95 unchanged (vsync) |
+| Overview | 99.9% (8.72M) | 14.37 / 14.55 ms | 18.17 / 19.16 ms | 16.70 / 16.80 vs 16.70 / 33.40 ms | Fail: paired GPU +26.5%; frame p95 doubled |
+
+Interior GPU render fell from 9.38 ms to 2.74 ms (SH no longer in the vertex
+stage). Overview compute still projects and sorts nearly the whole file, so
+paired GPU (6.74 ms render + 11.44 ms compute) misses the 16.7 ms vsync.
+Adaptive cadence did not change that split. Matching PlayCanvas contribution
+culls (`minPixelSize=2&minContribution=3`) dropped overview visibility to
+16.0% and brought paired GPU to 5.29 ms with frame p95 16.80 ms; interior
+visibility became 10.7% at 5.26 ms paired. Those culls change the image, so
+they stay opt-in.
+
+The capacity-sized projection cache was 432.7 MiB steady GPU / 865 MiB peak
+(CPU+GPU). All compute runs reported `diagnostics.projection.effective ===
+'compute'`, nonblank stills, and no device loss.
+
+#### Where the overview regression comes from
+
+An `sh=0` A/B at the same poses separates spherical harmonics from projection
+and sorting (label `langenthal-review`, 8 s sampling, `sortIntervalMs=0`):
+
+| Pose | Path | SH3 render / compute | `sh=0` render / compute | SH cost |
+| --- | --- | ---: | ---: | ---: |
+| Overview | Vertex | 11.78 / 2.45 ms | 7.13 / 2.36 ms | 4.83 ms |
+| Overview | Compute | 6.48 / 11.29 ms | 6.46 / 3.60 ms | 7.71 ms |
+| Interior | Vertex | 9.41 / 2.40 ms | 6.73 / 2.45 ms | 2.60 ms |
+| Interior | Compute | 2.76 / 4.67 ms | 2.85 / 2.56 ms | 2.08 ms |
+
+Without SH the two paths are within 0.6 ms at the overview (10.05 vs 9.48 ms
+paired), so neither the projection pass (~1.2 ms) nor the counting sort
+(~2.4 ms, unchanged because 99.9% visibility keeps the survivor-scaled bucket
+count at capacity) explains the regression. Evaluating SH once per survivor
+costs 7.71 ms in the projector but only 4.83 ms in the vertex stage, where it
+overlaps rasterization: one compute evaluation per splat is more expensive
+than roughly four latency-hidden vertex evaluations. Compute projection is
+therefore a win exactly in proportion to what culling removes, and the SH
+relocation is a loss whenever most of the file survives.
+
+#### PlayCanvas 2.22.1 reference (WebGPU, GPU-sort)
+
+`pc.Application`'s constructor is synchronous and cannot create a WebGPU
+device, so the adapter awaits `createGraphicsDevice` and builds `AppBase`
+instead; it asserts `deviceType === 'webgpu'` and reports
+`currentRenderer` after the first frame. GPU timings come from the PlayCanvas
+`GpuProfiler`, the same source as SuperSplat's Frame Timings overlay. The
+harness associates each timed `GpuProfiler.report` callback with PlayCanvas's
+submitted `device.renderVersion`, not with a changed duration, so consecutive
+equal-duration frames are retained. It drives bounded empty frames to drain
+pending timestamp reports and records `gpu.accounting` (`submitted`,
+`resolved`, `rejected`, `pending`) in every archive; unresolved or invalid
+results are rejected rather than silently omitted. Runs confirm
+`resolvedRenderer: raster-gpu-sort` and matching stills.
+
+| Pose | Culls | PlayCanvas GPU | VLAM vertex paired | VLAM compute paired |
+| --- | --- | ---: | ---: | ---: |
+| Interior | default (2 / 3) | 5.52 ms | 11.58 ms | 5.28 ms |
+| Overview | default (2 / 3) | 5.29 ms | 13.33 ms | 5.51 ms |
+| Interior | off | 6.02 ms | 11.79 ms | 7.40 ms |
+| Overview | off | 8.61 ms | 14.31 ms | 17.76 ms |
+
+At matched culls the two engines are level. With culls off, PlayCanvas keeps a
+1.2× lead at the interior and a 1.7× lead at the overview. Its per-pass
+medians explain why: `GSplatWorkBufferRenderPass`, which resolves color and
+SH, costs 4.7 ms but ran in only 25 of 406 sampled frames, while its
+projector is 0.36 ms, its OneSweep radix passes total 0.23 ms and forward
+rasterization is 1.3-1.8 ms. Per-frame it spends more than VLAM on sort
+scatter (3.1 ms vs 2.4 ms) and far less on SH, because SH is cached across
+frames rather than recomputed. VLAM's own `ShComputeCache` refreshes at the
+same cadence (48 dispatches over 737 frames). Those two paths now combine:
+see [SH cache under compute projection](#sh-cache-under-compute-projection-linuxrtx-3090-2026-09-13).
+
+This evidence rules out unconditional compute projection: an all-visible
+overview regresses without cached SH or contribution culls. It does not rule
+out a bounded automatic choice; see [automatic selection](#automatic-static-projection-selection-2026-09-13).
+Do not reduce the Gaussian cutoff below 3σ as a default.
+
+#### SH cache under compute projection (Linux/RTX 3090, 2026-09-13)
+
+`ShComputeCache` now stays active when compute projection is eligible. The
+projector is built with `sh: null` and the vertex stage samples the cached
+RGBA8 color. SH still refreshes on the vertex-path sort cadence (a projector
+dispatch does not change pool-indexed colors). Protocol: Chrome 152 WebGPU,
+1280×720, `preset=reference`, `mode=orbit`, five seconds of warm-up and ten
+seconds of sampling. PlayCanvas rows are 2.22.1 WebGPU with contribution
+culls off (`minPixelSize=0&minContribution=0`). Archives use labels
+`sh-coexist-langenthal-*`. Memory is 52 B/slot projection (432.7 MiB at
+8.72M) plus 4 B/splat SH cache (33.3 MiB, including 2048-wide texture
+padding). Goose (149,120, SH0) cannot allocate the cache (`sh-disabled`).
+
+Adaptive cadence (`sortIntervalMs` unset; 167 ms at 8.72M):
+
+| Pose | Path | GPU-visible | Paired GPU median / p95 | Frame p95 | SH dispatches | Result |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| Interior | Vertex | — | 9.43 / 11.83 ms | 16.80 ms | 0 | Baseline |
+| Interior | Vertex + cache | — | 6.75 / 13.00 ms | 16.80 ms | 59 | Render 9.38 → 6.74 ms |
+| Interior | Compute | 21.0% (1.83M) | 7.21 / 7.69 ms | 16.80 ms | 0 | Projector SH every frame |
+| Interior | Compute + cache | 21.0% (1.83M) | 5.23 / 8.87 ms | 16.80 ms | 59 | Beats PlayCanvas 5.98 ms |
+| Interior | PlayCanvas | — | 5.98 / 10.45 ms | 16.80 ms | 27 / 520 work-buffer | Cull-free reference |
+| Overview | Vertex | — | 12.00 / 14.42 ms | 22.30 ms | 0 | Misses vsync |
+| Overview | Vertex + cache | — | 7.24 / 18.37 ms | 22.50 ms | 58 | Median wins, p95 still tails |
+| Overview | Compute | 99.9% (8.72M) | 18.62 / 19.33 ms | 23.30 ms | 0 | Per-frame projector SH |
+| Overview | Compute + cache | 99.9% (8.72M) | 11.10 / 19.96 ms | 16.80 ms | 58 | Restores vsync; 1.25× behind PlayCanvas 8.90 ms |
+| Overview | PlayCanvas | — | 8.90 / 13.79 ms | 16.80 ms | 186 / 552 work-buffer | Cull-free reference |
+
+#### Automatic static projection selection (2026-09-13)
+
+The library and demo now default to `projectionStrategy: 'auto'` and the
+SH-preserving `performanceProfile: 'balanced'` on non-fill-constrained desktop
+devices. This is a one-time policy decision at first prepare, not a startup
+benchmark and never a scene-name rule. It selects compute projection plus the
+RGBA8 SH cache only for the measured cohort: a static, own-pool, unmodified,
+mono WebGPU mesh with counting sort, at least 8M SH splats, PlayCanvas-style
+2 px / 3 contribution culls, the measured NVIDIA Ampere adapter class, and an
+estimated peak projection-plus-cache allocation within 1 GiB. The estimate
+includes temporary projection mirrors and 2048-wide SH-cache row padding; the
+budget is a conservative application cap, not a claim about available VRAM.
+Hosts can tighten or disable this path with
+`projectionMemoryBudgetBytes` (set `0` to force the automatic decision to
+vertex) while explicit `projectionStrategy: 'compute'` remains an override.
+
+Every other case—including unknown adapters, smaller or SH-free files,
+streaming, unified sources, modifiers, foveation, XR, WebGL2, unvalidated
+discrete, integrated and mobile devices, custom sorting, and full-detail
+`performanceProfile: 'quality'`
+—stays on vertex projection. `projectionStrategyStatus` reports the selected
+mode and a stable `auto-*` reason. The selected path is locked for the mesh
+lifetime; a WebGL/XR/device failure falls back safely without camera-driven
+material rebuilds. `performanceProfile: 'quality'` or
+`projectionStrategy: 'vertex'` is the full-detail escape hatch.
+
+The automatic rule is intentionally narrower than the acceptance target. The
+only qualifying device/capture remains Langenthal-Manola4A on RTX 3090; a
+1–2M whole-file SH corpus and a second GPU class are still required before the
+threshold is broadened.
+
+#### Stationary projected-list reuse (Linux/RTX 3090, 2026-09-13)
+
+Compute projection now records the model-view matrix, camera projection,
+viewport, active-list and content revisions, and depth-of-field uniforms that
+its passes consume. With none changed, it preserves the existing indirect
+draw/list instead of submitting projection/cull/counting-sort work or falling
+back to the vertex sorter. A native Chromium 152/RTX 3090 default-policy
+Langenthal interior run (1280×720; 1 s warm-up; 3 s sampled) recorded **zero
+sampled projection, cull, sort, and SH dispatches**. Its two fixed-capture
+poses were nonblank; the later orbit capture added the expected submission.
+The corresponding hardware probe asserts exactly two projection submissions
+for two camera changes followed by two identical updates. This confirms
+submission reuse, not a cross-scene performance claim; the broader repeated
+motion/corpus protocol remains outstanding.
+
+`sortIntervalMs=0` still sorts and therefore refreshes SH every moved frame
+(~520–600 dispatches). Overview compute+cache paired GPU stays 19.75 ms with
+frame p95 33.40 ms, so the cache cannot pay for itself when the sort interval
+is zero. Goose paired GPU is vertex 1.82 ms, compute 2.20 ms, PlayCanvas
+1.99 ms; the 149k gate is unchanged because there is no SH to cache.
+
+The remaining PlayCanvas overview gap is not SH cadence: VLAM's counting
+sort is already cheaper than PlayCanvas scatter (~2.4 vs 3.1 ms), but the
+projector is still 52 B/slot (PlayCanvas 32 B) and rasterization is 7.00 vs
+3.72 ms at 99.9% visible. A later `projectionStrategy: 'auto'` should be a
+one-time first-prepare choice from capability, splat count and the 466 MiB
+combined budget, never a mid-session switch. An intermediate 1–2M whole-file
+SOG is still missing from this matrix.
+
+```text
+/vlam-benchmark.html?scene=Langenthal-Manola4A&preset=reference&mode=orbit&width=1280&height=720&warmup=5&seconds=10&projectionStrategy=compute&shEvaluation=compute&visibilityPose=overview&gpuTimestamps=1
+/vlam-benchmark.html?scene=Langenthal-Manola4A&preset=reference&mode=orbit&width=1280&height=720&warmup=5&seconds=10&projectionStrategy=compute&shEvaluation=compute&sortIntervalMs=0&visibilityPose=overview&gpuTimestamps=1
+/playcanvas-benchmark.html?scene=Langenthal-Manola4A&preset=reference&mode=orbit&width=1280&height=720&warmup=5&seconds=10&visibilityPose=overview&minPixelSize=0&minContribution=0
+```
+
+```text
+/vlam-benchmark.html?scene=Langenthal-Manola4A&preset=reference&mode=orbit&width=1280&height=720&warmup=5&seconds=10&projectionStrategy=vertex&sortIntervalMs=0&visibilityPose=interior&gpuTimestamps=1
+/vlam-benchmark.html?scene=Langenthal-Manola4A&preset=reference&mode=orbit&width=1280&height=720&warmup=5&seconds=10&projectionStrategy=compute&sortIntervalMs=0&visibilityPose=interior&gpuTimestamps=1
+/playcanvas-benchmark.html?scene=Langenthal-Manola4A&preset=reference&mode=orbit&width=1280&height=720&warmup=5&seconds=10&visibilityPose=interior
+```
 
 ### Supplied application baselines
 

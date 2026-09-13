@@ -19,8 +19,45 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Added
+
+- `ShComputeCache` stays active under `projectionStrategy: 'compute'`. The
+  projector skips SH when the cache will supply color, and the vertex stage
+  samples the 4 B/splat RGBA8 texture. On Langenthal-Manola4A (8.72M SH3,
+  RTX 3090) adaptive compute+cache cuts overview paired GPU 18.62 → 11.10 ms
+  and restores vsync (frame p95 16.80); interior is 5.23 ms against PlayCanvas
+  5.98 ms cull-free. `sortIntervalMs=0` still refreshes SH every frame. See
+  `docs/render-benchmark.md`.
+- `projectionStrategy: 'auto'` is now the library and demo default. It makes a
+  one-time, diagnostics-visible compute choice only for the measured large,
+  static SH NVIDIA Ampere cohort within a 1 GiB peak additional-allocation budget;
+  unknown and unsupported paths retain vertex projection. The default desktop
+  `balanced` profile applies PlayCanvas-style 2 px / 3 contribution culls
+  without suppressing SH; `quality` and explicit `vertex` remain full-detail
+  escapes.
+- Experimental compute projection now evaluates SH once per surviving splat,
+  packs the resolved RGBA8 color into the projection cache, and shrinks
+  counting-sort histogram work to the GPU-visible count. Opt-in
+  `minPixelSize` / `minContribution` culls match PlayCanvas independently of
+  `performanceProfile: 'smooth'`. The comparison harness registers the
+  8.72M-splat Langenthal-Manola4A capture and a PlayCanvas 2.22.1 adapter
+  that runs on WebGPU with GPU-sort and reports `GpuProfiler` pass timings.
+  An indoor RTX 3090 A/B cut paired GPU 39% in the hall and missed vsync on
+  an all-visible overview before cache/cull policy. An `sh=0` split
+  attributes the overview regression entirely to per-frame SH in the
+  projector; see `docs/render-benchmark.md`.
+
 ### Fixed
 
+- Compute projection now reuses the indirect visible list for an unchanged
+  model/view, projection, viewport, resident content, and depth-of-field
+  state, rather than re-projecting and falling back to a vertex sort. The
+  native hardware probe covers consecutive stationary updates.
+- PlayCanvas comparison timing now attributes `GpuProfiler` results by the
+  submitted `device.renderVersion`, preserving equal-duration GPU frames. The
+  harness drains pending timestamp reports after sampling and archives explicit
+  submitted/resolved/rejected/pending coverage instead of inferring a new frame
+  from a changed timing value.
 - LCC2 and streamed SOG publish independent region swaps instead of entering
   RAD's global quality gate, allowing distant coverage and lower-detail cuts
   after navigation or budget changes. Missing LCC2 regions request pinned

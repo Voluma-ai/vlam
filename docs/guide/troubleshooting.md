@@ -252,10 +252,10 @@ argument:
   `antialias` meta flag sets it automatically. Enabling it when the capture
  was not trained with it (or vice versa) is a common cause of "the wrong kind
  of soft".
-- **`performanceProfile`** (`'smooth'` on mobile, `'quality'` elsewhere) -
-  `smooth` rejects splats whose projected contribution is negligible, which
-  can visibly thin fine detail on a scene you expected to be complete. Pass
-  `'quality'` explicitly to keep every splat.
+- **`performanceProfile`** (`'smooth'` on mobile and fill-constrained desktops,
+  SH-preserving `'balanced'` elsewhere) - both cull splats whose projected
+  contribution is negligible. This can visibly thin fine detail on a scene you
+  expected to be complete; pass `'quality'` explicitly to keep every splat.
 
 ## Library warnings in the console
 

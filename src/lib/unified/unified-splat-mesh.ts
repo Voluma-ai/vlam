@@ -94,9 +94,11 @@ export interface UnifiedSplatPickResult extends SplatPickResult {
  */
 export interface UnifiedSplatMeshOptions {
   /**
-   * Experimental mono WebGPU project-once/cull-before-sort path. Defaults to
-   * `'vertex'`; XR presentation deliberately uses the established per-eye
-   * vertex projection.
+   * Experimental mono WebGPU project-once/cull-before-sort path. `'auto'`
+   * (default) deliberately resolves to vertex projection: source residency,
+   * placement, and SH cache eligibility are only known after the unified
+   * gather. Explicit `'compute'` remains available for measured opt-in runs.
+   * XR presentation always uses the established per-eye vertex projection.
    */
   projectionStrategy?: SplatProjectionStrategy;
   /** Composite source colors in display (sRGB) space. Defaults to `false`. */
@@ -200,6 +202,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   private readonly srgbOutput: boolean;
   private readonly sortMetric: SplatSortMetric;
   private readonly projectionStrategyValue: SplatProjectionStrategy;
+  private readonly projectionStrategyState: { effective: 'vertex' | 'compute'; reason: string };
   private sourceMaxStdDev: number | null = null;
   private sourceAntialias: boolean | null = null;
   private sourceProjectedFilterProfile: 'default' | 'lcc' | null = null;
@@ -231,8 +234,12 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     const compensateProjectedLowPass = uniform(0);
     const dofFocusDistance = uniform(10);
     const dofAperture = uniform(0);
-    const projectionStrategy = options.projectionStrategy ?? 'vertex';
-    if (projectionStrategy !== 'vertex' && projectionStrategy !== 'compute') {
+    const projectionStrategy = options.projectionStrategy ?? 'auto';
+    if (
+      projectionStrategy !== 'auto' &&
+      projectionStrategy !== 'vertex' &&
+      projectionStrategy !== 'compute'
+    ) {
       throw new RangeError('UnifiedSplatMesh: invalid projectionStrategy.');
     }
     if (projectionStrategy === 'compute') {
@@ -310,6 +317,15 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.srgbOutput = options.srgbOutput ?? false;
     this.sortMetric = options.sortMetric ?? 'depth';
     this.projectionStrategyValue = projectionStrategy;
+    this.projectionStrategyState = {
+      effective: projectionStrategy === 'compute' ? 'compute' : 'vertex',
+      reason:
+        projectionStrategy === 'auto'
+          ? 'auto-unified-source'
+          : projectionStrategy === 'compute'
+            ? 'explicit-compute'
+            : 'explicit-vertex',
+    };
     this.sortScheduler = new WebGpuSortScheduler(undefined, isFillConstrainedSplatDevice());
     this.orderAttribute = order;
     this.workSourceIndex = new THREE.StorageBufferAttribute(indices, 1);
@@ -356,6 +372,11 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   /** Requested projection strategy. */
   get projectionStrategy(): SplatProjectionStrategy {
     return this.projectionStrategyValue;
+  }
+
+  /** Resolved unified projection path and its deliberate auto fallback reason. */
+  get projectionStrategyStatus(): Readonly<{ effective: 'vertex' | 'compute'; reason: string }> {
+    return this.projectionStrategyState;
   }
 
   /** Strategy currently used by the draw (XR temporarily resolves to vertex). */

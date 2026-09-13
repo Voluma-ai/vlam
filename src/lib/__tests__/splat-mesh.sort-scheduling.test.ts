@@ -293,7 +293,7 @@ describe('SplatMesh sort scheduling', () => {
     }
   });
 
-  it('keeps the reference-quality defaults off mobile', () => {
+  it('uses balanced culls while preserving detail controls off mobile', () => {
     const mesh = new SplatMesh({ capacity: 4096 });
     meshes.push(mesh);
     const defaults = mesh as unknown as {
@@ -301,7 +301,7 @@ describe('SplatMesh sort scheduling', () => {
       maxStdDev: number;
       minSplatSizePx: number;
     };
-    expect(defaults.performanceProfile).toBe('quality');
+    expect(defaults.performanceProfile).toBe('balanced');
     expect(defaults.maxStdDev).toBe(3);
     expect(defaults.minSplatSizePx).toBe(0);
   });
