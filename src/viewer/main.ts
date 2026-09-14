@@ -1476,6 +1476,16 @@ async function main(): Promise<void> {
   const foveationDrawBudget = params.has('foveationDraw')
     ? Number(params.get('foveationDraw'))
     : undefined;
+  // Page-table RAD defaults to a complete intermediate 50%-budget first image.
+  // `?radInitialDisplay=0` restores the old target-detail hold for A/B;
+  // `coarse` remains a readable alias for the default, and a fraction tunes it.
+  const radInitialDisplayParam = params.get('radInitialDisplay');
+  const radInitialDisplayFraction =
+    radInitialDisplayParam === null
+      ? undefined
+      : radInitialDisplayParam === 'coarse'
+        ? 0.5
+        : Number(radInitialDisplayParam);
   // `?aspectClamp=K` caps a rendered splat's major/minor axis ratio at K, taming
   // far-field needle/spike artifacts from anisotropic / expanded coarse splats.
   const maxSplatAspect = params.has('aspectClamp') ? Number(params.get('aspectClamp')) : undefined;
@@ -1537,6 +1547,7 @@ async function main(): Promise<void> {
     ...(foveationMode ? { foveationMode } : {}),
     ...(foveationTargetPx === undefined ? {} : { foveationTargetPx }),
     ...(foveationDrawBudget === undefined ? {} : { foveationDrawBudget }),
+    ...(radInitialDisplayFraction === undefined ? {} : { radInitialDisplayFraction }),
     ...(maxSplatAspect === undefined ? {} : { maxSplatAspect }),
     ...(Object.keys(frontierFoveation).length === 0 ? {} : { frontierFoveation }),
     ...(lodAlpha === undefined ? {} : { lodAlpha }),

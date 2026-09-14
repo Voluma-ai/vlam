@@ -123,6 +123,9 @@ describe('frontier worker delivery', () => {
     expect(frontierWorker.shouldPublishFrontier(false, 8, true, true)).toBe(false);
     expect(frontierWorker.shouldPublishFrontier(false, 0, true, true)).toBe(true);
     expect(frontierWorker.shouldPublishFrontier(true, 8, true, true)).toBe(true);
+    expect(frontierWorker.shouldPublishFrontier(false, 8, false, false, 100, 100)).toBe(true);
+    expect(frontierWorker.shouldPublishFrontier(false, 8, false, false, 101, 100)).toBe(false);
+    expect(frontierWorker.shouldPublishFrontier(false, 8, false, true, 100, 100)).toBe(false);
   });
 
   beforeEach(() => {

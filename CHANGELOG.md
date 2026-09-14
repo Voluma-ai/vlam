@@ -21,6 +21,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- Page-table RAD now publishes its first fully staged, complete cover at 50% of
+  the initial draw budget, then refines through the existing atomic replacement
+  path. `radInitialDisplayFraction` tunes the threshold; the viewer's
+  `?radInitialDisplay=0` restores the prior target-detail hold for comparison.
 - `ShComputeCache` stays active under `projectionStrategy: 'compute'`. The
   projector skips SH when the cache will supply color, and the vertex stage
   samples the 4 B/splat RGBA8 texture. On Langenthal-Manola4A (8.72M SH3,
