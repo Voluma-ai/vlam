@@ -70,7 +70,7 @@ import {
   validateSceneUrl,
 } from './scene-url';
 import { createCollisionWorld, type CollisionWorld } from './collision';
-import { createFrameBenchmark, verifyGpuSort } from './sort-benchmark';
+import { createFrameBenchmark, isSwapPerformanceEvent, verifyGpuSort } from './sort-benchmark';
 import { demoSortStrategy } from './sort-policy';
 import { createPerfHud, hudBrowserName } from './perf-hud';
 import { createSeparateTool, type SeparateTool } from './separate';
@@ -3262,7 +3262,9 @@ async function main(): Promise<void> {
       ...(benchmarkSeconds > 0 || perfHud
         ? {
             onPerformanceEvent: (event: StreamedSplatPerformanceEvent) => {
-              if (benchmarkSeconds > 0) swapPerformanceEvents.push(event);
+              if (benchmarkSeconds > 0 && isSwapPerformanceEvent(event)) {
+                swapPerformanceEvents.push(event);
+              }
               recordWorstUpdate(event);
             },
           }
@@ -4186,6 +4188,7 @@ async function main(): Promise<void> {
           ...(mesh instanceof StreamedSplatMesh
             ? {
                 worstPlanApplyMs: mesh.planTimings.worstApplyMs,
+                ...(mesh.radStrategy === 'page-table' ? { frontierState: mesh.frontierState } : {}),
                 fetchCounts: mesh.fetchCounts,
                 ...(mesh.lodStats === undefined ? {} : { lodStats: mesh.lodStats }),
               }
@@ -4254,6 +4257,20 @@ async function main(): Promise<void> {
             computeGpuMs: latestComputeGpuMs,
             renderGpuMs: latestRenderGpuMs,
             sortVerification,
+            ...(splats instanceof StreamedSplatMesh && splats.radStrategy === 'page-table'
+              ? {
+                  radDemand: (
+                    splats as unknown as {
+                      demandDiagnostics: Record<string, number>;
+                    }
+                  ).demandDiagnostics,
+                  radPager: {
+                    frontier: splats.frontierState,
+                    planTimings: splats.planTimings,
+                    fetchCounts: splats.fetchCounts,
+                  },
+                }
+              : {}),
           });
           console.info('FRAME_BENCHMARK', benchmarkOutput.textContent);
         });

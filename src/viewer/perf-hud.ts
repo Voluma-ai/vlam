@@ -62,6 +62,17 @@ export interface PerfHudSample {
    * frame, which is exactly the shape a bad 1% low takes.
    */
   worstPlanApplyMs?: number | undefined;
+  /** Last page-table plan's queue state, not final detail completeness. */
+  frontierState?:
+    | {
+        frontierConverged: boolean;
+        pendingFrontierSplats: number;
+        staleResidentSplats: number;
+        lastPlanAppends: number;
+        lastPlanMoves: number;
+        planGeneration: number;
+      }
+    | undefined;
   /** Worst per-update CPU cost by stage, as monotonic maxima. */
   worstUpdate?:
     { cpuMs: number; uploadMs: number; sortSubmitMs: number; activeListMs: number } | undefined;
@@ -246,6 +257,14 @@ export function formatHud(sample: PerfHudSample, frames: readonly number[]): str
     // Shown only once a page table has actually applied a plan, so a static or
     // prefix-read scene does not carry a permanent "0.00" line.
     lines.push(`worst plan apply ${sample.worstPlanApplyMs.toFixed(1)} ms`);
+  }
+  if (sample.frontierState) {
+    const frontier = sample.frontierState;
+    lines.push(
+      `pager ${frontier.frontierConverged ? 'idle' : 'drain'}  pending ${frontier.pendingFrontierSplats}` +
+        `  stale ${frontier.staleResidentSplats}  move ${frontier.lastPlanMoves}` +
+        `  append ${frontier.lastPlanAppends}  gen ${frontier.planGeneration}`,
+    );
   }
   const worst = sample.worstUpdate;
   if (worst && worst.cpuMs > 0) {

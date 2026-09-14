@@ -21,6 +21,17 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- A benchmark-only `rad-focus` request scheduler candidate for over-cache
+  page-table RAD: incremental worker demand scans and camera-generation-aware
+  cancellation prioritize nearby central chunks while leaving staged display
+  updates intact. The production default remains unchanged pending route and
+  visual performance validation; chunks may mix visible/off-screen locations.
+- `VLAM_DEV_HTTP=1` lets a fresh Chromium profile use the local dev viewer on
+  localhost without installing the developer's mkcert CA.
+- Opt-in streamed performance events now report the number of pool texture
+  copies and live destination bytes on every update frame, including frames
+  without a LOD reschedule, to separate fragmented copy submission pressure
+  from upload volume during large RAD investigation.
 - Page-table RAD now publishes its first fully staged, complete cover at 50% of
   the initial draw budget, then refines through the existing atomic replacement
   path. `radInitialDisplayFraction` tunes the threshold; the viewer's
@@ -61,6 +72,18 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- Frame benchmarks now classify only streamed mutations and actual uploads as
+  swap frames; idle per-frame performance events no longer inflate swap counts
+  or erase the non-swap frame average.
+- Large page-table RAD captures whose decoded scene exceeds the cache allowance
+  no longer prefetch off-view chunks indefinitely. After the first complete
+  display, coarse-base fetches yield to frontier dependencies; the background
+  whole-scene sweep is disabled while it cannot fit. On the supplied 106M-splat
+  scene at a 5M draw target and 2 GiB cache, this removed the stationary
+  eviction/refetch loop and reached the full draw target in a native Chromium run.
+- Frontier plans holding a published cut now retire obsolete unpublished tail
+  residents after newcomers are seated, preventing an empty drain loop that
+  could freeze refinement while the worker kept replanning.
 - Startup benchmark pixel probes disable slow browser-wide memory checkpoints,
   including an explicit `uaMemory=1`, and record effective settings. Historical
   full-scene empty-pool timing claims are qualified because those checkpoints

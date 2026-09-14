@@ -7,6 +7,7 @@ import {
   type StreamedSplatPerformanceEvent,
 } from '../streaming/streamed-splat-mesh';
 import { writeCovariance, type SplatData } from '../core/splat-data';
+import { SplatMesh } from '../core/splat-mesh';
 
 const WIDTH = 2048;
 
@@ -84,6 +85,7 @@ function camera(): THREE.PerspectiveCamera {
 describe('StreamedSplatMesh performance-event gating', () => {
   const meshes: StreamedSplatMesh[] = [];
   afterEach(() => {
+    vi.restoreAllMocks();
     for (const m of meshes) m.dispose();
     meshes.length = 0;
   });
@@ -119,5 +121,45 @@ describe('StreamedSplatMesh performance-event gating', () => {
 
     // A settled tick (same desired runs, all resident) reports no event.
     expect(inner.reschedule(camera(), 1)).toBeNull();
+  });
+
+  it('reports texture copies from an update without a LOD reschedule', () => {
+    const events: StreamedSplatPerformanceEvent[] = [];
+    const m = makeStreamedMesh({ onPerformanceEvent: (event) => events.push(event) });
+    meshes.push(m);
+    const frame = m as unknown as {
+      shouldReschedule: () => boolean;
+      getUpdateTimings: () => {
+        activeListMs: number;
+        uploadMs: number;
+        sortSubmitMs: number;
+        stagingTextureAllocations: number;
+        textureCopyCount: number;
+        textureCopyBytes: number;
+        activeListUpdateRanges: number;
+      };
+    };
+    vi.spyOn(frame, 'shouldReschedule').mockReturnValue(false);
+    vi.spyOn(SplatMesh.prototype, 'update').mockImplementation(() => {});
+    vi.spyOn(frame, 'getUpdateTimings').mockReturnValue({
+      activeListMs: 0,
+      uploadMs: 3,
+      sortSubmitMs: 0,
+      stagingTextureAllocations: 2,
+      textureCopyCount: 7,
+      textureCopyBytes: 4096,
+      activeListUpdateRanges: 0,
+    });
+
+    m.update(camera(), {} as THREE.WebGPURenderer);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      textureCopyCount: 7,
+      textureCopyBytes: 4096,
+      stagingTextureAllocations: 2,
+      appendedCount: 0,
+      stagedCount: 0,
+    });
   });
 });

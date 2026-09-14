@@ -21,6 +21,43 @@ const SAMPLE: PerfHudSample = {
 };
 
 describe('formatHud', () => {
+  it('labels pager drain without implying completed detail', () => {
+    const text = formatHud(
+      {
+        ...SAMPLE,
+        frontierState: {
+          frontierConverged: false,
+          pendingFrontierSplats: 12,
+          staleResidentSplats: 3,
+          lastPlanAppends: 4,
+          lastPlanMoves: 5,
+          planGeneration: 8,
+        },
+      },
+      [16.7],
+    );
+    expect(text).toContain('pager drain  pending 12  stale 3  move 5  append 4  gen 8');
+  });
+
+  it('labels a drained pager as idle, not fully refined', () => {
+    const text = formatHud(
+      {
+        ...SAMPLE,
+        frontierState: {
+          frontierConverged: true,
+          pendingFrontierSplats: 0,
+          staleResidentSplats: 0,
+          lastPlanAppends: 0,
+          lastPlanMoves: 0,
+          planGeneration: 9,
+        },
+      },
+      [16.7],
+    );
+    expect(text).toContain('pager idle  pending 0  stale 0');
+    expect(text).not.toContain('cut done');
+  });
+
   it('reports fps and frame time from the rolling window', () => {
     const text = formatHud(SAMPLE, [10, 10, 10, 10]);
     expect(text).toContain('100 rAF');

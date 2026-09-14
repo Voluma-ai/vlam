@@ -28,6 +28,15 @@ directory name and `package.json` disagree, trust `package.json`.
 | `npm run test:browser` | Headless Chromium real-splat render checks for WebGPU and forced WebGL2 (run `npx playwright install chromium` once) |
 | `npm run test:browser:hardware` | Native-GPU projection/SH route; fails without a non-software WebGPU adapter and attaches browser, adapter/driver, and viewport metadata. It uses `/usr/bin/chromium` here; set `VLAM_HARDWARE_CHROMIUM` to the installed desktop Chromium path on another host. Run it separately from SwiftShader CI. |
 
+If a local mkcert pair makes the dev server use HTTPS but a fresh Chromium
+profile does not trust that CA, run `VLAM_DEV_HTTP=1 VLAM_DEV_PORT=5171 npm run dev`
+and open `http://localhost:5171/demo/`. Localhost remains a secure context for
+WebGPU. This does not change the HTTPS server on port 5170 or install a CA.
+An HTTPS forwarding layer serving the dev page must also proxy WebSocket
+upgrades to the same Vite port for live reload. Otherwise Vite's dev client
+reports a failed WebSocket connection even though the scene can load. A built
+preview omits HMR but also omits this dev server's `/remote` scene proxy.
+
 ## Architecture: the 30-second tour
 
 ```
@@ -152,6 +161,16 @@ never upload pending rows, patch the draw list, or change instance count on a
 worker path outside it. Packed per-splat shN survives streamed appends; only
 callers that append palette-backed `SplatData` directly to a dynamic shared pool
 lose shN, because per-file palettes cannot be merged there.
+
+The optional per-frame `onPerformanceEvent` reports `textureCopyCount` and
+`textureCopyBytes` for successful partial pool copies during the update (core,
+packed SH and channels). Bytes count live destination rows, not padded staging
+storage; these are CPU-side submission diagnostics, not GPU completion or
+allocation measurements. Page-table plan application is timed separately in
+`planTimings`.
+The HUD's `pager idle` means no writes remain queued in the last page-table
+plan; it does not mean that all current-view child chunks have arrived or that
+the view has reached its final detail.
 
 The demo consumes the library through the published entries (`src/lib/core/index.ts`
 and the optional subpaths) - if the demo needs something those entries do not

@@ -11,6 +11,7 @@ const permitted = new Set([
   'baseline',
   'skip-empty',
   'bounded-threshold',
+  'rad-focus',
   'exact-stream',
   'approximate-sh-stream',
   'first-vertex',

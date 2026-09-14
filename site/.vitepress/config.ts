@@ -7,7 +7,9 @@ import { benchmarkDevPlugin } from './benchmark-dev-plugin';
 
 const siteDir = dirname(fileURLToPath(import.meta.url));
 const sidebarPath = join(siteDir, '../api/typedoc-sidebar.json');
-const httpsCertificate = localHttpsCertificate();
+// Localhost is a secure context for WebGPU without TLS. This opt-out lets a
+// fresh browser profile run the demo without trusting the developer's mkcert CA.
+const httpsCertificate = process.env.VLAM_DEV_HTTP === '1' ? undefined : localHttpsCertificate();
 
 /** Lets a local benchmark run beside another developer server without killing it. */
 function localDevelopmentPort(): number {
@@ -53,7 +55,7 @@ export default defineConfig({
     server: {
       port: localDevelopmentPort(),
       strictPort: true,
-      host: true,
+      host: process.env.VLAM_DEV_HTTP === '1' ? 'localhost' : true,
       ...(httpsCertificate ? { https: httpsCertificate } : {}),
       // Same-origin proxy so the viewer can fetch remote scenes without CORS.
       proxy: {

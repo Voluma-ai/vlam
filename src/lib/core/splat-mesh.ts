@@ -352,6 +352,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     uploadMs: 0,
     sortSubmitMs: 0,
     stagingTextureAllocations: 0,
+    textureCopyCount: 0,
+    textureCopyBytes: 0,
     activeListUpdateRanges: 0,
   };
   // Protected so a unified {@link MergedSplatMesh} subclass can substitute a
@@ -1852,6 +1854,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.updateTimings.uploadMs = 0;
     this.updateTimings.sortSubmitMs = 0;
     this.updateTimings.stagingTextureAllocations = 0;
+    this.updateTimings.textureCopyCount = 0;
+    this.updateTimings.textureCopyBytes = 0;
     this.updateTimings.activeListUpdateRanges = 0;
     if (
       this.workerPublicationEnabled &&
@@ -1952,6 +1956,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     uploadMs: number;
     sortSubmitMs: number;
     stagingTextureAllocations: number;
+    textureCopyCount: number;
+    textureCopyBytes: number;
     activeListUpdateRanges: number;
   }> {
     return this.updateTimings;
@@ -2850,6 +2856,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         _uploadSrcRegion,
         _uploadPosition.set(0, start),
       );
+      this.updateTimings.textureCopyCount++;
+      this.updateTimings.textureCopyBytes +=
+        count * width * components * stagingData.BYTES_PER_ELEMENT;
     }
   }
 
@@ -3166,6 +3175,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           _uploadSrcRegion,
           _uploadPosition.set(0, region.start),
         );
+        this.updateTimings.textureCopyCount++;
+        this.updateTimings.textureCopyBytes +=
+          region.count * width * components * stagingData.BYTES_PER_ELEMENT;
       }
     }
   }

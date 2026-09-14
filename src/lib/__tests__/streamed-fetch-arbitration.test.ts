@@ -71,6 +71,8 @@ interface Internals {
   forwardChunkToWorker: (file: number, data: SplatData) => void;
   postToWorker: (message: unknown, transfer?: Transferable[]) => void;
   sweepAllowed: () => boolean;
+  scene: { maxResidentSplats: number };
+  cacheLimitBytes: number;
   fetching: Map<number, { controller: AbortController; kind: string }>;
   loader: { load: (url: string, options: { signal: AbortSignal }) => Promise<SplatData> };
 }
@@ -99,6 +101,19 @@ function captureLoads(mesh: StreamedMesh): {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('StreamedSplatMesh fetch arbitration', () => {
+  it('does not sweep a capture larger than its decoded cache allowance', () => {
+    const mesh = makeStreamedMesh();
+    const inner = mesh as unknown as Internals;
+    inner.scene.maxResidentSplats = 100_000_000;
+    inner.cacheLimitBytes = 2 * 1024 * 1024 * 1024;
+    expect(inner.sweepAllowed()).toBe(false);
+
+    // A scene-wide governor may later grant enough memory to cache it all.
+    inner.cacheLimitBytes = 6 * 1024 * 1024 * 1024;
+    expect(inner.sweepAllowed()).toBe(true);
+    mesh.dispose();
+  });
+
   it('sweeps by default, and stops sweeping once its weight goes to zero', () => {
     const unweighted = makeStreamedMesh();
     // A host that never asked for arbitration keeps the old behaviour exactly.
