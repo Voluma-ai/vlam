@@ -339,6 +339,40 @@ describe('StreamedSplatMesh page-table governance', () => {
     expect(RecordingWorker.last?.lastReschedule?.['limit']).toBeCloseTo(unscaled * 2, 12);
   });
 
+  it('defaults page-table RAD to a half-budget first display, with an opt-out', () => {
+    track(
+      makeMesh({
+        foveated: true,
+        options: { foveationMode: 'page-table' },
+      }),
+    );
+    expect(RecordingWorker.last?.init?.['initialPublishMinSplats']).toBe(2 * WIDTH);
+
+    track(
+      makeMesh({
+        foveated: true,
+        options: { foveationMode: 'page-table', radInitialDisplayFraction: 0 },
+      }),
+    );
+    expect(RecordingWorker.last?.init?.['initialPublishMinSplats']).toBeUndefined();
+
+    track(
+      makeMesh({
+        foveated: true,
+        options: { foveationMode: 'page-table', radInitialDisplayFraction: 0.75 },
+      }),
+    );
+    expect(RecordingWorker.last?.init?.['initialPublishMinSplats']).toBe(3 * WIDTH);
+  });
+
+  it('rejects an invalid first-display fraction', () => {
+    expect(() => makeMesh({ options: { radInitialDisplayFraction: -0.1 } })).toThrow(RangeError);
+    expect(() => makeMesh({ options: { radInitialDisplayFraction: 1.1 } })).toThrow(RangeError);
+    expect(() => makeMesh({ options: { radInitialDisplayFraction: Number.NaN } })).toThrow(
+      RangeError,
+    );
+  });
+
   it('validates lodScale', () => {
     expect(() => makeMesh({ options: { lodScale: 0 } })).toThrow(RangeError);
     expect(() => makeMesh({ options: { lodScale: -1 } })).toThrow(RangeError);

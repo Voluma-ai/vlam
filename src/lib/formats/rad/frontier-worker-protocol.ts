@@ -57,6 +57,8 @@ export interface FrontierInitMessage {
   readonly cpuCacheBytes: number;
   /** Most pool writes one plan may deliver, including freed-tail clears. */
   readonly maxPlanWrites: number;
+  /** Minimum complete frontier size to publish before requested children arrive. */
+  readonly initialPublishMinSplats?: number;
 }
 
 /**

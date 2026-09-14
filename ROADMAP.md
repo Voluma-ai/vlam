@@ -48,7 +48,11 @@ and the verified rendering math.
   image latency with startup memory probes disabled; measure target-detail time
   separately. Verify no holes, parent/child overlap, bright flashes, cache churn
   or starvation during camera motion. A lower active-count test threshold alone
-  is not an implementation of this behavior.
+  is not an implementation of this behavior. **Current status:** the page-table
+  first-image gate now defaults to a complete 50%-budget cut, which the supplied
+  10.1M-leaf RAD looked good at and loaded quickly. The reported brief quality
+  dip at the next published cut and the timing/coverage matrix still need
+  investigation before this item is complete.
 - **Exact remote PLY streaming efficiency and scale validation** — compare
   1/4/16 MiB windows and spooling only higher-order SH values instead of full
   vertex records. Retain exact global SH quantization. **Acceptance:** real

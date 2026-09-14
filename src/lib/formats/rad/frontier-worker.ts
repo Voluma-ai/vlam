@@ -78,6 +78,8 @@ let traversalFallbackCount = 0;
 let lastTraversalFallback = false;
 let lastRootCoverInfeasible = false;
 let lastTraversalMs = 0;
+/** First-image threshold supplied by the page-table host (Infinity restores the old hold). */
+let initialPublishMinSplats = Number.POSITIVE_INFINITY;
 
 /** Multiplicative step for the cut search; matches `LIMIT_GROW` in rad-frontier. */
 const LIMIT_STEP = 1.6;
@@ -290,8 +292,14 @@ export function shouldPublishFrontier(
   uncachedTouchedCount: number,
   cacheFull: boolean,
   hasPublishedDisplay: boolean,
+  initialPublishMinSplats = Number.POSITIVE_INFINITY,
+  currentSplatCount = 0,
 ): boolean {
-  return cameraMoved || uncachedTouchedCount === 0 || (!hasPublishedDisplay && cacheFull);
+  return (
+    cameraMoved ||
+    uncachedTouchedCount === 0 ||
+    (!hasPublishedDisplay && (cacheFull || currentSplatCount >= initialPublishMinSplats))
+  );
 }
 
 /**
@@ -425,6 +433,8 @@ function reschedule(msg: FrontierRescheduleMessage): void {
     uncachedTouched.length,
     totalBytes >= cpuCacheBytes,
     pager.hasPublishedDisplay,
+    initialPublishMinSplats,
+    result.count,
   );
 
   const plan = pager.update(desiredGlobals, {
@@ -457,6 +467,7 @@ self.onmessage = (event: MessageEvent<FrontierRequest>): void => {
     chunkSize = msg.chunkSize;
     cpuCacheBytes = msg.cpuCacheBytes;
     maxPlanWrites = msg.maxPlanWrites;
+    initialPublishMinSplats = msg.initialPublishMinSplats ?? Number.POSITIVE_INFINITY;
     pager = new FrontierPager(msg.capacity, chunkSize);
     solvedLimit = Number.POSITIVE_INFINITY;
     thresholdLimit = Number.POSITIVE_INFINITY;

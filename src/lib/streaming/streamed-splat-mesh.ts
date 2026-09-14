@@ -141,6 +141,16 @@ const PAGETABLE_PRIORITY_SLOTS = 3;
  * the frontier coarsens and evicts near-camera detail to fit. Overridable via
  * `foveationDrawBudget` (`?foveationDraw=`), and always ≤ the pool budget. */
 const PAGETABLE_DRAW_BUDGET = 4_000_000;
+/**
+ * The first page-table RAD image waits for a frontier at least this full
+ * relative to its initial draw budget. The raw chunk-0 cover appears quickly
+ * but looks too coarse up close; waiting for every chunk touched by the target
+ * cut keeps large captures blank for too long. Half the budget gave a useful,
+ * complete first image on the 10.1M-leaf bridge capture while leaving the
+ * target cut and near-camera fetch priority unchanged. Adjust this only after
+ * comparing first-image quality, time to target detail, and swap artifacts.
+ */
+const DEFAULT_RAD_INITIAL_DISPLAY_FRACTION = 0.5;
 
 /**
  * Splats per slab page in `foveationMode: 'page-table'`.
@@ -395,6 +405,21 @@ export interface StreamedSplatMeshOptions extends SplatMeshOptions {
    * formats default to `'progressive'`.
    */
   initialReveal?: 'progressive' | 'hold-near-l0' | 'hold-coverage';
+  /**
+   * First-image threshold for page-table `.rad`, as a fraction of the initial
+   * draw budget. The first complete, fully staged frontier at or above this
+   * count may appear while child chunks are still loading. Subsequent cuts use
+   * the normal atomic publication rule; the final draw budget and LOD target
+   * are unchanged. This is a splat-count threshold, not a fraction of image
+   * resolution or of downloaded bytes.
+   *
+   * Default `0.5`: the raw chunk-0 cover was too coarse up close, while
+   * waiting for all target-detail chunks delayed first paint on large scenes.
+   * Set `0` to use the former target-detail first-paint policy, or a finite
+   * fraction in `(0, 1]` to tune the first image. Other formats and RAD prefix
+   * mode ignore this option.
+   */
+  radInitialDisplayFraction?: number;
   /** Receives lightweight LOD mutation events for performance attribution. */
   onPerformanceEvent?: (event: StreamedSplatPerformanceEvent) => void;
   /**
@@ -1256,6 +1281,9 @@ export class StreamedSplatMesh extends SplatMesh {
     this.appendCap = validateAppendCap(options.maxSplatsPerSwap);
     this.pageTableWriteCap =
       options.maxSplatsPerSwap === undefined ? DEFAULT_PAGE_TABLE_WRITES_PER_PLAN : this.appendCap;
+    const initialRadDisplayFraction = validateRadInitialDisplayFraction(
+      options.radInitialDisplayFraction,
+    );
     const holdCoverage =
       options.initialReveal === 'hold-coverage' && this.scene.source.coverageRunsFor !== undefined;
     const holdNearL0 = options.initialReveal === 'hold-near-l0' && neverRetireCoverageEarly;
@@ -1411,6 +1439,10 @@ export class StreamedSplatMesh extends SplatMesh {
         chunkSize: scene.chunkSize ?? 65536,
         cpuCacheBytes: this.cacheLimitBytes,
         maxPlanWrites: this.pageTableWriteCap,
+        initialPublishMinSplats:
+          initialRadDisplayFraction === 0
+            ? undefined
+            : Math.ceil(this.pageTableDrawBudget * initialRadDisplayFraction),
       });
       // Seed the worker with the chunk the scene builder already decoded. The
       // tree roots are derived from chunk 0, so without this every traversal up
@@ -4467,6 +4499,17 @@ const _sphere = new THREE.Sphere();
 /** Camera forward in mesh-local space, for the page-table traversal's foveation. */
 const _cameraForward = new THREE.Vector3();
 const _drawSize = new THREE.Vector2();
+
+/** Validates the page-table RAD first-image fraction; zero restores the old hold. */
+function validateRadInitialDisplayFraction(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_RAD_INITIAL_DISPLAY_FRACTION;
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    throw new RangeError(
+      `radInitialDisplayFraction must be a finite fraction in [0, 1], got ${value}.`,
+    );
+  }
+  return value;
+}
 
 /** A `SplatData` view over a contiguous run `[j, j + count)` of a plan's packed
  * splats, so one pool write covers a whole run of slots. Zero-copy subarrays. */

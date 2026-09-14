@@ -85,7 +85,8 @@ export interface PagerUpdateOptions {
    * the previous cut and advances {@link PagerPlan.displayCount}. When false,
    * the drawn prefix stays put: replacements accumulate on the tail until a
    * later update passes `publish: true` (the frontier has the chunks it
-   * asked for, the cache is full, or the camera moved).
+   * asked for, the cache is full, the camera moved, or the first-image size
+   * threshold was reached).
    */
   readonly publish?: boolean;
 }

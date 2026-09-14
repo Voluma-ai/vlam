@@ -331,6 +331,21 @@ frontier (budget redistributes) and the shader drew it immediately.
 `solvedLimit` still refines while budget remains and does not coarsen
 after a clamp.
 
+**Earlier complete first image (page-table default).** The first fully staged,
+complete intermediate cover is published when it reaches 50% of the initial
+draw-splat budget, even if some requested child chunks have not arrived. This
+was chosen after the raw chunk-0 cover looked too coarse up close and the
+target-detail hold kept a large capture blank too long. It is a count of selected
+splats, not 50% of an image's pixel quality or of the bytes downloaded. The
+published cover remains visible until the normal atomic replacement is staged;
+the final draw budget, LOD target, and near-camera fetch priority are unchanged.
+The library option is `radInitialDisplayFraction`. In the viewer,
+`?radInitialDisplay=0` restores the previous target-detail hold for A/B,
+`?radInitialDisplay=coarse` explicitly selects the default, and a numeric
+fraction in `(0, 1]` tunes the threshold. Prefix RAD and other formats are
+unaffected. Watch for brief local quality changes when the first finer cut
+redistributes its fixed budget; the 50% gate alone does not prevent those.
+
 The prefix reader (`RadLodSource`, moderate captures under the 6M lift
 ceiling) uses the same publish policy without a pager: every depth, including
 chunk 0's overview, uploads into inactive ranges and the mesh presents only
