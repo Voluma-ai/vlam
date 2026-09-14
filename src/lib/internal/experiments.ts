@@ -7,7 +7,7 @@ export interface ExperimentConfiguration {
 }
 
 export const experiments: ExperimentConfiguration = {
-  initialPoolUpload: 'existing',
+  initialPoolUpload: 'skip-empty',
   radTraversal: 'heap',
   remotePly: 'buffered',
   webglProvokingVertex: 'existing',

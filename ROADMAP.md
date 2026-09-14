@@ -32,12 +32,12 @@ and the verified rendering math.
   incremental remote PLY decoding (exact and approximate SH), and WebGL
   provoking-vertex state. Keep the current sorter, rendering math, and public
   loader behavior. Promote candidates only after matched native-device A/B
-  runs and WebGPU/WebGL2 pixel validation. **Status:** benchmark controls and
-  private empty-pool candidate removed eight initial destination uploads in
-  five native WebGPU A/B pairs, improving median first-usable time from 109.2
-  to 83.3 ms in a 250,000-slot SH3 probe. It remains disabled pending wider
-  device and full-app validation. The
-  bounded-threshold traversal was tested on hotel and a 10.1M-splat RAD with
+  runs and WebGPU/WebGL2 pixel validation. **Status:** empty-pool
+  `skip-empty` is now the published default after Apple M3 Chrome hotel
+  startup A/B (WebGPU median first-usable 35.19→32.36 s with zero initial
+  destination uploads; forced WebGL2 within noise) plus lifecycle probes.
+  `VLAM_EXPERIMENT=baseline` still restores the prior upload for benchmarks.
+  The bounded-threshold traversal was tested on hotel and a 10.1M-splat RAD with
   five native A/B pairs each; it was slower and fell back repeatedly, so keep
   the heap. Exact remote PLY streaming decoded a generated input past 2 GiB
   with bounded source memory and bit-identical SH0–3, but its OPFS second pass

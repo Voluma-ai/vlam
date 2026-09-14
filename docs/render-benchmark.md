@@ -18,14 +18,14 @@ actual aliased 2.1.0 package; `environment.spark` describes the installed
 For build-time experiments, start a separate server for each variant with
 `VLAM_EXPERIMENT=baseline npm run benchmark:dev` or
 `VLAM_EXPERIMENT=skip-empty npm run benchmark:dev`. The effective settings are
-saved in comparison and memory reports. The published library always resolves
-to disabled experiments. Other selectable names (`bounded-threshold`,
-`exact-stream`, `approximate-sh-stream`, `first-vertex`) reserve independent
-benchmark configurations. The bounded-threshold traversal has been evaluated
-and is not recommended for promotion. Remote PLY streaming is implemented as
-an isolated benchmark experiment. The WebGL candidate is also isolated and
-cannot be evaluated on the tested Chrome GPU path because its extension is
-unavailable.
+saved in comparison and memory reports. Empty-pool `skip-empty` is the
+published default; `baseline` restores the prior initial upload for A/B.
+Other selectable names (`bounded-threshold`, `exact-stream`,
+`approximate-sh-stream`, `first-vertex`) remain independent benchmark-only
+configurations. The bounded-threshold traversal has been evaluated and is not
+recommended for promotion. Remote PLY streaming is implemented as an isolated
+benchmark experiment. The WebGL candidate is also isolated and cannot be
+evaluated on the tested Chrome GPU path because its extension is unavailable.
 
 ```bash
 npm install
@@ -158,14 +158,19 @@ disabled, so these numbers cannot establish uncapped throughput. Raw reports
 and PNGs are in `.tmp/benchmark-results/` under timestamps `22-13-33.767Z`,
 `22-13-54.836Z`, and `22-17-24.956Z` respectively.
 
-### Empty dynamic-pool upload experiment (14 September 2026)
+### Empty dynamic-pool upload (promoted 14 September 2026)
+
+Private empty dynamic pools now skip the initial destination CPU upload by
+default (`experiments.initialPoolUpload: 'skip-empty'`). Static meshes and
+supplied shared pools keep the previous initialization.
+`VLAM_EXPERIMENT=baseline` restores the prior upload on the isolated
+benchmark server.
 
 Five alternating fresh foreground tabs per variant used headed Chromium on an
-NVIDIA RTX 3090 WebGPU adapter. The probe creates a private 250,000-slot SH3
-dynamic pool, renders it empty, appends one white splat, and reads the first
-nonblank pixel. This isolates pool initialization; it is not a full-scene load
-benchmark. Both variants retained the same allocation, returned transparent
-empty pixels and opaque white appended pixels, and completed the same path.
+NVIDIA RTX 3090 WebGPU adapter for the isolated probe: a private 250,000-slot
+SH3 dynamic pool, empty render, one white append, and first nonblank pixel.
+Both variants retained the same allocation, returned transparent empty pixels
+and opaque white appended pixels, and completed the same path.
 
 | Build | Full destination texture uploads | Median construction | Median first usable from construction |
 | --- | ---: | ---: | ---: |
@@ -175,28 +180,32 @@ empty pixels and opaque white appended pixels, and completed the same path.
 The five paired first-usable differences favored the candidate by 20–37 ms.
 Actual rendered pixels also passed WebGPU and forced WebGL2 checks for append
 ordering, disjoint appends, row reuse, clear, compaction, float16/float32,
-and SH0–SH3. Static and shared pools retain their original initialization.
-This is a **device-validation-pending** candidate for eligible pools: the
-published default remains the existing behavior until matched full-application
-startup measurements and broader native-device checks pass. Raw run values are
-in `.tmp/pool-native-results.json`.
+and SH0–SH3. Raw isolated-pool values are in `.tmp/pool-native-results.json`.
 
-### Preliminary hotel startup check (14 September 2026)
+#### Apple M3 hotel startup gate (14 September 2026)
 
-Five alternating WebGPU hotel runs used the cached RAD above, its canonical
-camera, SH3, and a 1,000,000-splat budget. The browser did not expose adapter
-identity, so these are diagnostic measurements rather than promotable device
-evidence. Both runs reached 999,999 active splats without errors, but the
-candidate did not reproduce the isolated-pool gain.
+Promotion used native Chrome 151.0.7922.174 on a 16 GB MacBook Air (Apple M3,
+10-core GPU, Metal; WebGPU adapter vendor `apple` / `metal-3`), macOS 26.3.1,
+AC power, headed foreground tabs, the pinned hotel RAD
+(`413381d93b452a77d75e7998f89836db0df740127f995bf94f4d5126a129f773`), its
+canonical camera, SH3, and a 1,000,000-splat budget. Five alternating pairs
+per backend compared `VLAM_EXPERIMENT=baseline` (port 4187) with
+`skip-empty` (port 4188). Every run reached 999,999 / 1,501,184 active /
+capacity with no settle timeout or load failure. Skip-empty made zero initial
+destination CPU uploads (baseline always eight / 174,137,344 bytes); staged
+row uploads and staging-to-destination copies remained present.
 
-| Build | First usable frame median (five runs) |
-| --- | --- |
-| Existing | 38.73 s |
-| Skip empty | 34.60 s |
+| Backend | Existing median first usable | Skip-empty median first usable | Outcome |
+| --- | ---: | ---: | --- |
+| WebGPU | 35.19 s | 32.36 s | Promote: −2.83 s, zero dest uploads |
+| WebGL2 | 33.48 s | 35.53 s | Within ~7 s run-to-run range; no repeatable regression |
 
-The candidate removed all eight (174 MB) initial destination uploads in every
-run and improved the paired median by 4.14 s. Keep the existing default until
-forced-WebGL2 and cross-device validation complete.
+Paired JSON summaries and fixed-pose captures are under
+`.tmp/empty-pool-apple-silicon/` and
+`.tmp/pool-native-scene-{webgpu,webgl}-five-pairs.json`. Native Chrome
+lifecycle probes (empty → append, disjoint, reuse, clear, compaction) passed
+for both variants on WebGPU and forced WebGL2; automated
+`browser-tests/empty-pool.spec.ts` passed for both experiment builds.
 
 ### Bounded RAD traversal experiment (13 September 2026)
 
