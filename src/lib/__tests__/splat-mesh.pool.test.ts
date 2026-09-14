@@ -382,6 +382,14 @@ describe('SplatMesh poolFloatTextures float16', () => {
       expect(region.max.x).toBe(WIDTH);
       expect(region.max.y).toBe(1);
     }
+    const timings = (
+      mesh as unknown as {
+        getUpdateTimings(): { textureCopyCount: number; textureCopyBytes: number };
+      }
+    ).getUpdateTimings();
+    expect(timings.textureCopyCount).toBe(4);
+    // Two half RGBA rows, one byte RGBA row, and one float RGBA row.
+    expect(timings.textureCopyBytes).toBe(WIDTH * 4 * (2 + 1 + 2 + 4));
   });
 
   it('retains dirty rows when an upload fails so the next flush retries them', () => {
@@ -431,6 +439,13 @@ describe('SplatMesh poolFloatTextures float16', () => {
     // Three adjacent rows retry as one span, across the four core textures.
     expect(destinations).toEqual([0, 0, 0, 0]);
     expect(internals.pendingUploadRows).toEqual([]);
+    const timings = (
+      mesh as unknown as {
+        getUpdateTimings(): { textureCopyCount: number; textureCopyBytes: number };
+      }
+    ).getUpdateTimings();
+    expect(timings.textureCopyCount).toBe(4);
+    expect(timings.textureCopyBytes).toBe(3 * WIDTH * 4 * (4 + 1 + 4 + 4));
   });
 
   it('static constructor packs half images before the initial upload', () => {

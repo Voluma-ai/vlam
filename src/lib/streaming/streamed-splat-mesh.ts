@@ -63,9 +63,12 @@ import {
   FRONTIER_FOVEATION_DEFAULTS,
   type FrontierFoveation,
   type FrontierPlanMessage,
+  type FrontierDemandReply,
+  type FrontierDemandWant,
   type FrontierRequest,
   type PlanSplats,
 } from '../formats/rad/frontier-worker-protocol';
+import { experiments } from '../internal/experiments';
 import { shCoefficientCount } from '../core/sh-pack';
 import { warn } from '../core/logging';
 import type {
@@ -508,7 +511,7 @@ export interface StreamedSplatMeshOptions extends SplatMeshOptions {
   cacheBudget?: ChunkCacheBudget;
 }
 
-/** One streamed-LOD mutation tick, measured on the main thread. */
+/** One streamed-mesh update frame, measured on the main thread. */
 export interface StreamedSplatPerformanceEvent {
   /** Timestamp after the tick, on the same clock as requestAnimationFrame. */
   timestamp: number;
@@ -522,6 +525,10 @@ export interface StreamedSplatPerformanceEvent {
   sortSubmitMs: number;
   /** Exact-height staging textures allocated during this update. */
   stagingTextureAllocations: number;
+  /** Texture copies submitted this update (core, SH and custom channels). */
+  textureCopyCount: number;
+  /** Live destination bytes copied, excluding padded staging rows. */
+  textureCopyBytes: number;
   /** WebGPU source-index ranges queued for upload before this tick's sort. */
   activeListUpdateRanges: number;
   appendedCount: number;
@@ -799,6 +806,26 @@ export class StreamedSplatMesh extends SplatMesh {
   /** Chunks the last frontier wanted but did not have, biggest-on-screen first.
    * These outrank the background sweep - they are the detail actually on screen. */
   private pageTableFetchPriority: readonly number[] = [];
+  private demandGeneration = 0;
+  private demandKey = '';
+  private demandOutstanding = false;
+  private demandSentAt = -Infinity;
+  private demandWants: readonly FrontierDemandWant[] = [];
+  private readonly demandFirstSeen = new Map<number, number>();
+  private demandReadyGeneration = -1;
+  private demandSolvedLimit = Number.POSITIVE_INFINITY;
+  /** Internal benchmark counters; never part of the exported mesh interface. */
+  private readonly demandDiagnostics = {
+    generation: 0,
+    replies: 0,
+    staleReplies: 0,
+    cancellations: 0,
+    requests: 0,
+    completed: 0,
+    knownRequestedBytes: 0,
+    knownCompletedBytes: 0,
+    requestToDecodeMs: 0,
+  };
   /** Frontier-cut target node size (px) and foveation ramp; see `frontierView`. */
   private pageTableTargetPx = DEFAULT_FOVEATION_TARGET_PX;
   private pageTableFoveation: FrontierFoveation = FRONTIER_FOVEATION_DEFAULTS;
@@ -1411,8 +1438,9 @@ export class StreamedSplatMesh extends SplatMesh {
       this.slabCeiling = capacity;
       this.syncSlabPages(this.pageTableStagingSlots);
       this.frontierWorker = new FrontierWorkerCtor();
-      this.frontierWorker.onmessage = (e: MessageEvent<FrontierPlanMessage>) =>
-        this.handleFrontierMessage(e.data);
+      this.frontierWorker.onmessage = (
+        e: MessageEvent<FrontierPlanMessage | FrontierDemandReply>,
+      ) => this.handleFrontierMessage(e.data);
       this.frontierWorker.onerror = (event: ErrorEvent) => this.failFrontierWorker(event);
       this.frontierWorker.onmessageerror = (event: MessageEvent) => this.failFrontierWorker(event);
       this.pagerSlots = this.slabSlots;
@@ -1584,12 +1612,91 @@ export class StreamedSplatMesh extends SplatMesh {
   }
 
   /** Applies a worker reply, turning malformed messages into a terminal fault. */
-  private handleFrontierMessage(plan: FrontierPlanMessage): void {
+  private handleFrontierMessage(plan: FrontierPlanMessage | FrontierDemandReply): void {
     try {
-      this.applyFrontierPlan(plan);
+      if (plan.type === 'demand') this.applyDemand(plan);
+      else this.applyFrontierPlan(plan);
     } catch (error) {
       this.failFrontierWorker(error);
     }
+  }
+
+  private get focusedDemand(): boolean {
+    return (
+      !!this.frontierWorker &&
+      experiments.radDemand === 'focus' &&
+      estimateSceneDecodedBytes(this.scene) > this.cacheLimitBytes
+    );
+  }
+
+  private applyDemand(reply: FrontierDemandReply): void {
+    this.demandOutstanding = false;
+    if (
+      this.pageTableDisposed ||
+      reply.generation !== this.demandGeneration ||
+      !this.focusedDemand
+    ) {
+      this.demandDiagnostics.staleReplies++;
+      this.pendingWork = true;
+      return;
+    }
+    this.demandDiagnostics.replies++;
+    this.demandReadyGeneration = reply.generation;
+    this.demandWants = reply.wants;
+    const missing = new Set(reply.wants.map((want) => want.file));
+    for (const file of this.demandFirstSeen.keys()) {
+      if (!missing.has(file) || this.pageTableCachedFiles.has(file))
+        this.demandFirstSeen.delete(file);
+    }
+    for (const file of missing) {
+      if (!this.pageTableCachedFiles.has(file) && !this.demandFirstSeen.has(file)) {
+        this.demandFirstSeen.set(file, performance.now());
+      }
+    }
+    this.reconcileDemand();
+    this.pendingWork = true;
+  }
+
+  /** Only a complete, latest-generation scan proves an unpinned request obsolete. */
+  private reconcileDemand(): void {
+    if (this.demandReadyGeneration !== this.demandGeneration || !this.focusedDemand) return;
+    const wanted = new Set(this.demandWants.map((want) => want.file));
+    for (const [file, entry] of this.fetching) {
+      if (
+        !wanted.has(file) &&
+        !this.scene.pinnedFiles.has(file) &&
+        !entry.controller.signal.aborted
+      ) {
+        this.demandDiagnostics.cancellations++;
+        entry.controller.abort();
+      }
+    }
+    const visible = this.demandWants.filter((w) => w.tier === 0);
+    const now = performance.now();
+    const other = this.demandWants
+      .filter((w) => w.tier !== 0)
+      .sort((a, b) => {
+        const ageA = now - (this.demandFirstSeen.get(a.file) ?? now);
+        const ageB = now - (this.demandFirstSeen.get(b.file) ?? now);
+        const agingA = ageA >= 5000;
+        const agingB = ageB >= 5000;
+        return agingA === agingB
+          ? agingA
+            ? ageB - ageA || a.file - b.file
+            : a.tier - b.tier || b.priority - a.priority || a.file - b.file
+          : agingA
+            ? -1
+            : 1;
+      });
+    // An eighth visible request started before this reply is still legitimate.
+    // Let it finish; its released slot goes to the oldest lower-tier want.
+    // Preempting it would violate shared-request preservation and waste bytes.
+    for (const want of visible.slice(0, other.length ? 7 : 8))
+      this.requestChunk(want.file, 'priority');
+    for (const want of other.slice(0, 1)) this.requestChunk(want.file, 'priority');
+    for (const want of visible.slice(other.length ? 7 : 8))
+      this.requestChunk(want.file, 'priority');
+    for (const want of other.slice(1)) this.requestChunk(want.file, 'priority');
   }
 
   /**
@@ -2099,15 +2206,37 @@ export class StreamedSplatMesh extends SplatMesh {
       ? this.reschedule(lodCamera, now)
       : null;
     super.update(camera, renderer, options);
-    if (performanceEvent && this.onPerformanceEvent) {
+    if (this.onPerformanceEvent) {
       const timings = this.getUpdateTimings();
-      performanceEvent.cpuMs += performance.now() - performanceEvent.timestamp;
-      performanceEvent.activeListMs = timings.activeListMs;
-      performanceEvent.uploadMs = timings.uploadMs;
-      performanceEvent.sortSubmitMs = timings.sortSubmitMs;
-      performanceEvent.stagingTextureAllocations = timings.stagingTextureAllocations;
-      performanceEvent.activeListUpdateRanges = timings.activeListUpdateRanges;
-      this.onPerformanceEvent(performanceEvent);
+      const timestamp = performance.now();
+      const event: StreamedSplatPerformanceEvent = performanceEvent ?? {
+        timestamp,
+        cpuMs: timestamp - now,
+        activeListMs: 0,
+        uploadMs: 0,
+        sortSubmitMs: 0,
+        stagingTextureAllocations: 0,
+        textureCopyCount: 0,
+        textureCopyBytes: 0,
+        activeListUpdateRanges: 0,
+        appendedCount: 0,
+        removedCount: 0,
+        stagedCount: 0,
+        uploadCount: 0,
+        activeCount: this.activeSplatCount,
+        forcedSort: false,
+        compacted: false,
+      };
+      if (performanceEvent) event.cpuMs += timestamp - performanceEvent.timestamp;
+      event.timestamp = timestamp;
+      event.activeListMs = timings.activeListMs;
+      event.uploadMs = timings.uploadMs;
+      event.sortSubmitMs = timings.sortSubmitMs;
+      event.stagingTextureAllocations = timings.stagingTextureAllocations;
+      event.textureCopyCount = timings.textureCopyCount;
+      event.textureCopyBytes = timings.textureCopyBytes;
+      event.activeListUpdateRanges = timings.activeListUpdateRanges;
+      this.onPerformanceEvent(event);
     }
   }
 
@@ -2445,7 +2574,7 @@ export class StreamedSplatMesh extends SplatMesh {
       // when `size / distance ≤ targetPx / focalY`.
       const focalY = (camera.projectionMatrix.elements[5] * this.pageTableViewportY) / 2;
       if (focalY > 0) this.pageTableLimit = this.pageTableTargetPx / focalY;
-      this.reschedulePageTable(_cameraLocal, _cameraForward, _frustum, now);
+      this.reschedulePageTable(_cameraLocal, _cameraForward, _frustum, now, _projScreen.elements);
       // The page-table path still reports its per-update CPU cost. Returning
       // null here made `onPerformanceEvent` silent on the one path a `.rad`
       // actually takes, so a host watching `cpuMs` / `uploadMs` / `sortSubmitMs`
@@ -2468,6 +2597,8 @@ export class StreamedSplatMesh extends SplatMesh {
         uploadMs: 0,
         sortSubmitMs: 0,
         stagingTextureAllocations: 0,
+        textureCopyCount: 0,
+        textureCopyBytes: 0,
         activeListUpdateRanges: 0,
         appendedCount: 0,
         removedCount: 0,
@@ -3163,6 +3294,8 @@ export class StreamedSplatMesh extends SplatMesh {
       uploadMs: 0,
       sortSubmitMs: 0,
       stagingTextureAllocations: 0,
+      textureCopyCount: 0,
+      textureCopyBytes: 0,
       activeListUpdateRanges: 0,
       appendedCount,
       removedCount,
@@ -3987,51 +4120,98 @@ export class StreamedSplatMesh extends SplatMesh {
     forwardLocal: THREE.Vector3,
     frustum: THREE.Frustum,
     now: number,
+    projection: readonly number[] = [],
   ): void {
     if (this.pageTableDisposed) return;
-    // 1. What the last frontier wanted and did not have, biggest-on-screen
-    //    first. This is the detail the camera is pointed at, so it takes the
-    //    fetch slots before anything else - issued *after* the sweep below it
-    //    was silently dropped by the in-flight cap on every tick, and the whole
-    //    capture downloaded in file order while the view stayed coarse.
-    for (const file of this.pageTableFetchPriority) this.requestChunk(file, 'priority');
-    // 2. The source's camera-directed coarse base, for far coverage.
-    const desiredFiles = new Set(this.pageTableFetchPriority);
-    for (const run of this.scene.source.computeDesiredRuns(cameraLocal, frustum, now)) {
-      desiredFiles.add(run.file);
-      this.requestChunk(run.file, 'base');
-    }
-    // Cancel detail this mesh no longer wants, so its slots go back to the
-    // scene now rather than when a superseded request happens to finish. The
-    // classic path has always done this; the page-table path never did, which
-    // on a shared pipe means a camera cut kept paying for the old view.
-    // Sweep fetches are exempt: they are file-order pre-warming that no
-    // frontier plan ever names, so matching them against `desiredFiles` would
-    // abort every one of them on the very next reschedule.
-    for (const [file, entry] of this.fetching) {
-      if (entry.kind === 'sweep') continue;
-      if (!desiredFiles.has(file) && !this.scene.pinnedFiles.has(file)) entry.controller.abort();
-    }
-    // 3. Background sweep over the slots that remain: pull the lowest uncached
-    //    chunk (file order is coarse → fine). Once the cache holds the scene,
-    //    turning the camera is served from RAM in one traversal instead of a
-    //    level-by-level network ladder. It keeps a reserve free so (1) is never
-    //    starved, and pauses whenever the worker cache is at its cap - past that
-    //    point sweeping only evicts what the frontier is using. It resumes on
-    //    its own when the cap rises, which under a scene-wide `ChunkCacheBudget`
-    //    is what happens as the camera approaches this mesh.
-    //
-    //    Only a mesh with weight sweeps. This is speculation about a camera
-    //    move that has not happened, and it is unbounded - it wants the entire
-    //    capture. On a scene of streamed additional meshes, every hidden and distant one
-    //    speculating at once is the traffic that delays the mesh the viewer
-    //    is looking at. The cost of gating it is that re-focusing a mesh that
-    //    went cold refetches instead of hitting a warm cache.
-    if (!this.pageTableCacheAtLimit && this.sweepAllowed()) {
-      const sweepCap = Math.max(1, this.maxInflight - PAGETABLE_PRIORITY_SLOTS);
-      const files = this.scene.chunkUrls.length;
-      for (let f = 0; f < files && this.fetching.size < sweepCap; f++) {
-        if (!this.pageTableCachedFiles.has(f)) this.requestChunk(f, 'sweep');
+    if (this.focusedDemand) {
+      const camera: [number, number, number] = [cameraLocal.x, cameraLocal.y, cameraLocal.z];
+      const forward: [number, number, number] = [forwardLocal.x, forwardLocal.y, forwardLocal.z];
+      const limit = Math.min(this.pageTableLimit / this.lodScaleValue, this.demandSolvedLimit);
+      const key = [...camera, ...forward, ...projection, limit, this.pageTableDrawBudget].join(',');
+      if (key !== this.demandKey) {
+        this.demandKey = key;
+        this.demandGeneration++;
+        this.demandDiagnostics.generation = this.demandGeneration;
+      }
+      if (
+        !this.demandOutstanding &&
+        now - this.demandSentAt >= 100 &&
+        this.demandReadyGeneration !== this.demandGeneration
+      ) {
+        this.demandOutstanding = true;
+        this.demandSentAt = now;
+        this.postToWorker({
+          type: 'demand',
+          generation: this.demandGeneration,
+          cameraLocal: camera,
+          cameraForward: forward,
+          projection: Array.from(projection),
+          ...this.pageTableFoveation,
+          limit,
+          budget: this.pageTableDrawBudget,
+        });
+      }
+      if (this.demandReadyGeneration === this.demandGeneration) this.reconcileDemand();
+      // Root coverage is a prerequisite for either traversal. An incomplete
+      // scan never authorizes canceling or replacing any other request.
+      if (!this.pageTableCachedFiles.has(0)) this.requestChunk(0, 'priority');
+    } else {
+      this.demandWants = [];
+      this.demandReadyGeneration = -1;
+      this.demandKey = '';
+      // 1. What the last frontier wanted and did not have, biggest-on-screen
+      //    first. This is the detail the camera is pointed at, so it takes the
+      //    fetch slots before anything else - issued *after* the sweep below it
+      //    was silently dropped by the in-flight cap on every tick, and the whole
+      //    capture downloaded in file order while the view stayed coarse.
+      for (const file of this.pageTableFetchPriority) this.requestChunk(file, 'priority');
+      // 2. Keep the source's coarse base through the first complete page-table
+      //    cut. On captures that fit in cache it can keep pre-warming turns;
+      //    otherwise the frontier worker names current-view dependencies itself.
+      //    Continuing an independent base prefix on an over-cache capture
+      //    repeatedly evicts those dependencies and stalls visible refinement.
+      const desiredFiles = new Set(this.pageTableFetchPriority);
+      if (
+        this.pageTableDrawn === 0 ||
+        estimateSceneDecodedBytes(this.scene) <= this.cacheLimitBytes
+      ) {
+        for (const run of this.scene.source.computeDesiredRuns(cameraLocal, frustum, now)) {
+          desiredFiles.add(run.file);
+          this.requestChunk(run.file, 'base');
+        }
+      }
+      // Cancel detail this mesh no longer wants, so its slots go back to the
+      // scene now rather than when a superseded request happens to finish. The
+      // classic path has always done this; the page-table path never did, which
+      // on a shared pipe means a camera cut kept paying for the old view.
+      // Sweep fetches are exempt: they are file-order pre-warming that no
+      // frontier plan ever names, so matching them against `desiredFiles` would
+      // abort every one of them on the very next reschedule.
+      for (const [file, entry] of this.fetching) {
+        if (entry.kind === 'sweep') continue;
+        if (!desiredFiles.has(file) && !this.scene.pinnedFiles.has(file)) entry.controller.abort();
+      }
+      // 3. Background sweep over the slots that remain: pull the lowest uncached
+      //    chunk (file order is coarse → fine). Once the cache holds the scene,
+      //    turning the camera is served from RAM in one traversal instead of a
+      //    level-by-level network ladder. It keeps a reserve free so (1) is never
+      //    starved, and pauses whenever the worker cache is at its cap - past that
+      //    point sweeping only evicts what the frontier is using. It resumes on
+      //    its own when the cap rises, which under a scene-wide `ChunkCacheBudget`
+      //    is what happens as the camera approaches this mesh.
+      //
+      //    Only a mesh with weight sweeps. This is speculation about a camera
+      //    move that has not happened, and it is unbounded - it wants the entire
+      //    capture. On a scene of streamed additional meshes, every hidden and distant one
+      //    speculating at once is the traffic that delays the mesh the viewer
+      //    is looking at. The cost of gating it is that re-focusing a mesh that
+      //    went cold refetches instead of hitting a warm cache.
+      if (!this.pageTableCacheAtLimit && this.sweepAllowed()) {
+        const sweepCap = Math.max(1, this.maxInflight - PAGETABLE_PRIORITY_SLOTS);
+        const files = this.scene.chunkUrls.length;
+        for (let f = 0; f < files && this.fetching.size < sweepCap; f++) {
+          if (!this.pageTableCachedFiles.has(f)) this.requestChunk(f, 'sweep');
+        }
       }
     }
     if (this.pageTableInFlight) return; // one traversal outstanding - coalesce
@@ -4217,7 +4397,14 @@ export class StreamedSplatMesh extends SplatMesh {
     // The chunks the frontier wants next, biggest-on-screen first - requested now
     // and kept as the priority list the next reschedule fetches before anything.
     this.pageTableFetchPriority = Array.from(plan.touched);
-    for (const file of this.pageTableFetchPriority) this.requestChunk(file, 'priority');
+    if (this.focusedDemand && this.demandSolvedLimit !== plan.solvedLimit) {
+      this.demandSolvedLimit = plan.solvedLimit;
+      this.demandKey = '';
+      this.pendingWork = true;
+    }
+    if (!this.focusedDemand) {
+      for (const file of this.pageTableFetchPriority) this.requestChunk(file, 'priority');
+    }
     // Keep refining while chunks stream in (the frontier keeps changing), and
     // while the worker is still ramping its budget up to the governed one - that
     // ramp is what keeps a hard camera cut from arriving as one ~100 ms plan, so
@@ -4234,6 +4421,9 @@ export class StreamedSplatMesh extends SplatMesh {
     const tree = data.radTree;
     if (!tree) return;
     this.pageTableCachedFiles.add(file);
+    this.demandGeneration++;
+    this.demandDiagnostics.generation = this.demandGeneration;
+    this.demandKey = '';
     // Only forward SH the pool will actually render. A `.rad` chunk decodes
     // whatever bands the file carries regardless of what was asked for, and the
     // worker charges its cache for every byte it is handed - 15 coefficients is
@@ -4306,6 +4496,12 @@ export class StreamedSplatMesh extends SplatMesh {
   }
 
   private sweepAllowed(): boolean {
+    // A whole-scene sweep cannot finish inside a smaller decoded cache. On a
+    // large RAD it fills the spare slots with off-view chunks, then competes
+    // with the frontier's priority misses and triggers an eviction/refetch loop.
+    // Keep pre-warming captures whose complete decoded set fits their current
+    // allowance; a raised scene-wide allowance re-enables it automatically.
+    if (estimateSceneDecodedBytes(this.scene) > this.cacheLimitBytes) return false;
     // The `smooth` profile (the default on mobile) declines the sweep outright.
     //
     // The sweep is speculative pre-warming of the *whole capture*, and without a
@@ -4371,6 +4567,13 @@ export class StreamedSplatMesh extends SplatMesh {
     // tick, and the scheduler wakes it when the pipe frees up.
     if (this.fetchHandle && !this.fetchScheduler?.tryAcquire(this.fetchHandle, kind)) return;
     const controller = new AbortController();
+    const focusRequest = this.focusedDemand;
+    const knownBytes = this.scene.chunkOptions?.[file]?.rad?.length ?? 0;
+    const requestedAt = performance.now();
+    if (focusRequest) {
+      this.demandDiagnostics.requests++;
+      this.demandDiagnostics.knownRequestedBytes += knownBytes;
+    }
     this.fetching.set(file, { controller, kind, classicWant });
     this.loader
       .load(url, {
@@ -4383,6 +4586,11 @@ export class StreamedSplatMesh extends SplatMesh {
         // microtask later; keeping it would repopulate the cleared cache (or
         // post to a terminated frontier worker).
         if (this.disposed) return;
+        if (focusRequest) {
+          this.demandDiagnostics.completed++;
+          this.demandDiagnostics.knownCompletedBytes += knownBytes;
+          this.demandDiagnostics.requestToDecodeMs += performance.now() - requestedAt;
+        }
         this.retrying.delete(file);
         // Formats whose LOD structure lives in the chunks (a `.rad` tree) learn
         // it here - the source uses it for its coarse-base ranking. Read it before
@@ -4427,6 +4635,7 @@ export class StreamedSplatMesh extends SplatMesh {
         // hands its slot back too - a leak here silently shrinks the scene's
         // whole pipe until the pool is torn down.
         if (this.fetchHandle) this.fetchScheduler?.release(this.fetchHandle);
+        if (this.focusedDemand) this.reconcileDemand();
         this.pendingWork = true;
       });
   }

@@ -247,11 +247,10 @@ export class FrontierPager {
    *
    * While replacements are still arriving, evict only slots the admitted
    * appends need (`needRoom`). Never spend leftover cap on an already-published
-   * prefix - that mixed the previous cut with the next on screen. Before the
-   * first cut is visible there is no prefix to protect, so once every newcomer
-   * is seated we may retire the remaining stale residents even when publication
-   * is still held. Otherwise an early cache refill can leave `drain()` reporting
-   * stale work forever while evicting zero entries. Retirement remains bounded
+   * prefix - that mixed the previous cut with the next on screen. Once every
+   * newcomer is seated, retire stale tail residents even while holding the
+   * published prefix. Otherwise `drain()` can report tail work forever while
+   * evicting zero entries. The published prefix remains protected. Retirement is bounded
    * by `maxEvicts`; publishing used to dump the whole deferred leaver queue in
    * one plan (hotel-orbit spikes of 300k+ moves / ~150 ms apply).
    */
@@ -265,8 +264,8 @@ export class FrontierPager {
   ): number {
     const needRoom = Math.max(0, admitted - (this.capacity - this.count));
     const holdsPublishedPrefix = this.hasPublishedCut && !publish;
-    if (remainingNewAfter === 0 && !holdsPublishedPrefix) {
-      return Math.min(tailStale + prefixStale, maxEvicts);
+    if (remainingNewAfter === 0) {
+      return Math.min(holdsPublishedPrefix ? tailStale : tailStale + prefixStale, maxEvicts);
     }
     return Math.min(holdsPublishedPrefix ? tailStale : tailStale + prefixStale, needRoom);
   }

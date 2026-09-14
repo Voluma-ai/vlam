@@ -1,5 +1,5 @@
 import { createStreamedMeshFixture } from './helpers/streamed-mesh-fixture';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { StreamedSplatMesh, type StreamedSplatMeshOptions } from '../streaming/streamed-splat-mesh';
 import { setVlamLogHandler } from '../core/logging';
@@ -120,6 +120,68 @@ describe('StreamedSplatMesh budget ceiling', () => {
     meshes.push(mesh);
     return mesh;
   }
+
+  it('stops coarse-base requests after the first complete page-table display', () => {
+    const mesh = track(makeMesh({ foveated: true, options: { foveationMode: 'page-table' } }));
+    const inner = mesh as unknown as {
+      scene: {
+        source: { computeDesiredRuns: () => { file: number }[] };
+        maxResidentSplats: number;
+        chunkSize?: number;
+      };
+      cacheLimitBytes: number;
+      pageTableDrawn: number;
+      pageTableFetchPriority: number[];
+      pageTableInFlight: boolean;
+      requestChunk: (file: number, kind: string) => void;
+      sweepAllowed: () => boolean;
+      reschedulePageTable: (
+        position: THREE.Vector3,
+        forward: THREE.Vector3,
+        frustum: THREE.Frustum,
+        now: number,
+      ) => void;
+    };
+    const base = vi.fn(() => [{ file: 1 }]);
+    const request = vi.fn();
+    inner.scene.source.computeDesiredRuns = base;
+    inner.scene.maxResidentSplats = 100_000_000;
+    inner.scene.chunkSize = undefined;
+    inner.cacheLimitBytes = 2 * 1024 * 1024 * 1024;
+    inner.requestChunk = request;
+    inner.sweepAllowed = () => false;
+    inner.pageTableFetchPriority = [2];
+    inner.pageTableInFlight = true;
+    const schedule = () =>
+      inner.reschedulePageTable(
+        new THREE.Vector3(),
+        new THREE.Vector3(0, 0, -1),
+        new THREE.Frustum(),
+        1000,
+      );
+
+    schedule();
+    expect(request.mock.calls).toEqual([
+      [2, 'priority'],
+      [1, 'base'],
+    ]);
+    expect(base).toHaveBeenCalledOnce();
+
+    inner.pageTableDrawn = 1;
+    request.mockClear();
+    schedule();
+    expect(request.mock.calls).toEqual([[2, 'priority']]);
+    expect(base).toHaveBeenCalledOnce();
+
+    // A smaller capture still benefits from warming its whole decoded set.
+    inner.cacheLimitBytes = 6 * 1024 * 1024 * 1024;
+    request.mockClear();
+    schedule();
+    expect(request.mock.calls).toEqual([
+      [2, 'priority'],
+      [1, 'base'],
+    ]);
+  });
 
   it('lets setBudget climb to maxBudget when pool headroom was reserved', () => {
     const mesh = track(

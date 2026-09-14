@@ -44,6 +44,21 @@ export type FrameBenchmarkStats = {
   renderDrawCalls?: number;
 };
 
+/** A streamed frame is a swap only when it changed residents or submitted an upload. */
+export function isSwapPerformanceEvent(event: StreamedSplatPerformanceEvent): boolean {
+  return (
+    event.appendedCount > 0 ||
+    event.removedCount > 0 ||
+    event.stagedCount > 0 ||
+    event.uploadCount > 0 ||
+    event.compacted ||
+    event.textureCopyCount > 0 ||
+    event.textureCopyBytes > 0 ||
+    event.stagingTextureAllocations > 0 ||
+    event.activeListUpdateRanges > 0
+  );
+}
+
 /** Collects raw animation-loop timing after a configurable warm-up. */
 export function createFrameBenchmark(warmupSeconds: number, sampleSeconds: number) {
   let startedAt: number | null = null;
@@ -76,7 +91,7 @@ export function createFrameBenchmark(warmupSeconds: number, sampleSeconds: numbe
       }
     }
     previous = timestamp;
-    pendingEvents = [...events];
+    pendingEvents = events.filter(isSwapPerformanceEvent);
     pendingStats = stats;
     if (elapsed < (warmupSeconds + sampleSeconds) * 1000 || result) return result;
     const sorted = [...durations].sort((a, b) => a - b);

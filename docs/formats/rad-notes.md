@@ -26,6 +26,33 @@ chunks, no SH). Read together with `ROADMAP.md` M14. Implemented under
 - **A/B legacy modes:** `?foveationMode=band` (screen-radius band) and
   `?foveationMode=frontier` (whole-chunk GPU per-splat cut), see history doc.
 
+`VLAM_EXPERIMENT=rad-focus` benchmark-server variant trials a separate,
+request-only camera traversal on captures whose estimated decoded size exceeds
+their current cache allowance (`baseline` keeps the legacy order). It coalesces
+camera demand at 100 ms intervals, yields the worker walk after 4 ms, ranks
+visible parents by projected coarseness with a smooth 4× center preference,
+and reserves a fetch slot for boundary, uncertain or off-screen dependencies.
+Only a complete reply for the newest camera may cancel unpinned downloads;
+the pager's staged cut, draw budget and display publication are unaffected.
+This is not the production default until paired central-detail and frame-tail
+measurements, including pixel/coverage checks, pass the acceptance gate.
+RAD chunks mix locations, so this can avoid obsolete or low-value requests but
+cannot guarantee zero off-screen bytes.
+The viewer's `?cacheMB=` supplies a cache *floor*, not a forced smaller
+allowance; a capture that fits its default allowance will correctly keep the
+legacy scheduler in both variants. The frame benchmark JSON includes internal
+demand generations, stale replies, cancellation counts, and known inline-RAD
+range bytes (not transport-level transferred-byte measurements).
+
+Page-table fetches prioritize chunks requested by the current frontier. The
+coarse-base stream runs until the first complete display; after that it keeps
+pre-warming only when the whole decoded capture fits the current cache
+allowance. The background whole-scene sweep follows the same fit rule. On a
+larger capture, continuing either speculative stream can fill the cache with
+off-view chunks, evict current-view dependencies and leave an already published
+cut unable to refine. A scene-wide cache governor can re-enable pre-warming by
+granting enough allowance; the draw target and coverage rules do not change.
+
 ## Container
 
 ```

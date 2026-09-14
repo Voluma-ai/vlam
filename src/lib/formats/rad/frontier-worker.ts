@@ -25,6 +25,7 @@ import {
 import type { SplatData } from '../../core/splat-data';
 import { DEFAULT_PAGE_TABLE_WRITES_PER_PLAN } from '../../streaming/streaming-defaults';
 import { experiments } from '../../internal/experiments';
+import { FrontierDemandScan } from './frontier-demand';
 
 export type {
   FrontierChunkMessage,
@@ -33,12 +34,14 @@ export type {
   FrontierRequest,
   PlanSplats,
   FrontierPlanMessage,
+  FrontierDemandReply,
 } from './frontier-worker-protocol';
 import type {
   FrontierRequest,
   FrontierRescheduleMessage,
   PlanSplats,
   FrontierPlanMessage,
+  FrontierDemandMessage,
 } from './frontier-worker-protocol';
 
 // --- Worker state -----------------------------------------------------------
@@ -134,6 +137,38 @@ const BUDGET_SPEND_URGENT = 0.5;
  */
 let lastPlanKey: string | null = null;
 let lastCameraKey: string | null = null;
+let demandScan: FrontierDemandScan | null = null;
+let demandGeneration = 0;
+let demandChannel: MessageChannel | null = null;
+let pendingDemand: FrontierDemandMessage | null = null;
+
+function yieldDemand(msg: FrontierDemandMessage): void {
+  if (!demandChannel) {
+    demandChannel = new MessageChannel();
+    demandChannel.port1.onmessage = () => {
+      const next = pendingDemand;
+      pendingDemand = null;
+      if (next) scanDemand(next);
+    };
+  }
+  pendingDemand = msg;
+  // Timers in a backgrounded viewer may be clamped to one second. A message
+  // task still yields to chunk/plan messages without stretching a 4 ms walk
+  // into minutes when the tab is temporarily hidden.
+  demandChannel.port2.postMessage(null);
+}
+
+function scanDemand(msg: FrontierDemandMessage): void {
+  const generation = msg.generation;
+  const wants = demandScan?.step(performance.now() + 4);
+  if (generation !== demandGeneration) return;
+  if (!wants) {
+    yieldDemand(msg);
+    return;
+  }
+  demandScan = null;
+  (self as unknown as Worker).postMessage({ type: 'demand', generation, wants });
+}
 
 function planKey(msg: FrontierRescheduleMessage): string {
   const c = msg.cameraLocal;
@@ -519,6 +554,13 @@ self.onmessage = (event: MessageEvent<FrontierRequest>): void => {
     cacheBytes.set(msg.file, bytes);
     totalBytes += bytes;
     recordRoots(msg.file, data);
+    return;
+  }
+  if (msg.type === 'demand') {
+    demandGeneration = msg.generation;
+    const rootList = [...roots].filter((g) => cache.has(Math.floor(g / chunkSize)));
+    demandScan = new FrontierDemandScan(cache, rootList, chunkSize, msg);
+    scanDemand(msg);
     return;
   }
   reschedule(msg);

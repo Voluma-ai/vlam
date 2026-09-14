@@ -111,11 +111,36 @@ export interface FrontierRescheduleMessage {
   readonly budget: number;
 }
 
+/** Request-only camera snapshot. Its generation is independent of pager plans. */
+export interface FrontierDemandMessage extends Omit<
+  FrontierRescheduleMessage,
+  'type' | 'seq' | 'continuePendingPlan'
+> {
+  readonly type: 'demand';
+  readonly generation: number;
+  /** Local-position to clip matrix, column-major. */
+  readonly projection: readonly number[];
+}
+
+export interface FrontierDemandWant {
+  readonly file: number;
+  /** 0 visible, 1 edge/uncertain, 2 off-screen (still eligible). */
+  readonly tier: 0 | 1 | 2;
+  readonly priority: number;
+}
+
+export interface FrontierDemandReply {
+  readonly type: 'demand';
+  readonly generation: number;
+  readonly wants: readonly FrontierDemandWant[];
+}
+
 export type FrontierRequest =
   | FrontierInitMessage
   | FrontierChunkMessage
   | FrontierResizeMessage
   | FrontierCacheBudgetMessage
+  | FrontierDemandMessage
   | FrontierRescheduleMessage;
 
 /** Packed splats to write, in slot order (a subset of {@link SplatData}). */

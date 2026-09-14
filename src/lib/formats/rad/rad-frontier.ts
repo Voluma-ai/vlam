@@ -152,7 +152,7 @@ export function frontierView(
 }
 
 /** Shared foveated node-size calculation for the heap and threshold cuts. */
-function pixelScaleOf(data: SplatData, local: number, view: FrontierView): number {
+export function pixelScaleOf(data: SplatData, local: number, view: FrontierView): number {
   const pos = data.positions;
   const b = local * 3;
   const dx = (pos[b] as number) - view.origin.x;
@@ -446,7 +446,7 @@ export function traverseFrontierBounded(
 }
 
 /** Minimal binary max-heap of (global, priority), for the frontier traversal. */
-class MaxHeap {
+export class MaxHeap {
   private readonly items: number[] = []; // global indices
   private readonly prio: number[] = [];
 
