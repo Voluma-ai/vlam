@@ -25,6 +25,9 @@ export interface RemotePlyMetrics {
   mode: 'exact-stream' | 'approximate-sh-stream';
   inputBytes: number;
   peakInputBytes: number;
+  /** Explicit input/scratch backing buffers, including second-pass reads;
+   * excludes decoded output, browser queues, disk caches and GC-retained garbage. */
+  inputAccountingVersion: 2;
   temporaryDiskBytes: number;
   shExtent: number;
   clippedCoefficients: number;
@@ -64,14 +67,31 @@ export async function parseSplatPlyRemote(
       : 0;
   const reader = response.body.getReader();
   let loaded = 0;
-  let largestChunk = 0;
   let peakInputBytes = 0;
+  const retainedInputBuffers = new WeakSet<ArrayBufferLike>();
+  let retainedInputBytes = 0;
+  // Views can retain a much larger backing buffer, and multiple views can
+  // alias it. Count each backing allocation once, rather than view lengths.
+  // Weak membership keeps the accounting itself from extending buffer lifetime.
+  const trackInput = (view: ArrayBufferView): void => {
+    peakInputBytes = Math.max(
+      peakInputBytes,
+      retainedInputBytes + (retainedInputBuffers.has(view.buffer) ? 0 : view.buffer.byteLength),
+    );
+  };
+  const retainInput = (view: ArrayBufferView): void => {
+    if (!retainedInputBuffers.has(view.buffer)) {
+      retainedInputBuffers.add(view.buffer);
+      retainedInputBytes += view.buffer.byteLength;
+    }
+    trackInput(view);
+  };
   const read = async (): Promise<Uint8Array | null> => {
     signal.throwIfAborted();
     const next = await reader.read();
     if (next.done) return null;
     loaded += next.value.byteLength;
-    largestChunk = Math.max(largestChunk, next.value.byteLength);
+    trackInput(next.value);
     // Intermediaries can hide Content-Encoding while exposing the encoded
     // Content-Length; the body reader yields decoded bytes in that case.
     onProgress?.(loaded, total > 0 && loaded > total ? 0 : total);
@@ -81,6 +101,7 @@ export async function parseSplatPlyRemote(
   try {
     onProgress?.(0, total);
     const head = new Uint8Array(HEADER_LIMIT);
+    retainInput(head);
     let headLength = 0;
     let initialTail: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
     let headerEnd = -1;
@@ -102,18 +123,24 @@ export async function parseSplatPlyRemote(
       }
       if (headLength === HEADER_LIMIT) throw new Error('PLY header exceeds the 64 KiB limit.');
     }
-    const header = parsePlyHeader(head.slice(0, headerEnd).buffer);
+    retainInput(initialTail);
+    const headerBytes = head.slice(0, headerEnd);
+    retainInput(headerBytes);
+    const header = parsePlyHeader(headerBytes.buffer);
     // Compressed PLY retains its current whole-buffer decoder. This is an
     // explicit effective fallback, rather than attempting fixed-stride decode.
     if (isCompressedPly(header)) {
       const chunks: Uint8Array[] = [head.slice(0, headLength)];
+      retainInput(chunks[0]!);
       if (initialTail.length) chunks.push(initialTail);
       for (;;) {
         const chunk = await read();
         if (!chunk) break;
         chunks.push(chunk);
+        retainInput(chunk);
       }
       const bytes = new Uint8Array(loaded);
+      trackInput(bytes);
       let at = 0;
       for (const chunk of chunks) {
         bytes.set(chunk, at);
@@ -125,7 +152,8 @@ export async function parseSplatPlyRemote(
         metrics: {
           mode,
           inputBytes: loaded,
-          peakInputBytes: loaded,
+          peakInputBytes,
+          inputAccountingVersion: 2,
           temporaryDiskBytes: 0,
           shExtent: 0,
           clippedCoefficients: 0,
@@ -153,6 +181,7 @@ export async function parseSplatPlyRemote(
       Math.floor(Math.min(windowBytes, count * stride) / stride) * stride,
     );
     const window = new Uint8Array(capacity);
+    retainInput(window);
     // A usable response length confirms how many records can arrive. Without
     // that confirmation, grow decoded arrays only as records are received:
     // missing lengths and hidden content encoding must not make an inflated
@@ -165,6 +194,7 @@ export async function parseSplatPlyRemote(
       rest && mode === 'approximate-sh-stream' ? Math.min(SAMPLE_LIMIT, count) : 0;
     const sample =
       rest && sampleCount > 0 ? new Float32Array(sampleCount * rest.coefficients * 3) : null;
+    if (sample) retainInput(sample);
     let sampleExtent = 0;
     let extent = 0;
     let shPacked: SplatPackedShData | undefined;
@@ -233,10 +263,6 @@ export async function parseSplatPlyRemote(
       decoded = last;
       window.copyWithin(0, bytes, filled);
       filled -= bytes;
-      peakInputBytes = Math.max(
-        peakInputBytes,
-        capacity + headLength + (sample?.byteLength ?? 0) + largestChunk,
-      );
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       signal.throwIfAborted();
     };
@@ -268,10 +294,6 @@ export async function parseSplatPlyRemote(
 
     const finish = async (write?: FileSystemWritableFileStream): Promise<RemotePlyResult> => {
       await decodeWindow(write);
-      peakInputBytes = Math.max(
-        peakInputBytes,
-        capacity + headLength + (sample?.byteLength ?? 0) + largestChunk,
-      );
       if (decoded !== count || filled !== 0)
         throw new Error(`Truncated PLY vertex records: decoded ${decoded} of ${count}.`);
       if (rest && mode === 'approximate-sh-stream' && !shPacked) {
@@ -285,6 +307,7 @@ export async function parseSplatPlyRemote(
           mode,
           inputBytes: loaded,
           peakInputBytes,
+          inputAccountingVersion: 2,
           temporaryDiskBytes: diskBytes,
           shExtent: extent,
           clippedCoefficients,
@@ -333,10 +356,12 @@ export async function parseSplatPlyRemote(
           const last = Math.min(count, first + perWindow);
           const slice = file.slice(first * stride, last * stride);
           const view = new DataView(await slice.arrayBuffer());
+          trackInput(view);
           writePackedRest(view, stride, first, first, last, rest, extent, shPacked.packed);
           await new Promise<void>((resolve) => setTimeout(resolve, 0));
         }
         result.data = finalizePlyDecode(count, out, shPacked);
+        result.metrics.peakInputBytes = peakInputBytes;
         return result;
       } finally {
         if (writer) await writer.abort().catch(() => undefined);

@@ -6,11 +6,15 @@
 hotel A/B on Chrome 151 / macOS 26.3.1 / Apple M3 (WebGPU `apple`/`metal-3`)
 met the acceptance criteria: zero initial destination uploads, identical
 1,501,184 capacity with 999,999 active, staging copies retained, lifecycle
-probes green, WebGPU median first-usable 35.19→32.36 s, WebGL2 within noise.
+probes green. The historical WebGPU 35.19→32.36 s and WebGL2 timings included
+slow browser-wide memory checkpoints and do not isolate startup savings.
+The optimization remains enabled on zero-upload/lifecycle evidence and the
+isolated native 109.2→83.3 ms result. Repeat full-scene timing with the corrected
+startup harness before claiming a scene-load speedup.
 Evidence: `.tmp/pool-native-scene-{webgpu,webgl}-five-pairs.json` and
 `.tmp/empty-pool-apple-silicon/`. See `docs/render-benchmark.md`.
 
-## Validation protocol (completed before promotion)
+## Validation protocol (repeat timing after accounting correction)
 
 Validate `experiments.initialPoolUpload = 'skip-empty'` on a native Apple
 Silicon Chromium WebGPU device and forced WebGL2. The candidate skips only the
@@ -53,7 +57,7 @@ under `.tmp/pool-native-scene-*-five-pairs.json`.
 4. Use this identical query on each server, changing only its port:
 
    ```text
-   /memory-benchmark.html?kind=streamed&scene=/benchmark-assets/hotel/HOTEL.clean.comp-lod.rad&budget=1000000&maxBudget=1000000&settleMinActive=500000&settleSeconds=25&position=56.68,14.91,0.48&target=-33.32,-5.1,0.48&startupMetrics=1
+   /memory-benchmark.html?kind=streamed&scene=/benchmark-assets/hotel/HOTEL.clean.comp-lod.rad&budget=1000000&maxBudget=1000000&settleMinActive=500000&settleSeconds=25&position=56.68,14.91,0.48&target=-33.32,-5.1,0.48&startupMetrics=1&uaMemory=0
    ```
 
    For the WebGL2 pass add `&backend=webgl`.

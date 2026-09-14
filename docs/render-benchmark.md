@@ -184,7 +184,7 @@ and SH0–SH3. Raw isolated-pool values are in `.tmp/pool-native-results.json`.
 
 #### Apple M3 hotel startup gate (14 September 2026)
 
-Promotion used native Chrome 151.0.7922.174 on a 16 GB MacBook Air (Apple M3,
+The original promotion run used native Chrome 151.0.7922.174 on a 16 GB MacBook Air (Apple M3,
 10-core GPU, Metal; WebGPU adapter vendor `apple` / `metal-3`), macOS 26.3.1,
 AC power, headed foreground tabs, the pinned hotel RAD
 (`413381d93b452a77d75e7998f89836db0df740127f995bf94f4d5126a129f773`), its
@@ -197,8 +197,18 @@ row uploads and staging-to-destination copies remained present.
 
 | Backend | Existing median first usable | Skip-empty median first usable | Outcome |
 | --- | ---: | ---: | --- |
-| WebGPU | 35.19 s | 32.36 s | Promote: −2.83 s, zero dest uploads |
+| WebGPU | 35.19 s | 32.36 s | Historical instrumented timing; zero dest uploads |
 | WebGL2 | 33.48 s | 35.53 s | Within ~7 s run-to-run range; no repeatable regression |
+
+**Timing correction (14 September 2026):** these historical full-scene
+milestones included awaited browser-wide memory checkpoints before loading and
+rendering. They do not isolate a 2.83-second upload improvement. Keep the raw
+values as historical observations; the isolated 109.2→83.3 ms pool test and
+zero-upload/lifecycle evidence support retaining the optimization. Startup runs
+now automatically disable browser-wide memory measurements, even with
+`uaMemory=1`. Repeat native scene timing before publishing a new latency claim.
+`firstUsableMs` marks a nonblank frame at `settleMinActive`, not proof of complete
+coverage or settled detail.
 
 Paired JSON summaries and fixed-pose captures are under
 `.tmp/empty-pool-apple-silicon/` and
@@ -252,11 +262,19 @@ all three modes at one camera using a deterministic 200,000-splat SH3 PLY
 The capture is synthetic and locally generated; it is not a foliage quality
 reference.
 
-| Loader | Median fetch/decode | Measured source-buffer peak | Temporary disk | SH clipping |
+| Loader | Median fetch/decode | Legacy v1 input estimate | Temporary disk | SH clipping |
 | --- | ---: | ---: | ---: | ---: |
 | Buffered | 256 ms | At least 47.2 MB whole input | 0 | 0 |
 | Exact stream | 353 ms | 49.3 MB | 47.2 MB | 0 |
 | Approximate SH stream | 264 ms | 61.2 MB | 0 | 355 coefficients / 9 splats |
+
+**Accounting correction (14 September 2026):** the table above preserves
+legacy estimates, which omitted exact second-pass read buffers and understated
+compressed fallback copying. New reports include `inputAccountingVersion: 2`
+and count unique retained input/scratch backing buffers, including header and
+sample storage, second-pass reads, and joined compressed input. Decoded output,
+browser queues, disk caches and garbage awaiting collection are excluded. Do
+not compare v1 and v2 peaks as a memory optimization; rerun for new evidence.
 
 The 47 MB input fits under the reader's 64 MiB window, so this run cannot
 demonstrate a memory win. A separate generated test places one vertex after

@@ -14,6 +14,7 @@ import {
 } from '../lib/core';
 import { loadSplatData, loadSplatDataFile } from '../lib/loaders';
 import { remotePlyMetrics } from '../lib/loaders/ply-metrics';
+import { memoryBenchmarkSettings } from './memory-benchmark-settings';
 import { StreamedSplatMesh } from '../lib/streaming';
 import { version as vlamVersion } from '../../package.json';
 import {
@@ -85,7 +86,8 @@ interface TextureUploadBackend {
 }
 
 const params = new URLSearchParams(globalThis.location.search);
-const measureStartupPixels = params.get('startupMetrics') === '1';
+const measurementSettings = memoryBenchmarkSettings(params);
+const measureStartupPixels = measurementSettings.startupMetrics;
 const statusElement = document.querySelector<HTMLElement>('#status');
 const resultElement = document.querySelector<HTMLElement>('#result');
 const viewportElement = document.querySelector<HTMLElement>('#viewport');
@@ -279,7 +281,7 @@ function stopHeapSampling(): void {
 }
 
 async function userAgentBytes(): Promise<number | null> {
-  if (params.get('uaMemory') === '0') return null;
+  if (!measurementSettings.userAgentMemoryEnabled) return null;
   if (!memoryPerformance.measureUserAgentSpecificMemory) return null;
   try {
     return (await memoryPerformance.measureUserAgentSpecificMemory()).bytes;
@@ -617,6 +619,7 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
             ? Math.floor(numberParam('maxBudget', numberParam('budget', 1_000_000)))
             : null,
         settleMinActive: kind === 'streamed' ? Math.floor(numberParam('settleMinActive', 1)) : null,
+        ...measurementSettings,
       },
       scene: {
         loadMs,
@@ -651,6 +654,7 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
         streamedCacheBytes: finalCacheBytes,
       },
       limitations: [
+        'Startup pixel probes disable browser-wide memory measurements; firstUsableMs means the requested active-count threshold, not settled detail or complete coverage.',
         'usedJsHeapBytes is a main-isolate browser metric, not total process memory.',
         'userAgentBytes is reported only when the browser exposes and permits its memory API.',
         'GPU bytes count explicit VLAM allocations; driver padding and renderer-owned resources are excluded.',

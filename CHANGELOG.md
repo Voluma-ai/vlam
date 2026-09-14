@@ -57,6 +57,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- Startup benchmark pixel probes disable slow browser-wide memory checkpoints,
+  including an explicit `uaMemory=1`, and record effective settings. Historical
+  full-scene empty-pool timing claims are qualified because those checkpoints
+  paused loading/rendering. The verified empty-pool default remains enabled.
+- Experimental remote PLY input accounting now counts unique backing buffers,
+  including exact second-pass reads and compressed-input concatenation. Reports
+  identify accounting version 2; legacy peaks are not directly comparable.
+
 - Automatic projection policy memory now includes the projected counting
   sorter's histogram/bucket scratch and its first-upload CPU mirrors. Unified
   rendering applies the same resolved contribution culls as its sources in
@@ -152,10 +160,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - Newly allocated private dynamic pools skip the initial full-texture CPU
   upload of empty destination images. Textures still allocate at the same
   dimensions and types; post-construction rows keep the staged upload path.
-  Static meshes and caller-supplied shared pools are unchanged. Matched hotel
-  startup A/B on Apple M3 Chrome WebGPU cut median first-usable time from
-  35.19 s to 32.36 s with zero initial destination uploads; forced WebGL2 was
-  within run-to-run noise. The benchmark server retains
+  Static meshes and caller-supplied shared pools are unchanged. The isolated
+  native pool test improved first-usable output from 109.2 to 83.3 ms with zero
+  initial destination uploads. Historical Apple M3 scene timings included slow
+  memory checkpoints and do not isolate a load-time improvement. The benchmark server retains
   `VLAM_EXPERIMENT=baseline` for the previous upload behavior.
 - Closed the retained-scene-memory validation on an RTX 3090 with repeated
   fresh-tab Goose, 8.72M SH3 SOG, 12.85M Tempel LCC2, 3.19M-leaf Hotel RAD,

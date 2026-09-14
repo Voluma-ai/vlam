@@ -129,13 +129,74 @@ describe('incremental remote PLY', () => {
       expect(result.data.colors).toEqual(expected.colors);
       expect(result.data.covariances).toEqual(expected.covariances);
       expect(result.data.shPacked).toEqual(expected.shPacked);
-      expect(result.metrics.peakInputBytes).toBeLessThan(4096);
+      expect(result.metrics.inputAccountingVersion).toBe(2);
+      expect(result.metrics.peakInputBytes).toBeLessThan(70 * 1024);
       expect(result.metrics.temporaryDiskBytes).toBe(
         bands ? 3 * (14 + [0, 3, 8, 15][bands]! * 3) * 4 : 0,
       );
       expect(opfs.removed).toEqual(bands ? ['one-byte-test'] : []);
     },
   );
+
+  it('counts the second-pass read alongside retained source buffers', async () => {
+    fakeOpfs();
+    const bytes = fixture(3, 3);
+    const headerBytes = bytes.byteLength - 3 * 236;
+    const result = await parseSplatPlyRemote(response(bytes, 1), {
+      mode: 'exact-stream',
+      signal: new AbortController().signal,
+      resourceId: 'memory-second-pass',
+      windowBytes: 512,
+    });
+    // The one-byte views retain their complete source buffer. Two SH3 records
+    // fit in both the reusable input window and the separate disk-read slice.
+    expect(result.metrics.peakInputBytes).toBe(
+      64 * 1024 + headerBytes + bytes.byteLength + 472 * 2,
+    );
+    expect(result.data.shPacked).toEqual(parseSplatPly(bytes).shPacked);
+  });
+
+  it('counts retained compressed chunks and their joined copy', async () => {
+    const bounds = [
+      'min_x',
+      'min_y',
+      'min_z',
+      'max_x',
+      'max_y',
+      'max_z',
+      'min_scale_x',
+      'min_scale_y',
+      'min_scale_z',
+      'max_scale_x',
+      'max_scale_y',
+      'max_scale_z',
+    ];
+    const header = new TextEncoder().encode(
+      [
+        'ply',
+        'format binary_little_endian 1.0',
+        'element chunk 1',
+        ...bounds.map((name) => `property float ${name}`),
+        'element vertex 1',
+        ...['position', 'rotation', 'scale', 'color'].map((name) => `property uint packed_${name}`),
+        'end_header',
+        '',
+      ].join('\n'),
+    );
+    const bytes = new Uint8Array(header.length + 48 + 16);
+    bytes.set(header);
+    const result = await parseSplatPlyRemote(response(bytes.buffer, 1), {
+      mode: 'exact-stream',
+      signal: new AbortController().signal,
+    });
+    // All network views alias one buffer; it is counted once. The two header
+    // copies and the joined buffer are separate allocations.
+    expect(result.metrics.peakInputBytes).toBe(
+      64 * 1024 + header.length * 2 + bytes.byteLength * 2,
+    );
+    expect(result.metrics.bufferedFallback).toBe(true);
+    expect(result.data).toEqual(parseSplatPly(bytes.buffer));
+  });
 
   it('handles split records and unknown length without higher-order SH', async () => {
     const bytes = fixture(11, 0);

@@ -27,26 +27,49 @@ These are candidates for future work, not 1.0 release requirements. Preserve
 the WebGL2 fallback, the three.js-only library dependency, portable compute,
 and the verified rendering math.
 
-- **Spark 2.2-inspired loading and rendering experiments** — benchmark initial
-  empty dynamic-pool upload suppression, bounded-threshold RAD traversal,
-  incremental remote PLY decoding (exact and approximate SH), and WebGL
-  provoking-vertex state. Keep the current sorter, rendering math, and public
-  loader behavior. Promote candidates only after matched native-device A/B
-  runs and WebGPU/WebGL2 pixel validation. **Status:** empty-pool
-  `skip-empty` is now the published default after Apple M3 Chrome hotel
-  startup A/B (WebGPU median first-usable 35.19→32.36 s with zero initial
-  destination uploads; forced WebGL2 within noise) plus lifecycle probes.
-  `VLAM_EXPERIMENT=baseline` still restores the prior upload for benchmarks.
-  The bounded-threshold traversal was tested on hotel and a 10.1M-splat RAD with
-  five native A/B pairs each; it was slower and fell back repeatedly, so keep
-  the heap. Exact remote PLY streaming decoded a generated input past 2 GiB
-  with bounded source memory and bit-identical SH0–3, but its OPFS second pass
-  was slower on a 47 MB native benchmark; approximate SH clipped late outliers.
-  Both remain benchmark-only pending real-capture quality and broader device
-  validation. Native Chromium exposed no WebGL provoking-vertex extension on
-  the tested NVIDIA path; state and pixel probes passed, but no performance
-  conclusion is available. This does not
-  replace the mobile gate.
+- **Cheaper exact RAD frontier traversal** — profile selection, heap draining,
+  output construction and gathering separately. Replace the final ordered heap
+  drain with a linear scan, then evaluate reusable heap/output storage. Preserve
+  the selected global-ID set, coverage and hard budget; verify any change to
+  output order does not increase pager churn or alter pixels. **Acceptance:**
+  measure complete traversal distributions and camera-to-published-detail latency
+  on hotel and the larger RAD, including navigation, with no frame-tail or
+  coverage regression. The threshold prototype was slower and repeatedly fell
+  back; keep the current heap selection policy.
+- **Reduce padded staging uploads** — compare the current power-of-two staging
+  buckets with reusable fixed-height tiles that upload fewer unused rows.
+  **Acceptance:** count CPU upload bytes separately from GPU copies, measure
+  call overhead and startup/orbit p95/p99 on WebGPU and WebGL2, and preserve
+  atomic swaps, row clearing and SH alignment. Do not restore the exact-size
+  texture-allocation churn previously eliminated by the bucket cache.
+- **Earlier complete coarse RAD display** — publish the first complete, fully
+  staged coarse cut before waiting for all requested detail, then refine through
+  the existing atomic replacement path. **Acceptance:** improve first complete
+  image latency with startup memory probes disabled; measure target-detail time
+  separately. Verify no holes, parent/child overlap, bright flashes, cache churn
+  or starvation during camera motion. A lower active-count test threshold alone
+  is not an implementation of this behavior.
+- **Exact remote PLY streaming efficiency and scale validation** — compare
+  1/4/16 MiB windows and spooling only higher-order SH values instead of full
+  vertex records. Retain exact global SH quantization. **Acceptance:** real
+  500 MB–multi-GB SH-bearing vertex payloads, exact decoded-array parity,
+  version-2 input/scratch accounting, disk traffic, load time and cancellation
+  cleanup on multiple devices. The >2 GiB padding test proves offset handling,
+  not a large SH payload. Keep the loader benchmark-only until measurements
+  justify promotion; approximate SH clipped late outliers without a speed win.
+- **Independent empty-pool startup timing** — retain the verified published
+  `skip-empty` default and its static/shared-pool exclusions. Repeat native
+  hotel A/B using `startupMetrics=1` (which disables browser-wide memory
+  measurement), recording first visible and target-active-count milestones
+  separately from settled detail. Earlier full-scene startup numbers included
+  memory-checkpoint pauses and cannot isolate the upload saving; isolated
+  native pool timings improved 109.2→83.3 ms and eliminated all eight initial
+  destination uploads. Keep WebGPU/WebGL2 lifecycle and pixel checks.
+- **WebGL provoking-vertex evidence** — retain the benchmark-only adapter until
+  a native device exposes the extension and a relevant flat-varying shader path
+  is available. **Acceptance:** repeatable rendering improvement beyond noise,
+  unchanged pixels and picking, and restored mixed-scene GL state. The tested
+  NVIDIA path did not expose the extension; there is no default change to make.
 
 Brush lifecycle or stale-pick fixes discovered during existing selection
 validation fit stabilization. Defer new storage modes, rendering paths, and
@@ -98,8 +121,13 @@ selection features until their benefits are measured and visually validated.
   intermediate 1.83M SH2 Kauz SOG now exercises the missing scene-size band,
   but its median/tail split rules out a broader automatic cohort on this GPU;
   a second GPU class is still needed before the auto threshold can broaden.
-  Shrinking the 52 B/slot
-  projection cache toward PlayCanvas' 32 B is separate.
+  Cache compaction is tracked separately below.
+- **Compact compute-projection storage** — reduce the current 52 B/slot
+  projection cache, targeting 32 B/slot where precision permits. Keep the
+  existing projection eligibility policy while comparing retained/peak memory,
+  GPU bandwidth and frame-time tails. **Acceptance:** projection, clipping,
+  DoF, SH, picking and standalone/unified pixel parity on native devices; a
+  smaller allocation alone does not justify a broader automatic cohort.
 - **Stochastic transparency during movement** — experiment with opt-in
   sort-free fragment coverage while navigating heavy scenes, then restore
   sorted blending when motion settles and for captures. Any automatic policy
