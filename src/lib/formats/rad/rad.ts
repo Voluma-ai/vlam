@@ -217,6 +217,9 @@ export async function buildRadScene(
     maxResidentSplats: leafCount,
     contentSplatCount: leafCount,
     minimumCoverageSplats: source_.coverageSplatCount,
+    // The prefix reader caches whole chunks too. Expose their size so the
+    // decoded-cache ceiling counts merged tree nodes as well as leaves.
+    chunkSize,
     overviewPositions,
   };
 }

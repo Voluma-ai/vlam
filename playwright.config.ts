@@ -4,6 +4,9 @@ import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: './browser-tests',
   fullyParallel: false,
+  // Concurrent SwiftShader browsers contend for the software GPU and can
+  // leave backend probes uninitialized before their deadlines.
+  workers: 1,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
   use: { baseURL: 'http://127.0.0.1:4173', trace: 'retain-on-failure' },
@@ -15,7 +18,8 @@ export default defineConfig({
         channel: 'chromium',
         launchOptions: {
           args: [
-            '--enable-gpu',
+            // --enable-gpu prevents SwiftShader's WebGPU adapter from being
+            // exposed by the pinned Playwright Chromium on Linux.
             '--enable-unsafe-webgpu',
             '--use-webgpu-adapter=swiftshader',
             '--enable-dawn-features=allow_unsafe_apis',
@@ -31,12 +35,20 @@ export default defineConfig({
       name: 'chromium-webgl2',
       use: {
         ...devices['Desktop Chrome'],
-        launchOptions: { args: ['--use-angle=swiftshader-webgl', '--disable-webgpu'] },
+        launchOptions: {
+          args: [
+            '--use-angle=swiftshader-webgl',
+            '--enable-unsafe-swiftshader',
+            '--disable-webgpu',
+          ],
+        },
       },
     },
   ],
   webServer: {
-    command: 'npx vite --host 127.0.0.1 --port 4173',
+    command: process.env.VLAM_EXPERIMENT
+      ? 'npx vite --config scripts/vite.config.benchmark.ts --host 127.0.0.1 --port 4173'
+      : 'npx vite --host 127.0.0.1 --port 4173',
     url: 'http://127.0.0.1:4173/src/viewer/backend-probe.html',
     reuseExistingServer: !process.env.CI,
   },

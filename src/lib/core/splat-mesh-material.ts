@@ -75,6 +75,8 @@ import {
   radSplatStdDev,
   radSplatOpacity,
   gaussianSplatOpacity,
+  unpackRgba8FromFloat,
+  isSplatContributionVisible,
 } from './splat-render-math';
 export {
   isSplatFootprintInFrustum,
@@ -251,6 +253,11 @@ export interface SplatMaterialBuildInputs {
     axes: THREE.StorageBufferAttribute;
     parameters: THREE.StorageBufferAttribute;
     capacity: number;
+    /**
+     * When true, unpack RGBA8 from `parameters.z` (projector evaluated SH).
+     * When false, the vertex stage uses {@link shFinalColor} or vertex SH.
+     */
+    packedColor: boolean;
   };
   /** Display-only generated final color; pick always reads the source color. */
   shFinalColor?: THREE.Texture;
@@ -336,6 +343,10 @@ export interface SplatMaterialBuildInputs {
      * becomes a super-Gaussian, covering its subtree without scaling covariance.
      */
     lodAlpha?: boolean;
+    /** Drop splats whose on-screen diameter is below this many px (0 = off). */
+    minPixelSize?: number;
+    /** Drop splats whose opacity × major × minor is below this (0 = off). */
+    minContribution?: number;
   };
   /**
    * The mesh's live channel map, not a copy: `defineChannel` adds to it and
@@ -343,6 +354,24 @@ export interface SplatMaterialBuildInputs {
    */
   channels: ReadonlyMap<string, { texture: THREE.DataTexture }>;
   modifiers: readonly SplatModifier[];
+}
+
+/** Which RGB source the display graph uses for a splat's resolved color. */
+export type SplatDisplayColorSource = 'cached' | 'packed' | 'vertex-sh' | 'base';
+
+/**
+ * Three-way color selection for the standalone display graph.
+ * Cache wins, then projector-packed RGBA8, then vertex-stage SH, then DC.
+ */
+export function splatDisplayColorSource(options: {
+  hasCachedColor: boolean;
+  packedProjectedColor: boolean;
+  hasSh: boolean;
+}): SplatDisplayColorSource {
+  if (options.hasCachedColor) return 'cached';
+  if (options.packedProjectedColor) return 'packed';
+  if (options.hasSh) return 'vertex-sh';
+  return 'base';
 }
 
 /**
@@ -399,10 +428,23 @@ export function applySplatMaterialGraph(
     : null;
   /** Splat center in mesh-local space: the pool texel, or its placed position. */
   const localCenter = placed ? placed.worldCenter : asNode<'vec3'>(poolCenter);
+  const projectedClip = inputs.projected
+    ? storage(inputs.projected.clipCenters, 'vec4', inputs.projected.capacity)
+    : null;
+  const projectedAxes = inputs.projected
+    ? storage(inputs.projected.axes, 'vec4', inputs.projected.capacity)
+    : null;
+  const projectedParameters = inputs.projected
+    ? storage(inputs.projected.parameters, 'vec4', inputs.projected.capacity)
+    : null;
+  const colorSource = splatDisplayColorSource({
+    hasCachedColor: cachedColor != null,
+    packedProjectedColor: inputs.projected?.packedColor === true,
+    hasSh: sh !== null,
+  });
   const uncachedShSum =
-    sh === null || cachedColor
-      ? null
-      : (() => {
+    colorSource === 'vertex-sh' && sh !== null
+      ? (() => {
           const direction = (() => {
             if (!placed) return localCenter.sub(uniforms.localCameraPosition).normalize();
             // SH coefficients stay in their source frame. Transforming the
@@ -415,10 +457,17 @@ export function applySplatMaterialGraph(
               .normalize();
           })();
           return evaluateSplatSh(sh, textures, splatTexel, direction);
-        })();
+        })()
+      : null;
   const shSum = uncachedShSum;
   const colorAfterSh =
-    shSum === null ? baseColor : vec4(baseColor.rgb.add(shSum).clamp(0.0, 1.0), baseColor.a);
+    colorSource === 'cached'
+      ? baseColor
+      : colorSource === 'packed' && projectedParameters
+        ? unpackRgba8FromFloat(projectedParameters.element(splatIndex).z)
+        : shSum === null
+          ? baseColor
+          : vec4(baseColor.rgb.add(shSum).clamp(0.0, 1.0), baseColor.a);
   /** Approximate surface normal for lighting hooks: Σ⁻¹ amplifies the
    * least-variance axis (inverse iteration, two applications), oriented
    * toward the camera. Built only when a modifier reads `ctx.normal`. */
@@ -505,15 +554,6 @@ export function applySplatMaterialGraph(
   // Visual fade (modifier alpha / original encoded alpha). Applied after LOD
   // falloff so a marker crossfade cannot reclassify a merged node as a leaf.
   const vVisualOpacity = settings.lodAlpha ? varying(float(1), 'vVisualOpacity') : null;
-  const projectedClip = inputs.projected
-    ? storage(inputs.projected.clipCenters, 'vec4', inputs.projected.capacity)
-    : null;
-  const projectedAxes = inputs.projected
-    ? storage(inputs.projected.axes, 'vec4', inputs.projected.capacity)
-    : null;
-  const projectedParameters = inputs.projected
-    ? storage(inputs.projected.parameters, 'vec4', inputs.projected.capacity)
-    : null;
 
   material.vertexNode = Fn(() => {
     const center = stack.offset === null ? localCenter : localCenter.add(stack.offset);
@@ -773,19 +813,28 @@ export function applySplatMaterialGraph(
         notBlob = inBand;
       }
 
-      if (settings.performanceProfile === 'smooth') {
-        // PlayCanvas-compatible contribution rejection. The library's
-        // default quality profile bypasses this branch entirely.
-        // Screen-capped isotropic points (~1 px) fail opacity·major·minor ≥ 3
-        // once the camera approaches - skip the cull while mix > 0 so point
-        // mode does not vanish on zoom-in (hosts typically default to `smooth`).
-        const majorRadius = majorAxis.length();
-        const minorRadius = minorAxis.length();
+      if (
+        settings.performanceProfile === 'smooth' ||
+        settings.performanceProfile === 'balanced' ||
+        settings.minPixelSize ||
+        settings.minContribution
+      ) {
+        // PlayCanvas-compatible contribution rejection. The quality profile
+        // bypasses this unless the host set minPixelSize / minContribution.
         const opacity = stack.color.a;
-        const contributionOk = opacity
-          .greaterThanEqual(1 / 255)
-          .and(majorRadius.max(minorRadius).mul(2).greaterThanEqual(2))
-          .and(opacity.mul(majorRadius).mul(minorRadius).greaterThanEqual(3));
+        const contributionOk = isSplatContributionVisible(
+          opacity,
+          majorAxis,
+          minorAxis,
+          settings.minPixelSize ??
+            (settings.performanceProfile === 'smooth' || settings.performanceProfile === 'balanced'
+              ? 2
+              : 0),
+          settings.minContribution ??
+            (settings.performanceProfile === 'smooth' || settings.performanceProfile === 'balanced'
+              ? 3
+              : 0),
+        );
         const passes =
           stack.isotropicCovarianceMix === null
             ? contributionOk

@@ -93,7 +93,7 @@ export function parseSplatPly(buffer: ArrayBuffer): SplatData {
  * file costs tens of reads rather than thousands, small enough to stay far
  * below the 2 GiB an ArrayBuffer can hold.
  */
-const STREAM_WINDOW_BYTES = 64 * 1024 * 1024;
+export const STREAM_WINDOW_BYTES = 64 * 1024 * 1024;
 
 /** Bytes of a PLY that the header is assumed to fit inside. */
 const HEADER_WINDOW_BYTES = 64 * 1024;
@@ -176,7 +176,7 @@ export async function parseSplatPlyFile(
 }
 
 /** The vertex element of a splat PLY, with its required properties checked. */
-function requireSplatVertexElement(header: ReturnType<typeof parsePlyHeader>): PlyElement {
+export function requireSplatVertexElement(header: ReturnType<typeof parsePlyHeader>): PlyElement {
   const vertices = header.element('vertex');
   if (!vertices) throw new Error('PLY file is not a Gaussian splat file: no "vertex" element.');
   assertPlyPropertyTypes(
@@ -188,14 +188,14 @@ function requireSplatVertexElement(header: ReturnType<typeof parsePlyHeader>): P
   return vertices;
 }
 
-interface RestLayout {
+export interface RestLayout {
   bands: 1 | 2 | 3;
   coefficients: number;
   offsets: readonly number[];
 }
 
 /** Resolves optional `f_rest_*` higher-order SH in a 3DGS vertex element. */
-function restLayout(vertices: PlyElement): RestLayout | null {
+export function restLayout(vertices: PlyElement): RestLayout | null {
   const restNames = vertices.propertyNames.filter((name) => name.startsWith('f_rest_'));
   if (restNames.length === 0) return null;
   if (restNames.length % 3 !== 0) {
@@ -216,7 +216,7 @@ function restLayout(vertices: PlyElement): RestLayout | null {
   return { bands, coefficients, offsets };
 }
 
-function finalizePlyDecode(
+export function finalizePlyDecode(
   count: number,
   out: SplatArrays,
   shPacked: SplatPackedShData | undefined,
@@ -224,13 +224,13 @@ function finalizePlyDecode(
   return { count, ...out, ...(shPacked ? { shPacked } : {}) };
 }
 
-interface SplatArrays {
+export interface SplatArrays {
   positions: Float32Array;
   colors: Uint8Array;
   covariances: Float32Array;
 }
 
-function allocate(count: number): SplatArrays {
+export function allocate(count: number): SplatArrays {
   return {
     positions: new Float32Array(count * 3),
     colors: new Uint8Array(count * 4),
@@ -239,7 +239,7 @@ function allocate(count: number): SplatArrays {
 }
 
 /** Byte offsets of the properties the decoder reads, within one record. */
-interface VertexOffsets {
+export interface VertexOffsets {
   x: number;
   y: number;
   z: number;
@@ -256,7 +256,7 @@ interface VertexOffsets {
   q3: number;
 }
 
-function vertexOffsets(vertices: PlyElement): VertexOffsets {
+export function vertexOffsets(vertices: PlyElement): VertexOffsets {
   const at = (name: string): number => plyPropertyOffset(vertices, name);
   return {
     x: at('x'),
@@ -281,7 +281,7 @@ function vertexOffsets(vertices: PlyElement): VertexOffsets {
  * holds record `viewFirst`. Shared by the whole-buffer and streamed paths, so
  * both produce identical arrays.
  */
-function decodeRecords(
+export function decodeRecords(
   view: DataView,
   o: VertexOffsets,
   stride: number,
@@ -323,7 +323,7 @@ function decodeRecords(
 }
 
 /** Finds the largest absolute SH coefficient in a fixed-stride record range. */
-function measureRestExtent(
+export function measureRestExtent(
   view: DataView,
   stride: number,
   viewFirst: number,
@@ -343,7 +343,11 @@ function measureRestExtent(
 }
 
 /** Allocates the final packed SH array after its scene-wide extent is known. */
-function allocatePackedRest(count: number, rest: RestLayout, extent: number): SplatPackedShData {
+export function allocatePackedRest(
+  count: number,
+  rest: RestLayout,
+  extent: number,
+): SplatPackedShData {
   return {
     bands: rest.bands,
     packed: new Uint32Array(count * shCoefficientCount(rest.bands)),
@@ -352,7 +356,7 @@ function allocatePackedRest(count: number, rest: RestLayout, extent: number): Sp
 }
 
 /** Packs channel-major `f_rest_*` directly into coefficient-major RGB words. */
-function writePackedRest(
+export function writePackedRest(
   view: DataView,
   stride: number,
   viewFirst: number,

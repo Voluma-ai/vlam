@@ -1,5 +1,5 @@
 import type { PerspectiveCamera } from 'three';
-import type { GpuSample } from './comparison-gpu';
+import type { GpuPassSample, GpuSample, GpuSampleAccounting } from './comparison-gpu';
 
 /** Viewer-only bridge; never exported by the published library. */
 export interface ComparisonAdapter {
@@ -19,9 +19,12 @@ export interface ComparisonAdapter {
   gpu(): {
     render: GpuSample[];
     compute: GpuSample[];
+    /** Per-submission timing is available for the WebGPU adapter only. */
+    passes?: { render: GpuPassSample[]; compute: GpuPassSample[] };
     supported: boolean;
     coverage: string;
     rejected?: number;
+    accounting?: GpuSampleAccounting;
   };
   dispose(): void;
 }

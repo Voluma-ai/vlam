@@ -10,6 +10,7 @@
  * `SplatData`'s shape, and one copy of that is enough.
  */
 import type { SplatData } from '../core/splat-data';
+import type { RemotePlyResult } from '../formats/ply/parse-splat-ply-remote';
 import type { LoadWorkerRequest, LoadWorkerResponse } from './load-worker-protocol';
 import {
   createProgressThrottle,
@@ -24,7 +25,7 @@ export type LoadHandler = (
   message: Extract<LoadWorkerRequest, { type: 'load' }>,
   signal: AbortSignal,
   onProgress: SplatProgressCallback | undefined,
-) => Promise<SplatData>;
+) => Promise<SplatData | RemotePlyResult>;
 
 /**
  * Installs `self.onmessage`. Multiple requests may be in flight (fetches
@@ -56,7 +57,9 @@ export function serveLoadRequests(load: LoadHandler): void {
         })
       : undefined;
     try {
-      const data = await load(message, controller.signal, onProgress);
+      const output = await load(message, controller.signal, onProgress);
+      const data = 'data' in output ? output.data : output;
+      const metrics = 'data' in output ? output.metrics : undefined;
       const transfers = [data.positions.buffer, data.colors.buffer, data.covariances.buffer];
       if (data.sh) transfers.push(data.sh.labels.buffer, data.sh.palette.buffer);
       if (data.shPacked) transfers.push(data.shPacked.packed.buffer);
@@ -66,7 +69,13 @@ export function serveLoadRequests(load: LoadHandler): void {
           data.radTree.childStart.buffer,
           data.radTree.size.buffer,
         );
-      const reply: LoadWorkerResponse = { type: 'result', id: message.id, ok: true, data };
+      const reply: LoadWorkerResponse = {
+        type: 'result',
+        id: message.id,
+        ok: true,
+        data,
+        ...(metrics ? { metrics } : {}),
+      };
       worker.postMessage(reply, transfers as Transferable[]);
     } catch (error) {
       const reply: LoadWorkerResponse = {

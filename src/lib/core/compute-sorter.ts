@@ -22,6 +22,41 @@ import { intersectSortRange, sceneSortRange, type SplatSortRange } from './splat
 import { StorageMirrorReleaser } from './storage-attribute-mirror';
 import type { uniformArray } from 'three/tsl';
 
+/** Counting-sort histogram slots retained for exact depth quantization. */
+export const COMPUTE_SORTER_MAX_BUCKET_COUNT = 1 << 22;
+/** Smallest histogram retained for a sparse projected list. */
+export const COMPUTE_SORTER_MIN_BUCKET_COUNT = 1 << 16;
+const COMPUTE_SORTER_BLOCK_SIZE = 256;
+
+/**
+ * GPU bytes retained by a counting sorter's private histogram, scans, and
+ * per-splat bucket buffer. It excludes the caller-owned source/order buffers.
+ */
+export function estimateComputeSorterSteadyBytes(capacity: number): number {
+  if (!Number.isFinite(capacity) || capacity < 0) {
+    throw new RangeError('Compute sorter capacity must be a non-negative finite number.');
+  }
+  const splats = Math.floor(capacity);
+  const bucketCount = computeSorterBucketCount(splats);
+  const blockSums = COMPUTE_SORTER_MAX_BUCKET_COUNT / COMPUTE_SORTER_BLOCK_SIZE;
+  const superBlockSums = blockSums / COMPUTE_SORTER_BLOCK_SIZE;
+  return (bucketCount + blockSums + superBlockSums + splats) * Uint32Array.BYTES_PER_ELEMENT;
+}
+
+/** CPU mirrors coexist with the first GPU upload, so price the observable peak. */
+export function estimateComputeSorterPeakBytes(capacity: number): number {
+  return estimateComputeSorterSteadyBytes(capacity) * 2;
+}
+
+function computeSorterBucketCount(count: number): number {
+  const exponent = Math.ceil(Math.log2(Math.max(1, count)));
+  const rounded = 2 ** exponent;
+  return Math.min(
+    Math.max(rounded, COMPUTE_SORTER_MIN_BUCKET_COUNT),
+    COMPUTE_SORTER_MAX_BUCKET_COUNT,
+  );
+}
+
 /**
  * Optional per-source world transform for a unified {@link MergedSplatMesh} pool.
  * When present, each splat's center is transformed to world space by its
@@ -78,14 +113,8 @@ export interface PerSourceSortTransform {
  */
 export class ComputeSorter implements SplatSorter {
   readonly kind = 'counting' as const;
-  private static readonly BUCKET_COUNT = 1 << 22;
-  private static readonly BLOCK_SIZE = 256;
-
-  /**
-   * Smallest bucket count a sort will dispatch. Below this the fixed passes
-   * are already cheap, and the floor keeps every block-scan index exact.
-   */
-  private static readonly MIN_BUCKET_COUNT = 1 << 16;
+  private static readonly BUCKET_COUNT = COMPUTE_SORTER_MAX_BUCKET_COUNT;
+  private static readonly BLOCK_SIZE = COMPUTE_SORTER_BLOCK_SIZE;
 
   private readonly renderer: THREE.WebGPURenderer;
   /** Histogram slots reserved for this pool; never changes as residency changes. */
@@ -120,6 +149,11 @@ export class ComputeSorter implements SplatSorter {
   private readonly activeCount = uniform(0);
   /** Highest bucket index this sort uses; see {@link effectiveBucketCount}. */
   private readonly bucketMax = uniform(0);
+  /**
+   * One-frame-stale GPU-visible count for compute projection. Zero keeps the
+   * capacity-sized histogram so streaming covers still get full depth resolution.
+   */
+  private visibleCountHint = 0;
 
   private readonly viewCenter = new THREE.Vector3();
   private readonly sortMetric: SplatSortMetric;
@@ -346,20 +380,34 @@ export class ComputeSorter implements SplatSorter {
   }
 
   /**
+   * One-frame-stale GPU-visible count from compute projection. Shrinks the
+   * histogram/scan dispatches when most splats are culled. Ignored without an
+   * indirect projection dispatch so streaming covers keep full depth resolution.
+   */
+  setVisibleCountHint(count: number): void {
+    this.visibleCountHint = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  }
+
+  /**
    * Keep the allocated depth resolution while a streaming pool fills. A coarse
    * cover can span the whole scene with few splats; reducing the bucket count
    * with the live count makes overlapping splats tie and shimmer until detail
-   * arrives. Only the histogram/scatter work scales with the active count.
+   * arrives. Only compute projection, which already compacted to survivors,
+   * may shrink the histogram work using {@link setVisibleCountHint}.
    */
   private effectiveBucketCount(): number {
+    if (this.indirectDispatchAttribute && this.visibleCountHint > 0) {
+      return Math.min(
+        this.histogramBucketCount,
+        ComputeSorter.bucketCountFor(this.visibleCountHint),
+      );
+    }
     return this.histogramBucketCount;
   }
 
   /** Rounds a pool or live-splat count to the supported power-of-two range. */
   private static bucketCountFor(count: number): number {
-    const exponent = Math.ceil(Math.log2(Math.max(1, count)));
-    const rounded = 2 ** exponent;
-    return Math.min(Math.max(rounded, ComputeSorter.MIN_BUCKET_COUNT), ComputeSorter.BUCKET_COUNT);
+    return computeSorterBucketCount(count);
   }
 
   sort(

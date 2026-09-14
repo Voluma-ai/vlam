@@ -80,7 +80,9 @@
           color: config.fade ? ctx.color.mul(float(config.fade)) : ctx.color,
           ...(config.isotropic ? { isotropicCovarianceMix: float(1), isotropicScreenRadiusPx: float(2) } : {}),
         })];
-        const drawMesh = unified ? new UnifiedSplatMesh(renderer, 2048) : mesh;
+        const drawMesh = unified
+          ? new UnifiedSplatMesh(renderer, 2048, { performanceProfile: 'quality' })
+          : mesh;
         if (unified) drawMesh.addSource(mesh);
         drawMesh.setDepthOfField({ focusDistance: 1, aperture: config.aperture ?? 0 });
         const scene = new THREE.Scene();

@@ -6,13 +6,21 @@
   <output data-testid="backend"></output>
   <output data-testid="pixel"></output>
   <output data-testid="projection"></output>
+  <output data-testid="empty-pixel"></output>
+  <output data-testid="pool-uploads"></output>
+  <output data-testid="pool-timing"></output>
   <script type="module">
     import * as THREE from 'three/webgpu';
     import { createWebGPURenderer, SplatMesh } from '../lib/core';
+    import { packShCoefficients, shCoefficientCount } from '../lib/core/sh-pack';
 
     const params = new URLSearchParams(location.search);
     const requested = params.get('backend');
     const projection = params.get('projection') ?? 'vertex';
+    const dynamic = params.get('dynamic');
+    const capacity = Number(params.get('capacity') ?? '2048');
+    const bands = Number(params.get('bands') ?? '0');
+    const floatTextures = params.get('float16') === '1' ? 'float16' : 'float32';
     const canvas = document.querySelector('#canvas');
     const backend = document.querySelector('[data-testid="backend"]');
     const pixel = document.querySelector('[data-testid="pixel"]');
@@ -38,15 +46,49 @@
     const actual = renderer.backend.isWebGPUBackend ? 'webgpu' : 'webgl2';
     if (actual !== requested) throw new Error(`Requested ${requested}, initialized ${actual}.`);
 
-    const splats = new SplatMesh(
-      {
+    const splatData = {
         count: 1,
         positions: new Float32Array([0, 0, 0]),
         colors: new Uint8Array([255, 255, 255, 255]),
         covariances: new Float32Array([0.04, 0, 0, 0.04, 0, 0.04]),
-      },
-      { projectionStrategy: projection },
+      };
+    if (dynamic && bands > 0) {
+      splatData.shPacked = packShCoefficients(
+        new Float32Array(shCoefficientCount(bands) * 3),
+        1,
+        bands,
+        1,
+      );
+    }
+    const poolStart = performance.now();
+    const splats = new SplatMesh(
+      dynamic ? { capacity } : splatData,
+      { projectionStrategy: projection, shBands: bands, poolFloatTextures: floatTextures },
     );
+    let destinationUploads = 0;
+    if (dynamic) {
+      document.querySelector('[data-testid="pool-timing"]').textContent = JSON.stringify({
+        capacity,
+        constructorMs: performance.now() - poolStart,
+      });
+      const pool = splats.pool;
+      const destinations = new Set([
+        pool.centersTexture,
+        pool.colorsTexture,
+        pool.covarianceATexture,
+        pool.covarianceBTexture,
+        ...pool.shPackedTextures,
+      ]);
+      const updateTexture = renderer.backend.updateTexture;
+      renderer.backend.updateTexture = function (texture, ...rest) {
+        if (destinations.has(texture)) destinationUploads++;
+        return updateTexture.call(this, texture, ...rest);
+      };
+      document.querySelector('[data-testid="pool-uploads"]').textContent = JSON.stringify({
+        dataReady: [...destinations].map((texture) => texture.source.dataReady),
+        destinationUploads,
+      });
+    }
     const scene = new THREE.Scene();
     scene.add(splats);
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 10);
@@ -55,6 +97,14 @@
     const target = new THREE.RenderTarget(5, 5, { type: THREE.UnsignedByteType });
     renderer.setRenderTarget(target);
     renderer.setClearColor(0x000000, 0);
+    if (dynamic === 'after') {
+      splats.update(camera, renderer);
+      renderer.clear();
+      renderer.render(scene, camera);
+      const empty = await renderer.readRenderTargetPixelsAsync(target, 2, 2, 1, 1);
+      document.querySelector('[data-testid="empty-pixel"]').textContent = Array.from(empty).join(',');
+    }
+    if (dynamic) splats.appendRange(splatData);
     let bytes = new Uint8Array(4);
     // Worker-sorted paths intentionally reveal their first scene only after
     // its snapshot has an order. Give the probe a few render-preparation
@@ -70,10 +120,29 @@
     renderer.setRenderTarget(null);
     backend.textContent = actual;
     pixel.textContent = Array.from(bytes).join(',');
+    if (dynamic) {
+      const timing = JSON.parse(document.querySelector('[data-testid="pool-timing"]').textContent);
+      document.querySelector('[data-testid="pool-timing"]').textContent = JSON.stringify({
+        ...timing,
+        firstUsableMs: performance.now() - poolStart,
+      });
+    }
     projectionOutput.textContent = JSON.stringify({
       ...splats.projectionStrategyStatus,
       visibleCount: await splats.readGpuVisibleSplatCount(),
     });
+    if (dynamic) {
+      document.querySelector('[data-testid="pool-uploads"]').textContent = JSON.stringify({
+        dataReady: [
+          splats.pool.centersTexture,
+          splats.pool.colorsTexture,
+          splats.pool.covarianceATexture,
+          splats.pool.covarianceBTexture,
+          ...splats.pool.shPackedTextures,
+        ].map((texture) => texture.source.dataReady),
+        destinationUploads,
+      });
+    }
     target.dispose();
     splats.dispose();
     renderer.dispose();

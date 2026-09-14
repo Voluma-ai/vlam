@@ -1,6 +1,17 @@
 /** Shared TSL math; callers own storage access, policy, and output encoding. */
 import type * as THREE from 'three/webgpu';
-import { If, float, mat3, mix, vec2, vec3 } from 'three/tsl';
+import {
+  If,
+  float,
+  floatBitsToUint,
+  mat3,
+  mix,
+  uint,
+  uintBitsToFloat,
+  vec2,
+  vec3,
+  vec4,
+} from 'three/tsl';
 import { asNode } from './splat-material-types';
 import { MAX_DOF_VARIANCE } from './depth-of-field';
 
@@ -270,4 +281,59 @@ export function capProjectedEigenvaluesToScreenRadius(
     lambda1: asNode<'float'>(enabled.select(capped1, lambda1)),
     lambda2: asNode<'float'>(enabled.select(capped2, lambda2)),
   };
+}
+
+/** Packs a 0–1 RGBA color into a float bitcast of RGBA8 unorm. */
+export function packRgba8ToFloat(color: THREE.Node<'vec4'>): THREE.Node<'float'> {
+  const r = color.r.mul(255).add(0.5).floor().clamp(0, 255).toUint();
+  const g = color.g.mul(255).add(0.5).floor().clamp(0, 255).toUint();
+  const b = color.b.mul(255).add(0.5).floor().clamp(0, 255).toUint();
+  const a = color.a.mul(255).add(0.5).floor().clamp(0, 255).toUint();
+  return asNode<'float'>(
+    uintBitsToFloat(
+      r
+        .bitOr(g.shiftLeft(uint(8)))
+        .bitOr(b.shiftLeft(uint(16)))
+        .bitOr(a.shiftLeft(uint(24))),
+    ),
+  );
+}
+
+/** Unpacks a float bitcast of RGBA8 unorm into a 0–1 RGBA color. */
+export function unpackRgba8FromFloat(packed: THREE.Node<'float'>): THREE.Node<'vec4'> {
+  const bits = asNode<'uint'>(floatBitsToUint(packed));
+  return vec4(
+    bits.bitAnd(uint(255)).toFloat().div(255),
+    bits.shiftRight(uint(8)).bitAnd(uint(255)).toFloat().div(255),
+    bits.shiftRight(uint(16)).bitAnd(uint(255)).toFloat().div(255),
+    bits.shiftRight(uint(24)).bitAnd(uint(255)).toFloat().div(255),
+  );
+}
+
+/**
+ * SuperSplat-style contribution tests. `minPixelSize` is a diameter in px;
+ * `minContribution` is opacity × major × minor. Either 0 disables that test.
+ */
+export function isSplatContributionVisible(
+  opacity: THREE.Node<'float'>,
+  majorAxis: THREE.Node<'vec2'>,
+  minorAxis: THREE.Node<'vec2'>,
+  minPixelSize: number,
+  minContribution: number,
+): THREE.Node<'bool'> {
+  if (minPixelSize <= 0 && minContribution <= 0) return asNode<'bool'>(float(1).greaterThan(0));
+  const majorRadius = majorAxis.length();
+  const minorRadius = minorAxis.length();
+  let visible: THREE.Node<'bool'> = asNode<'bool'>(opacity.greaterThanEqual(1 / 255));
+  if (minPixelSize > 0) {
+    visible = asNode<'bool'>(
+      visible.and(majorRadius.max(minorRadius).mul(2).greaterThanEqual(minPixelSize)),
+    );
+  }
+  if (minContribution > 0) {
+    visible = asNode<'bool'>(
+      visible.and(opacity.mul(majorRadius).mul(minorRadius).greaterThanEqual(minContribution)),
+    );
+  }
+  return visible;
 }

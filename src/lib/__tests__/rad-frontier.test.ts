@@ -4,6 +4,7 @@ import {
   frontierView,
   searchLimitWithinBudget,
   traverseFrontier,
+  traverseFrontierBounded,
 } from '../formats/rad/rad-frontier';
 import type { SplatData } from '../core/splat-data';
 
@@ -344,6 +345,77 @@ describe('traverseFrontier - selected-index coverage (E7)', () => {
     // Fully cached, the same cut descends through the straddle cleanly.
     const fullCut = traverseFrontier(full, [0], 4, eye, 2);
     expect(fullCut.count).toBe(4); // leaves 2,3,4,5
+  });
+});
+
+describe('bounded threshold frontier', () => {
+  const view = frontierView({ x: 0, y: 0, z: 0 }, undefined);
+
+  it('falls back once rather than truncating a cut that exceeds capacity', () => {
+    const map = buildChunkMap(sampleTree(), 4);
+    const stack: number[] = [];
+    const cut = traverseFrontierBounded(map, [0, 0], 4, view, 2, 3, stack);
+    expect(cut.fallback).toBe(true);
+    expect(cut.count).toBe(3);
+    expect(stack).toHaveLength(0);
+    expect(selectionGlobals(cut.selection, 4).size).toBe(3);
+    expect(traverseFrontierBounded(map, [0], 4, view, 2, 4, stack).fallback).toBe(false);
+    expect(stack).toHaveLength(0);
+  });
+
+  it('preserves complete coverage under partial caches, rotations and budgets', () => {
+    const rand = rng(0x7a11b0ed);
+    const stack: number[] = [];
+    for (let trial = 0; trial < 80; trial++) {
+      const { nodes, parents } = randomForest(rand, 140);
+      const chunkSize = 7;
+      const cache = buildChunkMap(nodes, chunkSize);
+      for (const file of cache.keys()) if (file > 0 && rand() < 0.35) cache.delete(file);
+      const roots = parents.flatMap((parent, i) => (parent === -1 ? [i, i] : []));
+      const budget = 3 + Math.floor(rand() * 45);
+      const direction = rand() < 0.5 ? { x: 0, y: 0, z: 1 } : { x: 0, y: 0, z: -1 };
+      const cut = traverseFrontierBounded(
+        cache,
+        roots,
+        chunkSize,
+        frontierView({ x: 0, y: 0, z: 0 }, direction),
+        0.05 + rand() * 4,
+        budget,
+        stack,
+      );
+      const selected = selectionGlobals(cut.selection, chunkSize);
+      expect(cut.count).toBeLessThanOrEqual(budget);
+      expect(selected.size).toBe(cut.count);
+      expect(stack).toHaveLength(0);
+      for (let i = 0; i < nodes.length; i++) {
+        if (nodes[i]!.childCount === 0) expect(coveringCount(i, parents, selected)).toBe(1);
+      }
+    }
+  });
+
+  it('reports an infeasible coarse-root cover', () => {
+    const map = buildChunkMap(sampleTree(), 4);
+    const cut = traverseFrontierBounded(map, [0, 3], 4, view, 10, 1);
+    expect(cut.fallback).toBe(true);
+    expect(cut.rootCoverInfeasible).toBe(true);
+  });
+
+  it('walks an extreme depth iteratively with bounded pending storage', () => {
+    const p: [number, number, number] = [0, 0, 1];
+    const nodes: TreeNode[] = [{ size: 8, pos: p, childCount: 0, childStart: 0 }];
+    let parent = 0;
+    for (let depth = 0; depth < 1_500; depth++) {
+      nodes[parent]!.childStart = nodes.length;
+      nodes[parent]!.childCount = 2;
+      parent = nodes.length;
+      nodes.push({ size: 8, pos: p, childCount: 0, childStart: 0 });
+      nodes.push({ size: 0.1, pos: p, childCount: 0, childStart: 0 });
+    }
+    const stack: number[] = [];
+    const cut = traverseFrontierBounded(buildChunkMap(nodes, 16), [0], 16, view, 1, 2_000, stack);
+    expect(cut.fallback).toBe(false);
+    expect(cut.count).toBe(1_501);
+    expect(stack).toHaveLength(0);
   });
 });
 

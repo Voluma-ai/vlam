@@ -27,6 +27,50 @@ These are candidates for future work, not 1.0 release requirements. Preserve
 the WebGL2 fallback, the three.js-only library dependency, portable compute,
 and the verified rendering math.
 
+- **Cheaper exact RAD frontier traversal** — profile selection, heap draining,
+  output construction and gathering separately. Replace the final ordered heap
+  drain with a linear scan, then evaluate reusable heap/output storage. Preserve
+  the selected global-ID set, coverage and hard budget; verify any change to
+  output order does not increase pager churn or alter pixels. **Acceptance:**
+  measure complete traversal distributions and camera-to-published-detail latency
+  on hotel and the larger RAD, including navigation, with no frame-tail or
+  coverage regression. The threshold prototype was slower and repeatedly fell
+  back; keep the current heap selection policy.
+- **Reduce padded staging uploads** — compare the current power-of-two staging
+  buckets with reusable fixed-height tiles that upload fewer unused rows.
+  **Acceptance:** count CPU upload bytes separately from GPU copies, measure
+  call overhead and startup/orbit p95/p99 on WebGPU and WebGL2, and preserve
+  atomic swaps, row clearing and SH alignment. Do not restore the exact-size
+  texture-allocation churn previously eliminated by the bucket cache.
+- **Earlier complete coarse RAD display** — publish the first complete, fully
+  staged coarse cut before waiting for all requested detail, then refine through
+  the existing atomic replacement path. **Acceptance:** improve first complete
+  image latency with startup memory probes disabled; measure target-detail time
+  separately. Verify no holes, parent/child overlap, bright flashes, cache churn
+  or starvation during camera motion. A lower active-count test threshold alone
+  is not an implementation of this behavior.
+- **Exact remote PLY streaming efficiency and scale validation** — compare
+  1/4/16 MiB windows and spooling only higher-order SH values instead of full
+  vertex records. Retain exact global SH quantization. **Acceptance:** real
+  500 MB–multi-GB SH-bearing vertex payloads, exact decoded-array parity,
+  version-2 input/scratch accounting, disk traffic, load time and cancellation
+  cleanup on multiple devices. The >2 GiB padding test proves offset handling,
+  not a large SH payload. Keep the loader benchmark-only until measurements
+  justify promotion; approximate SH clipped late outliers without a speed win.
+- **Independent empty-pool startup timing** — retain the verified published
+  `skip-empty` default and its static/shared-pool exclusions. Repeat native
+  hotel A/B using `startupMetrics=1` (which disables browser-wide memory
+  measurement), recording first visible and target-active-count milestones
+  separately from settled detail. Earlier full-scene startup numbers included
+  memory-checkpoint pauses and cannot isolate the upload saving; isolated
+  native pool timings improved 109.2→83.3 ms and eliminated all eight initial
+  destination uploads. Keep WebGPU/WebGL2 lifecycle and pixel checks.
+- **WebGL provoking-vertex evidence** — retain the benchmark-only adapter until
+  a native device exposes the extension and a relevant flat-varying shader path
+  is available. **Acceptance:** repeatable rendering improvement beyond noise,
+  unchanged pixels and picking, and restored mixed-scene GL state. The tested
+  NVIDIA path did not expose the extension; there is no default change to make.
+
 Brush lifecycle or stale-pick fixes discovered during existing selection
 validation fit stabilization. Defer new storage modes, rendering paths, and
 selection features until their benefits are measured and visually validated.
@@ -56,12 +100,34 @@ selection features until their benefits are measured and visually validated.
   `projectionStrategy: 'compute'` opt-in for standalone and unified mono
   WebGPU. Exact dense coverage, footprint-aware edge culling, indirect
   arguments, pixels, WebGL2 fallback and XR fallback have automated coverage.
-  Five alternating Windows/NVIDIA runs met the requested 27.4% interior and
-  100% overview visibility bands, but failed the evidence gate: paired GPU
-  median regressed 40.8% and 5.8%, respectively, while frame p95 did not
-  improve. The 7.77 MB steady cache also remains an explicit cost. A larger
-  supported capture is still needed to measure nonzero adaptive cadence;
-  `'vertex'` remains the default.
+  Goose (149k, no SH) failed the first evidence gate: paired GPU median
+  regressed 40.8% interior / 5.8% overview. Langenthal-Manola4A indoor
+  (8,724,225 SH3, RTX 3090) wins the mezzanine (paired GPU 11.81 → 7.20 ms,
+  21% visible) and missed vsync on the close exterior overview (frame p95
+  16.80 → 33.40 ms at 99.9% visible) until `ShComputeCache` stayed active
+  under compute projection. With the library adaptive sort cadence the
+  overview paired GPU is 18.62 → 11.10 ms and frame p95 returns to 16.80 ms;
+  interior compute+cache is 5.23 ms paired against PlayCanvas 5.98 ms
+  cull-free. `projectionStrategy: 'auto'` now makes a one-time choice for the
+  measured >=8M static SH NVIDIA Ampere cohort, with a 1 GiB configurable
+  peak-allocation cap; unknown/unsupported cases retain vertex. The
+  default desktop profile is SH-preserving `balanced` (2 px / 3 contribution
+  culls), while `quality` remains full detail. Goose still regresses, and
+  `sortIntervalMs=0` still refreshes SH every frame so the overview misses
+  vsync. The projector records model/view, projection, viewport, active-list,
+  content and DoF state, so an unchanged compute view reuses its indirect list
+  without falling back to a vertex sort; the native RTX 3090 stationary probe
+  records zero sampled projection, cull, sort and SH submissions. An
+  intermediate 1.83M SH2 Kauz SOG now exercises the missing scene-size band,
+  but its median/tail split rules out a broader automatic cohort on this GPU;
+  a second GPU class is still needed before the auto threshold can broaden.
+  Cache compaction is tracked separately below.
+- **Compact compute-projection storage** — reduce the current 52 B/slot
+  projection cache, targeting 32 B/slot where precision permits. Keep the
+  existing projection eligibility policy while comparing retained/peak memory,
+  GPU bandwidth and frame-time tails. **Acceptance:** projection, clipping,
+  DoF, SH, picking and standalone/unified pixel parity on native devices; a
+  smaller allocation alone does not justify a broader automatic cohort.
 - **Stochastic transparency during movement** — experiment with opt-in
   sort-free fragment coverage while navigating heavy scenes, then restore
   sorted blending when motion settles and for captures. Any automatic policy

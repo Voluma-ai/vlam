@@ -40,12 +40,28 @@ Useful query parameters:
 | `settleSeconds` | positive seconds; `30` | Maximum streaming settle wait |
 | `settleMinActive` | positive splat count; `1` | Required resident cut before a streamed run may settle |
 | `position`, `target` | paired `x,y,z` vectors; framed | Fixed world-space camera for reproducible cuts |
-| `uaMemory` | `1` / `0`; `1` | Disable slow browser-wide checkpoints for smoke tests |
+| `uaMemory` | `1` / `0`; `1` | Disable slow browser-wide checkpoints; always disabled for startup probes |
+| `startupMetrics` | `1` / `0`; `0` | Record first nonblank/target-active pixels and upload transfers; disables browser-wide memory measurements |
 | `syntheticSplats` | positive count; `64` | Size of the `scene=synthetic` CI smoke |
 
 The JSON remains on the page, is available as `window.__vlamMemoryBenchmark`
 for local automation, and can be downloaded. Keep raw reports under `.tmp/`;
 large captures and reports do not belong in Git.
+
+For startup latency comparisons use `startupMetrics=1`. It suppresses all
+browser-wide memory checkpoints even when `uaMemory=1`, because those calls can
+pause for seconds before rendering. Run memory profiling separately. Reports
+record both effective settings in `configuration`. Startup milestones are
+elapsed from benchmark start; `firstUsableMs` means a nonblank frame meeting
+`settleMinActive`, not complete scene coverage or settled detail. Record the
+first nonblank frame and settlement separately.
+
+Remote PLY `inputAccountingVersion: 2` reports an explicit input/scratch
+backing-buffer high-water mark, including header allocation, SH sampling,
+retained network views, second-pass reads and compressed input concatenation.
+Aliased views count once at backing-buffer size. This excludes decoded output,
+browser stream queues, disk caches and GC-retained garbage. Historical v1
+estimates omit some allocations and must not be compared directly with v2.
 
 ## What is recorded
 

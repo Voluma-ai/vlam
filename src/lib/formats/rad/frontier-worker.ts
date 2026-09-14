@@ -16,9 +16,15 @@
  *  - worker → main `plan`     : `{ seq, moves, appends, degenerate, touched, … }`.
  */
 import { FrontierPager, type PagerPlan } from './frontier-pager';
-import { frontierView, gatherGlobals, traverseFrontier } from './rad-frontier';
+import {
+  frontierView,
+  gatherGlobals,
+  traverseFrontier,
+  traverseFrontierBounded,
+} from './rad-frontier';
 import type { SplatData } from '../../core/splat-data';
 import { DEFAULT_PAGE_TABLE_WRITES_PER_PLAN } from '../../streaming/streaming-defaults';
+import { experiments } from '../../internal/experiments';
 
 export type {
   FrontierChunkMessage,
@@ -65,6 +71,13 @@ let neededFiles = new Set<number>();
  * One traversal per reschedule (plus at most one extra when badly under).
  */
 let solvedLimit = Number.POSITIVE_INFINITY;
+let thresholdLimit = Number.POSITIVE_INFINITY;
+let thresholdBudget = -1;
+const thresholdStack: number[] = [];
+let traversalFallbackCount = 0;
+let lastTraversalFallback = false;
+let lastRootCoverInfeasible = false;
+let lastTraversalMs = 0;
 
 /** Multiplicative step for the cut search; matches `LIMIT_GROW` in rad-frontier. */
 const LIMIT_STEP = 1.6;
@@ -123,7 +136,7 @@ let lastCameraKey: string | null = null;
 function planKey(msg: FrontierRescheduleMessage): string {
   const c = msg.cameraLocal;
   const f = msg.cameraForward;
-  return `${c[0]},${c[1]},${c[2]}|${f[0]},${f[1]},${f[2]}|${msg.limit}|${msg.budget}`;
+  return `${experiments.radTraversal}|${c[0]},${c[1]},${c[2]}|${f[0]},${f[1]},${f[2]}|${msg.limit}|${msg.budget}`;
 }
 
 function cameraKey(msg: FrontierRescheduleMessage): string {
@@ -247,6 +260,11 @@ function postPlan(
     staleResidentSplats: pager!.pendingStaleCount,
     cacheBytes: totalBytes,
     cacheLimitBytes: cpuCacheBytes,
+    traversalStrategy: experiments.radTraversal,
+    traversalFallback: lastTraversalFallback,
+    traversalFallbackCount,
+    rootCoverInfeasible: lastRootCoverInfeasible,
+    traversalMs: lastTraversalMs,
   };
   (self as unknown as Worker).postMessage(reply, [
     moveSlots.buffer,
@@ -323,39 +341,71 @@ function reschedule(msg: FrontierRescheduleMessage): void {
   // Solve for the cut that spends the budget, warm-started from the last one
   // (Spark's `lastPixelLimit`). `msg.limit` is the coarsest cut allowed - the
   // quality target - and the floor is how far below it the budget may buy.
+  const traversalStartedAt = performance.now();
   const floor = msg.limit * LIMIT_FLOOR_FACTOR;
-  let limit = Math.min(msg.limit, Math.max(floor, solvedLimit));
-  let result = traverseFrontier(cache, rootList, chunkSize, view, limit, msg.budget);
-
-  if (
-    !result.budgetClamped &&
-    result.refinable &&
-    limit > floor &&
-    result.count < msg.budget * BUDGET_SPEND_URGENT
-  ) {
-    // Badly under budget with detail available: refine now, but only accept the
-    // finer cut if it stays within budget (never refine into an over-budget
-    // selection - the invariant `searchLimitWithinBudget` was built around).
-    const finer = Math.max(floor, limit / LIMIT_STEP);
-    const refined = traverseFrontier(cache, rootList, chunkSize, view, finer, msg.budget);
-    if (!refined.budgetClamped && refined.count <= msg.budget) {
-      limit = finer;
-      result = refined;
+  let limit: number;
+  let result: ReturnType<typeof traverseFrontier>;
+  if (experiments.radTraversal === 'bounded-threshold') {
+    const hardCap = Math.min(msg.budget, pager.capacity);
+    if (thresholdBudget !== hardCap) {
+      thresholdBudget = hardCap;
+      thresholdLimit = msg.limit;
+    }
+    limit = Math.max(floor, thresholdLimit);
+    const candidate = traverseFrontierBounded(
+      cache,
+      rootList,
+      chunkSize,
+      view,
+      limit,
+      hardCap,
+      thresholdStack,
+    );
+    result = candidate;
+    lastTraversalFallback = candidate.fallback;
+    lastRootCoverInfeasible = candidate.rootCoverInfeasible;
+    if (candidate.fallback) {
+      traversalFallbackCount++;
+      thresholdLimit = limit * 1.25;
+    } else {
+      const target = hardCap * 0.9;
+      thresholdLimit =
+        candidate.count < hardCap * 0.8 || candidate.count > hardCap
+          ? Math.max(
+              floor,
+              limit * Math.max(0.8, Math.min(1.25, Math.sqrt(candidate.count / target))),
+            )
+          : limit;
+    }
+  } else {
+    limit = Math.min(msg.limit, Math.max(floor, solvedLimit));
+    result = traverseFrontier(cache, rootList, chunkSize, view, limit, msg.budget);
+    lastTraversalFallback = false;
+    lastRootCoverInfeasible = false;
+    if (
+      !result.budgetClamped &&
+      result.refinable &&
+      limit > floor &&
+      result.count < msg.budget * BUDGET_SPEND_URGENT
+    ) {
+      const finer = Math.max(floor, limit / LIMIT_STEP);
+      const refined = traverseFrontier(cache, rootList, chunkSize, view, finer, msg.budget);
+      if (!refined.budgetClamped && refined.count <= msg.budget) {
+        limit = finer;
+        result = refined;
+      }
+    }
+    if (
+      !result.budgetClamped &&
+      result.refinable &&
+      result.count < msg.budget * BUDGET_SPEND_TARGET
+    ) {
+      solvedLimit = Math.max(floor, limit / LIMIT_STEP);
+    } else {
+      solvedLimit = limit;
     }
   }
-
-  // Converge over subsequent reschedules. Refine while budget remains; do not
-  // coarsen - `traverseFrontier` already stopped descent at `maxSplats`, and
-  // growing the limit would publish a blurrier cut than the one on screen.
-  if (
-    !result.budgetClamped &&
-    result.refinable &&
-    result.count < msg.budget * BUDGET_SPEND_TARGET
-  ) {
-    solvedLimit = Math.max(floor, limit / LIMIT_STEP);
-  } else {
-    solvedLimit = limit;
-  }
+  lastTraversalMs = performance.now() - traversalStartedAt;
 
   // Desired globals grouped by chunk; protect those chunks from eviction.
   neededFiles = new Set<number>();
@@ -409,6 +459,9 @@ self.onmessage = (event: MessageEvent<FrontierRequest>): void => {
     maxPlanWrites = msg.maxPlanWrites;
     pager = new FrontierPager(msg.capacity, chunkSize);
     solvedLimit = Number.POSITIVE_INFINITY;
+    thresholdLimit = Number.POSITIVE_INFINITY;
+    thresholdBudget = -1;
+    traversalFallbackCount = 0;
     lastPlanKey = null;
     lastCameraKey = null;
     return;
@@ -417,6 +470,7 @@ self.onmessage = (event: MessageEvent<FrontierRequest>): void => {
     // Only the pager's slot count changes; `cache` and its roots are untouched,
     // so a mesh growing or shrinking its storage re-downloads nothing.
     pager?.resize(msg.capacity);
+    thresholdBudget = -1;
     return;
   }
   if (msg.type === 'cacheBudget') {

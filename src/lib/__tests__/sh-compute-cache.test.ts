@@ -45,10 +45,14 @@ function internals(mesh: SplatMesh) {
   return mesh as unknown as {
     ShCacheCtor: typeof ShComputeCache;
     shCache: ShComputeCache | null;
+    shCacheFailed: boolean;
     shEvaluationState: { reason: string };
+    projectedPipeline: { packedColor: boolean } | null;
     contentRevision: number;
     graphRevision: number;
     perSourceSort: object | null;
+    capacity: number;
+    shEvaluationWantsCompute(renderer: THREE.WebGPURenderer): boolean;
   };
 }
 
@@ -227,6 +231,38 @@ describe('pool-indexed SH compute cache', () => {
     cache.dispose(r);
     texture.dispose();
   });
+
+  it('refreshes the GPU-projected survivors through their indirect dispatch', () => {
+    const gpu = renderer();
+    const r = gpu as unknown as THREE.WebGPURenderer;
+    const texture = new THREE.DataTexture(new Float32Array(4), 1, 1);
+    const visibleIndices = new THREE.StorageBufferAttribute(new Uint32Array(8), 1);
+    const visibleCount = new THREE.StorageBufferAttribute(new Uint32Array([3]), 1);
+    const dispatchArgs = new THREE.IndirectStorageBufferAttribute(new Uint32Array([1, 1, 1]), 1);
+    const cache = new ShComputeCache({
+      capacity: 8,
+      centersTexture: texture,
+      colorsTexture: texture,
+      covarianceBTexture: texture,
+      dataTextureWidth: 1,
+      sh: { mode: 'palette', bands: 1, paletteTexture: texture },
+      localCameraPosition: uniform(new THREE.Vector3()),
+      localViewProjection: uniform(new THREE.Matrix4()),
+      frustumMargin: uniform(new THREE.Vector2(3, 3)),
+      visibleIndices,
+      visibleCount,
+      visibleDispatchArgs: dispatchArgs,
+    });
+    const camera = new THREE.Vector3(0, 0, 3);
+    cache.prepare(r, 8, camera, 0, 0, 0);
+    cache.prepare(r, 8, camera.set(1, 0, 3), 0, 0, 1, false, true, true);
+    expect(gpu.compute).toHaveBeenCalledTimes(2);
+    expect(gpu.compute.mock.calls[0]).toHaveLength(1);
+    expect(gpu.compute.mock.calls[1]?.[1]).toBe(dispatchArgs);
+    expect(cache.snapshot()).toMatchObject({ visibleListRefreshes: 1 });
+    cache.dispose(r);
+    texture.dispose();
+  });
 });
 
 describe('SH path selection and mesh lifecycle', () => {
@@ -239,7 +275,7 @@ describe('SH path selection and mesh lifecycle', () => {
     mesh.dispose();
   });
 
-  it('selects the hybrid cache for an identified Apple Mac but excludes touch devices', () => {
+  it('keeps small Apple Mac auto workloads on vertex SH and excludes touch devices', () => {
     const gpu = renderer();
     const device = gpu.backend.device as typeof gpu.backend.device & {
       adapterInfo: { vendor: string; architecture: string };
@@ -251,9 +287,29 @@ describe('SH path selection and mesh lifecycle', () => {
     mac.update(new THREE.PerspectiveCamera(), gpu as unknown as THREE.WebGPURenderer, {
       sort: false,
     });
-    expect(internals(mac).shCache).not.toBeNull();
-    expect(internals(mac).shEvaluationState.reason).toBe('apple-mac-auto');
+    expect(internals(mac).shCache).toBeNull();
+    expect(internals(mac).shEvaluationState.reason).toBe('apple-mac-small-workload');
     mac.dispose();
+
+    const withoutSh = new SplatMesh(data(), { shEvaluation: 'auto', shBands: 0 });
+    withoutSh.update(new THREE.PerspectiveCamera(), gpu as unknown as THREE.WebGPURenderer, {
+      sort: false,
+    });
+    expect(internals(withoutSh).shEvaluationState.reason).toBe('sh-disabled');
+    withoutSh.dispose();
+
+    const largeMac = new SplatMesh(data(), { shEvaluation: 'auto' });
+    Object.defineProperty(largeMac, 'capacity', { value: 8_000_000 });
+    expect(
+      internals(largeMac).shEvaluationWantsCompute(gpu as unknown as THREE.WebGPURenderer),
+    ).toBe(true);
+    largeMac.dispose();
+
+    const explicit = new SplatMesh(data(), { shEvaluation: 'compute' });
+    expect(
+      internals(explicit).shEvaluationWantsCompute(gpu as unknown as THREE.WebGPURenderer),
+    ).toBe(true);
+    explicit.dispose();
 
     vi.stubGlobal('navigator', { platform: 'MacIntel', maxTouchPoints: 5 });
     const touch = new SplatMesh(data(), { shEvaluation: 'auto' });
@@ -264,6 +320,13 @@ describe('SH path selection and mesh lifecycle', () => {
     expect(internals(touch).shCache).toBeNull();
     expect(internals(touch).shEvaluationState.reason).toBe('unvalidated-auto-device');
     touch.dispose();
+
+    vi.stubGlobal('navigator', { platform: 'Win32', maxTouchPoints: 0 });
+    const nonApple = new SplatMesh(data(), { shEvaluation: 'auto' });
+    expect(
+      internals(nonApple).shEvaluationWantsCompute(gpu as unknown as THREE.WebGPURenderer),
+    ).toBe(false);
+    nonApple.dispose();
     vi.unstubAllGlobals();
   });
 
@@ -341,6 +404,113 @@ describe('SH path selection and mesh lifecycle', () => {
     mesh.dispose();
     update();
     expect(internals(mesh).shCache).toBeNull();
+    clock.mockRestore();
+  });
+
+  it('keeps the SH cache under compute projection and skips projector SH', () => {
+    const gpu = renderer();
+    const mesh = new SplatMesh(data(), {
+      shEvaluation: 'compute',
+      projectionStrategy: 'compute',
+    });
+    internals(mesh).ShCacheCtor = ShComputeCache;
+    mesh.update(new THREE.PerspectiveCamera(), gpu as unknown as THREE.WebGPURenderer, {
+      sort: false,
+    });
+    // sort:false leaves projection inactive; a real sort frame enables both.
+    mesh.update(new THREE.PerspectiveCamera(), gpu as unknown as THREE.WebGPURenderer);
+    expect(internals(mesh).shCache).not.toBeNull();
+    expect(internals(mesh).shEvaluationState.reason).toBe('compute-projection-cache');
+    expect(mesh.projectionStrategyStatus).toEqual({
+      effective: 'compute',
+      reason: 'explicit-compute',
+    });
+    expect(internals(mesh).projectedPipeline?.packedColor).toBe(false);
+    mesh.dispose();
+  });
+
+  it('defers the projected pipeline until the SH cache module is loaded', () => {
+    const gpu = renderer();
+    const mesh = new SplatMesh(data(), {
+      shEvaluation: 'compute',
+      projectionStrategy: 'compute',
+    });
+    mesh.update(new THREE.PerspectiveCamera(), gpu as unknown as THREE.WebGPURenderer);
+    expect(mesh.projectionStrategyStatus).toEqual({
+      effective: 'vertex',
+      reason: 'loading-sh-cache-module',
+    });
+    expect(internals(mesh).projectedPipeline).toBeNull();
+    expect(internals(mesh).shEvaluationState.reason).toBe('loading-compute-module');
+    internals(mesh).ShCacheCtor = ShComputeCache;
+    mesh.update(new THREE.PerspectiveCamera(), gpu as unknown as THREE.WebGPURenderer);
+    expect(mesh.projectionStrategyStatus.effective).toBe('compute');
+    expect(internals(mesh).projectedPipeline?.packedColor).toBe(false);
+    expect(internals(mesh).shCache).not.toBeNull();
+    mesh.dispose();
+  });
+
+  it('rebuilds the projector with packed SH after a late cache failure', () => {
+    const gpu = renderer();
+    const mesh = new SplatMesh(data(), {
+      shEvaluation: 'compute',
+      projectionStrategy: 'compute',
+    });
+    internals(mesh).ShCacheCtor = ShComputeCache;
+    const camera = new THREE.PerspectiveCamera();
+    mesh.update(camera, gpu as unknown as THREE.WebGPURenderer);
+    expect(internals(mesh).projectedPipeline?.packedColor).toBe(false);
+    internals(mesh).shCacheFailed = true;
+    mesh.update(camera, gpu as unknown as THREE.WebGPURenderer);
+    expect(internals(mesh).shCache).toBeNull();
+    expect(internals(mesh).projectedPipeline?.packedColor).toBe(true);
+    expect(mesh.projectionStrategyStatus.effective).toBe('compute');
+    mesh.dispose();
+  });
+
+  it('keeps projector SH when compute projection is requested without the cache', () => {
+    const gpu = renderer();
+    const mesh = new SplatMesh(data(), {
+      shEvaluation: 'vertex',
+      projectionStrategy: 'compute',
+    });
+    internals(mesh).ShCacheCtor = ShComputeCache;
+    mesh.update(new THREE.PerspectiveCamera(), gpu as unknown as THREE.WebGPURenderer);
+    expect(internals(mesh).shCache).toBeNull();
+    expect(internals(mesh).shEvaluationState.reason).toBe('explicit-vertex');
+    expect(internals(mesh).projectedPipeline?.packedColor).toBe(true);
+    expect(mesh.projectionStrategyStatus.effective).toBe('compute');
+    mesh.dispose();
+  });
+
+  it('refreshes SH on the sort cadence under compute projection, not every projector dispatch', () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const gpu = renderer();
+    const mesh = new SplatMesh(data(), {
+      shEvaluation: 'compute',
+      projectionStrategy: 'compute',
+      sortIntervalMs: 1000,
+    });
+    internals(mesh).ShCacheCtor = ShComputeCache;
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.z = 3;
+    mesh.update(camera, gpu as unknown as THREE.WebGPURenderer);
+    const cache = internals(mesh).shCache!;
+    const initial = cache.snapshot().dispatches;
+    expect(initial).toBeGreaterThan(0);
+    for (let i = 1; i <= 5; i++) {
+      now += 16;
+      camera.position.x = i * 0.1;
+      mesh.update(camera, gpu as unknown as THREE.WebGPURenderer);
+    }
+    expect(cache.snapshot().dispatches).toBe(initial);
+    expect(internals(mesh).shEvaluationState.reason).toBe('camera-motion-cached');
+    now += 1000;
+    camera.position.x = 2;
+    mesh.update(camera, gpu as unknown as THREE.WebGPURenderer);
+    expect(cache.snapshot().dispatches).toBe(initial + 1);
+    mesh.dispose();
     clock.mockRestore();
   });
 });
