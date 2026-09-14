@@ -64,6 +64,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - Experimental remote PLY input accounting now counts unique backing buffers,
   including exact second-pass reads and compressed-input concatenation. Reports
   identify accounting version 2; legacy peaks are not directly comparable.
+  Its browser probe also respects WebGPU readback row padding in preview captures.
 
 - Automatic projection policy memory now includes the projected counting
   sorter's histogram/bucket scratch and its first-upload CPU mirrors. Unified

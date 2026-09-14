@@ -41,9 +41,10 @@ export interface RemotePlyResult {
 }
 
 /**
- * Incrementally decodes uncompressed fixed-stride PLY records. The only input
- * reservoir is a reusable 64 MiB window plus the at-most-64 KiB header. The
- * final decoded arrays are deliberately separate from the source-buffer peak.
+ * Incrementally decodes uncompressed fixed-stride PLY records through a reusable
+ * window (64 MiB by default). Input accounting includes header storage, response
+ * buffers and optional SH sampling or disk-read scratch. Final decoded arrays
+ * are deliberately separate from that peak.
  */
 export async function parseSplatPlyRemote(
   response: Response,

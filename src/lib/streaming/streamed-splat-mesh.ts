@@ -1316,9 +1316,8 @@ export class StreamedSplatMesh extends SplatMesh {
     // fix it - thirteen 500 MB captures still allow 6.5 GB, because nothing
     // related the meshes to each other. The budget is that missing relation.
     const isPageTable = isPageTableFoveation(options.foveationMode);
-    // Prefix RAD has chunked data too, but unlike LCC its scene does not expose
-    // a `chunkSize`. Use the chunk format marker so its cache ceiling still
-    // reflects the estimated capture size.
+    // Chunked formats need a ceiling based on their decoded chunks. Keep the
+    // format check for custom RAD sources that do not expose `chunkSize`.
     const isChunkedRad = scene.chunkOptions?.[0]?.format === 'rad-chunk';
     const cacheCeilingBytes =
       isPageTable || scene.chunkSize !== undefined || isChunkedRad

@@ -85,12 +85,16 @@
       const preview = document.querySelector('#preview');
       const context = preview.getContext('2d');
       const image = context.createImageData(96, 32);
+      // three.js WebGPU readback retains 256-byte row alignment.
+      const rowBytes = renderer.backend.isWebGPUBackend ? Math.ceil(96 * 4 / 256) * 256 : 96 * 4;
       for (let y = 0; y < 32; y++) {
-        image.data.set(full.subarray((31 - y) * 96 * 4, (32 - y) * 96 * 4), y * 96 * 4);
+        const sourceRow = (31 - y) * rowBytes;
+        image.data.set(full.subarray(sourceRow, sourceRow + 96 * 4), y * 96 * 4);
       }
       context.putImageData(image, 0, 0);
+      const previewSamples = [33, 48, 63].map((x) => Array.from(context.getImageData(x, 15, 1, 1).data));
       output.textContent = JSON.stringify({
-        backend, count: data.count, secondCount: second.count, metrics, temporaryEntries, samples,
+        backend, count: data.count, secondCount: second.count, metrics, temporaryEntries, samples, previewSamples,
       });
       target.dispose();
     } catch (error) {

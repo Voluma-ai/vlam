@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildRadScene } from '../formats/rad/rad';
+import { estimateSceneDecodedBytes } from '../streaming/streamed-splat-mesh';
 import { httpDatasetSource } from '../streaming/dataset-source';
 import { RAD_CHUNK_MAGIC, RAD_MAGIC } from '../formats/rad/parse-rad';
 
@@ -56,13 +57,18 @@ function radcChunk(count: number, childCount: number[], childStart: number[]): U
 }
 
 /** A `--rad-chunked` header: chunks reference external `.radc` files. */
-function chunkedHeader(filenames: readonly string[], count: number): Uint8Array {
+function chunkedHeader(
+  filenames: readonly string[],
+  count: number,
+  leafCount?: number,
+): Uint8Array {
   const meta = {
     version: 1,
     type: 'gsplat',
     count,
     chunkSize: 4,
     lodTree: true,
+    ...(leafCount === undefined ? {} : { comment: JSON.stringify({ input_splat_count: leafCount }) }),
     allChunkBytes: 0,
     chunks: filenames.map((filename) => ({ offset: 0, bytes: 0, filename })),
   };
@@ -183,10 +189,10 @@ describe('buildRadScene with an external .radc chunk set', () => {
 describe('buildRadScene prefix-vs-foveated choice', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  /** Serves a two-chunk dataset of `count` splats with no `input_splat_count`. */
+  /** Serves eight tree nodes, seven of them leaves. */
   function stubScene(): void {
     const files: Record<string, Uint8Array> = {
-      'http://host/scene.rad': chunkedHeader(['scene-0.radc', 'scene-1.radc'], 8),
+      'http://host/scene.rad': chunkedHeader(['scene-0.radc', 'scene-1.radc'], 8, 7),
       'http://host/scene-0.radc': radcChunk(4, [2, 0, 0, 0], [4, 0, 0, 0]),
       'http://host/scene-1.radc': radcChunk(4, [0, 0, 0, 0], [0, 0, 0, 0]),
     };
@@ -224,6 +230,11 @@ describe('buildRadScene prefix-vs-foveated choice', () => {
       budget: 4,
     });
     expect(scene.foveation).toBeUndefined();
+    expect(scene.contentSplatCount).toBe(7);
+    expect(scene.chunkSize).toBe(4);
+    // A prefix cache keeps the merged node too: sizing from the leaf count
+    // would evict a chunk and refetch it indefinitely at a full-detail cut.
+    expect(estimateSceneDecodedBytes(scene)).toBe(8 * 52);
   });
 
   it('foveates when the budget cannot hold the leaves', async () => {

@@ -65,7 +65,7 @@ interface StartupMilestones {
   firstRenderMs: number | null;
   /** A rendered target was read back with at least one non-transparent pixel. */
   firstNonblankMs: number | null;
-  /** A nonblank frame was available after the requested startup coverage was active. */
+  /** A nonblank frame was available after the requested active-count threshold. */
   firstUsableMs: number | null;
 }
 

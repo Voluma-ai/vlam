@@ -14,8 +14,14 @@ test('remote PLY stream decodes SH and renders on both backends', async ({ page 
     count: number;
     secondCount: number;
     temporaryEntries: number;
-    metrics: { mode: string; temporaryDiskBytes: number; bufferedFallback: boolean };
+    metrics: {
+      mode: string;
+      temporaryDiskBytes: number;
+      bufferedFallback: boolean;
+      inputAccountingVersion: number;
+    };
     samples: number[][];
+    previewSamples: number[][];
   };
   expect(value.error).toBeUndefined();
   expect(value.count).toBe(3);
@@ -23,8 +29,13 @@ test('remote PLY stream decodes SH and renders on both backends', async ({ page 
   expect(value.temporaryEntries).toBe(0);
   expect(value.metrics.mode).toBe(variant);
   expect(value.metrics.bufferedFallback).toBe(false);
+  expect(value.metrics.inputAccountingVersion).toBe(2);
   expect(value.metrics.temporaryDiskBytes > 0).toBe(variant === 'exact-stream');
   for (const [i, pixel] of value.samples.entries()) {
+    expect(pixel[3]).toBeGreaterThan(0);
+    expect(pixel[i]).toBeGreaterThan(pixel[(i + 1) % 3] as number);
+  }
+  for (const [i, pixel] of value.previewSamples.entries()) {
     expect(pixel[3]).toBeGreaterThan(0);
     expect(pixel[i]).toBeGreaterThan(pixel[(i + 1) % 3] as number);
   }
