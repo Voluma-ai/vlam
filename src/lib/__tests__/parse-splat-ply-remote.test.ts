@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseSplatPly } from '../formats/ply/parse-splat-ply';
-import { parseSplatPlyRemote } from '../formats/ply/parse-splat-ply-remote';
+import {
+  APPROXIMATE_SH_SAMPLE_LIMIT,
+  parseSplatPlyRemote,
+} from '../formats/ply/parse-splat-ply-remote';
 
 const CORE = [
   'x',
@@ -256,12 +259,18 @@ describe('incremental remote PLY', () => {
     },
   );
 
+  it('samples 65,536 vertices before locking approximate SH range', () => {
+    expect(APPROXIMATE_SH_SAMPLE_LIMIT).toBe(65_536);
+  });
+
   it('holds approximate SH range after the sample and counts a late outlier', async () => {
-    const bytes = fixture(65_537, 1, false, true);
-    const result = await parseSplatPlyRemote(response(bytes, 1024 * 1024, false), {
+    const sampleLimit = 32;
+    const bytes = fixture(sampleLimit + 1, 1, false, true);
+    const result = await parseSplatPlyRemote(response(bytes, 256, false), {
       mode: 'approximate-sh-stream',
       signal: new AbortController().signal,
-      windowBytes: 8 * 1024 * 1024,
+      windowBytes: 8 * 1024,
+      sampleLimit,
     });
     const exact = parseSplatPly(bytes);
     expect(result.data.positions).toEqual(exact.positions);
@@ -273,14 +282,17 @@ describe('incremental remote PLY', () => {
   });
 
   it('grows approximate packed SH after the sample when length is unknown', async () => {
-    const bytes = fixture(100_000, 1);
-    const result = await parseSplatPlyRemote(response(bytes, 1024 * 1024, false), {
+    const sampleLimit = 8;
+    const count = 40;
+    const bytes = fixture(count, 1);
+    const result = await parseSplatPlyRemote(response(bytes, 64, false), {
       mode: 'approximate-sh-stream',
       signal: new AbortController().signal,
-      windowBytes: 1024 * 1024,
+      windowBytes: 256,
+      sampleLimit,
     });
     expect(result.data.positions).toEqual(parseSplatPly(bytes).positions);
-    expect(result.data.shPacked?.packed).toHaveLength(100_000 * 3);
+    expect(result.data.shPacked?.packed).toHaveLength(count * 3);
     expect(result.data.shPacked?.packed.at(-1)).not.toBe(0);
   });
 
