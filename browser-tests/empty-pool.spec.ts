@@ -2,8 +2,12 @@ import { expect, test } from '@playwright/test';
 
 declare const process: { env: { VLAM_EXPERIMENT?: string } };
 
+// The published build already uses skip-empty; the isolated build is only
+// needed to compare it against the benchmark-only baseline.
+const skipEmptyBuild = !process.env.VLAM_EXPERIMENT || process.env.VLAM_EXPERIMENT === 'skip-empty';
+
 test('skip-empty dynamic pool renders after both append orders', async ({ page }, testInfo) => {
-  test.skip(process.env.VLAM_EXPERIMENT !== 'skip-empty', 'requires the isolated skip-empty build');
+  test.skip(!skipEmptyBuild, 'requires the published or isolated skip-empty build');
   const backend = testInfo.project.name === 'chromium-webgpu' ? 'webgpu' : 'webgl2';
   for (const dynamic of ['before', 'after']) {
     await page.goto(`/src/viewer/backend-probe.html?backend=${backend}&dynamic=${dynamic}`);
@@ -36,7 +40,7 @@ test('baseline uploads its empty destination textures', async ({ page }, testInf
 });
 
 test('skip-empty handles float formats and packed SH bands', async ({ page }, testInfo) => {
-  test.skip(process.env.VLAM_EXPERIMENT !== 'skip-empty', 'requires the isolated skip-empty build');
+  test.skip(!skipEmptyBuild, 'requires the published or isolated skip-empty build');
   const backend = testInfo.project.name === 'chromium-webgpu' ? 'webgpu' : 'webgl2';
   for (const float16 of [false, true]) {
     for (const bands of [0, 1, 2, 3]) {
@@ -60,7 +64,7 @@ test('skip-empty handles float formats and packed SH bands', async ({ page }, te
 test('skip-empty preserves disjoint, reused, cleared and compacted pixels', async ({
   page,
 }, testInfo) => {
-  test.skip(process.env.VLAM_EXPERIMENT !== 'skip-empty', 'requires the isolated skip-empty build');
+  test.skip(!skipEmptyBuild, 'requires the published or isolated skip-empty build');
   const backend = testInfo.project.name === 'chromium-webgpu' ? 'webgpu' : 'webgl2';
   await page.goto(`/src/viewer/empty-pool-lifecycle-probe.html?backend=${backend}`);
   const output = page.locator('[data-testid="result"]');

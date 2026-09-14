@@ -3508,7 +3508,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       this.shEvaluationState.reason =
         this.shEvaluation === 'auto'
           ? this.appleMacAutoSmallWorkload(renderer)
-            ? 'apple-mac-small-workload'
+            ? this.materialInputs.sh === null
+              ? 'sh-disabled'
+              : 'apple-mac-small-workload'
             : 'unvalidated-auto-device'
           : 'explicit-vertex';
       return;

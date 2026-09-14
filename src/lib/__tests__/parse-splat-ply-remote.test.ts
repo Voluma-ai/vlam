@@ -160,6 +160,41 @@ describe('incremental remote PLY', () => {
     ).rejects.toThrow(/Truncated PLY/);
   });
 
+  it.each([true, false])(
+    'does not eagerly allocate an inflated vertex count with length=%s',
+    async (length) => {
+      const header = new TextEncoder().encode(
+        [
+          'ply',
+          'format binary_little_endian 1.0',
+          'element vertex 1000000',
+          ...CORE.map((name) => `property float ${name}`),
+          'end_header',
+          '',
+        ].join('\n'),
+      );
+      const bytes = new Uint8Array(header.length + 2 * CORE.length * 4);
+      bytes.set(header);
+      const NativeFloat32Array = Float32Array;
+      vi.stubGlobal(
+        'Float32Array',
+        class extends NativeFloat32Array {
+          constructor(count: number) {
+            if (count > 1024) throw new Error('Eager decoded-array allocation');
+            super(count);
+          }
+        },
+      );
+      await expect(
+        parseSplatPlyRemote(response(bytes.buffer, 512, length), {
+          mode: 'exact-stream',
+          signal: new AbortController().signal,
+          windowBytes: 224,
+        }),
+      ).rejects.toThrow(/Truncated PLY vertex records/);
+    },
+  );
+
   it('holds approximate SH range after the sample and counts a late outlier', async () => {
     const bytes = fixture(65_537, 1, false, true);
     const result = await parseSplatPlyRemote(response(bytes, 1024 * 1024, false), {
@@ -176,6 +211,18 @@ describe('incremental remote PLY', () => {
     expect(result.metrics.shExtent).toBeLessThan(exact.shPacked!.range.max[0]);
   });
 
+  it('grows approximate packed SH after the sample when length is unknown', async () => {
+    const bytes = fixture(100_000, 1);
+    const result = await parseSplatPlyRemote(response(bytes, 1024 * 1024, false), {
+      mode: 'approximate-sh-stream',
+      signal: new AbortController().signal,
+      windowBytes: 1024 * 1024,
+    });
+    expect(result.data.positions).toEqual(parseSplatPly(bytes).positions);
+    expect(result.data.shPacked?.packed).toHaveLength(100_000 * 3);
+    expect(result.data.shPacked?.packed.at(-1)).not.toBe(0);
+  });
+
   it('does not trust encoded Content-Length for a decoded response body', async () => {
     const bytes = fixture(2, 0);
     const stream = response(bytes, 5).body!;
@@ -189,6 +236,19 @@ describe('incremental remote PLY', () => {
     });
     expect(result.data.positions).toEqual(parseSplatPly(bytes).positions);
     expect(result.metrics.inputBytes).toBe(bytes.byteLength);
+  });
+
+  it('accepts decoded records when an intermediary hides the content encoding', async () => {
+    const bytes = fixture(2, 0);
+    const wrapped = new Response(response(bytes, 5, false).body, {
+      headers: { 'Content-Length': '12' },
+    });
+    const result = await parseSplatPlyRemote(wrapped, {
+      mode: 'exact-stream',
+      signal: new AbortController().signal,
+      windowBytes: 224,
+    });
+    expect(result.data.positions).toEqual(parseSplatPly(bytes).positions);
   });
 
   it('keeps source-buffer memory bounded past 2 GiB with a small decoded scene', async () => {

@@ -291,6 +291,13 @@ describe('SH path selection and mesh lifecycle', () => {
     expect(internals(mac).shEvaluationState.reason).toBe('apple-mac-small-workload');
     mac.dispose();
 
+    const withoutSh = new SplatMesh(data(), { shEvaluation: 'auto', shBands: 0 });
+    withoutSh.update(new THREE.PerspectiveCamera(), gpu as unknown as THREE.WebGPURenderer, {
+      sort: false,
+    });
+    expect(internals(withoutSh).shEvaluationState.reason).toBe('sh-disabled');
+    withoutSh.dispose();
+
     const largeMac = new SplatMesh(data(), { shEvaluation: 'auto' });
     Object.defineProperty(largeMac, 'capacity', { value: 8_000_000 });
     expect(

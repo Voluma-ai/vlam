@@ -153,7 +153,12 @@ export async function parseSplatPlyRemote(
       Math.floor(Math.min(windowBytes, count * stride) / stride) * stride,
     );
     const window = new Uint8Array(capacity);
-    const out = allocate(count);
+    // A usable response length confirms how many records can arrive. Without
+    // that confirmation, grow decoded arrays only as records are received:
+    // missing lengths and hidden content encoding must not make an inflated
+    // vertex count allocate the entire declared output up front.
+    let allocatedCount = total >= vertexEnd ? count : 0;
+    let out = allocate(allocatedCount);
     const offsets = vertexOffsets(vertices);
     const rest = restLayout(vertices);
     const sampleCount =
@@ -170,12 +175,29 @@ export async function parseSplatPlyRemote(
     let streamAt = 0;
     let diskBytes = 0;
 
+    const ensureDecodedCapacity = (required: number): void => {
+      if (required <= allocatedCount) return;
+      const next = Math.min(count, Math.max(required, allocatedCount * 2));
+      const expanded = allocate(next);
+      expanded.positions.set(out.positions);
+      expanded.colors.set(out.colors);
+      expanded.covariances.set(out.covariances);
+      out = expanded;
+      if (shPacked && rest) {
+        const expandedSh = allocatePackedRest(next, rest, extent);
+        expandedSh.packed.set(shPacked.packed);
+        shPacked = expandedSh;
+      }
+      allocatedCount = next;
+    };
+
     const decodeWindow = async (write?: FileSystemWritableFileStream): Promise<void> => {
       const records = Math.floor(filled / stride);
       if (records === 0) return;
       const bytes = records * stride;
       const view = new DataView(window.buffer, 0, bytes);
       const last = decoded + records;
+      ensureDecodedCapacity(last);
       decodeRecords(view, offsets, stride, decoded, decoded, last, out);
       if (rest && mode === 'exact-stream') {
         extent = measureRestExtent(view, stride, decoded, decoded, last, rest, extent);
@@ -197,7 +219,7 @@ export async function parseSplatPlyRemote(
         }
         if (!shPacked && last >= sampleCount) {
           extent = Math.max(sampleExtent * 1.25, 1e-8);
-          shPacked = allocatePackedRest(count, rest, extent);
+          shPacked = allocatePackedRest(allocatedCount, rest, extent);
           if (sample) packSample(sample, sampleCount, rest, extent, shPacked.packed);
         }
         if (shPacked && last > sampleCount) {
