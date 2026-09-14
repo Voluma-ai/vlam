@@ -22,7 +22,9 @@ const height = integerParam('height', 600);
 const pixelRatio = positiveParam('pixelRatio', 1);
 const forceWebGL = params.get('backend') === 'webgl';
 const gpuTimestamps = params.get('gpuTimestamps') === '1';
-const profile: SplatPerformanceProfile = params.get('profile') === 'smooth' ? 'smooth' : 'quality';
+const profileParam = params.get('profile');
+const profile: SplatPerformanceProfile =
+  profileParam === 'smooth' ? 'smooth' : profileParam === 'balanced' ? 'balanced' : 'quality';
 const maxStdDev = positiveParam('maxStdDev', 3);
 const shBands = parseShBands(params.get('sh'));
 const mode = params.get('mode') === 'orbit' ? 'orbit' : 'stationary';

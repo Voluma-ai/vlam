@@ -6,7 +6,25 @@ import { fileURLToPath } from 'node:url';
 const root = new URL('../.tmp/benchmark-assets/', import.meta.url);
 const tempelSource = 'https://assets.voluma.ai/voluma/cultural-heritage/Tempel/Tempel.lcc2';
 const hotelSource = 'https://assets.voluma.ai/voluma/veersetoren/HOTEL.clean.comp-lod.rad';
+const langenthalSource = 'https://assets.voluma.ai/jack/v/Langenthal-Manola4A.sog';
+const kauzSource = 'https://assets.voluma.ai/jack/v/Kauz_sh2.crop.sog';
 await mkdir(root, { recursive: true });
+
+function sogBoundsCamera(meta) {
+  const unlog = (n) => Math.sign(n) * Math.expm1(Math.abs(n));
+  const min = meta.means.mins.map(unlog);
+  const max = meta.means.maxs.map(unlog);
+  const center = min.map((value, axis) => (value + max[axis]) / 2);
+  const radius = Math.max(0.1, Math.hypot(...max.map((value, axis) => value - min[axis])) / 2);
+  const target = [center[0], -center[1], -center[2]];
+  return {
+    camera: { target, position: [target[0], target[1], target[2] + radius * 2.5] },
+    visibilityPoses: {
+      interior: { target, position: [target[0], target[1], target[2] + radius * 0.35] },
+      overview: { target, position: [target[0], target[1], target[2] + radius * 2.5] },
+    },
+  };
+}
 
 function metadata(bytes) {
   for (let i = Math.max(0, bytes.length - 65557); i < bytes.length - 46; i++) {
@@ -82,12 +100,7 @@ function radHeader(bytes) {
   const bytes = cached ?? (await readFile(new URL('../assets/goose.sog', import.meta.url)));
   const meta = metadata(bytes);
   if (meta.version !== 2) throw new Error('Expected a SOG v2 capture');
-  const unlog = (n) => Math.sign(n) * Math.expm1(Math.abs(n));
-  const min = meta.means.mins.map(unlog);
-  const max = meta.means.maxs.map(unlog);
-  const center = min.map((value, axis) => (value + max[axis]) / 2);
-  const radius = Math.max(0.1, Math.hypot(...max.map((value, axis) => value - min[axis])) / 2);
-  const target = [center[0], -center[1], -center[2]];
+  const poses = sogBoundsCamera(meta);
   const manifest = {
     source: 'assets/goose.sog',
     file: 'goose.sog',
@@ -95,11 +108,7 @@ function radHeader(bytes) {
     bytes: bytes.length,
     count: meta.count,
     shBands: meta.shN?.bands ?? 0,
-    camera: { target, position: [target[0], target[1], target[2] + radius * 2.5] },
-    visibilityPoses: {
-      interior: { target, position: [target[0], target[1], target[2] + radius * 0.35] },
-      overview: { target, position: [target[0], target[1], target[2] + radius * 2.5] },
-    },
+    ...poses,
   };
   if (!cached) {
     await writeFile(new URL('goose.sog.partial', root), bytes);
@@ -178,6 +187,65 @@ function radHeader(bytes) {
   console.log(
     `hotel: ${manifest.count} leaves / ${manifest.nodes} nodes, SHA-256 ${manifest.sha256}`,
   );
+  console.log(`Camera: ${JSON.stringify(manifest.camera)}`);
+}
+
+{
+  const file = new URL('Langenthal-Manola4A.sog', root);
+  const bytes = await cachedOrDownload(file, langenthalSource, langenthalSource);
+  const meta = metadata(bytes);
+  if (meta.version !== 2) throw new Error('Expected a SOG v2 capture');
+  // Indoor climbing hall (Manola). The AABB center sits above the occupied
+  // floors; a sphere-radius offset along +Z looks at the exterior. These poses
+  // were chosen from stills: mezzanine looking into the hall, and a close
+  // outside orbit that still fills the frame.
+  const interior = {
+    position: [20, 4, 3.741006851196289],
+    target: [20, 4, 11.741006851196289],
+  };
+  const overview = {
+    position: [27.298867225646973, 8, 48],
+    target: [27.298867225646973, 4, 3.741006851196289],
+  };
+  const manifest = {
+    source: langenthalSource,
+    file: 'Langenthal-Manola4A.sog',
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    bytes: bytes.length,
+    count: meta.count,
+    shBands: meta.shN?.bands ?? 0,
+    camera: interior,
+    visibilityPoses: { interior, overview },
+  };
+  await writeFile(
+    new URL('Langenthal-Manola4A.json', root),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
+  console.log(`Langenthal-Manola4A: ${manifest.count} splats, SHA-256 ${manifest.sha256}`);
+  console.log(`Camera: ${JSON.stringify(manifest.camera)}`);
+}
+
+{
+  const file = new URL('Kauz_sh2.crop.sog', root);
+  const bytes = await cachedOrDownload(file, kauzSource, kauzSource);
+  const meta = metadata(bytes);
+  if (meta.version !== 2) throw new Error('Expected a SOG v2 capture');
+  // Visually inspected aerial views of the house, field, and surrounding
+  // vegetation. Generic bounds framing exposes only a horizon slice here.
+  const interior = { position: [0, 50, 90], target: [0, 0, 0] };
+  const overview = { position: [0, 100, 200], target: [0, 0, 0] };
+  const manifest = {
+    source: kauzSource,
+    file: 'Kauz_sh2.crop.sog',
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    bytes: bytes.length,
+    count: meta.count,
+    shBands: meta.shN?.bands ?? 0,
+    camera: interior,
+    visibilityPoses: { interior, overview },
+  };
+  await writeFile(new URL('Kauz-sh2.json', root), `${JSON.stringify(manifest, null, 2)}\n`);
+  console.log(`Kauz-sh2: ${manifest.count} splats, SHA-256 ${manifest.sha256}`);
   console.log(`Camera: ${JSON.stringify(manifest.camera)}`);
 }
 

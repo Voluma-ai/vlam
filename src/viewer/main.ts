@@ -1405,8 +1405,30 @@ async function main(): Promise<void> {
   const shEvaluation = (shEvaluationParam ?? 'auto') as NonNullable<
     SplatMeshOptions['shEvaluation']
   >;
+  const projectionStrategyParam = params.get('projectionStrategy');
+  if (
+    projectionStrategyParam !== null &&
+    projectionStrategyParam !== 'auto' &&
+    projectionStrategyParam !== 'vertex' &&
+    projectionStrategyParam !== 'compute'
+  ) {
+    throw new Error('Invalid projectionStrategy: expected auto, vertex or compute.');
+  }
+  const projectionStrategy = projectionStrategyParam ?? undefined;
+  const minPixelSizeParam = params.get('minPixelSize');
+  const minPixelSize = minPixelSizeParam === null ? undefined : Number(minPixelSizeParam);
+  const minContributionParam = params.get('minContribution');
+  const minContribution = minContributionParam === null ? undefined : Number(minContributionParam);
+  if (
+    profileParam !== null &&
+    profileParam !== 'quality' &&
+    profileParam !== 'balanced' &&
+    profileParam !== 'smooth'
+  ) {
+    throw new Error('Invalid profile: expected quality, balanced or smooth.');
+  }
   const performanceProfile: SplatPerformanceProfile | undefined =
-    profileParam === null ? undefined : profileParam === 'smooth' ? 'smooth' : 'quality';
+    profileParam === null ? undefined : profileParam;
   // ?cacheMB=N pins the decoded-chunk CPU cache cap, to reproduce a phone's
   // tighter cache on desktop (the streamed-SOG donut: the finest chunks are
   // wanted nearest the camera and are the first evicted when the cap is short).
@@ -1496,11 +1518,14 @@ async function main(): Promise<void> {
       sortMetric,
       shEvaluation,
       orientation,
+      ...(projectionStrategy === undefined ? {} : { projectionStrategy }),
       ...(performanceProfile === undefined ? {} : { performanceProfile }),
       ...(sortIntervalMs === undefined ? {} : { sortIntervalMs }),
       ...(antialias === undefined ? {} : { antialias }),
       ...(cutoff === undefined ? {} : { maxStdDev: cutoff }),
       ...(minSplatSizePx === undefined ? {} : { minSplatSizePx }),
+      ...(minPixelSize === undefined ? {} : { minPixelSize }),
+      ...(minContribution === undefined ? {} : { minContribution }),
       ...(params.get('poolFloat') === 'float16' ? { poolFloatTextures: 'float16' as const } : {}),
     };
   };

@@ -26,6 +26,7 @@ directory name and `package.json` disagree, trust `package.json`.
 | `npm run build` | site + library |
 | `npm test` | Vitest unit tests (dev-only; not shipped in the package) |
 | `npm run test:browser` | Headless Chromium real-splat render checks for WebGPU and forced WebGL2 (run `npx playwright install chromium` once) |
+| `npm run test:browser:hardware` | Native-GPU projection/SH route; fails without a non-software WebGPU adapter and attaches browser, adapter/driver, and viewport metadata. It uses `/usr/bin/chromium` here; set `VLAM_HARDWARE_CHROMIUM` to the installed desktop Chromium path on another host. Run it separately from SwiftShader CI. |
 
 ## Architecture: the 30-second tour
 
@@ -222,7 +223,7 @@ error messages, and comments stay strictly professional.
 | Atomics in TSL | `storage(attr, 'uint', n).toAtomic()`; `atomicAdd(ptr.element(i), v)` returns the old value and can be captured directly. |
 | TSL expressions across branches | Materialize shared workgroup addresses with `.toVar()` before divergent branches. Otherwise TSL can cache an expression at its first use inside `If(valid)`, leaving inactive lanes with an uninitialized address during unconditional cleanup. In the radix sorter, empty groups then cleared group zero's masks and duplicated splat indices during loading. |
 | Dynamic dispatch | `renderer.compute(node, dispatchSize)` exists for dynamic counts; kernel `count` is otherwise baked at build time. |
-| Portable storage-binding count | The unified projection and dense-list compaction are separate dispatches. Gather packs isotropic mix/radius into reserved covariance lanes, keeping projection at 7 storage bindings and compaction at 3 under WebGPU's portable baseline of 8. Do not fuse them without rechecking `maxStorageBuffersPerShaderStage`. |
+| Portable storage-binding count | The unified projection and dense-list compaction are separate dispatches. Gather packs isotropic mix/radius into reserved covariance lanes, keeping projection at 7 storage bindings and compaction at 3 under WebGPU's portable baseline of 8. Standalone compute projection packs the SH-resolved RGBA8 color into the reserved `parameters.z` lane rather than adding a binding, except when `ShComputeCache` supplies color, in which case the projector skips SH and the vertex stage samples the cache texture. Do not fuse the passes without rechecking `maxStorageBuffersPerShaderStage`. |
 | `splatIndex` is float32 | Exact for indices ≤ 2²⁴ (~16.7M splats). Fine today; revisit for larger scenes. |
 | Output color space | Source formats store display-ready sRGB colors; the splat material converts them to the renderer's linear working space in-shader (`colorSpaceToWorking`, see `core/splat-mesh.ts`). The renderer keeps the default `SRGBColorSpace` output, so standard meshes share the canvas untouched. |
 | Hidden/embedded previews report 1 FPS | An embedded browser pane often reports `visibilityState: "hidden"`, so rAF is throttled (often fully paused). Drive `splats.update()` + `renderer.render()` manually and time `update()` synchronously; `PerformanceObserver('longtask')` is polluted by background-tab pauses, so it over-reports. |

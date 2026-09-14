@@ -9,6 +9,16 @@ const siteDir = dirname(fileURLToPath(import.meta.url));
 const sidebarPath = join(siteDir, '../api/typedoc-sidebar.json');
 const httpsCertificate = localHttpsCertificate();
 
+/** Lets a local benchmark run beside another developer server without killing it. */
+function localDevelopmentPort(): number {
+  const raw = process.env.VLAM_DEV_PORT;
+  if (raw === undefined) return 5170;
+  if (!/^\d+$/.test(raw)) throw new Error('VLAM_DEV_PORT must be an integer TCP port.');
+  const port = Number(raw);
+  if (port < 1 || port > 65535) throw new Error('VLAM_DEV_PORT must be between 1 and 65535.');
+  return port;
+}
+
 type SidebarItem = {
   text: string;
   link?: string;
@@ -41,7 +51,7 @@ export default defineConfig({
   vite: {
     plugins: [benchmarkDevPlugin(), viewerDevPlugin()],
     server: {
-      port: 5170,
+      port: localDevelopmentPort(),
       strictPort: true,
       host: true,
       ...(httpsCertificate ? { https: httpsCertificate } : {}),

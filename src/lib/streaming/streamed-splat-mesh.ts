@@ -4472,7 +4472,11 @@ const _drawSize = new THREE.Vector2();
 /** A `SplatData` view over a contiguous run `[j, j + count)` of a plan's packed
  * splats, so one pool write covers a whole run of slots. Zero-copy subarrays. */
 function shWordsPerSplat(bands: 1 | 2 | 3): number {
-  return Math.ceil((3 * shCoefficientCount(bands)) / 4);
+  // Each packed uint stores one RGB coefficient. The RGBA texture groups
+  // provide four words per *texel*, but the plan buffer has no group padding
+  // between splats. Rounding here shifted every splat after the first for
+  // band 2/3 page-table moves and appends.
+  return shCoefficientCount(bands);
 }
 
 function slicePlanRun(splats: PlanSplats, j: number, count: number): PlanSplats {

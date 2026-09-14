@@ -156,6 +156,49 @@ describe('ComputeSorter', () => {
     }
   });
 
+  it('shrinks histogram work to the GPU-visible count on the projection path', () => {
+    const capacity = 1 << 22;
+    const compute = vi.fn();
+    const renderer = { compute } as unknown as THREE.WebGPURenderer;
+    const width = 2048;
+    const height = Math.ceil(capacity / width);
+    sorter = new ComputeSorter({
+      renderer,
+      capacity,
+      centersTexture: new THREE.DataTexture(
+        new Float32Array(width * height * 4),
+        width,
+        height,
+        THREE.RGBAFormat,
+        THREE.FloatType,
+      ),
+      dataTextureWidth: width,
+      splatIndexAttribute: new THREE.StorageInstancedBufferAttribute(new Float32Array(capacity), 1),
+      sourceIndexAttribute: new THREE.StorageBufferAttribute(new Uint32Array(capacity), 1),
+      indirectDispatchAttribute: new THREE.IndirectStorageBufferAttribute(new Uint32Array(3), 1),
+    });
+    sorter.setVisibleCountHint(300_000);
+    sorter.sort(new THREE.Matrix4(), capacity, new THREE.Sphere(new THREE.Vector3(), 1));
+    const internals = internalsOf(sorter);
+    const buckets = 1 << 19;
+    expect(internals.clearPass.count).toBe(buckets);
+    expect(internals.addOffsetsPass.count).toBe(buckets);
+    expect(internals.scanBlocksPass.count).toBe(buckets / BLOCK_SIZE);
+    expect(internals.bucketMax.value).toBe(buckets - 1);
+    expect(internals.clearPass.count).toBeGreaterThanOrEqual(300_000);
+  });
+
+  it('keeps capacity-sized buckets on the streaming path even with a visible-count hint', () => {
+    const capacity = 1 << 20;
+    sorter = makeSorter(vi.fn(), capacity);
+    sorter.setVisibleCountHint(300_000);
+    sorter.sort(new THREE.Matrix4(), capacity, new THREE.Sphere(new THREE.Vector3(), 1));
+    const internals = internalsOf(sorter);
+    expect(internals.clearPass.count).toBe(capacity);
+    expect(internals.addOffsetsPass.count).toBe(capacity);
+    expect(internals.bucketMax.value).toBe(capacity - 1);
+  });
+
   it('treats an empty sort as done without dispatching', () => {
     const compute = vi.fn();
     sorter = makeSorter(compute);

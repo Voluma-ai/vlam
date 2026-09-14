@@ -11,6 +11,9 @@ function source(
     maxStdDev?: number;
     minSplatSizePx?: number;
     antialias?: boolean;
+    performanceProfile?: 'quality' | 'balanced' | 'smooth';
+    minPixelSize?: number;
+    minContribution?: number;
     lodAlpha?: boolean;
     sh?: boolean;
     storageMode?: 'editable' | 'render-only';
@@ -69,6 +72,16 @@ describe('supportsUnifiedSplatMesh', () => {
 });
 
 describe('UnifiedSplatMesh', () => {
+  it('accepts the library auto default and keeps unified rendering on vertex projection', () => {
+    const unified = new UnifiedSplatMesh(mockRenderer(), 1);
+    expect(unified.projectionStrategy).toBe('auto');
+    expect(unified.projectionStrategyStatus).toEqual({
+      effective: 'vertex',
+      reason: 'auto-unified-source',
+    });
+    unified.dispose();
+  });
+
   it('rejects render-only sources before mutating registration state', () => {
     const renderer = mockRenderer();
     const mesh = source({ storageMode: 'render-only' });
@@ -106,6 +119,44 @@ describe('UnifiedSplatMesh', () => {
     );
     unified.dispose();
     mesh.dispose();
+  });
+
+  it('applies balanced contribution culls to the shared vertex and compute paths', () => {
+    const renderer = mockRenderer();
+    const mesh = source({ performanceProfile: 'balanced' });
+    const computeMesh = source({ performanceProfile: 'balanced' });
+    const vertex = new UnifiedSplatMesh(renderer, 1, { performanceProfile: 'balanced' });
+    const compute = new UnifiedSplatMesh(renderer, 1, {
+      performanceProfile: 'balanced',
+      projectionStrategy: 'compute',
+    });
+
+    vertex.addSource(mesh);
+    compute.addSource(computeMesh);
+    expect(vertex as unknown as { minPixelSize: number; minContribution: number }).toMatchObject({
+      minPixelSize: 2,
+      minContribution: 3,
+    });
+    expect(compute as unknown as { minPixelSize: number; minContribution: number }).toMatchObject({
+      minPixelSize: 2,
+      minContribution: 3,
+    });
+
+    vertex.dispose();
+    compute.dispose();
+    mesh.dispose();
+    computeMesh.dispose();
+  });
+
+  it('rejects a source whose contribution culls differ from the unified draw', () => {
+    const renderer = mockRenderer();
+    const unified = new UnifiedSplatMesh(renderer, 1, { performanceProfile: 'balanced' });
+    const quality = source({ performanceProfile: 'quality' });
+
+    expect(() => unified.addSource(quality)).toThrow(/contribution-culling/);
+
+    unified.dispose();
+    quality.dispose();
   });
 
   it('gathers registered source pools into one draw range', () => {

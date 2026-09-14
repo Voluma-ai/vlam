@@ -63,6 +63,7 @@ const HTML_PAGES: Readonly<Record<string, string>> = {
   '/memory-benchmark.html': 'src/viewer/memory-benchmark.html',
   '/spark-benchmark.html': 'src/viewer/spark-benchmark.html',
   '/vlam-benchmark.html': 'src/viewer/vlam-benchmark.html',
+  '/playcanvas-benchmark.html': 'src/viewer/playcanvas-benchmark.html',
   ...Object.fromEntries(
     EXAMPLE_APPS.flatMap((slug) => {
       const file = `example-apps/${slug}/index.html`;

@@ -46,7 +46,11 @@ Rules of the road:
   whole lowest-`priority` sources are dropped for that frame -
   `droppedSourceCount` / `droppedSplatCount` report it.
 - All sources must agree on `srgbOutput` (a constructor option),
-  `maxStdDev`, and `antialias`.
+  `maxStdDev`, `antialias`, and the resolved `minPixelSize` /
+  `minContribution` contribution culls. `UnifiedSplatMesh` defaults to the
+  same balanced device profile as `SplatMesh`; use matching
+  `performanceProfile: 'quality'` options on the unified mesh and its sources
+  for full-detail rendering.
 - `unified.update(camera)` replaces the per-mesh `update` calls; do not also
   call `source.update()` yourself.
 

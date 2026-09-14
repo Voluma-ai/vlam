@@ -56,7 +56,7 @@ Three settings are device-derived unless you override them:
 
 **The splat budget**, `resolveSplatBudget()`. How many splats may be active. A hardcoded number that suits your workstation is the classic way to make a phone worse.
 
-**The performance profile**, `resolveSplatPerformanceProfile()` picks `'smooth'` on mobile and fill-constrained desktops, `'quality'` on discrete desktop, which controls how aggressively faint splats are culled.
+**The performance profile**, `resolveSplatPerformanceProfile()` picks `'smooth'` on mobile and fill-constrained desktops, and SH-preserving `'balanced'` culls on other desktops. Pass `'quality'` for the full-detail path.
 
 **Coverage and rendering defaults**, device-derived, and generally not worth touching until you have measured a specific problem. The public demo's performance mode (on by default on phones and on integrated / fallback desktops) is the exception: it uses a 3σ Gaussian cutoff and no renderer MSAA, because 4σ plus MSAA was what made a 600k scene on an iPhone 15 Pro miss vsync during a hard orbit. A MacBook Air M3 and a Galaxy S24 Ultra keep that same SD default: goose on the Ultra is locked 60 in SD (p99 60, missed 0) and still ~58 rAF in HD, and streamed million-splat scenes already miss 60 Hz before HD on both. `?maxStdDev=` and `?rendererAntialias=` pin those for A/B.
 

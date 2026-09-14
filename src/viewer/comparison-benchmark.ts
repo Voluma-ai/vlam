@@ -4,9 +4,11 @@ import { RenderBenchmarkSession } from './render-benchmark-session';
 import {
   applyComparisonCamera,
   comparisonConfig,
+  comparisonMotionElapsedMs,
   comparisonSuite,
   comparisonSuiteOptions,
   comparisonSuiteUrl,
+  comparisonWarmupMs,
   comparisonUrl,
   summarize,
   type ComparisonPose,
@@ -101,7 +103,7 @@ async function run(): Promise<void> {
     config.position && config.target
       ? { position: config.position, target: config.target }
       : (selectedFixedPose ?? manifest.camera);
-  for (const engine of ['spark', 'vlam'] as const) {
+  for (const engine of ['spark', 'vlam', 'playcanvas'] as const) {
     const link = document.createElement('a');
     link.textContent = `Open ${engine.toUpperCase()} at this camera`;
     const standalone = new URLSearchParams(params);
@@ -139,14 +141,19 @@ async function run(): Promise<void> {
         ? await (
             await import('./comparison-spark')
           ).createComparisonSpark(config, `/benchmark-assets/${manifest.file}`)
-        : await (
-            await import('./comparison-vlam')
-          ).createComparisonVlam(config, `/benchmark-assets/${manifest.file}`);
+        : config.engine === 'playcanvas'
+          ? await (
+              await import('./comparison-playcanvas')
+            ).createComparisonPlayCanvas(config, `/benchmark-assets/${manifest.file}`)
+          : await (
+              await import('./comparison-vlam')
+            ).createComparisonVlam(config, `/benchmark-assets/${manifest.file}`);
     const active = adapter;
     view.replaceChildren(active.canvas);
     status.textContent = `${suiteLabel}Waiting for the initial sort…`;
     await active.settle(camera);
-    const session = new RenderBenchmarkSession(config.warmup * 1000, config.seconds * 1000);
+    const warmupMs = comparisonWarmupMs(config.warmup * 1000, config.mode);
+    const session = new RenderBenchmarkSession(warmupMs, config.seconds * 1000);
     const cpu: number[] = [],
       draws: number[] = [],
       activeCounts: number[] = [];
@@ -177,7 +184,7 @@ async function run(): Promise<void> {
             applyComparisonCamera(
               camera,
               pose,
-              Math.max(0, state.elapsedMs - config.warmup * 1000),
+              comparisonMotionElapsedMs(state.elapsedMs, warmupMs, config.mode),
               config.mode,
             );
             const before = state.sampling ? active.diagnostics?.() : undefined;
@@ -271,6 +278,7 @@ async function run(): Promise<void> {
         supported: gpu.supported,
         coverage: gpu.coverage,
         rejected: gpu.rejected ?? 0,
+        accounting: gpu.accounting ?? null,
         render: summarize(gpu.render.map((sample) => sample.ms)),
         compute: summarize(gpu.compute.map((sample) => sample.ms)),
         pairedTotal: summarize(pairedGpu.map((sample) => sample.ms)),
@@ -280,6 +288,8 @@ async function run(): Promise<void> {
         cpuUpdateAndRenderMs: cpu,
         gpuRender: [...gpu.render],
         gpuCompute: [...gpu.compute],
+        gpuRenderPasses: [...(gpu.passes?.render ?? [])],
+        gpuComputePasses: [...(gpu.passes?.compute ?? [])],
         gpuPairedTotal: pairedGpu,
         dispatchFrames,
       },

@@ -128,6 +128,15 @@ describe('UnifiedSplatMesh under XR presentation', () => {
 
     expect(unified.projectionStrategy).toBe('compute');
     expect(unified.effectiveProjectionStrategy).toBe('vertex');
+    expect(unified.projectionStrategyStatus).toEqual({ effective: 'vertex', reason: 'xr' });
+
+    (renderer.xr as unknown as { isPresenting: boolean }).isPresenting = false;
+    unified.update(new THREE.PerspectiveCamera());
+    expect(unified.effectiveProjectionStrategy).toBe('compute');
+    expect(unified.projectionStrategyStatus).toEqual({
+      effective: 'compute',
+      reason: 'explicit-compute',
+    });
     unified.dispose();
     mesh.dispose();
   });

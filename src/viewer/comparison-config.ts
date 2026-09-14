@@ -1,7 +1,14 @@
 import { PerspectiveCamera, Vector3 } from 'three';
 
 /** Cached captures the standalone comparison pages can load. */
-export const COMPARISON_SCENES = ['Tempel', 'goose', 'hotel', 'lcc'] as const;
+export const COMPARISON_SCENES = [
+  'Tempel',
+  'goose',
+  'hotel',
+  'lcc',
+  'Langenthal-Manola4A',
+  'Kauz-sh2',
+] as const;
 export type ComparisonScene = (typeof COMPARISON_SCENES)[number];
 
 /** How the comparison adapters open a cached asset URL. */
@@ -11,20 +18,23 @@ export function comparisonAssetKind(url: string): 'lcc2' | 'rad' | 'file' {
   return 'file';
 }
 
-/** Parameters shared by the two standalone comparison pages. */
+/** Parameters shared by the standalone comparison pages. */
 export interface ComparisonConfig {
-  engine: 'spark' | 'vlam';
+  engine: 'spark' | 'vlam' | 'playcanvas';
   scene: ComparisonScene;
   preset: 'supplied' | 'proposed' | 'controlled' | 'reference' | 'defaults' | 'matched';
   mode: 'stationary' | 'orbit' | 'rotate' | 'translate' | 'settle';
   shEvaluation: 'auto' | 'vertex' | 'compute';
-  projectionStrategy: 'vertex' | 'compute';
+  projectionStrategy: 'auto' | 'vertex' | 'compute';
   visibilityPose: 'interior' | 'overview' | undefined;
   sortMetric: 'depth' | 'radial' | undefined;
   sortStrategy: 'counting' | 'radix' | 'exact' | 'worker' | undefined;
   /** VLAM-only override; undefined keeps the library's adaptive cadence. */
   sortIntervalMs: number | undefined;
   maxStdDev: number | undefined;
+  /** VLAM contribution culls; undefined follows the mesh/profile default. */
+  minPixelSize: number | undefined;
+  minContribution: number | undefined;
   /** VLAM only: `webgpu` (default) or forced `webgl`. Spark is always WebGL2. */
   backend: 'webgpu' | 'webgl';
   width: number;
@@ -80,7 +90,7 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
     backend: ['webgpu', 'webgl'],
     mode: ['stationary', 'orbit', 'rotate', 'translate', 'settle'],
     shEvaluation: ['auto', 'vertex', 'compute'],
-    projectionStrategy: ['vertex', 'compute'],
+    projectionStrategy: ['auto', 'vertex', 'compute'],
     visibilityPose: ['interior', 'overview'],
     sortMetric: ['depth', 'radial'],
     sortStrategy: ['counting', 'radix', 'exact', 'worker'],
@@ -89,10 +99,16 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
     if (params.has(key) && !(allowed as readonly string[]).includes(params.get(key)!))
       throw new Error(`Invalid ${key}.`);
   }
-  const engine = path.includes('spark-benchmark') ? 'spark' : 'vlam';
+  const engine = path.includes('spark-benchmark')
+    ? 'spark'
+    : path.includes('playcanvas-benchmark')
+      ? 'playcanvas'
+      : 'vlam';
   // Spark's comparison page is WebGL2-only; rejecting webgpu avoids a silent no-op.
   if (engine === 'spark' && params.get('backend') === 'webgpu')
     throw new Error('Spark comparison is WebGL2-only; omit backend or use backend=webgl.');
+  if (engine === 'playcanvas' && params.get('backend') === 'webgl')
+    throw new Error('PlayCanvas comparison is WebGPU-only; omit backend or use backend=webgpu.');
   const backend = engine === 'spark' || params.get('backend') === 'webgl' ? 'webgl' : 'webgpu';
   const preset = (params.get('preset') ?? 'proposed') as ComparisonConfig['preset'];
   return {
@@ -102,12 +118,14 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
     mode: (params.get('mode') ?? 'stationary') as ComparisonConfig['mode'],
     shEvaluation: (params.get('shEvaluation') ?? 'auto') as ComparisonConfig['shEvaluation'],
     projectionStrategy: (params.get('projectionStrategy') ??
-      'vertex') as ComparisonConfig['projectionStrategy'],
+      'auto') as ComparisonConfig['projectionStrategy'],
     visibilityPose: params.get('visibilityPose') as ComparisonConfig['visibilityPose'],
     sortMetric: params.get('sortMetric') as ComparisonConfig['sortMetric'],
     sortStrategy: params.get('sortStrategy') as ComparisonConfig['sortStrategy'],
     sortIntervalMs: nonNegative('sortIntervalMs', 60_000),
     maxStdDev: params.has('maxStdDev') ? positive('maxStdDev', 3, 8) : undefined,
+    minPixelSize: nonNegative('minPixelSize', 64),
+    minContribution: nonNegative('minContribution', 64),
     backend,
     width: Math.max(1, Math.floor(positive('width', 1280, 4096))),
     height: Math.max(1, Math.floor(positive('height', 720, 4096))),
@@ -131,6 +149,28 @@ export interface ComparisonPose {
   target: [number, number, number];
 }
 
+/** Duration of the orbit before a `settle` run starts its static sample. */
+export const COMPARISON_SETTLE_MOTION_MS = 5_000;
+
+/** Ensure a move-to-settle warm-up cannot begin sampling while the camera moves. */
+export function comparisonWarmupMs(warmupMs: number, mode: ComparisonConfig['mode']): number {
+  return mode === 'settle' ? Math.max(warmupMs, COMPARISON_SETTLE_MOTION_MS) : warmupMs;
+}
+
+/**
+ * Keeps ordinary motion out of warm-up while allowing `settle` to finish before
+ * sampling begins. A move-to-settle run is otherwise just an orbit that starts
+ * moving at the measurement boundary, which reverses the scenario it claims to
+ * measure.
+ */
+export function comparisonMotionElapsedMs(
+  elapsedMs: number,
+  warmupMs: number,
+  mode: ComparisonConfig['mode'],
+): number {
+  return mode === 'settle' ? elapsedMs : Math.max(0, elapsedMs - warmupMs);
+}
+
 /** Apply an identical, elapsed-time orbit independent of renderer frame rate. */
 export function applyComparisonCamera(
   camera: PerspectiveCamera,
@@ -141,7 +181,7 @@ export function applyComparisonCamera(
   const target = new Vector3(...pose.target);
   const offset = new Vector3(...pose.position).sub(target);
   const mode = typeof motion === 'boolean' ? (motion ? 'orbit' : 'stationary') : motion;
-  const time = mode === 'settle' ? Math.min(elapsedMs, 5000) : elapsedMs;
+  const time = mode === 'settle' ? Math.min(elapsedMs, COMPARISON_SETTLE_MOTION_MS) : elapsedMs;
   if (mode === 'orbit' || mode === 'settle')
     offset.applyAxisAngle(new Vector3(0, 1, 0), time * 0.00012);
   camera.position.copy(target).add(offset);

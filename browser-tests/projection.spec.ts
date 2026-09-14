@@ -34,6 +34,13 @@ test('compute projection has exact dense coverage and indirect arguments', async
       pixel: number[];
     };
     gooseParity: { differentChannels: number; maxChannelDifference: number };
+    shParity: {
+      base: number[][];
+      vertex: number[][];
+      computeCache: number[][];
+      cacheDispatches: number;
+      projectorPackedColor: boolean | null;
+    };
     picking: { frontZ: number | null; backZ: number | null; displayChangedChannels: number };
     renderOnlyPicking: { released: boolean; backZ: number | null } | null;
   };
@@ -51,6 +58,20 @@ test('compute projection has exact dense coverage and indirect arguments', async
   // pixel-equivalent: only a few hundred of 3.7M channels may differ by ≤2.
   expect(value.gooseParity.differentChannels).toBeLessThanOrEqual(512);
   expect(value.gooseParity.maxChannelDifference).toBeLessThanOrEqual(2);
+  expect(value.shParity.cacheDispatches).toBeGreaterThanOrEqual(2);
+  expect(value.shParity.projectorPackedColor).toBe(false);
+  for (let pose = 0; pose < 2; pose++) {
+    const base = value.shParity.base[pose]!;
+    const vertex = value.shParity.vertex[pose]!;
+    const cached = value.shParity.computeCache[pose]!;
+    expect(vertex[0]! - base[0]!).toBeGreaterThan(30);
+    for (let channel = 0; channel < 4; channel++) {
+      expect(Math.abs(cached[channel]! - vertex[channel]!)).toBeLessThanOrEqual(3);
+    }
+  }
+  expect(Math.abs(value.shParity.vertex[0]![0]! - value.shParity.vertex[1]![0]!)).toBeGreaterThan(
+    5,
+  );
   expect(value.picking.frontZ).toBeCloseTo(0, 3);
   expect(value.picking.backZ).toBeCloseTo(3, 3);
   expect(value.picking.displayChangedChannels).toBe(0);

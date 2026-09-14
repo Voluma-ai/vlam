@@ -19,7 +19,65 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Added
+
+- `ShComputeCache` stays active under `projectionStrategy: 'compute'`. The
+  projector skips SH when the cache will supply color, and the vertex stage
+  samples the 4 B/splat RGBA8 texture. On Langenthal-Manola4A (8.72M SH3,
+  RTX 3090) adaptive compute+cache cuts overview paired GPU 18.62 → 11.10 ms
+  and restores vsync (frame p95 16.80); interior is 5.23 ms against PlayCanvas
+  5.98 ms cull-free. `sortIntervalMs=0` still refreshes SH every frame. See
+  `docs/render-benchmark.md`.
+- `projectionStrategy: 'auto'` is now the library and demo default. It makes a
+  one-time, diagnostics-visible compute choice only for the measured large,
+  static SH NVIDIA Ampere cohort within a 1 GiB peak additional-allocation budget;
+  unknown and unsupported paths retain vertex projection. The default desktop
+  `balanced` profile applies PlayCanvas-style 2 px / 3 contribution culls
+  without suppressing SH; `quality` and explicit `vertex` remain full-detail
+  escapes.
+- Experimental compute projection now evaluates SH once per surviving splat,
+  packs the resolved RGBA8 color into the projection cache, and shrinks
+  counting-sort histogram work to the GPU-visible count. Opt-in
+  `minPixelSize` / `minContribution` culls match PlayCanvas independently of
+  `performanceProfile: 'smooth'`. The comparison harness registers the
+  8.72M-splat Langenthal-Manola4A capture and a PlayCanvas 2.22.1 adapter
+  that runs on WebGPU with GPU-sort and reports `GpuProfiler` pass timings.
+  An indoor RTX 3090 A/B cut paired GPU 39% in the hall and missed vsync on
+  an all-visible overview before cache/cull policy. An `sh=0` split
+  attributes the overview regression entirely to per-frame SH in the
+  projector; see `docs/render-benchmark.md`.
+- The comparison corpus now reproducibly caches the remotely hosted
+  1,827,467-splat SH2 Kauz SOG, with pinned SHA-256 and visually inspected
+  close/elevated cameras. Its five-run RTX 3090 result documents a compute
+  median win on the elevated view but projector/sorter tails that keep the
+  automatic policy conservative.
+- WebGPU comparison archives now retain each resolved render and compute
+  submission alongside their per-frame totals, so future tail work can be
+  attributed without adding asynchronous readback to the measured loop.
+
 ### Fixed
+
+- Automatic projection policy memory now includes the projected counting
+  sorter's histogram/bucket scratch and its first-upload CPU mirrors. Unified
+  rendering applies the same resolved contribution culls as its sources in
+  both vertex and compute projection paths, and reports `vertex / xr` while
+  an explicit compute path is suspended for XR.
+- Camera/view SH-cache refreshes under compute projection now dispatch only
+  the projector's GPU-visible survivor list; initial and content refreshes
+  still initialize the complete pool. The RTX 3090 Langenthal overview-orbit
+  p95 fell from 14.07 to 7.80 ms paired GPU in five alternating reference runs.
+- Compute projection now reuses the indirect visible list for an unchanged
+  model/view, projection, viewport, resident content, and depth-of-field
+  state, rather than re-projecting and falling back to a vertex sort. The
+  native hardware probe covers consecutive stationary updates.
+- PlayCanvas comparison timing now attributes `GpuProfiler` results by the
+  submitted `device.renderVersion`, preserving equal-duration GPU frames. The
+  harness drains pending timestamp reports after sampling and archives explicit
+  submitted/resolved/rejected/pending coverage instead of inferring a new frame
+  from a changed timing value.
+- `mode=settle` in the comparison harness now completes its five-second orbit
+  during warm-up (extending shorter warm-ups as needed), rather than starting
+  that movement at the first timed frame.
 
 - Classic LCC startup now stages the whole coarse scene for broad views when
   it fits comfortably in the budget, so the first revealed frame does not omit
@@ -39,7 +97,6 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   with a stationary camera, merged sources keep source IDs synchronized with
   their center snapshots, and unified sources continue uploading when they
   delegate sorting.
-
 - LCC2 and streamed SOG publish independent region swaps instead of entering
   RAD's global quality gate, allowing distant coverage and lower-detail cuts
   after navigation or budget changes. Missing LCC2 regions request pinned
