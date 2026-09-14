@@ -151,6 +151,31 @@ export function frontierView(
   };
 }
 
+/** Shared foveated node-size calculation for the heap and threshold cuts. */
+function pixelScaleOf(data: SplatData, local: number, view: FrontierView): number {
+  const pos = data.positions;
+  const b = local * 3;
+  const dx = (pos[b] as number) - view.origin.x;
+  const dy = (pos[b + 1] as number) - view.origin.y;
+  const dz = (pos[b + 2] as number) - view.origin.z;
+  const d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-6;
+  const scale = (data.radTree!.size[local] as number) / d;
+  const forward = view.forward;
+  if (!forward) return scale;
+  // Spark's ramp weights off-cone content but never removes its coarse cover.
+  const forwardDot = dx * forward.x + dy * forward.y + dz * forward.z;
+  if (forwardDot <= 0) return scale * view.behindFoveate;
+  const dot = forwardDot / d;
+  if (dot >= view.coneDot0) return scale;
+  if (dot >= view.coneDot) {
+    const t = (dot - view.coneDot) / (view.coneDot0 - view.coneDot);
+    return scale * (view.coneFoveate + (1 - view.coneFoveate) * t);
+  }
+  return (
+    scale * (view.behindFoveate + (view.coneFoveate - view.behindFoveate) * (dot / view.coneDot))
+  );
+}
+
 /**
  * Spark's priority-frontier tree traversal - the O(frontier) selection.
  *
@@ -199,15 +224,6 @@ export function traverseFrontier(
   const picks = new Map<number, number[]>();
   const touched = new Map<number, number>();
   const heap = new MaxHeap();
-  const camX = view.origin.x;
-  const camY = view.origin.y;
-  const camZ = view.origin.z;
-  const forward = view.forward;
-  const fwdX = forward?.x ?? 0;
-  const fwdY = forward?.y ?? 0;
-  const fwdZ = forward?.z ?? 0;
-  const foveated = forward !== undefined;
-  const { coneDot0, coneDot, coneFoveate, behindFoveate } = view;
 
   /** Reads a node's world size + center; null if its chunk is not cached. */
   const nodeAt = (global: number): { data: SplatData; local: number } | null => {
@@ -226,29 +242,6 @@ export function traverseFrontier(
     picked.push(local);
   };
 
-  /** Foveated on-screen size of the node at `local` in `data`. */
-  const pixelScaleOf = (data: SplatData, local: number): number => {
-    const pos = data.positions;
-    const b = local * 3;
-    const dx = (pos[b] as number) - camX;
-    const dy = (pos[b + 1] as number) - camY;
-    const dz = (pos[b + 2] as number) - camZ;
-    const d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-6;
-    const scale = (data.radTree!.size[local] as number) / d;
-    if (!foveated) return scale;
-    // Port of Spark's `new_compute_pixel_scale`: full weight inside `coneFov0`,
-    // ramping to `coneFoveate` at `coneFov`, then to `behindFoveate` behind.
-    const forwardDot = dx * fwdX + dy * fwdY + dz * fwdZ;
-    if (forwardDot <= 0) return scale * behindFoveate;
-    const dot = forwardDot / d;
-    if (dot >= coneDot0) return scale;
-    if (dot >= coneDot) {
-      const t = (dot - coneDot) / (coneDot0 - coneDot);
-      return scale * (coneFoveate + (1 - coneFoveate) * t);
-    }
-    return scale * (behindFoveate + (coneFoveate - behindFoveate) * (dot / coneDot));
-  };
-
   // Seed the roots. `numSplats` tracks heap + output, exactly as Spark's
   // `num_splats` does, so the budget can be checked before each descent.
   let numSplats = 0;
@@ -258,7 +251,7 @@ export function traverseFrontier(
     const node = nodeAt(r);
     if (!node) continue;
     seeded.add(r);
-    heap.push(r, pixelScaleOf(node.data, node.local));
+    heap.push(r, pixelScaleOf(node.data, node.local, view));
     numSplats++;
   }
 
@@ -314,7 +307,7 @@ export function traverseFrontier(
     for (let c = 0; c < childCount; c++) {
       const child = childStart + c;
       const childNode = nodeAt(child)!; // the whole range is cached
-      const childScale = pixelScaleOf(childNode.data, childNode.local);
+      const childScale = pixelScaleOf(childNode.data, childNode.local, view);
       // Children already fine enough go straight out; only the ones that may
       // still refine cost a heap slot.
       if (childScale <= limit) {
@@ -362,6 +355,94 @@ export function traverseFrontier(
     count += picked.length;
   }
   return { selection, count, touched, budgetClamped, refinable };
+}
+
+/** A bounded depth-first cut; falls back to the heap before any over-cap cut escapes. */
+export function traverseFrontierBounded(
+  chunkMap: ReadonlyMap<number, SplatData>,
+  roots: readonly number[],
+  chunkSize: number,
+  view: FrontierView,
+  threshold: number,
+  maxSplats: number,
+  stack: number[] = [],
+): ReturnType<typeof traverseFrontier> & { fallback: boolean; rootCoverInfeasible: boolean } {
+  const fallback = (rootCoverInfeasible: boolean) => ({
+    ...traverseFrontier(chunkMap, roots, chunkSize, view, threshold, maxSplats),
+    fallback: true,
+    rootCoverInfeasible,
+  });
+  if (!Number.isSafeInteger(maxSplats) || maxSplats < 1) return fallback(true);
+  stack.length = 0;
+  const seeded = new Set<number>();
+  for (const root of roots) {
+    if (seeded.has(root)) continue;
+    if (!chunkMap.get(Math.floor(root / chunkSize))?.radTree) continue;
+    seeded.add(root);
+    stack.push(root);
+  }
+  if (stack.length > maxSplats) {
+    stack.length = 0;
+    return fallback(true);
+  }
+
+  const picks = new Map<number, number[]>();
+  const touched = new Map<number, number>();
+  let count = stack.length; // selected outputs plus unresolved stack nodes
+  let refinable = false;
+  while (stack.length > 0) {
+    const global = stack.pop() as number;
+    const file = Math.floor(global / chunkSize);
+    const data = chunkMap.get(file);
+    const local = global - file * chunkSize;
+    if (!data?.radTree || local >= data.count) {
+      count--;
+      continue;
+    }
+    const tree = data.radTree;
+    const childCount = tree.childCount[local] as number;
+    const scale = pixelScaleOf(data, local, view);
+    let allCached = true;
+    if (childCount > 0) {
+      const childStart = tree.childStart[local] as number;
+      const firstChunk = Math.floor(childStart / chunkSize);
+      const lastChunk = Math.floor((childStart + childCount - 1) / chunkSize);
+      for (let cc = firstChunk; cc <= lastChunk; cc++) {
+        if (chunkMap.has(cc)) continue;
+        allCached = false;
+        if (scale > threshold && scale > (touched.get(cc) ?? 0)) touched.set(cc, scale);
+      }
+    }
+    if (childCount === 0 || scale <= threshold || !allCached) {
+      let selected = picks.get(file);
+      if (!selected) {
+        selected = [];
+        picks.set(file, selected);
+      }
+      selected.push(local);
+      if (childCount > 0 && allCached) refinable = true;
+      continue;
+    }
+    const nextCount = count - 1 + childCount;
+    if (nextCount > maxSplats) {
+      stack.length = 0;
+      return fallback(false);
+    }
+    count = nextCount;
+    const childStart = tree.childStart[local] as number;
+    for (let child = childStart + childCount - 1; child >= childStart; child--) stack.push(child);
+  }
+  const selection: FrontierSelection = new Map();
+  for (const [file, locals] of picks) selection.set(file, Uint32Array.from(locals));
+  return {
+    selection,
+    count,
+    touched,
+    budgetClamped: false,
+    refinable,
+    fallback: false,
+    rootCoverInfeasible: false,
+  };
 }
 
 /** Minimal binary max-heap of (global, priority), for the frontier traversal. */

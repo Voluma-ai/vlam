@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" />
+  <title>Provoking vertex state probe</title>
+  <canvas id="canvas" width="64" height="64"></canvas>
+  <output data-testid="result"></output>
+  <script type="module">
+    import { ProvokingVertexBenchmark } from './provoking-vertex-benchmark';
+
+    const output = document.querySelector('[data-testid="result"]');
+    const gl = document.querySelector('#canvas').getContext('webgl2', { antialias: false });
+    if (!gl) throw new Error('WebGL2 is unavailable.');
+    const shader = (type, source) => {
+      const value = gl.createShader(type);
+      gl.shaderSource(value, source);
+      gl.compileShader(value);
+      if (!gl.getShaderParameter(value, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(value));
+      return value;
+    };
+    const program = gl.createProgram();
+    gl.attachShader(program, shader(gl.VERTEX_SHADER, `#version 300 es
+      layout(location=0) in vec2 position;
+      layout(location=1) in vec3 color;
+      flat out vec3 chosen;
+      void main() { chosen = color; gl_Position = vec4(position, 0.0, 1.0); }`));
+    gl.attachShader(program, shader(gl.FRAGMENT_SHADER, `#version 300 es
+      precision highp float;
+      flat in vec3 chosen;
+      out vec4 result;
+      void main() { result = vec4(chosen, 1.0); }`));
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+    gl.useProgram(program);
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      -1, -1, 1, 0, 0, // first: red
+       1, -1, 0, 1, 0, // second: green
+       0,  1, 0, 0, 1, // last: blue
+    ]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 20, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 20, 8);
+    const draw = () => {
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      const pixel = new Uint8Array(4);
+      gl.readPixels(32, 32, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+      return Array.from(pixel);
+    };
+    const adapter = new ProvokingVertexBenchmark(gl, true);
+    const before = draw();
+    const during = adapter.render(draw);
+    const after = draw();
+    output.textContent = JSON.stringify({ before, during, after, state: adapter.diagnostics() });
+  </script>
+</html>

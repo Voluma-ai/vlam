@@ -753,6 +753,13 @@ export class StreamedSplatMesh extends SplatMesh {
   private lastPlanBudget = 0;
   private lastPlanCamera: readonly [number, number, number] | null = null;
   private firstFrontierCamera: readonly [number, number, number] | null = null;
+  private frontierTraversal = {
+    strategy: 'heap' as 'heap' | 'bounded-threshold',
+    fallback: false,
+    fallbackCount: 0,
+    rootCoverInfeasible: false,
+    traversalMs: 0,
+  };
   /** Monotonic reschedule id; a stale plan (superseded by a newer request) is
    * dropped. `pageTableInFlight` coalesces to one outstanding traversal. */
   private pageTableSeq = 0;
@@ -1809,6 +1816,13 @@ export class StreamedSplatMesh extends SplatMesh {
     planBudget: number;
     lastPlanCamera: readonly [number, number, number] | null;
     firstFrontierCamera: readonly [number, number, number] | null;
+    traversal: Readonly<{
+      strategy: 'heap' | 'bounded-threshold';
+      fallback: boolean;
+      fallbackCount: number;
+      rootCoverInfeasible: boolean;
+      traversalMs: number;
+    }>;
   }> {
     return {
       frontierConverged: this.frontierWorker ? this.frontierConverged : true,
@@ -1820,6 +1834,7 @@ export class StreamedSplatMesh extends SplatMesh {
       planBudget: this.lastPlanBudget,
       lastPlanCamera: this.lastPlanCamera,
       firstFrontierCamera: this.firstFrontierCamera,
+      traversal: this.frontierTraversal,
     };
   }
 
@@ -4094,6 +4109,13 @@ export class StreamedSplatMesh extends SplatMesh {
     this.lastPlanMoves = plan.lastPlanMoves ?? plan.moveSlots.length;
     this.lastPlanGeneration = plan.planGeneration ?? this.lastPlanGeneration + 1;
     this.lastPlanBudget = plan.planBudget ?? this.pageTableDrawBudget;
+    this.frontierTraversal = {
+      strategy: plan.traversalStrategy ?? 'heap',
+      fallback: plan.traversalFallback ?? false,
+      fallbackCount: plan.traversalFallbackCount ?? 0,
+      rootCoverInfeasible: plan.rootCoverInfeasible ?? false,
+      traversalMs: plan.traversalMs ?? 0,
+    };
     if (plan.cameraLocal) {
       this.lastPlanCamera = plan.cameraLocal;
       this.firstFrontierCamera ??= plan.cameraLocal;

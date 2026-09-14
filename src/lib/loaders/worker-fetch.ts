@@ -110,6 +110,24 @@ export async function fetchBuffer(
   signal: AbortSignal,
   onProgress?: SplatProgressCallback,
 ): Promise<ArrayBuffer> {
+  const response = await fetchWholeResponse(url, request, signal);
+  try {
+    // `arrayBuffer()` reports nothing until it is done, so a caller that wants
+    // progress reads the body itself.
+    if (!onProgress || !response.body) return await response.arrayBuffer();
+    return await readBodyWithProgress(response, onProgress);
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    throw toSplatLoadError(error, { phase: 'fetch', url });
+  }
+}
+
+/** Opens a whole-body fetch while preserving request and fetch-error policy. */
+export async function fetchWholeResponse(
+  url: string,
+  request: SplatRequestOptions | undefined,
+  signal: AbortSignal,
+): Promise<Response> {
   let response: Response;
   try {
     response = await fetch(url, toRequestInit(request, signal));
@@ -124,15 +142,7 @@ export async function fetchBuffer(
       status: response.status,
     });
   }
-  try {
-    // `arrayBuffer()` reports nothing until it is done, so a caller that wants
-    // progress reads the body itself.
-    if (!onProgress || !response.body) return await response.arrayBuffer();
-    return await readBodyWithProgress(response, onProgress);
-  } catch (error) {
-    if (isAbortError(error)) throw error;
-    throw toSplatLoadError(error, { phase: 'fetch', url });
-  }
+  return response;
 }
 
 /**

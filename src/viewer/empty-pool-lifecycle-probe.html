@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" />
+  <title>VLAM empty-pool lifecycle probe</title>
+  <canvas id="preview" width="64" height="64" style="width: 512px; height: 512px; image-rendering: pixelated"></canvas>
+  <output data-testid="result"></output>
+  <script type="module">
+    import * as THREE from 'three/webgpu';
+    import { createWebGPURenderer, SplatMesh } from '../lib/core';
+
+    const result = document.querySelector('[data-testid="result"]');
+    const backend = new URLSearchParams(location.search).get('backend');
+    let phase = 'start';
+    try {
+      const renderer = await createWebGPURenderer({
+        antialias: false,
+        forceWebGL: backend === 'webgl2',
+        requireWebGpu: backend === 'webgpu',
+      });
+      renderer.setSize(64, 64, false);
+      await renderer.init();
+      const target = new THREE.RenderTarget(64, 64, { type: THREE.UnsignedByteType });
+      renderer.setRenderTarget(target);
+      renderer.setClearColor(0x000000, 0);
+      const scene = new THREE.Scene();
+      const mesh = new SplatMesh({ capacity: 4 * 2048 });
+      scene.add(mesh);
+      const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 10);
+      camera.position.z = 2;
+      camera.updateMatrixWorld();
+
+      const data = (x, rgb) => ({
+        count: 1,
+        positions: new Float32Array([x, 0, 0]),
+        colors: new Uint8Array([...rgb, 255]),
+        covariances: new Float32Array([0.006, 0, 0, 0.006, 0, 0.006]),
+      });
+      const sample = (bytes, x) => Array.from(bytes.slice((32 * 64 + x) * 4, (32 * 64 + x) * 4 + 4));
+      async function frame() {
+        mesh.update(camera, renderer);
+        renderer.clear();
+        renderer.render(scene, camera);
+        return renderer.readRenderTargetPixelsAsync(target, 0, 0, 64, 64);
+      }
+      async function settle(predicate, capture = false) {
+        for (let i = 0; i < 60; i++) {
+          const bytes = await frame();
+          const samples = [sample(bytes, 9), sample(bytes, 32), sample(bytes, 55)];
+          if (predicate(samples))
+            return { samples, corner: Array.from(bytes.slice(0, 4)), ...(capture ? { bytes } : {}) };
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        throw new Error('Pool lifecycle frame did not settle.');
+      }
+      const visible = (pixel) => pixel[3] > 16;
+      const absent = (pixel) => pixel[3] === 0;
+      const initial = await settle((pixels) => pixels.every(absent));
+      phase = 'disjoint';
+      const left = mesh.appendRange(data(-0.6, [255, 0, 0]));
+      const middle = mesh.appendRange(data(0, [0, 255, 0]));
+      const right = mesh.appendRange(data(0.6, [0, 0, 255]));
+      const { bytes: disjointBytes, ...disjoint } = await settle((pixels) => pixels.every(visible), true);
+      const preview = document.querySelector('#preview');
+      preview.getContext('2d').putImageData(
+        new ImageData(new Uint8ClampedArray(disjointBytes), 64, 64),
+        0,
+        0,
+      );
+      phase = 'reuse';
+      mesh.removeRange(middle);
+      const replacement = mesh.appendRange(data(0, [255, 255, 0]));
+      const reused = await settle((pixels) => pixels.every(visible) && pixels[1][0] > 16);
+      phase = 'compact';
+      mesh.removeRange(left);
+      mesh.compact();
+      const compacted = await settle((pixels) => absent(pixels[0]) && pixels.slice(1).every(visible));
+      phase = 'clear';
+      mesh.removeRange(replacement);
+      mesh.removeRange(right);
+      const cleared = await settle((pixels) => pixels.every(absent));
+      phase = 'fill-again';
+      const white = mesh.appendRange(data(0, [255, 255, 255]));
+      const filledAgain = await settle((pixels) => absent(pixels[0]) && visible(pixels[1]) && absent(pixels[2]));
+      mesh.removeRange(white);
+      result.textContent = JSON.stringify({
+        backend: renderer.backend.isWebGPUBackend ? 'webgpu' : 'webgl2',
+        initial,
+        disjoint,
+        reused,
+        compacted,
+        cleared,
+        filledAgain,
+      });
+      renderer.setRenderTarget(null);
+      target.dispose();
+      mesh.dispose();
+      renderer.dispose();
+    } catch (error) {
+      result.textContent = JSON.stringify({ error: String(error), phase });
+    }
+  </script>
+</html>

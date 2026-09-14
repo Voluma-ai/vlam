@@ -5,6 +5,7 @@
  * accounting side by side: neither is relabelled as total device memory.
  */
 import * as THREE from 'three/webgpu';
+import { experiments } from '../lib/internal/experiments';
 import {
   createWebGPURenderer,
   SplatMesh,
@@ -12,6 +13,7 @@ import {
   type SplatSortStrategy,
 } from '../lib/core';
 import { loadSplatData, loadSplatDataFile } from '../lib/loaders';
+import { remotePlyMetrics } from '../lib/loaders/ply-metrics';
 import { StreamedSplatMesh } from '../lib/streaming';
 import { version as vlamVersion } from '../../package.json';
 import {
@@ -50,7 +52,40 @@ interface MemoryCheckpoint {
   readonly streamedCacheBytes: number;
 }
 
+/** Development-only startup markers for paired streamed-scene comparisons. */
+interface StartupMilestones {
+  /** The page began resolving the requested scene URL. */
+  fetchStartMs: number;
+  /** Stream manifest parsing and the empty pool construction completed. */
+  meshConstructionMs: number | null;
+  /** The first decoded streamed chunk was applied to the mesh. */
+  firstDecodedChunkMs: number | null;
+  /** The first normal scene render was submitted. */
+  firstRenderMs: number | null;
+  /** A rendered target was read back with at least one non-transparent pixel. */
+  firstNonblankMs: number | null;
+  /** A nonblank frame was available after the requested startup coverage was active. */
+  firstUsableMs: number | null;
+}
+
+interface TransferTotals {
+  calls: number;
+  bytes: number;
+}
+
+/** Development-only attribution for pool texture transfer work. */
+interface StartupTransfers {
+  destinationCpuUploads: TransferTotals;
+  otherDataTextureCpuUploads: TransferTotals;
+  stagingToDestinationCopies: TransferTotals;
+}
+
+interface TextureUploadBackend {
+  updateTexture?: (...args: unknown[]) => unknown;
+}
+
 const params = new URLSearchParams(globalThis.location.search);
+const measureStartupPixels = params.get('startupMetrics') === '1';
 const statusElement = document.querySelector<HTMLElement>('#status');
 const resultElement = document.querySelector<HTMLElement>('#result');
 const viewportElement = document.querySelector<HTMLElement>('#viewport');
@@ -148,6 +183,95 @@ function startHeapSampling(): void {
   sampleTimer = globalThis.setInterval(takeHeapSample, 100);
 }
 
+function textureByteLength(texture: THREE.Texture): number {
+  if (!(texture instanceof THREE.DataTexture)) return 0;
+  const data = texture.image.data;
+  return ArrayBuffer.isView(data) ? data.byteLength : 0;
+}
+
+function addTransfer(total: TransferTotals, bytes: number): void {
+  total.calls++;
+  total.bytes += bytes;
+}
+
+/**
+ * Counts texture work after pool construction without changing renderer behavior.
+ * Destination CPU uploads must stay at zero for the skipped-empty candidate;
+ * row updates should instead appear as staging upload plus staging-to-pool copy.
+ */
+function instrumentPoolTransfers(
+  renderer: THREE.WebGPURenderer,
+  poolTextures: readonly THREE.DataTexture[],
+): { transfers: StartupTransfers; restore: () => void } {
+  const destinations = new Set<THREE.Texture>(poolTextures);
+  const transfers: StartupTransfers = {
+    destinationCpuUploads: { calls: 0, bytes: 0 },
+    otherDataTextureCpuUploads: { calls: 0, bytes: 0 },
+    stagingToDestinationCopies: { calls: 0, bytes: 0 },
+  };
+  const backend = renderer.backend as unknown as TextureUploadBackend;
+  const originalUpdateTexture = backend.updateTexture;
+  if (originalUpdateTexture) {
+    backend.updateTexture = (...args: unknown[]): unknown => {
+      const texture = args[0];
+      if (texture instanceof THREE.DataTexture) {
+        addTransfer(
+          destinations.has(texture)
+            ? transfers.destinationCpuUploads
+            : transfers.otherDataTextureCpuUploads,
+          textureByteLength(texture),
+        );
+      }
+      return originalUpdateTexture.apply(backend, args);
+    };
+  }
+  const originalCopy = renderer.copyTextureToTexture.bind(renderer);
+  renderer.copyTextureToTexture = (...args: Parameters<typeof renderer.copyTextureToTexture>) => {
+    const [source, destination, sourceRegion] = args;
+    if (destinations.has(destination) && source instanceof THREE.DataTexture && sourceRegion) {
+      const width = sourceRegion.max.x - sourceRegion.min.x;
+      const height = sourceRegion.max.y - sourceRegion.min.y;
+      const sourceBytes = textureByteLength(source);
+      const image = source.image;
+      const texels = image.width * image.height;
+      addTransfer(
+        transfers.stagingToDestinationCopies,
+        texels > 0 ? (sourceBytes / texels) * width * height : 0,
+      );
+    }
+    return originalCopy(...args);
+  };
+  return {
+    transfers,
+    restore: () => {
+      if (originalUpdateTexture) backend.updateTexture = originalUpdateTexture;
+      renderer.copyTextureToTexture = originalCopy;
+    },
+  };
+}
+
+function poolDataTextures(mesh: SplatMesh): readonly THREE.DataTexture[] {
+  // Benchmark-only inspection of private storage; production lifecycle stays public.
+  const pool = (
+    mesh as unknown as {
+      pool: {
+        centersTexture: THREE.DataTexture;
+        colorsTexture: THREE.DataTexture;
+        covarianceATexture: THREE.DataTexture;
+        covarianceBTexture: THREE.DataTexture;
+        shPackedTextures: readonly THREE.DataTexture[];
+      };
+    }
+  ).pool;
+  return [
+    pool.centersTexture,
+    pool.colorsTexture,
+    pool.covarianceATexture,
+    pool.covarianceBTexture,
+    ...pool.shPackedTextures,
+  ];
+}
+
 function stopHeapSampling(): void {
   if (sampleTimer !== undefined) globalThis.clearInterval(sampleTimer);
   sampleTimer = undefined;
@@ -220,6 +344,7 @@ async function renderUntilSettled(
   scene: THREE.Scene,
   camera: THREE.PerspectiveCamera,
   renderer: THREE.WebGPURenderer,
+  milestones: StartupMilestones,
 ): Promise<{ frames: number; timedOut: boolean }> {
   const timeoutAt = performance.now() + numberParam('settleSeconds', 30) * 1000;
   const streamed = mesh instanceof StreamedSplatMesh;
@@ -233,29 +358,59 @@ async function renderUntilSettled(
   let stableFrames = 0;
   let previousActive = -1;
   let previousCacheBytes = -1;
-  do {
-    mesh.update(camera, renderer);
+  // This development-only target confirms pixels rather than treating a nonzero
+  // active count as a visible frame. It is rendered only while a marker remains
+  // unknown, after the normal canvas render has already been submitted.
+  const pixelTarget = measureStartupPixels
+    ? new THREE.RenderTarget(800, 600, { type: THREE.UnsignedByteType })
+    : null;
+  const inspectPixels = async (usable: boolean): Promise<void> => {
+    if (pixelTarget === null) return;
+    renderer.setRenderTarget(pixelTarget);
+    renderer.setClearColor(0x000000, 0);
+    renderer.clear();
     renderer.render(scene, camera);
-    frames++;
-    if (!streamed && frames >= 2) {
-      return { frames, timedOut: false };
-    }
-    if (streamed) {
+    const pixels = await renderer.readRenderTargetPixelsAsync(pixelTarget, 0, 0, 800, 600);
+    renderer.setRenderTarget(null);
+    if (!pixels.some((value, index) => index % 4 === 3 && value !== 0)) return;
+    const elapsedMs = performance.now() - benchmarkStartedAt;
+    milestones.firstNonblankMs ??= elapsedMs;
+    if (usable) milestones.firstUsableMs ??= elapsedMs;
+  };
+  try {
+    do {
+      mesh.update(camera, renderer);
+      milestones.firstRenderMs ??= performance.now() - benchmarkStartedAt;
+      renderer.render(scene, camera);
+      frames++;
       const active = mesh.activeSplatCount;
-      const cacheBytes = mesh.fetchCounts.cacheBytes;
-      const stable =
-        !mesh.isStreaming &&
-        active >= expectedActive &&
-        active === previousActive &&
-        cacheBytes === previousCacheBytes;
-      stableFrames = stable ? stableFrames + 1 : 0;
-      previousActive = active;
-      previousCacheBytes = cacheBytes;
-      if (stableFrames >= 10) return { frames, timedOut: false };
-    }
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-  } while (performance.now() < timeoutAt);
-  return { frames, timedOut: true };
+      if (measureStartupPixels && active > 0 && milestones.firstNonblankMs === null)
+        await inspectPixels(false);
+      if (measureStartupPixels && active >= expectedActive && milestones.firstUsableMs === null)
+        await inspectPixels(true);
+      if (!streamed && frames >= 2) {
+        return { frames, timedOut: false };
+      }
+      if (streamed) {
+        const active = mesh.activeSplatCount;
+        const cacheBytes = mesh.fetchCounts.cacheBytes;
+        const stable =
+          !mesh.isStreaming &&
+          active >= expectedActive &&
+          active === previousActive &&
+          cacheBytes === previousCacheBytes;
+        stableFrames = stable ? stableFrames + 1 : 0;
+        previousActive = active;
+        previousCacheBytes = cacheBytes;
+        if (stableFrames >= 10) return { frames, timedOut: false };
+      }
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    } while (performance.now() < timeoutAt);
+    return { frames, timedOut: true };
+  } finally {
+    renderer.setRenderTarget(null);
+    pixelTarget?.dispose();
+  }
 }
 
 function downloadJson(report: unknown): void {
@@ -295,11 +450,22 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
   let mesh: SplatMesh | null = null;
   const retainedDecoded: { data: SplatData | null } = { data: null };
   let decodedBytes: DecodedSplatMemory | null = null;
+  let remotePlyDecode: ReturnType<typeof remotePlyMetrics> = null;
   let paletteBytes = 0;
   let packedShBands: 0 | 1 | 2 | 3;
   let sourceFormat: string | null = sourceExtension(source);
   let sourceProgress = { loaded: 0, total: 0 };
   let garbageCollectionExposed: boolean;
+  let startupTransfers: StartupTransfers | null = null;
+  let restoreTransferInstrumentation = (): void => {};
+  const startup: StartupMilestones = {
+    fetchStartMs: performance.now() - benchmarkStartedAt,
+    meshConstructionMs: null,
+    firstDecodedChunkMs: null,
+    firstRenderMs: null,
+    firstNonblankMs: null,
+    firstUsableMs: null,
+  };
 
   try {
     renderer = await createWebGPURenderer({ forceWebGL });
@@ -315,6 +481,7 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
     samplePhase = 'loading';
     status.textContent = `Loading ${kind} scene…`;
     const loadStartedAt = performance.now();
+    startup.fetchStartMs = loadStartedAt - benchmarkStartedAt;
     const onProgress = (loaded: number, total: number): void => {
       sourceProgress = { loaded, total };
       takeHeapSample();
@@ -326,6 +493,11 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
         poolFloatTextures: floatTextures,
         sortStrategy: requestedSort,
         storageMode,
+        onPerformanceEvent: (event) => {
+          if (event.appendedCount > 0) {
+            startup.firstDecodedChunkMs ??= performance.now() - benchmarkStartedAt;
+          }
+        },
         ...(requestedShBands === undefined ? {} : { shBands: requestedShBands }),
       });
       packedShBands =
@@ -337,6 +509,7 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
           ? await loadSplatDataFile(source.file, { onProgress })
           : await loadSplatData(source.url, { onProgress });
       const decoded = retainedDecoded.data;
+      remotePlyDecode = remotePlyMetrics(decoded);
       decodedBytes = decodedSplatMemory(decoded);
       sourceFormat = synthetic ? 'synthetic' : (decoded.format ?? sourceFormat);
       checkpoints.push(await checkpoint('after-decode', null));
@@ -349,6 +522,12 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
       packedShBands = mesh.shBands > 0 ? (decoded.shPacked?.bands ?? 0) : 0;
       paletteBytes = mesh.shBands > 0 ? (decoded.sh?.palette.byteLength ?? 0) : 0;
     }
+    startup.meshConstructionMs = performance.now() - benchmarkStartedAt;
+    if (measureStartupPixels) {
+      const instrumented = instrumentPoolTransfers(renderer, poolDataTextures(mesh));
+      startupTransfers = instrumented.transfers;
+      restoreTransferInstrumentation = instrumented.restore;
+    }
     const loadMs = performance.now() - loadStartedAt;
     checkpoints.push(await checkpoint('after-mesh-construction', mesh));
     scene.add(mesh);
@@ -360,7 +539,7 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
     // can outlive the WebGPU device on a slow CI backend.
     mesh.update(camera, renderer);
     await renderer.compileAsync(scene, camera);
-    const settle = await renderUntilSettled(mesh, scene, camera, renderer);
+    const settle = await renderUntilSettled(mesh, scene, camera, renderer, startup);
     checkpoints.push(await checkpoint('after-first-settle', mesh));
     // Static caller-owned SplatData is released here. The earlier checkpoint
     // records the retained-input case; the next one isolates the mesh itself.
@@ -402,6 +581,7 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
         : null;
 
     scene.remove(mesh);
+    restoreTransferInstrumentation();
     mesh.dispose();
     mesh = null;
     renderer.dispose();
@@ -412,6 +592,7 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
     const usedHeap = heapSamples.map((sample) => sample.usedJsHeapBytes);
     const report = {
       schemaVersion: 1,
+      experiments,
       environment: {
         versions: { vlam: vlamVersion, threeRevision: THREE.REVISION },
         browser: navigator.userAgent,
@@ -439,7 +620,10 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
       },
       scene: {
         loadMs,
+        startup,
+        startupTransfers,
         sourceProgress,
+        remotePlyDecode,
         activeSplats,
         capacity,
         shBands,
@@ -481,6 +665,7 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
     download.onclick = () => downloadJson(latestReport);
   } catch (error) {
     stopHeapSampling();
+    restoreTransferInstrumentation();
     mesh?.dispose();
     renderer?.dispose();
     const message = error instanceof Error ? error.message : String(error);

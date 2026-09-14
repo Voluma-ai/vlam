@@ -25,6 +25,7 @@ import * as THREE from 'three/webgpu';
 import type { WebGLRenderer } from 'three';
 import { uniform } from 'three/tsl';
 import type { SplatData } from './splat-data';
+import { experiments } from '../internal/experiments';
 import { type SplatOrientation, yUpTransformForFormat } from './orientation';
 import type { SplatModifier } from './splat-modifier';
 import type { SplatSorter } from './sorter';
@@ -643,6 +644,20 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     }
     const ownsPool = suppliedPool === undefined || shMismatch;
     const pool = ownsPool ? makeOwnPool() : suppliedPool;
+    if (!isStatic && suppliedPool === undefined && experiments.initialPoolUpload === 'skip-empty') {
+      // Only this mesh's new dynamic pool is known to contain no initial data.
+      // Keep needsUpdate and all CPU images so three allocates the destination
+      // textures while subsequent writes still use the staged row-copy path.
+      for (const texture of [
+        pool.centersTexture,
+        pool.colorsTexture,
+        pool.covarianceATexture,
+        pool.covarianceBTexture,
+        ...pool.shPackedTextures,
+      ]) {
+        texture.source.dataReady = false;
+      }
+    }
     // Per-mesh draw state is sized by what *this* mesh can have active, not by
     // the pool: sharing a large pool between many meshes would otherwise give
     // each of them a pool-sized draw list and active list (8 B per pool splat,

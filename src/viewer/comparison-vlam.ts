@@ -11,10 +11,12 @@ import { createWebGPURenderer, detectSplatDeviceProfile, SplatMesh } from '../li
 import { automaticSortIntervalMs } from '../lib/core/sort-scheduler';
 import { loadSplatData } from '../lib/loaders';
 import { StreamedSplatMesh } from '../lib/streaming';
+import { experiments } from '../lib/internal/experiments';
 import { version } from '../../package.json';
 import type { ComparisonAdapter } from './comparison-adapter';
 import { comparisonAssetKind, type ComparisonConfig } from './comparison-config';
 import { shEvaluationDiagnostics } from './sh-evaluation-diagnostics';
+import { ProvokingVertexBenchmark } from './provoking-vertex-benchmark';
 import {
   ComparisonWebGlTimer,
   ComparisonWebGpuTimer,
@@ -68,6 +70,9 @@ export async function createComparisonVlam(
     ? await StreamedSplatMesh.load(url, {
         ...meshOptions,
         ...(kind === 'lcc2' ? { lodBaseDistance: 10 } : {}),
+        ...(kind === 'rad' && config.radBudget !== undefined
+          ? { budget: config.radBudget, maxBudget: config.radBudget }
+          : {}),
       })
     : new SplatMesh(await loadSplatData(url), meshOptions);
   // Goose and hotel are Y-down captures; LCC2 already stands up via formatTransform.
@@ -223,7 +228,10 @@ export async function createComparisonVlam(
   };
 
   /** Wait until the WebGL worker has applied the settle camera's order. */
-  const settleWorkerSort = async (camera: PerspectiveCamera): Promise<void> => {
+  const settleWorkerSort = async (
+    camera: PerspectiveCamera,
+    render: () => void = () => renderer.render(scene, camera),
+  ): Promise<void> => {
     await awaitCoverage(camera);
     const host = mesh as unknown as {
       sorter?: { kind?: string; snapshot?: () => WorkerSortSnapshot };
@@ -234,7 +242,7 @@ export async function createComparisonVlam(
     mesh.update(camera, renderer);
     const sorter = host.sorter;
     if (sorter?.kind !== 'worker' || !sorter.snapshot) {
-      renderer.render(scene, camera);
+      render();
       return;
     }
     const target = sorter.snapshot().submittedCount;
@@ -242,13 +250,25 @@ export async function createComparisonVlam(
       if (performance.now() > deadline) throw new Error('VLAM WebGL worker sort timed out.');
       await new Promise((resolve) => setTimeout(resolve, 16));
     }
-    renderer.render(scene, camera);
+    render();
   };
 
   if (useWebGl) {
     const gl = renderer.getContext();
     if (!(gl instanceof WebGL2RenderingContext))
       throw new Error('VLAM WebGL comparison requires WebGL2.');
+    const provoking = new ProvokingVertexBenchmark(
+      gl,
+      experiments.webglProvokingVertex === 'first-vertex',
+    );
+    const flatVaryings = new Set<string>();
+    const shaderSource = gl.shaderSource;
+    gl.shaderSource = function (shader, source) {
+      for (const line of source.split('\n')) {
+        if (/^\s*flat\s+(?:in|out|varying)\s+/.test(line)) flatVaryings.add(line.trim());
+      }
+      shaderSource.call(this, shader, source);
+    };
     const timer = new ComparisonWebGlTimer(
       gl,
       config.timestamps
@@ -258,19 +278,27 @@ export async function createComparisonVlam(
     const debug = gl.getExtension('WEBGL_debug_renderer_info');
     return {
       canvas: renderer.domElement,
-      diagnostics: () => shEvaluationDiagnostics(mesh),
+      diagnostics: () => ({
+        ...shEvaluationDiagnostics(mesh),
+        frontier: mesh instanceof StreamedSplatMesh ? mesh.frontierState : null,
+        planTimings: mesh instanceof StreamedSplatMesh ? mesh.planTimings : null,
+        provokingVertex: provoking.diagnostics(),
+        flatVaryings: [...flatVaryings],
+      }),
       metadata: {
         ...baseMetadata,
         gpu: debug ? (gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) as string) : null,
       },
       async settle(camera) {
-        await settleWorkerSort(camera);
+        await settleWorkerSort(camera, () =>
+          provoking.render(() => renderer.render(scene, camera)),
+        );
       },
       frame(camera, frame, sampling) {
         timer.begin(frame, sampling);
         const start = performance.now();
         mesh.update(camera, renderer);
-        renderer.render(scene, camera);
+        provoking.render(() => renderer.render(scene, camera));
         const cpuMs = performance.now() - start;
         timer.end();
         return {
@@ -297,6 +325,7 @@ export async function createComparisonVlam(
       },
       dispose() {
         timer.reset();
+        gl.shaderSource = shaderSource;
         mesh.dispose();
         renderer.dispose();
       },
@@ -319,6 +348,8 @@ export async function createComparisonVlam(
     canvas: renderer.domElement,
     diagnostics: () => ({
       ...shEvaluationDiagnostics(mesh),
+      frontier: mesh instanceof StreamedSplatMesh ? mesh.frontierState : null,
+      planTimings: mesh instanceof StreamedSplatMesh ? mesh.planTimings : null,
       projection: {
         requested: mesh.projectionStrategy,
         ...mesh.projectionStrategyStatus,

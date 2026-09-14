@@ -2,11 +2,30 @@
 
 ## Minimal Spark / VLAM comparison
 
-The two standalone pages compare Spark **2.1.0 / WebGL2** with the current
+The two standalone pages compare Spark **2.2.0 / WebGL2** with the current
 VLAM source on **actual WebGPU**. Spark is a development dependency only.
 They share Three.js, the scene bytes, camera, timing session and reporting;
 each page loads only its chosen renderer. The older `/render-benchmark.html`
 described below remains available with its existing defaults.
+
+A historical Spark 2.1.0 package was recovered from the local npm cache and
+aliased into one isolated benchmark server (`VLAM_SPARK_VERSION=2.1.0`,
+`VITE_SPARK_VERSION=2.1.0`). The normal installed development dependency and
+lockfile remain Spark 2.2.0. In that archived report, `renderer.version` is the
+actual aliased 2.1.0 package; `environment.spark` describes the installed
+2.2.0 package tree and must not be read as the active renderer.
+
+For build-time experiments, start a separate server for each variant with
+`VLAM_EXPERIMENT=baseline npm run benchmark:dev` or
+`VLAM_EXPERIMENT=skip-empty npm run benchmark:dev`. The effective settings are
+saved in comparison and memory reports. The published library always resolves
+to disabled experiments. Other selectable names (`bounded-threshold`,
+`exact-stream`, `approximate-sh-stream`, `first-vertex`) reserve independent
+benchmark configurations. The bounded-threshold traversal has been evaluated
+and is not recommended for promotion. Remote PLY streaming is implemented as
+an isolated benchmark experiment. The WebGL candidate is also isolated and
+cannot be evaluated on the tested Chrome GPU path because its extension is
+unavailable.
 
 ```bash
 npm install
@@ -24,6 +43,7 @@ Open these paths on the dev server printed by the last command:
 /vlam-benchmark.html?preset=reference&mode=stationary&backend=webgl
 /spark-benchmark.html?scene=hotel&mode=orbit
 /vlam-benchmark.html?scene=hotel&mode=orbit
+/vlam-benchmark.html?scene=hotel&radBudget=1000000&preset=reference
 ```
 
 The cache command downloads Tempel (`.lcc2` plus its SOG tiles) and the
@@ -31,13 +51,16 @@ hotel-core Spark `.rad` once to the ignored `.tmp/benchmark-assets/` directory
 and records SHA-256, byte size, splat count, SH bands and canonical camera in
 a JSON manifest. Both viewers fetch that same local copy so tile URLs and
 `.rad` byte ranges resolve without remote CORS. It also prepares the
-repository's small `goose.sog` fixture (`?scene=goose`).
+repository's small `goose.sog` fixture (`?scene=goose`). An additional
+`?scene=lcc` RAD can be placed at `.tmp/benchmark-assets/lcc/render.rad` with
+metadata in `.tmp/benchmark-assets/lcc.json`; this is an optional local test
+capture, not part of the default cache download.
 Re-running the command verifies/recreates metadata from the cached bytes;
 it does not silently replace the capture with a newer remote asset.
 
 The downloaded Tempel capture has **12,847,768 splats** across five LOD levels
 (**6,635,642** at finest) and **SH3**. VLAM streams the `.lcc2` octree cut.
-Spark 2.1.0 has no LCC2 reader, so it fully decodes every listed SOG tile (all
+Spark 2.2.0 has no LCC2 reader, so it fully decodes every listed SOG tile (all
 LOD levels plus the environment tile). Tempel starts at the docs-example
 interior view, already in the LCC2→Three basis both engines use; goose is
 framed from its source center bounds. Goose (SOG) gets a 180° X rotation on
@@ -63,7 +86,8 @@ Canvas CSS can shrink the displayed image without changing GPU resolution.
 | `preset` | `proposed` | `supplied`, `proposed`, `controlled`, or `reference`; legacy `defaults` and `matched` remain accepted |
 | `mode` | `stationary` | `stationary`, `orbit`, position-preserving `rotate`, `translate`, or five seconds of orbit then `settle` |
 | `shEvaluation` | `auto` | VLAM SH evaluation: `vertex` or generated final `compute`; `auto` selects the latter on identified Apple Silicon Macs |
-| `scene` | `Tempel` | Cached `.lcc2` capture, `goose`, or streamed `hotel` (`.rad`) |
+| `scene` | `Tempel` | Cached `.lcc2` capture, `goose`, or streamed `hotel` / optional `lcc` (`.rad`) |
+| `radBudget` | device default | VLAM-only `.rad` splat budget; `1000000` forces hotel through the page-table traversal |
 | `width`, `height` | `1280`, `720` | Drawing-buffer pixels, at pixel ratio 1 |
 | `warmup`, `seconds` | `5`, `30` | Warm-up and measured seconds after initial load/sort |
 | `sh=0..3` | source | Benchmark-only SH band cap; `0` is the suite's disabled diagnostic |
@@ -82,7 +106,150 @@ Canvas CSS can shrink the displayed image without changing GPU resolution.
 | `suitePreset` | proposed (compact) / all (full) | With `suite=1`, run only the proposed or controlled cases |
 | `suiteDensity` | `compact` | `full` restores three 720p repetitions of proposed+controlled plus QHD |
 
-The four named configurations are deliberately separate:
+### Hotel baseline snapshot (14 September 2026)
+
+One fresh headed Chromium tab per engine used the same cached hotel RAD
+(`413381d93b452a77d75e7998f89836db0df740127f995bf94f4d5126a129f773`),
+camera, 1280×720, SH3, `reference` preset, 2 s warm-up, and 5 s stationary
+measurement on NVIDIA RTX 3090. Spark 2.1.0 was run from the cached package,
+Spark 2.2.0 from the installed dependency, and VLAM 0.8.1 with every new
+experiment disabled. Both Spark versions selected 2,295,273 active splats;
+VLAM's page-table budget was set to 2,295,274 and selected that many. A separate
+1,000,000-splat VLAM traversal stress run is retained in the raw results and
+must not be compared as a matched baseline. The WebGL2 versus WebGPU backend
+difference and one run per engine preclude an engine-speed ranking. These are
+reference snapshots, not paired performance evidence for promotion.
+
+| Engine | Backend | Active splats | Frame median / p95 / p99 | Captures |
+| --- | --- | ---: | --- | --- |
+| Spark 2.1.0 | WebGL2 | 2,295,273 | 16.7 / 16.8 / 16.9 ms | Nonblank front and orbit |
+| Spark 2.2.0 | WebGL2 | 2,295,273 | 16.7 / 16.8 / 16.8 ms | Nonblank front and orbit |
+| VLAM 0.8.1, baseline | WebGPU | 2,295,274 | 16.7 / 16.8 / 16.8 ms | Nonblank front and orbit |
+
+The 60 Hz foreground display paced all three reports. GPU timestamps were
+disabled, so these numbers cannot establish uncapped throughput. Raw reports
+and PNGs are in `.tmp/benchmark-results/` under timestamps `22-13-33.767Z`,
+`22-13-54.836Z`, and `22-17-24.956Z` respectively.
+
+### Empty dynamic-pool upload experiment (14 September 2026)
+
+Five alternating fresh foreground tabs per variant used headed Chromium on an
+NVIDIA RTX 3090 WebGPU adapter. The probe creates a private 250,000-slot SH3
+dynamic pool, renders it empty, appends one white splat, and reads the first
+nonblank pixel. This isolates pool initialization; it is not a full-scene load
+benchmark. Both variants retained the same allocation, returned transparent
+empty pixels and opaque white appended pixels, and completed the same path.
+
+| Build | Full destination texture uploads | Median construction | Median first usable from construction |
+| --- | ---: | ---: | ---: |
+| Existing | 8 | 4.9 ms | 109.2 ms |
+| Skip empty | 0 | 4.9 ms | 83.3 ms |
+
+The five paired first-usable differences favored the candidate by 20–37 ms.
+Actual rendered pixels also passed WebGPU and forced WebGL2 checks for append
+ordering, disjoint appends, row reuse, clear, compaction, float16/float32,
+and SH0–SH3. Static and shared pools retain their original initialization.
+This is a **device-validation-pending** candidate for eligible pools: the
+published default remains the existing behavior until matched full-application
+startup measurements and broader native-device checks pass. Raw run values are
+in `.tmp/pool-native-results.json`.
+
+### Preliminary hotel startup check (14 September 2026)
+
+Five alternating WebGPU hotel runs used the cached RAD above, its canonical
+camera, SH3, and a 1,000,000-splat budget. The browser did not expose adapter
+identity, so these are diagnostic measurements rather than promotable device
+evidence. Both runs reached 999,999 active splats without errors, but the
+candidate did not reproduce the isolated-pool gain.
+
+| Build | First usable frame median (five runs) |
+| --- | --- |
+| Existing | 38.73 s |
+| Skip empty | 34.60 s |
+
+The candidate removed all eight (174 MB) initial destination uploads in every
+run and improved the paired median by 4.14 s. Keep the existing default until
+forced-WebGL2 and cross-device validation complete.
+
+### Bounded RAD traversal experiment (13 September 2026)
+
+Five alternating heap / bounded-threshold pairs per scene used headed Chromium
+on an NVIDIA RTX 3090, actual WebGPU, 1280×720, pixel ratio 1, SH3,
+`preset=reference`, a stationary supplied camera, and 2 s warm-up plus 5 s
+measurement. Each pair loaded identical cached bytes in a fresh foreground
+tab. Hotel used a 1,000,000-splat budget to select its page-table path;
+the larger RAD used the 4,000,000-splat device budget. The latter is the
+user-supplied `lcc/render.rad` (812,213,456 bytes, SHA-256
+`1163d0b4d76ea69c0f89682bdf38d4628edd3513d64f17247979eb2d51f812bf`,
+10,105,638 source splats, 14,684,393 nodes). Its shared camera is
+`position=2.670622,2.330199,2.810265` and
+`target=1.988569,1.942181,0.970633`.
+
+| Scene | Heap last-traversal median | Threshold last-traversal median | Threshold fallbacks per run | Frame p99 median |
+| --- | ---: | ---: | ---: | ---: |
+| Hotel | 340 ms | 366 ms | 12–13 | 16.8 ms for both |
+| LCC RAD | 1,947 ms | 2,493 ms | 3–4 | 16.8 ms for both |
+
+The traversal values are one final worker sample per run, not full-load worker
+percentiles. The browser's 60 Hz pacing masks uncapped frame throughput in
+the 5-second steady-state window. Both variants reached the same active
+budget, and fixed-pose front/orbit captures were nonblank; the bridge,
+foliage, and railings were visually inspected. The candidate is about 8%
+slower on hotel and 28% slower on LCC in these samples, with repeated safety
+fallbacks. Keep the heap default and retain bounded threshold as an isolated
+benchmark experiment. Raw JSON and PNG captures are in the ignored
+`.tmp/benchmark-results/` directory.
+
+### Remote PLY streaming experiment (14 September 2026)
+
+The `exact-stream` and `approximate-sh-stream` builds read uncompressed binary
+PLY records in bounded windows. Exact SH measures the full extent while
+spooling vertex records to a request-owned OPFS file, then packs in a second
+bounded pass. Approximate SH samples the first 65,536 vertices, fixes a 1.25×
+symmetric range, and counts later clipping. Compressed PLY retains buffered
+decoding. Neither strategy changes the published loader's default.
+
+On headed Chromium / NVIDIA RTX 3090 WebGPU, five fresh-tab cycles compared
+all three modes at one camera using a deterministic 200,000-splat SH3 PLY
+(47,201,477 bytes; SHA-256
+`44a1e80c0c8a38460012676c728faec2b3715f1ea1e1b0b3df471edb99344d13`).
+The capture is synthetic and locally generated; it is not a foliage quality
+reference.
+
+| Loader | Median fetch/decode | Measured source-buffer peak | Temporary disk | SH clipping |
+| --- | ---: | ---: | ---: | ---: |
+| Buffered | 256 ms | At least 47.2 MB whole input | 0 | 0 |
+| Exact stream | 353 ms | 49.3 MB | 47.2 MB | 0 |
+| Approximate SH stream | 264 ms | 61.2 MB | 0 | 355 coefficients / 9 splats |
+
+The 47 MB input fits under the reader's 64 MiB window, so this run cannot
+demonstrate a memory win. A separate generated test places one vertex after
+more than 2 GiB of preceding fixed-size PLY records and decodes it without
+retaining the input. SH0–SH3 exact outputs match the buffered parser byte for
+byte across one-byte network chunks. Both variants rendered on WebGPU and
+forced WebGL2; concurrent exact requests left no OPFS files, and cancellation
+and forced worker termination cleanup passed targeted tests. Front and side
+synthetic views were inspected, but real foliage, thin features, and diverse
+devices remain unvalidated. Keep exact streaming available only in benchmark
+builds for further large-file study. Do not promote approximate SH: the small
+load-time difference does not justify silent coefficient clipping. Raw native
+reports and captures are in `.tmp/ply-native-results/`.
+
+### WebGL provoking-vertex experiment (14 September 2026)
+
+The `first-vertex` benchmark build asks for `WEBGL_provoking_vertex`, changes
+the convention only around VLAM WebGL renders, and restores the previous GL
+state. A mixed flat-varying triangle probe checks before/during/after pixels.
+The adapter leaves rendering unchanged when the extension is absent. In headed
+Chromium on NVIDIA RTX 3090, the extension was unavailable; the hotel WebGL2
+run reported `supported=false`, `appliedRenders=0`, no generated flat-varying
+shader declarations, and nonblank front/orbit captures. The WebGL2 browser
+probe and state-restoration unit tests passed. There is no valid native GPU
+performance comparison for this candidate, and no reason to change VLAM's
+default convention. Retain it as an isolated benchmark probe until a supported
+device and relevant flat-varying shader path can be tested.
+
+The four named comparison configurations are deliberately separate:
 
 | Configuration | Standalone harness behavior |
 | --- | --- |

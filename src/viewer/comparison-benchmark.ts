@@ -1,4 +1,5 @@
 import { PerspectiveCamera } from 'three';
+import { experiments } from '../lib/internal/experiments';
 import { RenderBenchmarkSession } from './render-benchmark-session';
 import {
   applyComparisonCamera,
@@ -222,6 +223,7 @@ async function run(): Promise<void> {
       schemaVersion: 1,
       recordedAt: new Date().toISOString(),
       environment,
+      experiments,
       browser: navigator.userAgent,
       platform: navigator.platform,
       pageState: {

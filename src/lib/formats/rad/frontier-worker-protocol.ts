@@ -130,6 +130,12 @@ export interface PlanSplats {
 export interface FrontierPlanMessage {
   readonly type: 'plan';
   readonly seq: number;
+  /** Build-time-only traversal diagnostics for benchmark comparisons. */
+  readonly traversalStrategy?: 'heap' | 'bounded-threshold';
+  readonly traversalFallback?: boolean;
+  readonly traversalFallbackCount?: number;
+  readonly rootCoverInfeasible?: boolean;
+  readonly traversalMs?: number;
   /** Survivors relocated by swap-remove: write `moves` splat j at `moveSlots[j]`. */
   readonly moveSlots: Uint32Array;
   readonly moves: PlanSplats;

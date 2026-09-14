@@ -24,6 +24,9 @@ import {
 // Inlined worker (blob URL): survives library bundling in any consumer
 // setup, unlike an asset file referenced via `new URL(...)`.
 import LoadWorker from './load-worker?worker&inline';
+import { experiments } from '../internal/experiments';
+import { recordRemotePlyMetrics, remotePlyMetrics } from './ply-metrics';
+import { cleanupPlyTemporary, recoverPlyTemporaryOrphans } from './ply-temp';
 
 /**
  * Formats served by the one-shot worker rather than the streaming one.
@@ -43,6 +46,8 @@ const ONE_SHOT_FORMATS = new Set<ChunkFileFormat>(['spz', 'splat', 'ksplat']);
  */
 class WorkerClient {
   private nextRequestId = 0;
+  /** Outlives immediate abort settlement until worker acknowledgment/termination. */
+  private readonly ownedPlyFiles = new Map<number, string>();
   private readonly pending = new Map<
     number,
     {
@@ -62,8 +67,11 @@ class WorkerClient {
   ) {
     this.workerFailure = initialFailure;
     if (worker === null) return;
+    if (experiments.remotePly === 'exact-stream')
+      void recoverPlyTemporaryOrphans().catch(() => undefined);
     worker.onmessage = (event: MessageEvent<LoadWorkerResponse>) => {
       try {
+        if (event.data.type === 'result') this.ownedPlyFiles.delete(event.data.id);
         const request = this.pending.get(event.data.id);
         if (!request) return;
         if (event.data.type === 'progress') {
@@ -74,6 +82,7 @@ class WorkerClient {
         this.pending.delete(event.data.id);
         request.removeAbortListener?.();
         if (event.data.ok) {
+          if (event.data.metrics) recordRemotePlyMetrics(event.data.data, event.data.metrics);
           request.resolve(event.data.data);
         } else if (event.data.cancelled) {
           request.reject(createAbortError('Chunk load was cancelled.'));
@@ -105,6 +114,13 @@ class WorkerClient {
     if (this.workerFailure) return Promise.reject(this.workerFailure);
 
     const id = this.nextRequestId++;
+    const resourceId =
+      experiments.remotePly === 'exact-stream' &&
+      message.format === 'ply' &&
+      message.source.from === 'url'
+        ? crypto.randomUUID()
+        : undefined;
+    if (resourceId) this.ownedPlyFiles.set(id, resourceId);
     const promise = new Promise<SplatData>((resolve, reject) => {
       this.pending.set(id, { resolve, reject, ...(onProgress ? { onProgress } : {}) });
     });
@@ -134,7 +150,7 @@ class WorkerClient {
       if (pending) pending.removeAbortListener = () => signal.removeEventListener('abort', onAbort);
     }
 
-    const request: LoadWorkerRequest = { ...message, id };
+    const request: LoadWorkerRequest = { ...message, id, ...(resourceId ? { resourceId } : {}) };
     try {
       this.worker?.postMessage(request);
     } catch (error) {
@@ -148,7 +164,14 @@ class WorkerClient {
     if (this.disposed) return;
     this.disposed = true;
     this.worker?.terminate();
+    this.cleanupOwnedPlyFiles();
     this.rejectAll(createAbortError('ChunkLoader has been disposed.'));
+  }
+
+  private cleanupOwnedPlyFiles(): void {
+    const ids = [...this.ownedPlyFiles.values()];
+    this.ownedPlyFiles.clear();
+    for (const id of ids) void cleanupPlyTemporary(id).catch(() => undefined);
   }
 
   private rejectAll(error: Error): void {
@@ -179,6 +202,7 @@ class WorkerClient {
       this.worker.onmessageerror = null;
       this.worker.terminate();
     }
+    this.cleanupOwnedPlyFiles();
     this.rejectAll(failure);
   }
 }
@@ -408,9 +432,11 @@ const SOURCE_FORMATS: readonly SplatDataFormat[] = ['ply', 'spz', 'splat', 'kspl
  * `rad-chunk`) carry no self-contained frame, so they are left unstamped.
  */
 function withSourceFormat(data: SplatData, format: ChunkFileFormat): SplatData {
-  return (SOURCE_FORMATS as readonly string[]).includes(format)
-    ? { ...data, format: format as SplatDataFormat }
-    : data;
+  if (!(SOURCE_FORMATS as readonly string[]).includes(format)) return data;
+  const stamped = { ...data, format: format as SplatDataFormat };
+  const metrics = remotePlyMetrics(data);
+  if (metrics) recordRemotePlyMetrics(stamped, metrics);
+  return stamped;
 }
 
 function resolveFileFormat(

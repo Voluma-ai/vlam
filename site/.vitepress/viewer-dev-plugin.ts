@@ -121,6 +121,10 @@ export function viewerDevPlugin(): Plugin {
       return {
         server: {
           fs: { allow: [repoRoot] },
+          headers: {
+            'Cross-Origin-Resource-Policy': 'same-origin',
+            'Cross-Origin-Embedder-Policy': 'require-corp',
+          },
         },
         // The example samples import the package name an embedder would write,
         // not a relative path, that is the point of them. Map it to the
@@ -134,6 +138,9 @@ export function viewerDevPlugin(): Plugin {
     },
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
+        // The viewer pages opt into COEP for WebGPU. Mark same-origin assets
+        // explicitly; Vite's own worker responses use the server headers above.
+        res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
         if (req.method !== 'GET' && req.method !== 'HEAD') return next();
 
         const requested = new URL(req.url ?? '/', 'http://localhost');

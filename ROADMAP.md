@@ -27,6 +27,27 @@ These are candidates for future work, not 1.0 release requirements. Preserve
 the WebGL2 fallback, the three.js-only library dependency, portable compute,
 and the verified rendering math.
 
+- **Spark 2.2-inspired loading and rendering experiments** — benchmark initial
+  empty dynamic-pool upload suppression, bounded-threshold RAD traversal,
+  incremental remote PLY decoding (exact and approximate SH), and WebGL
+  provoking-vertex state. Keep the current sorter, rendering math, and public
+  loader behavior. Promote candidates only after matched native-device A/B
+  runs and WebGPU/WebGL2 pixel validation. **Status:** benchmark controls and
+  private empty-pool candidate removed eight initial destination uploads in
+  five native WebGPU A/B pairs, improving median first-usable time from 109.2
+  to 83.3 ms in a 250,000-slot SH3 probe. It remains disabled pending wider
+  device and full-app validation. The
+  bounded-threshold traversal was tested on hotel and a 10.1M-splat RAD with
+  five native A/B pairs each; it was slower and fell back repeatedly, so keep
+  the heap. Exact remote PLY streaming decoded a generated input past 2 GiB
+  with bounded source memory and bit-identical SH0–3, but its OPFS second pass
+  was slower on a 47 MB native benchmark; approximate SH clipped late outliers.
+  Both remain benchmark-only pending real-capture quality and broader device
+  validation. Native Chromium exposed no WebGL provoking-vertex extension on
+  the tested NVIDIA path; state and pixel probes passed, but no performance
+  conclusion is available. This does not
+  replace the mobile gate.
+
 Brush lifecycle or stale-pick fixes discovered during existing selection
 validation fit stabilization. Defer new storage modes, rendering paths, and
 selection features until their benefits are measured and visually validated.

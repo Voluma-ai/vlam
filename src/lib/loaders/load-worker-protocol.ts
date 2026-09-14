@@ -8,6 +8,7 @@
  * the shipped declarations.
  */
 import type { LccChunkParams } from '../formats/lcc/parse-lcc';
+import type { RemotePlyMetrics } from '../formats/ply/parse-splat-ply-remote';
 import type { RadShCodebook, SplatData } from '../core/splat-data';
 import type { ChunkFileFormat, SerializedSplatLoadError, SplatRequestOptions } from './loading';
 
@@ -42,6 +43,8 @@ export type LoadWorkerRequest =
       files?: Readonly<Record<string, string>>;
       /** Report read progress; off unless the caller passed `onProgress`. */
       progress?: boolean;
+      /** Opaque host-owned OPFS file name for exact remote PLY SH. */
+      resourceId?: string;
     }
   | { type: 'cancel'; id: number };
 
@@ -64,6 +67,6 @@ export interface RadChunkRangeRequest {
 }
 
 export type LoadWorkerResponse =
-  | { type: 'result'; id: number; ok: true; data: SplatData }
+  | { type: 'result'; id: number; ok: true; data: SplatData; metrics?: RemotePlyMetrics }
   | { type: 'result'; id: number; ok: false; error: SerializedSplatLoadError; cancelled: boolean }
   | { type: 'progress'; id: number; loaded: number; total: number };

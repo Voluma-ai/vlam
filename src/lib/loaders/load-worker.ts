@@ -1,10 +1,12 @@
 import { parseSplatPly, parseSplatPlyFile } from '../formats/ply/parse-splat-ply';
+import { parseSplatPlyRemote, type RemotePlyResult } from '../formats/ply/parse-splat-ply-remote';
+import { experiments } from '../internal/experiments';
 import { parseSog, parseSogDirectory } from '../formats/sog/parse-sog';
 import { parseRad, parseRadChunkStreaming } from '../formats/rad/parse-rad';
 import { parseLccChunk, type LccChunkParams } from '../formats/lcc/parse-lcc';
 import { packPaletteSh } from '../core/sh-pack';
 import type { SplatData } from '../core/splat-data';
-import { fetchBuffer, fetchRange, stripFragment } from './worker-fetch';
+import { fetchBuffer, fetchRange, fetchWholeResponse, stripFragment } from './worker-fetch';
 import { serveLoadRequests } from './worker-host';
 import {
   isAbortError,
@@ -45,6 +47,7 @@ serveLoadRequests((message, signal, onProgress) =>
     message.rad,
     message.files,
     message.sog,
+    message.resourceId,
     onProgress,
   ),
 );
@@ -57,8 +60,9 @@ async function load(
   rad?: RadChunkRangeRequest,
   files?: Readonly<Record<string, string>>,
   sog?: { packShBands: 1 | 2 | 3 },
+  resourceId?: string,
   onProgress?: SplatProgressCallback,
-): Promise<SplatData> {
+): Promise<SplatData | RemotePlyResult> {
   if (source.from === 'url' && source.kind === 'directory') {
     const data = await parseSogDirectory(source.url, {
       signal,
@@ -84,6 +88,20 @@ async function load(
     try {
       return await parseSplatPlyFile(source.file, {
         signal,
+        ...(onProgress ? { onProgress } : {}),
+      });
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      throw toSplatLoadError(error, { phase: 'decode', url: label });
+    }
+  }
+  if (source.from === 'url' && format === 'ply' && experiments.remotePly !== 'buffered') {
+    const response = await fetchWholeResponse(source.url, source.request, signal);
+    try {
+      return await parseSplatPlyRemote(response, {
+        mode: experiments.remotePly,
+        signal,
+        ...(resourceId ? { resourceId } : {}),
         ...(onProgress ? { onProgress } : {}),
       });
     } catch (error) {

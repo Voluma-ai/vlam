@@ -110,7 +110,7 @@ export async function createComparisonSpark(
     canvas: renderer.domElement,
     metadata: {
       engine: 'spark',
-      version: '2.1.0',
+      version: import.meta.env.VITE_SPARK_VERSION ?? '2.2.0',
       threeRevision: REVISION,
       backend: 'WebGL2',
       gpu: debug ? (gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) as string) : null,
@@ -134,7 +134,6 @@ export async function createComparisonSpark(
         minAlpha: spark.minAlpha,
         preBlurAmount: spark.preBlurAmount,
         blurAmount: spark.blurAmount,
-        encodeLinear: spark.encodeLinear,
         clipXY: spark.clipXY,
         outputColorSpace: renderer.outputColorSpace,
         msaa: renderer.getContextAttributes()?.antialias === true ? 'enabled' : 0,

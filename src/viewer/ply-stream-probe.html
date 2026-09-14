@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" />
+  <title>Remote PLY streaming probe</title>
+  <canvas id="preview" width="96" height="32"></canvas>
+  <output data-testid="result"></output>
+  <script type="module">
+    import * as THREE from 'three/webgpu';
+    import { createWebGPURenderer, SplatMesh } from '../lib/core';
+    import { loadSplatData } from '../lib/loaders';
+    import { remotePlyMetrics } from '../lib/loaders/ply-metrics';
+
+    const output = document.querySelector('[data-testid="result"]');
+    const params = new URLSearchParams(location.search);
+    const backend = params.get('backend');
+    const names = [
+      'x', 'y', 'z', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity',
+      'scale_0', 'scale_1', 'scale_2', 'rot_0', 'rot_1', 'rot_2', 'rot_3',
+      ...Array.from({ length: 9 }, (_, i) => `f_rest_${i}`),
+    ];
+    const header = new TextEncoder().encode([
+      'ply', 'format binary_little_endian 1.0', 'element vertex 3',
+      ...names.map((name) => `property float ${name}`), 'end_header', '',
+    ].join('\n'));
+    const bytes = new Uint8Array(header.length + names.length * 4 * 3);
+    bytes.set(header);
+    const view = new DataView(bytes.buffer);
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < names.length; j++) {
+        const name = names[j];
+        const value = name === 'x' ? (i - 1) * 0.75
+          : name.startsWith('f_dc_') ? (Number(name.at(-1)) === i ? 1.5 : -1.5)
+            : name === 'opacity' ? 8
+              : name.startsWith('scale_') ? Math.log(0.16)
+                : name === 'rot_0' ? 1
+                  : name.startsWith('f_rest_') ? (i - 1) * (j - 10) / 100
+                    : 0;
+        view.setFloat32(header.length + (i * names.length + j) * 4, value, true);
+      }
+    }
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+    let renderer;
+    let mesh;
+    try {
+      const [data, second] = await Promise.all([
+        loadSplatData(url, { format: 'ply' }),
+        loadSplatData(url, { format: 'ply' }),
+      ]);
+      const metrics = remotePlyMetrics(data);
+      let temporaryEntries = 0;
+      if (navigator.storage?.getDirectory) {
+        const root = await navigator.storage.getDirectory();
+        const dir = await root.getDirectoryHandle('vlam-ply-experiment', { create: true });
+        for await (const _entry of dir) temporaryEntries++;
+      }
+      renderer = await createWebGPURenderer({
+        forceWebGL: backend === 'webgl2', requireWebGpu: backend === 'webgpu',
+        antialias: false,
+      });
+      renderer.setSize(96, 32, false);
+      await renderer.init();
+      mesh = new SplatMesh(data, { orientation: 'source', shBands: 1 });
+      const scene = new THREE.Scene();
+      scene.add(mesh);
+      const camera = new THREE.PerspectiveCamera(45, 3, 0.1, 10);
+      camera.position.z = 2;
+      camera.updateMatrixWorld();
+      const target = new THREE.RenderTarget(96, 32, { type: THREE.UnsignedByteType });
+      renderer.setRenderTarget(target);
+      renderer.setClearColor(0, 0);
+      const samples = [];
+      for (let attempt = 0; attempt < 30; attempt++) {
+        mesh.update(camera, renderer);
+        renderer.clear();
+        renderer.render(scene, camera);
+        samples.length = 0;
+        for (const x of [33, 48, 63]) {
+          samples.push(Array.from(await renderer.readRenderTargetPixelsAsync(target, x, 16, 1, 1)));
+        }
+        if (samples.every((pixel) => pixel[3] > 0)) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      const full = await renderer.readRenderTargetPixelsAsync(target, 0, 0, 96, 32);
+      renderer.setRenderTarget(null);
+      const preview = document.querySelector('#preview');
+      const context = preview.getContext('2d');
+      const image = context.createImageData(96, 32);
+      for (let y = 0; y < 32; y++) {
+        image.data.set(full.subarray((31 - y) * 96 * 4, (32 - y) * 96 * 4), y * 96 * 4);
+      }
+      context.putImageData(image, 0, 0);
+      output.textContent = JSON.stringify({
+        backend, count: data.count, secondCount: second.count, metrics, temporaryEntries, samples,
+      });
+      target.dispose();
+    } catch (error) {
+      output.textContent = JSON.stringify({ error: String(error) });
+    } finally {
+      mesh?.dispose();
+      renderer?.dispose();
+      URL.revokeObjectURL(url);
+    }
+  </script>
+</html>

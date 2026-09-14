@@ -1,7 +1,7 @@
 import { PerspectiveCamera, Vector3 } from 'three';
 
 /** Cached captures the standalone comparison pages can load. */
-export const COMPARISON_SCENES = ['Tempel', 'goose', 'hotel'] as const;
+export const COMPARISON_SCENES = ['Tempel', 'goose', 'hotel', 'lcc'] as const;
 export type ComparisonScene = (typeof COMPARISON_SCENES)[number];
 
 /** How the comparison adapters open a cached asset URL. */
@@ -32,6 +32,8 @@ export interface ComparisonConfig {
   warmup: number;
   seconds: number;
   sh: 0 | 1 | 2 | 3 | undefined;
+  /** Optional RAD frontier budget for comparing traversal strategies. */
+  radBudget: number | undefined;
   msaa: boolean;
   timestamps: boolean;
   position?: [number, number, number];
@@ -112,6 +114,9 @@ export function comparisonConfig(path: string, params: URLSearchParams): Compari
     warmup: positive('warmup', 5, 120),
     seconds: positive('seconds', 30, 600),
     sh: params.has('sh') ? (Number(params.get('sh')) as 0 | 1 | 2 | 3) : undefined,
+    radBudget: params.has('radBudget')
+      ? Math.floor(positive('radBudget', 1_000_000, 10_000_000))
+      : undefined,
     msaa: params.has('msaa') ? params.get('msaa') === '1' : preset === 'supplied',
     timestamps: params.get('gpuTimestamps') !== '0',
     position,
