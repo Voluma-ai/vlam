@@ -68,7 +68,9 @@ function chunkedHeader(
     count,
     chunkSize: 4,
     lodTree: true,
-    ...(leafCount === undefined ? {} : { comment: JSON.stringify({ input_splat_count: leafCount }) }),
+    ...(leafCount === undefined
+      ? {}
+      : { comment: JSON.stringify({ input_splat_count: leafCount }) }),
     allChunkBytes: 0,
     chunks: filenames.map((filename) => ({ offset: 0, bytes: 0, filename })),
   };
