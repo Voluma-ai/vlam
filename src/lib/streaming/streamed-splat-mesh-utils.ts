@@ -37,10 +37,12 @@ export function buildHoldSwapGroups(toAdd: readonly LodRun[]): SwapGroup[] {
 /**
  * Groups adds and removals into visible-cell transactions.
  *
- * Classic LCC (`coverageGroup` set on every run): one transaction per sub-leaf
- * interval at every resolved level (including L0), so a cached slice can
- * replace its own prior coverage while siblings still fetch. Hierarchical
- * sources without coverage groups keep interval-overlap grouping.
+ * Classic LCC (`coverageGroup` set on every run): one transaction per
+ * overlap-connected interval within a physical cell. Ordinarily that is one
+ * sub-leaf, so a cached slice can replace its prior coverage while siblings
+ * still fetch. A shared coarse run spans several sub-leaves and must switch
+ * with all its replacements together. Hierarchical sources without coverage
+ * groups use the same interval-overlap rule across the full cut.
  */
 export function buildSwapGroups(toAdd: LodRun[], toRemove: ResidentEntry[]): SwapGroup[] {
   const coverageRuns = [...toAdd, ...toRemove.map(([, entry]) => entry.run)];
@@ -64,36 +66,43 @@ export function buildSwapGroups(toAdd: LodRun[], toRemove: ResidentEntry[]): Swa
 
     const groups: SwapGroup[] = [];
     for (const bucket of buckets.values()) {
-      // Every classic-LCC cut is one transaction per sub-leaf - including
-      // resolved L0. Quality cells split into dozens of finest slices; waiting
-      // for the whole cell before any swap left near detail stuck on coarse
-      // (green) while a few in-flight fetches churned across siblings forever.
-      // Per-slice: a ready L0 patch replaces its own prior coverage immediately;
-      // siblings keep theirs until their chunks land.
-      const byLeaf = new Map<string, SwapGroup>();
-      const leafKey = (start: number, end: number): string => `${start}:${end}`;
-      const ensure = (start: number, end: number): SwapGroup => {
-        const key = leafKey(start, end);
-        let group = byLeaf.get(key);
-        if (!group) {
-          group = { adds: [], removes: [], leafStart: start, leafEnd: end, addCount: 0 };
-          byLeaf.set(key, group);
+      // A shared coarse file can produce one run spanning many sub-leaves.
+      // Matching only equal leaf intervals would put its retirement in a
+      // remove-only group, briefly leaving every finer slice uncovered.
+      const items = [
+        ...bucket.adds.map((run) => ({
+          start: run.leafStart,
+          end: run.leafEnd,
+          add: run,
+          remove: undefined as ResidentEntry | undefined,
+        })),
+        ...bucket.removes.map((entry) => ({
+          start: entry[1].run.leafStart,
+          end: entry[1].run.leafEnd,
+          add: undefined as LodRun | undefined,
+          remove: entry,
+        })),
+      ].sort((a, b) => a.start - b.start || b.end - a.end);
+      let current: SwapGroup | undefined;
+      for (const item of items) {
+        if (!current || item.start >= current.leafEnd) {
+          current = {
+            adds: [],
+            removes: [],
+            leafStart: item.start,
+            leafEnd: item.end,
+            addCount: 0,
+          };
+          groups.push(current);
+        } else {
+          current.leafEnd = Math.max(current.leafEnd, item.end);
         }
-        return group;
-      };
-      for (const run of bucket.adds) {
-        const group = ensure(run.leafStart, run.leafEnd);
-        group.adds.push(run);
-        group.addCount += run.count;
+        if (item.add) {
+          current.adds.push(item.add);
+          current.addCount += item.add.count;
+        }
+        if (item.remove) current.removes.push(item.remove);
       }
-      for (const entry of bucket.removes) {
-        const run = entry[1].run;
-        const group = ensure(run.leafStart, run.leafEnd);
-        group.removes.push(entry);
-        group.leafStart = Math.min(group.leafStart, run.leafStart);
-        group.leafEnd = Math.max(group.leafEnd, run.leafEnd);
-      }
-      groups.push(...byLeaf.values());
     }
     return groups.sort((a, b) => a.leafStart - b.leafStart);
   }

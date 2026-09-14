@@ -78,6 +78,25 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - `mode=settle` in the comparison harness now completes its five-second orbit
   during warm-up (extending shorter warm-ups as needed), rather than starting
   that movement at the first timed frame.
+
+- Classic LCC startup now stages the whole coarse scene for broad views when
+  it fits comfortably in the budget, so the first revealed frame does not omit
+  cells beyond the camera-directed set. Small coarse levels share one fetch per
+  physical cell instead of hundreds of tiny sub-chunk requests. The progress
+  pill identifies the staged set as the initial view. A shared coarse run now
+  switches with all overlapping finer slices in one visible transaction, so
+  refinement cannot briefly remove its coverage.
+
+- WebGL2 and explicit WebGPU worker sorting now publish an immutable scene
+  snapshot atomically: changed pool rows (including packed SH and channels),
+  depth order, and instance count remain on the last complete scene until the
+  matching worker reply is prepared for rendering. Request identities replace
+  slot-range checks, so RAD replacements that reuse the same slots no longer
+  flash stale order or new data; failed and replaced sorters restore pending
+  upload coverage for retry. Channel edits trigger a worker publication even
+  with a stationary camera, merged sources keep source IDs synchronized with
+  their center snapshots, and unified sources continue uploading when they
+  delegate sorting.
 - LCC2 and streamed SOG publish independent region swaps instead of entering
   RAD's global quality gate, allowing distant coverage and lower-detail cuts
   after navigation or budget changes. Missing LCC2 regions request pinned

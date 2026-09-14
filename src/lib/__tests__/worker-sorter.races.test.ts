@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SplatMesh } from '../core/splat-mesh';
+import { MergedSplatMesh } from '../core/merged-splat-mesh';
 import { writeCovariance } from '../core/splat-data';
 import type { SortWorkerRequest, OrderMessage, SortMessage } from '../core/sort-worker';
 import type { SplatSorter } from '../core/sorter';
@@ -17,7 +18,7 @@ const workers = vi.hoisted(() => {
   class FakeSortWorker {
     static instances: FakeSortWorker[] = [];
     onmessage: ((event: { data: OrderMessage }) => void) | null = null;
-    onerror: unknown = null;
+    onerror: ((event: ErrorEvent) => void) | null = null;
     onmessageerror: unknown = null;
     posted: SortWorkerRequest[] = [];
     constructor() {
@@ -29,10 +30,14 @@ const workers = vi.hoisted(() => {
     terminate(): void {}
     /** Delivers a back-to-front order reply, as the real worker would. */
     reply(order: Uint32Array): void {
-      this.onmessage?.({ data: { type: 'order', order } });
+      const requestId = this.sortMessages().at(-1)?.requestId ?? 0;
+      this.onmessage?.({ data: { type: 'order', requestId, order } });
     }
     sortMessages(): SortMessage[] {
       return this.posted.filter((m): m is SortMessage => m.type === 'sort');
+    }
+    fail(): void {
+      this.onerror?.({ message: 'simulated worker failure' } as ErrorEvent);
     }
   }
   return { FakeSortWorker };
@@ -46,6 +51,9 @@ interface Internals {
   splatIndexAttribute: THREE.InstancedBufferAttribute;
   rebuildActiveList(): void;
   requestSortIfNeeded(camera: THREE.Camera, renderer: THREE.WebGPURenderer): void;
+  workerPublicationEnabled: boolean;
+  prepareWorkerPublication(renderer: THREE.WebGPURenderer): void;
+  geometry: THREE.InstancedBufferGeometry;
 }
 
 class TestMesh extends SplatMesh {
@@ -79,7 +87,16 @@ function internals(mesh: SplatMesh): Internals {
 }
 
 function webglRenderer(): THREE.WebGPURenderer {
-  return { backend: { isWebGPUBackend: false } } as unknown as THREE.WebGPURenderer;
+  return {
+    backend: { isWebGPUBackend: false },
+    copyTextureToTexture: vi.fn(),
+  } as unknown as THREE.WebGPURenderer;
+}
+
+function publish(mesh: SplatMesh): void {
+  const state = internals(mesh);
+  state.workerPublicationEnabled = true;
+  state.prepareWorkerPublication(webglRenderer());
 }
 
 function cameraAt(x: number): THREE.Camera {
@@ -176,6 +193,9 @@ describe('WorkerSorter / active-list race regressions', () => {
     // broken blend order until the camera next moves.
     mesh.appendRange(makeSplatData(2));
     internals(mesh).rebuildActiveList();
+    // A completed snapshot remains visible until render preparation publishes
+    // it; only then may the next snapshot begin.
+    publish(mesh);
     internals(mesh).requestSortIfNeeded(camera, webglRenderer());
     expect(worker.sortMessages()).toHaveLength(2);
   });
@@ -215,11 +235,157 @@ describe('WorkerSorter / active-list race regressions', () => {
     attribute.clearUpdateRanges();
     worker.reply(Uint32Array.from([3, 2, 1, 0]));
 
-    // Before the fix applyOrder set only needsUpdate: with any narrow range
-    // pending from an active-list patch, the renderer uploaded a fragment of
-    // the permutation and drew garbage until the next sort.
+    // The reply only queues a publication: no changed draw range can escape
+    // before its matching pool rows are ready.
+    expect(attribute.updateRanges).toHaveLength(0);
+    publish(mesh);
+    // Publication uploads the whole permutation, never a stale narrow range.
     const covering = attribute.updateRanges.some((range) => range.start === 0 && range.count >= 4);
     expect(covering).toBe(true);
+  });
+
+  it('keeps the published data, order, and count intact while a replacement waits', () => {
+    const { mesh, handles } = meshWith([3]);
+    const camera = cameraAt(1);
+    const state = internals(mesh);
+    state.workerPublicationEnabled = true;
+    state.requestSortIfNeeded(camera, webglRenderer());
+    const worker = lastWorker();
+    worker.reply(Uint32Array.from([2, 1, 0]));
+    publish(mesh);
+    const publishedOrder = Array.from(
+      (state.splatIndexAttribute.array as Float32Array).subarray(0, 3),
+    );
+    const publishedCount = state.geometry.instanceCount;
+
+    // Reuse the same row-aligned slots: this is the RAD replacement case that
+    // cannot be identified by comparing active ranges alone.
+    mesh.removeRange(handles[0]!);
+    mesh.appendRange(makeSplatData(3));
+    state.rebuildActiveList();
+    state.requestSortIfNeeded(camera, webglRenderer());
+    expect(worker.sortMessages()).toHaveLength(2);
+    expect(Array.from((state.splatIndexAttribute.array as Float32Array).subarray(0, 3))).toEqual(
+      publishedOrder,
+    );
+    expect(state.geometry.instanceCount).toBe(publishedCount);
+
+    worker.reply(Uint32Array.from([2, 1, 0]));
+    publish(mesh);
+    expect(state.geometry.instanceCount).toBe(3);
+  });
+
+  it('restores failed snapshot coverage and retries without dropping the published view', () => {
+    const { mesh } = meshWith([3]);
+    const camera = cameraAt(1);
+    const state = internals(mesh);
+    state.workerPublicationEnabled = true;
+    state.requestSortIfNeeded(camera, webglRenderer());
+    const worker = lastWorker();
+    worker.reply(Uint32Array.from([2, 1, 0]));
+    publish(mesh);
+    const previous = Array.from((state.splatIndexAttribute.array as Float32Array).subarray(0, 3));
+
+    mesh.appendRange(makeSplatData(2));
+    state.rebuildActiveList();
+    state.requestSortIfNeeded(camera, webglRenderer());
+    worker.fail();
+    expect(Array.from((state.splatIndexAttribute.array as Float32Array).subarray(0, 3))).toEqual(
+      previous,
+    );
+    state.requestSortIfNeeded(camera, webglRenderer());
+    expect(worker.sortMessages()).toHaveLength(3);
+  });
+
+  it('publishes a channel edit without camera movement', () => {
+    const { mesh, handles } = meshWith([3]);
+    mesh.defineChannel('paint');
+    const state = internals(mesh);
+    const camera = cameraAt(1);
+    state.workerPublicationEnabled = true;
+    state.requestSortIfNeeded(camera, webglRenderer());
+    const worker = lastWorker();
+    worker.reply(Uint32Array.from([2, 1, 0]));
+    publish(mesh);
+
+    mesh.writeChannel(handles[0]!, 'paint', [1, 1, 1]);
+    state.requestSortIfNeeded(camera, webglRenderer());
+    expect(worker.sortMessages()).toHaveLength(2);
+    expect(worker.sortMessages()[1]?.indices).toEqual(Uint32Array.from([0, 1, 2]));
+  });
+
+  it('sends source IDs with captured center rows after adding a merged source', () => {
+    const mesh = new MergedSplatMesh({ capacity: 8192 });
+    meshes.push(mesh);
+    mesh.addSource(makeSplatData(3));
+    const state = internals(mesh);
+    const camera = cameraAt(1);
+    state.workerPublicationEnabled = true;
+    state.requestSortIfNeeded(camera, webglRenderer());
+    const worker = lastWorker();
+    worker.reply(Uint32Array.from([2, 1, 0]));
+    publish(mesh);
+
+    const before = worker.posted.length;
+    mesh.addSource(makeSplatData(3), new THREE.Matrix4().makeTranslation(0, 0, 10));
+    state.requestSortIfNeeded(camera, webglRenderer());
+    const writes = worker.posted.slice(before).filter((message) => message.type === 'write');
+    expect(writes.some((message) => message.sourceIds?.includes(1))).toBe(true);
+  });
+
+  it('uploads worker-configured sources when unified rendering owns sorting', () => {
+    const mesh = new SplatMesh({ capacity: 4096 }, { sortStrategy: 'worker' });
+    meshes.push(mesh);
+    mesh.appendRange(makeSplatData(3));
+    mesh.setUnifiedPickVisibility(true);
+    const copy = vi.fn();
+    const renderer = {
+      backend: { isWebGPUBackend: true },
+      copyTextureToTexture: copy,
+      getDrawingBufferSize: (size: THREE.Vector2) => size.set(800, 600),
+    } as unknown as THREE.WebGPURenderer;
+    mesh.update(new THREE.PerspectiveCamera(), renderer, { sort: false });
+    expect(copy).toHaveBeenCalled();
+    expect(internals(mesh).workerPublicationEnabled).toBe(false);
+  });
+
+  it('releases an in-flight standalone snapshot when unified rendering takes over', () => {
+    const mesh = new SplatMesh({ capacity: 4096 }, { sortStrategy: 'worker' });
+    meshes.push(mesh);
+    mesh.appendRange(makeSplatData(3));
+    const state = internals(mesh);
+    state.workerPublicationEnabled = true;
+    state.requestSortIfNeeded(cameraAt(1), webglRenderer());
+    const worker = lastWorker();
+    mesh.setUnifiedPickVisibility(true);
+    const copy = vi.fn();
+    const renderer = {
+      backend: { isWebGPUBackend: true },
+      copyTextureToTexture: copy,
+      getDrawingBufferSize: (size: THREE.Vector2) => size.set(800, 600),
+    } as unknown as THREE.WebGPURenderer;
+    mesh.update(new THREE.PerspectiveCamera(), renderer, { sort: false });
+    expect(copy).toHaveBeenCalled();
+    expect(state.workerPublicationEnabled).toBe(false);
+    worker.reply(Uint32Array.from([2, 1, 0]));
+    expect(state.geometry.instanceCount).toBe(3);
+  });
+
+  it('keeps the standalone worker boundary while XR skips a sort', () => {
+    const mesh = new SplatMesh({ capacity: 4096 });
+    meshes.push(mesh);
+    mesh.appendRange(makeSplatData(3));
+    const renderer = {
+      backend: { isWebGPUBackend: false },
+      copyTextureToTexture: vi.fn(),
+      getDrawingBufferSize: (size: THREE.Vector2) => size.set(800, 600),
+    } as unknown as THREE.WebGPURenderer;
+    mesh.update(new THREE.PerspectiveCamera(), renderer);
+    expect(lastWorker().sortMessages()).toHaveLength(1);
+    mesh.update(new THREE.PerspectiveCamera(), renderer, { sort: false });
+    expect(internals(mesh).workerPublicationEnabled).toBe(true);
+    expect(internals(mesh).geometry.instanceCount).toBe(0);
+    expect(lastWorker().sortMessages()).toHaveLength(1);
   });
 
   it('drops a worker order computed against an outdated active set', () => {

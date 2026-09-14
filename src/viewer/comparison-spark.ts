@@ -134,7 +134,6 @@ export async function createComparisonSpark(
         minAlpha: spark.minAlpha,
         preBlurAmount: spark.preBlurAmount,
         blurAmount: spark.blurAmount,
-        encodeLinear: spark.encodeLinear,
         clipXY: spark.clipXY,
         outputColorSpace: renderer.outputColorSpace,
         msaa: renderer.getContextAttributes()?.antialias === true ? 'enabled' : 0,

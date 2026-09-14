@@ -53,12 +53,20 @@
     camera.position.z = 2;
     camera.updateMatrixWorld();
     const target = new THREE.RenderTarget(5, 5, { type: THREE.UnsignedByteType });
-    splats.update(camera, renderer);
     renderer.setRenderTarget(target);
     renderer.setClearColor(0x000000, 0);
-    renderer.clear();
-    renderer.render(scene, camera);
-    const bytes = await renderer.readRenderTargetPixelsAsync(target, 2, 2, 1, 1);
+    let bytes = new Uint8Array(4);
+    // Worker-sorted paths intentionally reveal their first scene only after
+    // its snapshot has an order. Give the probe a few render-preparation
+    // frames rather than sampling the documented zero-instance first frame.
+    for (let attempt = 0; attempt < 30; attempt++) {
+      splats.update(camera, renderer);
+      renderer.clear();
+      renderer.render(scene, camera);
+      bytes = await renderer.readRenderTargetPixelsAsync(target, 2, 2, 1, 1);
+      if (bytes[3] > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     renderer.setRenderTarget(null);
     backend.textContent = actual;
     pixel.textContent = Array.from(bytes).join(',');

@@ -54,9 +54,10 @@ function sortAndReceive(
   spans: Uint32Array,
   sortMetric: 'depth' | 'radial' = 'depth',
   sortRange?: { min: number; max: number },
+  indices?: Uint32Array,
 ): Uint32Array {
   replies.length = 0;
-  send({ type: 'sort', modelView, spans, sortMetric, sortRange });
+  send({ type: 'sort', requestId: 1, modelView, spans, indices, sortMetric, sortRange });
   expect(replies).toHaveLength(1);
   expect(replies[0]!.type).toBe('order');
   return replies[0]!.order;
@@ -209,6 +210,26 @@ describe('sort-worker 2-pass 24-bit radix depth sort', () => {
     expect(Array.from(order)).toEqual([1, 2, 0]);
   });
 
+  it('uses an explicit captured active list when compaction changed the range layout', () => {
+    const centers = new Float32Array(4 * 4);
+    centers.set([0, 0, -1, 0], 0);
+    centers.set([0, 0, -5, 0], 4);
+    centers.set([0, 0, -3, 0], 8);
+    initPool(centers);
+    const modelView = new Float32Array(16);
+    modelView[10] = 1;
+    // Deliberately incompatible spans prove that the immutable active list,
+    // not mutable range records, is the request's sorting input.
+    const order = sortAndReceive(
+      modelView,
+      new Uint32Array([0, 1]),
+      'depth',
+      undefined,
+      new Uint32Array([0, 2]),
+    );
+    expect(Array.from(order)).toEqual([2, 0]);
+  });
+
   it('clamps million-unit outliers without sacrificing visible depth resolution', () => {
     const centers = new Float32Array(5 * 4);
     centers.set([0, 0, -1_000_000, 0], 0); // distant outlier → first bucket
@@ -261,6 +282,7 @@ describe('sort-worker 2-pass 24-bit radix depth sort', () => {
     replies.length = 0;
     send({
       type: 'sort',
+      requestId: 1,
       sortMetric: 'depth',
       modelView,
       spans: new Uint32Array([0, 2]),

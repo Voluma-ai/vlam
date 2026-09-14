@@ -4,14 +4,15 @@
  * comfortably sorts a million splats per frame on the CPU.
  *
  * The worker mirrors the pool's centers texture (vec4 stride, xyz used) so
- * it can sort any subset: the main thread sends written rows once, then
- * per sort only the model-view matrix and the active pool-index spans.
+ * it can sort any subset: the main thread sends written rows once, then per
+ * sort sends the model-view matrix and an exact captured pool-index list
+ * (legacy callers may still send active spans).
  *
  * Protocol:
  *  - main → worker: `{ type: 'init', capacity }` once.
  *  - main → worker: `{ type: 'write', start, centers }` after pool writes.
- *  - main → worker: `{ type: 'sort', modelView, spans }` per camera change.
- *  - worker → main: `{ type: 'order', order }` - active pool indices,
+ *  - main → worker: `{ type: 'sort', requestId, modelView, indices }` per camera change.
+ *  - worker → main: `{ type: 'order', requestId, order }` - active pool indices,
  *    back-to-front, transferred.
  */
 
@@ -59,6 +60,7 @@ function ensureScratch(activeCount: number): void {
 function sortByDepth(
   modelView: Float32Array,
   spans: Uint32Array,
+  indices: Uint32Array | undefined,
   matrices: Float32Array | undefined,
   sortMetric: 'depth' | 'radial',
   sortRange: SplatSortRange | undefined,
@@ -77,57 +79,63 @@ function sortByDepth(
   const m10 = modelView[10] as number;
   const m14 = modelView[14] as number;
 
-  let activeCount = 0;
-  for (let s = 0; s < spans.length; s += 2) activeCount += spans[s + 1] as number;
+  let activeCount = indices?.length ?? 0;
+  if (!indices) {
+    for (let s = 0; s < spans.length; s += 2) activeCount += spans[s + 1] as number;
+  }
 
   ensureScratch(activeCount);
+  if (indices) {
+    poolIndexes.set(indices, 0);
+  } else {
+    let slot = 0;
+    for (let s = 0; s < spans.length; s += 2) {
+      const start = spans[s] as number;
+      const end = start + (spans[s + 1] as number);
+      for (let i = start; i < end; i++) poolIndexes[slot++] = i;
+    }
+  }
   let minDepth = Infinity;
   let maxDepth = -Infinity;
-  let cursor = 0;
-  for (let s = 0; s < spans.length; s += 2) {
-    const start = spans[s] as number;
-    const end = start + (spans[s + 1] as number);
-    for (let i = start; i < end; i++) {
-      const p = i * 4;
-      const source = sourceIds[i] as number;
-      const matrix = matrices ? source * 16 : 0;
-      const x = centers[p] as number;
-      const y = centers[p + 1] as number;
-      const z = centers[p + 2] as number;
-      const worldX = matrices
-        ? (matrices[matrix] as number) * x +
-          (matrices[matrix + 4] as number) * y +
-          (matrices[matrix + 8] as number) * z +
-          (matrices[matrix + 12] as number)
-        : x;
-      const worldY = matrices
-        ? (matrices[matrix + 1] as number) * x +
-          (matrices[matrix + 5] as number) * y +
-          (matrices[matrix + 9] as number) * z +
-          (matrices[matrix + 13] as number)
-        : y;
-      const worldZ = matrices
-        ? (matrices[matrix + 2] as number) * x +
-          (matrices[matrix + 6] as number) * y +
-          (matrices[matrix + 10] as number) * z +
-          (matrices[matrix + 14] as number)
-        : z;
-      const viewZ = m2 * worldX + m6 * worldY + m10 * worldZ + m14;
-      const depth =
-        sortMetric === 'radial'
-          ? -Math.hypot(
-              m0 * worldX + m4 * worldY + m8 * worldZ + m12,
-              m1 * worldX + m5 * worldY + m9 * worldZ + m13,
-              viewZ,
-            )
-          : viewZ;
-      poolIndexes[cursor] = i;
-      depths[cursor] = depth;
-      cursor++;
-      if (!sortRange) {
-        if (depth < minDepth) minDepth = depth;
-        if (depth > maxDepth) maxDepth = depth;
-      }
+  for (let cursor = 0; cursor < activeCount; cursor++) {
+    const i = poolIndexes[cursor] as number;
+    const p = i * 4;
+    const source = sourceIds[i] as number;
+    const matrix = matrices ? source * 16 : 0;
+    const x = centers[p] as number;
+    const y = centers[p + 1] as number;
+    const z = centers[p + 2] as number;
+    const worldX = matrices
+      ? (matrices[matrix] as number) * x +
+        (matrices[matrix + 4] as number) * y +
+        (matrices[matrix + 8] as number) * z +
+        (matrices[matrix + 12] as number)
+      : x;
+    const worldY = matrices
+      ? (matrices[matrix + 1] as number) * x +
+        (matrices[matrix + 5] as number) * y +
+        (matrices[matrix + 9] as number) * z +
+        (matrices[matrix + 13] as number)
+      : y;
+    const worldZ = matrices
+      ? (matrices[matrix + 2] as number) * x +
+        (matrices[matrix + 6] as number) * y +
+        (matrices[matrix + 10] as number) * z +
+        (matrices[matrix + 14] as number)
+      : z;
+    const viewZ = m2 * worldX + m6 * worldY + m10 * worldZ + m14;
+    const depth =
+      sortMetric === 'radial'
+        ? -Math.hypot(
+            m0 * worldX + m4 * worldY + m8 * worldZ + m12,
+            m1 * worldX + m5 * worldY + m9 * worldZ + m13,
+            viewZ,
+          )
+        : viewZ;
+    depths[cursor] = depth;
+    if (!sortRange) {
+      if (depth < minDepth) minDepth = depth;
+      if (depth > maxDepth) maxDepth = depth;
     }
   }
 
@@ -197,10 +205,11 @@ self.onmessage = (event: MessageEvent<SortWorkerRequest>) => {
   const order = sortByDepth(
     message.modelView,
     message.spans,
+    message.indices,
     message.matrices,
     message.sortMetric,
     message.sortRange,
   );
-  const reply: OrderMessage = { type: 'order', order };
+  const reply: OrderMessage = { type: 'order', requestId: message.requestId, order };
   (self as unknown as Worker).postMessage(reply, [order.buffer]);
 };

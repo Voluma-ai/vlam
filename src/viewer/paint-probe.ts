@@ -141,7 +141,17 @@ const modes = {
   }).length,
 };
 paint.paintStroke(stroke, paintOptions);
-const after = await draw();
+let after = await draw();
+// WebGL publishes a channel edit with the worker's next completed sort, so
+// inspect the first frame that actually contains the stroke.
+for (
+  let attempt = 0;
+  actual === 'webgl2' && changedPixels(before, after) <= 20 && attempt < 50;
+  attempt++
+) {
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  after = await draw();
+}
 const center = (48 * 96 + 48) * 4;
 
 // The readbacks above already synchronize the pixels under test. Do not await

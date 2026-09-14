@@ -36,7 +36,7 @@ import {
   releaseRendererAttributes,
   type PerSourceSortTransform,
 } from './compute-sorter';
-import { WorkerSorter } from './worker-sorter';
+import { WorkerSorter, type WorkerSortSnapshot } from './worker-sorter';
 import { WebGpuSortScheduler, validateSortIntervalMs } from './sort-scheduler';
 import { classifySplatGpuClass, detectSplatDeviceProfile } from './splat-budget';
 import { encodeFloat32ToHalf } from './half-float';
@@ -93,6 +93,30 @@ import {
 interface UploadRowSpan {
   readonly start: number;
   readonly count: number;
+}
+
+/** A copied pool-row region retained until its matching worker order publishes. */
+interface CapturedCoreRows extends UploadRowSpan {
+  readonly centers: Float32Array;
+  readonly colors: Uint8Array;
+  readonly covarianceA: Float32Array;
+  readonly covarianceB: Float32Array;
+  readonly shPacked: readonly Uint32Array[];
+}
+
+interface CapturedChannelRows extends UploadRowSpan {
+  readonly data: Uint8Array | Float32Array;
+}
+
+/** One immutable worker-sort publication. It never aliases mutable pool backing. */
+interface WorkerPublicationSnapshot {
+  readonly generation: number;
+  readonly activeCount: number;
+  readonly activeListVersion: number;
+  readonly spans: Uint32Array;
+  readonly activeIndices: Uint32Array;
+  readonly coreRows: readonly CapturedCoreRows[];
+  readonly channels: ReadonlyMap<string, readonly CapturedChannelRows[]>;
 }
 
 /** Sorts dirty rows and coalesces overlapping or adjacent spans for one flush. */
@@ -179,6 +203,11 @@ interface RangeRecord {
  * camera moves - only that index buffer is rewritten, never the splat data
  * itself. On the WebGPU backend the sort runs in TSL compute passes
  * (`ComputeSorter`); the WebGL2 fallback uses a Web Worker (`WorkerSorter`).
+ * Worker sorting has a deliberately asynchronous visibility boundary: pool
+ * changes stay pending until their immutable data snapshot and matching order
+ * can publish together. Do not bypass that boundary by uploading a worker-path
+ * row or changing its draw count directly; slot reuse can retain the same
+ * ranges while replacing every splat.
  *
  * Two construction modes:
  *
@@ -280,6 +309,16 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   private readonly ranges = new Map<SplatRange, RangeRecord>();
   private activeCount = 0;
+  /** Count in the last atomically published worker snapshot, not pending CPU state. */
+  private publishedActiveCount = 0;
+  /** WebGL2 and explicit WebGPU worker sorts publish texture rows and order together. */
+  private workerPublicationEnabled = false;
+  private workerPublicationGeneration = 0;
+  private workerSnapshotInFlight: WorkerPublicationSnapshot | null = null;
+  private workerPublicationPending: {
+    snapshot: WorkerPublicationSnapshot;
+    order: Uint32Array;
+  } | null = null;
 
   /**
    * Bumped whenever the resident splat set or its positions change (activate,
@@ -327,8 +366,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /** Row spans written since the last flush, awaiting GPU upload. */
   private pendingUploadRows: UploadRowSpan[] = [];
-  /** Row spans awaiting mirroring to the CPU sort worker (WebGL2 path). */
-  private workerDirtyRows: { start: number; count: number }[] = [];
   /** Persistent copy sources avoid allocating four temporary textures per upload region. */
   private readonly uploadStaging = new Map<string, Map<number, THREE.DataTexture>>();
   /** Reusable float→half encode buffers keyed like {@link uploadStaging}. */
@@ -425,7 +462,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private readonly picker: SplatPicker = new SplatPicker({
     mesh: this,
     isDisposed: () => this.disposed,
-    getActiveCount: () => this.activeCount,
+    getActiveCount: () =>
+      this.workerPublicationEnabled ? this.publishedActiveCount : this.activeCount,
     getViewportSize: () => this.viewport.value,
     getPickVisible: () => this.effectiveVisibility,
     hasSorter: () => this.sorter !== null,
@@ -436,7 +474,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       // re-read emptied `.array` / texture images and poison the WebGPU device.
       // The last `update()` already left a valid GPU draw list.
       if (!this.cpuStorageReleased) {
-        this.flushPendingUploads(renderer);
+        this.prepareWorkerPublication(renderer);
         if (!this.computeProjectionActive && this.sorter !== null) {
           this.requestSortIfNeeded(camera, renderer);
         }
@@ -913,6 +951,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       await this.radixSorterLoad;
     }
     if (this.disposed || revision !== this.sortStrategyRevision) return;
+    this.invalidateWorkerPublications();
     const wasCpu = this.usesCpuDrawList();
     this.setComputeProjectionActive(false);
     this.sorter?.dispose();
@@ -922,6 +961,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.projectedPipeline?.dispose();
     this.projectedPipeline = null;
     this.sortStrategyValue = strategy;
+    const isWebGPU =
+      (this.lastRenderer?.backend as { isWebGPUBackend?: boolean } | undefined)?.isWebGPUBackend ===
+      true;
+    if (isWebGPU && strategy !== 'worker') this.workerPublicationEnabled = false;
     if (wasCpu !== this.usesCpuDrawList()) {
       this.drawListSorted = false;
       this.rebuildActiveList();
@@ -1601,6 +1644,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     const endRow = Math.floor((first + data.length - 1) / width);
     channel.pendingRows.push({ start: startRow, count: endRow - startRow + 1 });
     this.contentRevision++;
+    // Worker-backed views publish channel rows only with a completed snapshot.
+    // A stationary camera still needs a request to make this edit visible.
+    if (this.workerPublicationEnabled) this.invalidateSort();
   }
 
   /**
@@ -1772,6 +1818,18 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (this.disposed) return;
     this.bindRenderingOnlyRenderer(renderer, 'update');
     this.lastRenderer = renderer;
+    if (options.sort === false && this.unifiedPickVisibility !== null) {
+      // A registered unified source is gathered through its textures and the
+      // unified renderer owns ordering. XR can also skip a standalone sort;
+      // that must keep its existing worker publication boundary intact.
+      if (this.workerPublicationEnabled) {
+        this.invalidateWorkerPublications();
+        this.workerPublicationEnabled = false;
+        this.rebuildActiveList();
+      }
+    } else if (this.usesCpuDrawList()) {
+      this.enableWorkerPublicationBoundary();
+    }
     this.assertPoolFitsDevice(renderer);
     camera.updateMatrixWorld();
     this.updateWorldMatrix(true, false);
@@ -1780,8 +1838,27 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.updateTimings.sortSubmitMs = 0;
     this.updateTimings.stagingTextureAllocations = 0;
     this.updateTimings.activeListUpdateRanges = 0;
+    if (
+      this.workerPublicationEnabled &&
+      this.activeCount === 0 &&
+      !this.workerSnapshotInFlight &&
+      !this.workerPublicationPending
+    ) {
+      this.workerPublicationPending = {
+        snapshot: {
+          generation: ++this.workerPublicationGeneration,
+          activeCount: 0,
+          activeListVersion: this.activeListVersion,
+          spans: new Uint32Array(0),
+          activeIndices: new Uint32Array(0),
+          coreRows: [],
+          channels: new Map(),
+        },
+        order: new Uint32Array(0),
+      };
+    }
     const uploadStartedAt = performance.now();
-    this.flushPendingUploads(renderer);
+    this.prepareWorkerPublication(renderer);
     this.updateTimings.uploadMs = performance.now() - uploadStartedAt;
     // Resolve the drawn view once: XR gives a per-eye viewport and a separate
     // head pose, everything else the whole canvas. Both consumers below must
@@ -2132,7 +2209,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.lastRenderer = renderer;
     camera.updateMatrixWorld();
     this.updateWorldMatrix(true, false);
-    this.flushPendingUploads(renderer);
+    if (this.usesCpuDrawList()) this.enableWorkerPublicationBoundary();
+    this.prepareWorkerPublication(renderer);
     if (target) _viewSize.set(target.width, target.height);
     else renderer.getDrawingBufferSize(_viewSize);
     this.writeViewUniforms(camera, _viewSize.x, _viewSize.y);
@@ -2169,7 +2247,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // Skip instead; the secondary view draws with the primary order (the
     // documented WebGL2 limitation).
     const isWebGPU = (renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend === true;
-    if (!isWebGPU) return false;
+    if (!isWebGPU || this.sortStrategy === 'worker' || this.sorter?.kind === 'worker') return false;
     if (this.prepareProjectedSort(camera, camera, renderer)) return true;
     // The secondary view already owns the current projected order. Avoid a
     // redundant vertex sort when its projector submission was safely skipped.
@@ -2315,6 +2393,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.invalidateWorkerPublications(false);
     super.dispose();
     if (this.shCacheRenderer) this.shCache?.dispose(this.shCacheRenderer);
     this.shCache = null;
@@ -2359,7 +2438,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // Drop queued CPU work and cached references so nothing uploads or
     // rebuilds after teardown, and large arrays are unreachable promptly.
     this.pendingUploadRows = [];
-    this.workerDirtyRows = [];
     this.queryGrid = null;
     this.ranges.clear();
   }
@@ -2490,9 +2568,274 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   /** Records a written row span for GPU upload and the sort-worker mirror. */
   private markRowsWritten(start: number, count: number): void {
     this.pendingUploadRows.push({ start, count });
-    // The worker mirror only needs deltas once a WorkerSorter exists; it
-    // snapshots the whole pool at creation time.
-    if (this.sorter?.kind === 'worker') this.workerDirtyRows.push({ start, count });
+  }
+
+  /** Enables atomic worker publication once the renderer has selected that path. */
+  private enableWorkerPublicationBoundary(): void {
+    if (this.workerPublicationEnabled) return;
+    this.workerPublicationEnabled = true;
+    // Nothing has been depth-sorted for this backend yet. Do not expose an
+    // identity prefix merely because the CPU active list was already built.
+    this.publishedActiveCount = 0;
+    (this.geometry as THREE.InstancedBufferGeometry).instanceCount = 0;
+  }
+
+  /**
+   * The sole worker-path publication point. Keep texture rows, depth order,
+   * and count in this order: changing any one earlier visibly combines two
+   * scenes (the historical streamed WebGL flash). This is deliberately not
+   * folded into `flushPendingUploads` as a performance shortcut.
+   */
+  private prepareWorkerPublication(renderer: THREE.WebGPURenderer): void {
+    if (!this.workerPublicationEnabled) {
+      this.flushPendingUploads(renderer);
+      return;
+    }
+    const publication = this.workerPublicationPending;
+    if (!publication) return;
+    this.uploadCapturedPublication(renderer, publication.snapshot);
+    const draw = this.splatIndexAttribute.array as Float32Array;
+    draw.set(publication.order, 0);
+    this.splatIndexAttribute.clearUpdateRanges();
+    if (publication.order.length > 0) {
+      this.splatIndexAttribute.addUpdateRange(0, publication.order.length);
+    }
+    this.splatIndexAttribute.needsUpdate = true;
+    (this.geometry as THREE.InstancedBufferGeometry).instanceCount =
+      publication.snapshot.activeCount;
+    this.publishedActiveCount = publication.snapshot.activeCount;
+    this.drawListSorted = true;
+    this.sortedActiveListVersion = publication.snapshot.activeListVersion;
+    this.workerPublicationPending = null;
+  }
+
+  /**
+   * Captures the current CPU scene into the sole worker request allowed in flight.
+   * These copies are bounded by merged dirty rows, never a duplicate pool; they
+   * must nevertheless remain immutable until the reply publishes.
+   */
+  private captureWorkerPublication(): WorkerSortSnapshot | null {
+    if (this.workerSnapshotInFlight || this.workerPublicationPending) return null;
+    const width = SplatMesh.DATA_TEXTURE_WIDTH;
+    const coreRows = mergeUploadRows(this.pendingUploadRows).map((row) => {
+      const offset = row.start * width * 4;
+      const length = row.count * width * 4;
+      return {
+        ...row,
+        centers: this.backing.centers.slice(offset, offset + length),
+        colors: this.backing.colors.slice(offset, offset + length),
+        covarianceA: this.backing.covarianceA.slice(offset, offset + length),
+        covarianceB: this.backing.covarianceB.slice(offset, offset + length),
+        shPacked: this.backing.shPacked.map((data) => data.slice(offset, offset + length)),
+      };
+    });
+    this.pendingUploadRows = [];
+    const channels = new Map<string, readonly CapturedChannelRows[]>();
+    for (const [name, channel] of this.channels) {
+      const rows = mergeUploadRows(channel.pendingRows).map((row) => {
+        const offset = row.start * width;
+        const length = row.count * width;
+        return { ...row, data: channel.backing.slice(offset, offset + length) };
+      });
+      channel.pendingRows = [];
+      if (rows.length > 0) channels.set(name, rows);
+    }
+    const spans = this.currentWorkerSpans();
+    const activeIndices = (this.sourceIndexAttribute.array as Uint32Array).slice(
+      0,
+      this.activeCount,
+    );
+    const snapshot: WorkerPublicationSnapshot = {
+      generation: ++this.workerPublicationGeneration,
+      activeCount: this.activeCount,
+      activeListVersion: this.activeListVersion,
+      spans,
+      activeIndices,
+      coreRows,
+      channels,
+    };
+    this.workerSnapshotInFlight = snapshot;
+    return {
+      requestId: snapshot.generation,
+      spans,
+      indices: activeIndices,
+      centerWrites: coreRows.map((row) => ({
+        start: row.start * width,
+        centers: row.centers,
+        sourceIds: this.perSourceSort?.sourceIds.slice(
+          row.start * width,
+          (row.start + row.count) * width,
+        ),
+      })),
+    };
+  }
+
+  private currentWorkerSpans(): Uint32Array {
+    const spans = new Uint32Array(this.ranges.size * 2);
+    let cursor = 0;
+    for (const record of this.ranges.values()) {
+      if (!record.active) continue;
+      const count = record.activePrefix ?? record.count;
+      if (count === 0) continue;
+      spans[cursor++] = record.start;
+      spans[cursor++] = count;
+    }
+    return spans.subarray(0, cursor);
+  }
+
+  private queueWorkerPublication(requestId: number, order: Uint32Array): void {
+    const snapshot = this.workerSnapshotInFlight;
+    if (!snapshot || snapshot.generation !== requestId || this.disposed) return;
+    this.workerSnapshotInFlight = null;
+    // The generation, rather than the current span layout, identifies this
+    // result: a RAD replacement may reuse every pool slot while changing all
+    // of its contents.
+    this.workerPublicationPending = { snapshot, order };
+  }
+
+  private restoreWorkerPublication(requestId: number): void {
+    const snapshot = this.workerSnapshotInFlight;
+    if (!snapshot || snapshot.generation !== requestId) return;
+    this.workerSnapshotInFlight = null;
+    // Requeue coverage, not old bytes. A later CPU mutation may already own a
+    // row; the retry must capture that latest backing rather than overwrite it.
+    this.pendingUploadRows.push(...snapshot.coreRows.map(({ start, count }) => ({ start, count })));
+    for (const [name, rows] of snapshot.channels) {
+      const channel = this.channels.get(name);
+      if (channel) channel.pendingRows.push(...rows.map(({ start, count }) => ({ start, count })));
+    }
+    this.invalidateSort();
+  }
+
+  /** Invalidates replies owned by a discarded sorter and releases their copies. */
+  private invalidateWorkerPublications(requeue = true): void {
+    const snapshots = [
+      this.workerSnapshotInFlight,
+      this.workerPublicationPending?.snapshot ?? null,
+    ];
+    this.workerSnapshotInFlight = null;
+    this.workerPublicationPending = null;
+    if (!requeue) return;
+    for (const snapshot of snapshots) {
+      if (!snapshot) continue;
+      this.pendingUploadRows.push(
+        ...snapshot.coreRows.map(({ start, count }) => ({ start, count })),
+      );
+      for (const [name, rows] of snapshot.channels) {
+        const channel = this.channels.get(name);
+        if (channel)
+          channel.pendingRows.push(...rows.map(({ start, count }) => ({ start, count })));
+      }
+    }
+  }
+
+  /** Uploads exact snapshot bytes; never read mutable CPU backing during publication. */
+  private uploadCapturedPublication(
+    renderer: THREE.WebGPURenderer,
+    snapshot: WorkerPublicationSnapshot,
+  ): void {
+    const floatType = this.poolFloatTextures === 'float16' ? THREE.HalfFloatType : THREE.FloatType;
+    for (const row of snapshot.coreRows) {
+      this.uploadCapturedRow(renderer, row.start, row.count, THREE.RGBAFormat, 4, [
+        {
+          key: 'centers',
+          texture: this.dataTextures[0] as THREE.DataTexture,
+          data: row.centers,
+          type: floatType,
+          encodeHalf: this.poolFloatTextures === 'float16',
+        },
+        {
+          key: 'colors',
+          texture: this.dataTextures[1] as THREE.DataTexture,
+          data: row.colors,
+          type: THREE.UnsignedByteType,
+        },
+        {
+          key: 'covarianceA',
+          texture: this.dataTextures[2] as THREE.DataTexture,
+          data: row.covarianceA,
+          type: floatType,
+          encodeHalf: this.poolFloatTextures === 'float16',
+        },
+        {
+          key: 'covarianceB',
+          texture: this.dataTextures[3] as THREE.DataTexture,
+          data: row.covarianceB,
+          type: THREE.FloatType,
+        },
+      ]);
+      if (this.shPackedTextures.length > 0) {
+        this.uploadCapturedRow(
+          renderer,
+          row.start,
+          row.count,
+          THREE.RGBAIntegerFormat,
+          4,
+          this.shPackedTextures.map((texture, group) => ({
+            key: `shPacked${group}`,
+            texture,
+            data: row.shPacked[group] as Uint32Array,
+            type: THREE.UnsignedIntType,
+          })),
+        );
+      }
+    }
+    for (const [name, rows] of snapshot.channels) {
+      const channel = this.channels.get(name);
+      if (!channel) continue;
+      for (const row of rows) {
+        this.uploadCapturedRow(renderer, row.start, row.count, THREE.RedFormat, 1, [
+          {
+            key: `channel:${name}`,
+            texture: channel.texture,
+            data: row.data,
+            type: channel.textureType,
+          },
+        ]);
+      }
+    }
+  }
+
+  private uploadCapturedRow(
+    renderer: THREE.WebGPURenderer,
+    start: number,
+    count: number,
+    format: THREE.PixelFormat,
+    components: number,
+    entries: {
+      key: string;
+      texture: THREE.DataTexture;
+      data: Float32Array | Uint8Array | Uint32Array;
+      type: THREE.TextureDataType;
+      encodeHalf?: boolean;
+    }[],
+  ): void {
+    const width = SplatMesh.DATA_TEXTURE_WIDTH;
+    for (const { key, texture, data, type, encodeHalf } of entries) {
+      let stagingData: Float32Array | Uint8Array | Uint32Array | Uint16Array = data;
+      if (encodeHalf) {
+        const half = this.acquireHalfEncodeBuffer(key, data.length);
+        encodeFloat32ToHalf(data as Float32Array, half, 0, data.length);
+        stagingData = half;
+      }
+      const staging = this.acquireUploadStaging(
+        key,
+        stagingData,
+        width,
+        count,
+        format,
+        type,
+        components,
+      );
+      _uploadSrcRegion.min.set(0, 0);
+      _uploadSrcRegion.max.set(width, count);
+      renderer.copyTextureToTexture(
+        staging,
+        texture,
+        _uploadSrcRegion,
+        _uploadPosition.set(0, start),
+      );
+    }
   }
 
   /** Appends one newly active pool range to the packed source-index list. */
@@ -2578,7 +2921,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // the first commit, before {@link sorter} exists, otherwise the following
     // `needsUpdate` upload clobbers the GPU sort and the first frames draw
     // pool order (the noisy "unsorted" picture).
-    if (this.usesCpuDrawList()) {
+    if (this.usesCpuDrawList() && !this.workerPublicationEnabled) {
       const source = this.sourceIndexAttribute.array as Uint32Array;
       const draw = this.splatIndexAttribute.array as Float32Array;
       if (this.drawListSorted) {
@@ -2600,7 +2943,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         this.splatIndexAttribute.needsUpdate = true;
       }
     }
-    (this.geometry as THREE.InstancedBufferGeometry).instanceCount = this.activeCount;
+    if (!this.workerPublicationEnabled) {
+      (this.geometry as THREE.InstancedBufferGeometry).instanceCount = this.activeCount;
+    }
     this.activeListVersion++;
     this.sortScheduler.invalidateContent();
   }
@@ -2642,7 +2987,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // itself, or the first instances would render pool slots 0..n-1
     // regardless of where the active ranges live. The CPU sorter then
     // replaces this identity order asynchronously.
-    if (this.usesCpuDrawList()) {
+    if (this.usesCpuDrawList() && !this.workerPublicationEnabled) {
       const draw = this.splatIndexAttribute.array as Float32Array;
       draw.set(source.subarray(0, cursor));
       this.splatIndexAttribute.clearUpdateRanges();
@@ -2650,7 +2995,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       this.splatIndexAttribute.needsUpdate = true;
       this.drawListSorted = false;
     }
-    (this.geometry as THREE.InstancedBufferGeometry).instanceCount = cursor;
+    if (!this.workerPublicationEnabled) {
+      (this.geometry as THREE.InstancedBufferGeometry).instanceCount = cursor;
+    }
 
     // Pool-index changes invalidate the current draw order. Force the next
     // sort instead of displaying a stale permutation during a streaming swap.
@@ -3591,29 +3938,15 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
               }
             : undefined,
           splatIndexAttribute: this.splatIndexAttribute,
-          takeDirtyRows: () => {
-            const rows = this.workerDirtyRows;
-            this.workerDirtyRows = [];
-            return rows;
-          },
-          getActiveSpans: () => {
-            const spans = new Uint32Array(this.ranges.size * 2);
-            let cursor = 0;
-            for (const record of this.ranges.values()) {
-              if (!record.active) continue;
-              // The used prefix only (matching the active list): the full slab
-              // count would make the worker sort - and the draw list render -
-              // the inactive page-table tail in place of live splats.
-              const count = record.activePrefix ?? record.count;
-              if (count === 0) continue;
-              spans[cursor++] = record.start;
-              spans[cursor++] = count;
-            }
-            return spans.subarray(0, cursor);
-          },
+          takeDirtyRows: () => [],
+          getActiveSpans: () => this.currentWorkerSpans(),
+          captureSnapshot: () => this.captureWorkerPublication(),
+          hasPendingPublication: () => this.workerPublicationPending !== null,
           onOrderApplied: () => {
             this.drawListSorted = true;
           },
+          onOrderReady: (requestId, order) => this.queueWorkerPublication(requestId, order),
+          onSortFailure: (requestId) => this.restoreWorkerPublication(requestId),
         },
         this.sortMetric,
       );

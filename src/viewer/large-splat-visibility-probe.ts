@@ -58,7 +58,14 @@ async function drawPixel(): Promise<number[]> {
 }
 
 try {
-  await drawPixel();
+  // The worker backend begins with a deliberate zero-instance frame until it
+  // has a matched data/order snapshot. Warm that publication before measuring
+  // the visibility cases below.
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const warm = await drawPixel();
+    if ((warm[3] as number) > 0 || requested === 'webgpu') break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
   const initialDispatches = host.shCache?.snapshot().dispatches ?? 0;
   camera.position.x = -2;
   let footprint = await drawPixel();
