@@ -146,8 +146,9 @@ export interface SplatMeshOptions {
   storageMode?: SplatStorageMode;
   /**
    * Where higher-order SH is evaluated. `auto` (default) selects generated
-   * final color on identified Apple Silicon Macs and retains vertex evaluation
-   * elsewhere.
+   * final color on identified Apple Silicon Macs only for static pools with at
+   * least 8,000,000 splats, and retains vertex evaluation elsewhere. Smaller
+   * Apple Mac pools report `apple-mac-small-workload` in diagnostics.
    * `compute` opts fully loaded, unmodified standalone WebGPU meshes into an
    * RGBA8 cache (4 bytes per pool slot, with no CPU mirror). The display shader
    * reads that final color instead of retaining the source-color and SH-palette

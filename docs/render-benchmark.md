@@ -86,7 +86,7 @@ justify a lower threshold.
 | --- | --- | --- |
 | `preset` | `proposed` | `supplied`, `proposed`, `controlled`, or `reference`; legacy `defaults` and `matched` remain accepted |
 | `mode` | `stationary` | `stationary`, `orbit`, position-preserving `rotate`, `translate`, or five seconds of orbit in warm-up then `settle` |
-| `shEvaluation` | `auto` | VLAM SH evaluation: `vertex` or generated final `compute`; `auto` selects the latter on identified Apple Silicon Macs and alongside a qualifying automatic compute-projection choice |
+| `shEvaluation` | `auto` | VLAM SH evaluation: `vertex` or generated final `compute`; `auto` selects the latter on identified Apple Silicon Macs only for static SH pools with at least 8,000,000 splats, and alongside a qualifying automatic compute-projection choice. Smaller eligible Apple pools use vertex SH (`apple-mac-small-workload`); explicit `compute` remains available. |
 | `scene` | `Tempel` | Cached `.lcc2` capture, `goose`, `Kauz-sh2`, streamed `hotel` (`.rad`), or `Langenthal-Manola4A` |
 | `width`, `height` | `1280`, `720` | Drawing-buffer pixels, at pixel ratio 1 |
 | `warmup`, `seconds` | `5`, `30` | Warm-up and measured seconds after initial load/sort |

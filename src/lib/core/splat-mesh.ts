@@ -139,6 +139,7 @@ const UPLOAD_STAGING_CACHE_SIZE = 12;
  * graph; larger allocations still fall back until tested on physical devices.
  */
 const SH_COMPUTE_CACHE_VALIDATED_MAX_BYTES = 64 * 1024 * 1024;
+const APPLE_MAC_AUTO_SH_MIN_SPLATS = 8_000_000;
 
 /** Next power of two ≥ n (n ≥ 1). Staging GPU textures are immutable-sized. */
 function uploadStagingBucketHeight(height: number): number {
@@ -3040,6 +3041,24 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   }
 
   /** Apple Silicon and auto-selected desktop compute paths use generated final color. */
+  private appleMacAutoSmallWorkload(renderer: THREE.WebGPURenderer): boolean {
+    if (this.shEvaluation !== 'auto' || this.capacity >= APPLE_MAC_AUTO_SH_MIN_SPLATS) return false;
+    const adapter = this.webGpuBackend(renderer).device?.adapterInfo;
+    const text = [adapter?.vendor, adapter?.architecture, adapter?.device, adapter?.description]
+      .join(' ')
+      .toLowerCase();
+    const nav = typeof navigator === 'undefined' ? null : navigator;
+    const platform = nav
+      ? ((nav as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ??
+        nav.platform)
+      : '';
+    return (
+      (platform === 'macOS' || /mac/i.test(platform)) &&
+      (nav?.maxTouchPoints ?? 0) <= 1 &&
+      (text.includes('apple') || text.includes('metal'))
+    );
+  }
+
   private shEvaluationWantsCompute(renderer: THREE.WebGPURenderer): boolean {
     if (this.shEvaluation === 'compute') return true;
     if (this.shEvaluation !== 'auto') return false;
@@ -3064,7 +3083,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       (nav?.maxTouchPoints ?? 0) <= 1 &&
       (adapterText.includes('apple') || adapterText.includes('metal'));
     return (
-      appleMac ||
+      (appleMac && this.capacity >= APPLE_MAC_AUTO_SH_MIN_SPLATS) ||
       (this.projectionStrategyValue === 'auto' && this.automaticProjectionStrategy === 'compute')
     );
   }
@@ -3125,7 +3144,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     const useCompute = this.shEvaluationWantsCompute(renderer);
     if (!useCompute) {
       this.shEvaluationState.reason =
-        this.shEvaluation === 'auto' ? 'unvalidated-auto-device' : 'explicit-vertex';
+        this.shEvaluation === 'auto'
+          ? this.appleMacAutoSmallWorkload(renderer)
+            ? 'apple-mac-small-workload'
+            : 'unvalidated-auto-device'
+          : 'explicit-vertex';
       return;
     }
     const sh = this.materialInputs.sh;

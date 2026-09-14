@@ -51,6 +51,8 @@ function internals(mesh: SplatMesh) {
     contentRevision: number;
     graphRevision: number;
     perSourceSort: object | null;
+    capacity: number;
+    shEvaluationWantsCompute(renderer: THREE.WebGPURenderer): boolean;
   };
 }
 
@@ -273,7 +275,7 @@ describe('SH path selection and mesh lifecycle', () => {
     mesh.dispose();
   });
 
-  it('selects the hybrid cache for an identified Apple Mac but excludes touch devices', () => {
+  it('keeps small Apple Mac auto workloads on vertex SH and excludes touch devices', () => {
     const gpu = renderer();
     const device = gpu.backend.device as typeof gpu.backend.device & {
       adapterInfo: { vendor: string; architecture: string };
@@ -285,9 +287,22 @@ describe('SH path selection and mesh lifecycle', () => {
     mac.update(new THREE.PerspectiveCamera(), gpu as unknown as THREE.WebGPURenderer, {
       sort: false,
     });
-    expect(internals(mac).shCache).not.toBeNull();
-    expect(internals(mac).shEvaluationState.reason).toBe('apple-mac-auto');
+    expect(internals(mac).shCache).toBeNull();
+    expect(internals(mac).shEvaluationState.reason).toBe('apple-mac-small-workload');
     mac.dispose();
+
+    const largeMac = new SplatMesh(data(), { shEvaluation: 'auto' });
+    Object.defineProperty(largeMac, 'capacity', { value: 8_000_000 });
+    expect(
+      internals(largeMac).shEvaluationWantsCompute(gpu as unknown as THREE.WebGPURenderer),
+    ).toBe(true);
+    largeMac.dispose();
+
+    const explicit = new SplatMesh(data(), { shEvaluation: 'compute' });
+    expect(
+      internals(explicit).shEvaluationWantsCompute(gpu as unknown as THREE.WebGPURenderer),
+    ).toBe(true);
+    explicit.dispose();
 
     vi.stubGlobal('navigator', { platform: 'MacIntel', maxTouchPoints: 5 });
     const touch = new SplatMesh(data(), { shEvaluation: 'auto' });
@@ -298,6 +313,13 @@ describe('SH path selection and mesh lifecycle', () => {
     expect(internals(touch).shCache).toBeNull();
     expect(internals(touch).shEvaluationState.reason).toBe('unvalidated-auto-device');
     touch.dispose();
+
+    vi.stubGlobal('navigator', { platform: 'Win32', maxTouchPoints: 0 });
+    const nonApple = new SplatMesh(data(), { shEvaluation: 'auto' });
+    expect(
+      internals(nonApple).shEvaluationWantsCompute(gpu as unknown as THREE.WebGPURenderer),
+    ).toBe(false);
+    nonApple.dispose();
     vi.unstubAllGlobals();
   });
 
