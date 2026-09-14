@@ -19,7 +19,8 @@ import {
 } from './parse-splat-ply';
 
 const HEADER_LIMIT = 64 * 1024;
-const SAMPLE_LIMIT = 65_536;
+/** Vertices whose `f_rest_*` values fix the approximate-stream SH range. */
+export const APPROXIMATE_SH_SAMPLE_LIMIT = 65_536;
 
 export interface RemotePlyMetrics {
   mode: 'exact-stream' | 'approximate-sh-stream';
@@ -53,6 +54,8 @@ export async function parseSplatPlyRemote(
     signal: AbortSignal;
     resourceId?: string;
     windowBytes?: number;
+    /** Test seam: production approximate SH still samples 65,536 vertices. */
+    sampleLimit?: number;
     onProgress?: (loaded: number, total: number) => void;
   },
 ): Promise<RemotePlyResult> {
@@ -192,7 +195,9 @@ export async function parseSplatPlyRemote(
     const offsets = vertexOffsets(vertices);
     const rest = restLayout(vertices);
     const sampleCount =
-      rest && mode === 'approximate-sh-stream' ? Math.min(SAMPLE_LIMIT, count) : 0;
+      rest && mode === 'approximate-sh-stream'
+        ? Math.min(options.sampleLimit ?? APPROXIMATE_SH_SAMPLE_LIMIT, count)
+        : 0;
     const sample =
       rest && sampleCount > 0 ? new Float32Array(sampleCount * rest.coefficients * 3) : null;
     if (sample) retainInput(sample);
