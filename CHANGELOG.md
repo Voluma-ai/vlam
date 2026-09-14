@@ -92,6 +92,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- Newly allocated private dynamic pools skip the initial full-texture CPU
+  upload of empty destination images. Textures still allocate at the same
+  dimensions and types; post-construction rows keep the staged upload path.
+  Static meshes and caller-supplied shared pools are unchanged. Matched hotel
+  startup A/B on Apple M3 Chrome WebGPU cut median first-usable time from
+  35.19 s to 32.36 s with zero initial destination uploads; forced WebGL2 was
+  within run-to-run noise. The benchmark server retains
+  `VLAM_EXPERIMENT=baseline` for the previous upload behavior.
 - Closed the retained-scene-memory validation on an RTX 3090 with repeated
   fresh-tab Goose, 8.72M SH3 SOG, 12.85M Tempel LCC2, 3.19M-leaf Hotel RAD,
   and generated 1M SH3 PLY runs across WebGPU and forced WebGL2. Render-only

@@ -1,5 +1,15 @@
 # Empty-pool optimization: Apple Silicon handover
 
+## Outcome (14 September 2026)
+
+**Promoted.** `experiments.initialPoolUpload` is now `'skip-empty'`. Matched
+hotel A/B on Chrome 151 / macOS 26.3.1 / Apple M3 (WebGPU `apple`/`metal-3`)
+met the acceptance criteria: zero initial destination uploads, identical
+1,501,184 capacity with 999,999 active, staging copies retained, lifecycle
+probes green, WebGPU median first-usable 35.19→32.36 s, WebGL2 within noise.
+Evidence: `.tmp/pool-native-scene-{webgpu,webgl}-five-pairs.json` and
+`.tmp/empty-pool-apple-silicon/`. See `docs/render-benchmark.md`.
+
 ## Objective
 
 Validate `experiments.initialPoolUpload = 'skip-empty'` on a native Apple
