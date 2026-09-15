@@ -134,6 +134,7 @@ describe('createFrameBenchmark swap attribution', () => {
     benchmark.record(0, [swapEvent()]);
     benchmark.record(40, [swapEvent()]);
     benchmark.record(50);
+    expect(benchmark.measurementStartedAtMs).toBe(50);
     benchmark.record(100);
 
     expect(benchmark.record(110)).toMatchObject({

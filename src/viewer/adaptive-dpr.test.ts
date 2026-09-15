@@ -3,6 +3,7 @@ import {
   ADAPTIVE_DPR_DOWNWARD_COOLDOWN_MS,
   ADAPTIVE_DPR_FAILED_PROBE_DELAY_MS,
   ADAPTIVE_DPR_MAX_FAILED_PROBE_DELAY_MS,
+  ADAPTIVE_DPR_PRESSURE_DWELL_MS,
   ADAPTIVE_DPR_PROBATION_MS,
   createAdaptiveDprState,
   scopeAdaptiveDprTransitions,
@@ -31,15 +32,18 @@ describe('adaptive DPR controller', () => {
     expect(first.state.emaMs).toBeCloseTo(19.8);
     const second = update(first.state, 16.7, 30);
     expect(second.changed).toBe(false);
-    const sustained = update(second.state, 33.4, 30);
-    expect(sustained.changed).toBe(true);
-    expect(sustained.transition?.reason).toBe('pressure');
+    const third = update(second.state, 33.4, 30);
+    expect(third.changed).toBe(false);
   });
 
-  it('applies sustained pressure reductions immediately', () => {
+  it('requires a short continuous-pressure dwell before reducing DPR', () => {
     let state = createAdaptiveDprState(1, 0);
-    state = update(state, 0, 40).state;
-    const result = update(state, 16.7, 40);
+    for (const nowMs of [0, 100, 200]) {
+      const result = update(state, nowMs, 40);
+      expect(result.changed).toBe(false);
+      state = result.state;
+    }
+    const result = update(state, ADAPTIVE_DPR_PRESSURE_DWELL_MS, 40);
     expect(result.changed).toBe(true);
     expect(result.state.pixelRatio).toBe(0.8);
     expect(result.state.cooldownRemainingMs).toBe(ADAPTIVE_DPR_DOWNWARD_COOLDOWN_MS);
@@ -108,6 +112,7 @@ describe('adaptive DPR controller', () => {
     const state: State = {
       ...createAdaptiveDprState(1, 0),
       emaMs: 22,
+      pressureMs: ADAPTIVE_DPR_PRESSURE_DWELL_MS - 16.7,
       probationRemainingMs: 5_000,
       failedProbeDelayMs: 120_000,
       lastActiveAtMs: 0,
@@ -127,6 +132,7 @@ describe('adaptive DPR controller', () => {
       pixelRatio: 1,
       emaMs: undefined,
       warmupRemaining: 5,
+      pressureMs: 0,
       healthyRecoveryMs: 0,
       probationRemainingMs: 0,
       cooldownRemainingMs: 0,

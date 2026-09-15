@@ -1579,12 +1579,10 @@ async function main(): Promise<void> {
     ...(lodAlpha === undefined ? {} : { lodAlpha }),
   });
   let benchmark: ReturnType<typeof createFrameBenchmark> | null = null;
-  let benchmarkStartedAtMs: number | undefined;
   let benchmarkTransitionStartIndex = 0;
   let benchmarkAdaptiveDprEnabled = false;
   let completedAdaptiveDprTransitions: ReturnType<typeof scopeAdaptiveDprTransitions> = [];
   const beginBenchmark = (): void => {
-    benchmarkStartedAtMs = performance.now();
     benchmarkTransitionStartIndex = adaptiveDprTransitions.length;
     benchmarkAdaptiveDprEnabled = adaptiveDpr && pinnedPixelRatio === null;
     completedAdaptiveDprTransitions = [];
@@ -4267,7 +4265,7 @@ async function main(): Promise<void> {
       completedAdaptiveDprTransitions = scopeAdaptiveDprTransitions(
         adaptiveDprTransitions,
         benchmarkTransitionStartIndex,
-        benchmarkStartedAtMs ?? timestamp,
+        benchmark?.measurementStartedAtMs ?? timestamp,
         timestamp,
         benchmarkAdaptiveDprEnabled,
       );

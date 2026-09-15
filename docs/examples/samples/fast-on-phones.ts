@@ -48,12 +48,14 @@ let emaMs: number | undefined;
 let warmupRemaining = ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES;
 let last = performance.now();
 let sinceHud = 0;
+let pressureMs = 0;
 let healthyRecoveryMs = 0;
 let probationRemainingMs = 0;
 let cooldownRemainingMs = 0;
 let failedProbeDelayMs = 30_000;
 
 const recoveryDwellMs = 2_000;
+const pressureDwellMs = 250;
 const probationMs = 5_000;
 const ordinaryCooldownMs = 10_000;
 const maxFailedProbeDelayMs = 5 * 60_000;
@@ -85,9 +87,14 @@ renderer.setAnimationLoop(() => {
   });
   emaMs = next.emaMs;
   warmupRemaining = next.warmupRemaining;
-  if (next.pixelRatio < pixelRatio) {
+  pressureMs =
+    next.pixelRatio < pixelRatio && activeGap <= 250
+      ? Math.min(pressureDwellMs, pressureMs + activeTimerMs)
+      : 0;
+  if (next.pixelRatio < pixelRatio && pressureMs >= pressureDwellMs) {
     const failedProbe = probationWasActive;
     pixelRatio = next.pixelRatio;
+    pressureMs = 0;
     healthyRecoveryMs = 0;
     probationRemainingMs = 0;
     cooldownRemainingMs = failedProbe ? failedProbeDelayMs : ordinaryCooldownMs;

@@ -67,6 +67,7 @@ export function createFrameBenchmark(
   refreshHints: RefreshTimingHints = {},
 ) {
   let startedAt: number | null = null;
+  let measurementStartedAtMs: number | null = null;
   let previous: number | null = null;
   const durations: number[] = [];
   const eventsByFrame: StreamedSplatPerformanceEvent[][] = [];
@@ -86,6 +87,7 @@ export function createFrameBenchmark(
       pendingEvents = [];
       return null;
     }
+    measurementStartedAtMs ??= timestamp;
     if (previous !== null) {
       durations.push(timestamp - previous);
       // A mutation submitted during the previous frame affects the interval
@@ -220,7 +222,12 @@ export function createFrameBenchmark(
     };
     return result;
   };
-  return { record };
+  return {
+    record,
+    get measurementStartedAtMs(): number | null {
+      return measurementStartedAtMs;
+    },
+  };
 }
 
 /** Reads the GPU order buffer and verifies permutation and depth invariants. */

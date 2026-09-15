@@ -165,7 +165,7 @@ requirements met; not exercised here) · ❓ unverified, no device/report
 | Safari, macOS | WebGPU | ✅ | MacBook Air M3, 8 GB. Classified 2026-08-21 (`mem - desktop integrated`, no `deviceMemory`). Demo SD/HD measured 2026-08-25 in Safari and Chrome; default stays fill-constrained. |
 | Chrome, Android, Galaxy S7 (Mali, no WebGPU) | WebGL2 | 🔎 | Smoke only for the no-WebGPU budget tier (ROADMAP N4). Runs, low fps expected. Not a support claim. |
 | Chrome, Android, Galaxy S24 Ultra (Adreno 750) | WebGPU | ✅ | 2026-08-25, Chrome 151, public demo `?hud=1&gpuTimestamps=1`. HUD `mem 8 mobile discrete`, native dpr 2.625. Goose HD, streamed Dehaar / sandwijck SD vs HD below. Not a 60 Hz claim on dense scenes. |
-| Chrome, Android, Pixel 8a (Mali-G715) | WebGPU / WebGL2 | ✅ | 2026-09-15, Chrome 152 on Android 16/API 36, adapter `arm / valhall`. Three-repeat Goose/Kauz static matrix, main-viewer Tempel/hotel defaults, portrait/landscape DPR and coverage A/B, startup probes, and ten-minute Goose/Tempel thermal soaks. Device-neutral implementation validated on this Mali device; no global candidate promoted. |
+| Chrome, Android, Pixel 8a (Mali-G715) | WebGPU / WebGL2 | ✅ | 2026-09-15, Chrome 152 on Android 16/API 36, adapter `arm / valhall`. Three-repeat Goose/Kauz static matrix, main-viewer Tempel/hotel defaults, portrait/landscape DPR and coverage A/B, startup probes, and ten-minute Goose/Tempel thermal soaks. Device-neutral instrumentation and the predecessor adaptive controller were exercised on this Mali device; no global candidate promoted. |
 | Chrome, Android, other devices | WebGPU / WebGL2 | ❓ | Not exercised by this project. |
 | Firefox | WebGPU | ❓ | Firefox's WebGPU rollout status is not tracked by this project and has not been tested here. Where WebGPU is absent, the WebGL2 fallback applies. |
 | Firefox | WebGL2 | 🔎 | Nothing in the fallback path is Chromium-specific, but it has not been run here. |
@@ -356,7 +356,7 @@ reported Android 16/API 36, 1080×2400 at 420 dpi, USB power, battery saver off,
 and an active 60 Hz mode. WebGPU exposed `vendor: arm`, `architecture: valhall`
 with no device string; Chrome exposed 8 GiB and the viewer classified it as
 `mobile discrete`. The rerun used one foreground Chrome tab, fixed
-`refreshHz=60`, SD (`smooth`, 3σ, MSAA off), stable residency, manual benchmark
+`refreshHz=60`, SD (`smooth`, 3σ, MSAA off), initial loading settled, manual benchmark
 start, 10 seconds of warm-up, and 60 seconds of sampling. Settings were restored
 to automatic brightness, portrait, 60 Hz, and battery saver off.
 
@@ -369,28 +369,29 @@ to automatic brightness, portrait, 60 Hz, and battery saver off.
 | Kauz SH2 source, rendered SH0 / WebGPU / orbit | 1,827,467 | 50.2 / 67.1 / 83.8 ms | Nonblank, 3 runs |
 | Kauz SH2 source, rendered SH0 / WebGL2 / orbit | 1,827,467 | 50.3 / 67.1 / 83.7 ms | Nonblank, 3 runs |
 
-**Foreground 60-second adaptive/pinned validation.** All runs used fixed
-`refreshHz=60`, SD/smooth/3σ, MSAA off, and stable residency. Values below are
+**Foreground 60-second adaptive/pinned measurements.** All runs used fixed
+`refreshHz=60`, SD/smooth/3σ, MSAA off, and an orbiting streamed workload after
+initial loading settled. Values below are
 median / p95 / p99; normalized refresh source was `provided` in every run.
 
 | Scene / mode | Final DPR | Median / p95 / p99 | Result |
 | --- | ---: | ---: | --- |
-| Goose / WebGPU / adaptive (3 runs) | 1.0, 1.0, 1.0 | 16.8 / 16.9 / 16.9–17.0 ms | Startup quality preserved; one run recovered after intermittent callback pressure |
+| Goose / WebGPU / adaptive (3 runs) | 1.0, 1.0, 1.0 at report | 16.8 / 16.9 / 16.9–17.0 ms | One run spent about 27.5 s at DPR 0.8; a later HUD capture also reached 0.8 |
 | Goose / WebGPU / pinned 0.8 (3 runs) | 0.8 | 16.8 / 16.9 / 16.9 ms | Control |
 | Goose / WebGPU / pinned 1.0 (3 runs) | 1.0 | 16.8 / 16.9 / 16.9 ms | Control |
-| Tempel / WebGPU / adaptive (3 runs) | 0.8 | 16.8 / 33.6 / 33.7–50.2 ms | Prompt drop; failed probes obeyed the 30 s active-time backoff |
+| Tempel / WebGPU / adaptive (3 runs) | 0.8 | 16.8 / 33.6 / 33.7–50.2 ms | Failed probes obeyed the 30 s active-time backoff during active streaming |
 | Tempel / WebGPU / pinned 0.8 (3 runs) | 0.8 | 16.8 / 33.6–33.7 / 33.8–50.3 ms | Control |
 | Tempel / WebGPU / pinned 1.0 (3 runs) | 1.0 | 16.8 / 33.6–33.7 / 33.7–33.8 ms | Control; dense callback cadence remains visible |
 | Goose / WebGL2 / adaptive (1 smoke) | 1.0 | 16.8 / 16.9 / 16.9 ms | Nonblank; no transition |
 
 All adaptive and pinned outputs reported display refresh source `provided`,
-display interval 16.7 ms, and callback p10 about 16.7 ms. Adaptive DPR stayed
-within 5% of the appropriate pinned control and matched pinned 0.8 on Tempel.
-DPR 1.0 remained safe for Goose but was not sustainable for Tempel; the 0.8
-result is therefore a speed-preserving decision, not a recovery failure. Probe
-retries were separated by active-time backoff, not rapid oscillation. This
-validates device-neutral behavior on Mali-G715 only; it is not broad Android
-GPU-family validation.
+display interval 16.7 ms, and callback p10 about 16.7 ms. Their aggregate frame
+times stayed within 5%, but the Tempel runs contained 181–263 swap frames and
+4.3–6.6 million staged uploads, so they are streaming-orbit measurements rather
+than settled-residency comparisons. The captures motivated a 250 ms continuous-
+pressure dwell to protect Goose quality; that revision has not been rerun on the
+Pixel. Probe retries in the captured predecessor were separated by active-time
+backoff rather than rapid oscillation.
 
 The earlier main-viewer product-default captures were Goose 149,120 splats at
 16.8 / 16.9 / 17.0 ms, Tempel LCC2 596,842 residents at 16.8 / 33.7 / 33.7
@@ -417,10 +418,11 @@ pool textures, and compute projection remain opt-in; the browser suite covers
 their behavior, but no valid Pixel cross-scene performance gate promoted them.
 
 The scene reset, timing instrumentation, and adaptive controller are
-device-neutral viewer behavior. This Pixel run validates them on Mali-G715
-only; broad Android performance claims remain pending a repeat on the Adreno
-Galaxy S24 Ultra. The Galaxy S7 remains a WebGL2 correctness smoke test, not a
-performance target.
+device-neutral viewer behavior. The timing changes and predecessor controller
+were exercised on Mali-G715; the continuous-pressure revision still needs a
+device rerun. Broad Android performance claims remain pending a repeat on the
+Adreno Galaxy S24 Ultra. The Galaxy S7 remains a WebGL2 correctness smoke test,
+not a performance target.
 
 Startup probes (`startupMetrics=1&uaMemory=0`) reached first usable Goose in
 0.98–1.34 s and Tempel in 3.53–3.72 s across three runs. Accounted mesh memory

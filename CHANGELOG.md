@@ -31,9 +31,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - Adaptive DPR recovery now seeds the first post-warm-up EMA from the target,
   accepts normal 60 Hz 16.7–16.8 ms frames as healthy, advances dwell/probation/
   cooldown only on active frames, and tolerates neutral jitter by decaying health.
-  It applies pressure reductions immediately, requires two seconds of healthy
-  active time for upward suggestions, and backs off failed probes. Scene and
-  performance-mode changes reset its state.
+  It requires 250 ms of continuous active pressure before reducing resolution,
+  two seconds of healthy active time for upward suggestions, and backs off
+  failed probes. Scene and performance-mode changes reset its state.
 
 - A benchmark-only `rad-focus` request scheduler candidate for over-cache
   page-table RAD: incremental worker demand scans and camera-generation-aware

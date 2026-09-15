@@ -2,6 +2,8 @@ import { suggestAdaptivePixelRatio, type AdaptivePixelRatioResult } from '../lib
 
 /** Consecutive healthy active time required before accepting an upward DPR step. */
 export const ADAPTIVE_DPR_RECOVERY_DWELL_MS = 2_000;
+/** Continuous active pressure required before lowering DPR. */
+export const ADAPTIVE_DPR_PRESSURE_DWELL_MS = 250;
 /** Active-time probation after an upward step. */
 export const ADAPTIVE_DPR_PROBATION_MS = 5_000;
 /** Active-time cooldown after an ordinary downward step. */
@@ -27,6 +29,7 @@ export interface AdaptiveDprState {
   pixelRatio: number;
   emaMs: number | undefined;
   warmupRemaining: number;
+  pressureMs: number;
   healthyRecoveryMs: number;
   probationRemainingMs: number;
   cooldownRemainingMs: number;
@@ -43,6 +46,7 @@ export function createAdaptiveDprState(
     pixelRatio,
     emaMs: undefined,
     warmupRemaining,
+    pressureMs: 0,
     healthyRecoveryMs: 0,
     probationRemainingMs: 0,
     cooldownRemainingMs: 0,
@@ -54,10 +58,11 @@ export function createAdaptiveDprState(
 /**
  * Applies one visible, mounted frame to the adaptive-DPR policy.
  *
- * Downward suggestions take effect immediately. Upward suggestions require
- * two seconds of active healthy time, then enter a five-second active-time
- * probation. A failed probe backs off exponentially; inactive frames do not
- * advance the EMA, warm-up, dwell, probation, or cooldown state.
+ * Downward suggestions require a short continuous-pressure dwell. Upward
+ * suggestions require two seconds of active healthy time, then enter a
+ * five-second active-time probation. A failed probe backs off exponentially;
+ * inactive frames do not advance the EMA, warm-up, dwell, probation, or
+ * cooldown state.
  */
 export function updateAdaptiveDpr(
   state: AdaptiveDprState,
@@ -85,15 +90,23 @@ export function updateAdaptiveDpr(
     ...state,
     emaMs: suggestion.emaMs,
     warmupRemaining: suggestion.warmupRemaining,
+    pressureMs:
+      suggestion.pixelRatio < state.pixelRatio && activeGap <= 250
+        ? Math.min(ADAPTIVE_DPR_PRESSURE_DWELL_MS, state.pressureMs + timerMs)
+        : 0,
     healthyRecoveryMs: activeGap > 250 ? 0 : state.healthyRecoveryMs,
     probationRemainingMs: Math.max(0, state.probationRemainingMs - timerMs),
     cooldownRemainingMs: Math.max(0, state.cooldownRemainingMs - timerMs),
     lastActiveAtMs: nowMs,
   };
 
-  if (suggestion.pixelRatio < state.pixelRatio) {
+  if (
+    suggestion.pixelRatio < state.pixelRatio &&
+    next.pressureMs >= ADAPTIVE_DPR_PRESSURE_DWELL_MS
+  ) {
     const failedProbe = probationWasActive;
     next.pixelRatio = suggestion.pixelRatio;
+    next.pressureMs = 0;
     next.healthyRecoveryMs = 0;
     next.probationRemainingMs = 0;
     next.cooldownRemainingMs = failedProbe
