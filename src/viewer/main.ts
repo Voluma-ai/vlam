@@ -70,7 +70,13 @@ import {
 } from './scene-url';
 import { createCollisionWorld, type CollisionWorld } from './collision';
 import { createFrameBenchmark, isSwapPerformanceEvent, verifyGpuSort } from './sort-benchmark';
-import { createAdaptiveDprState, updateAdaptiveDpr } from './adaptive-dpr';
+import {
+  createAdaptiveDprState,
+  scopeAdaptiveDprTransitions,
+  updateAdaptiveDpr,
+  type AdaptiveDprTransition,
+} from './adaptive-dpr';
+import { type RefreshTimingHints } from './frame-timing';
 import { demoSortStrategy } from './sort-policy';
 import { createPerfHud, hudBrowserName } from './perf-hud';
 import { createSeparateTool, type SeparateTool } from './separate';
@@ -557,16 +563,34 @@ async function main(): Promise<void> {
     perfMode.enabled ? PERF_MODE_PIXEL_RATIO : pixelRatioCeiling();
   const adaptivePixelRatioMin = (): number =>
     perfMode.enabled ? PERF_MODE_ADAPTIVE_MIN_PIXEL_RATIO : 1;
+  const refreshHz = Number(params.get('refreshHz'));
+  const refreshHints: RefreshTimingHints = {
+    ...(Number.isFinite(refreshHz) && refreshHz > 0 ? { refreshHz } : {}),
+    screenRefreshRate: (screen as Screen & { refreshRate?: number }).refreshRate,
+  };
   // SD starts at 1 and may step down; HD starts at the quality ceiling.
   let adaptiveDprState = createAdaptiveDprState(
     adaptivePixelRatioMax(),
     ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES,
   );
+  const adaptiveDprTransitions: AdaptiveDprTransition[] = [];
+  const recordAdaptiveDprTransition = (transition: AdaptiveDprTransition): void => {
+    adaptiveDprTransitions.push(transition);
+  };
   const resetAdaptivePixelRatio = (): void => {
+    const oldPixelRatio = adaptiveDprState.pixelRatio;
     adaptiveDprState = createAdaptiveDprState(
       adaptivePixelRatioMax(),
       ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES,
     );
+    if (adaptiveDpr && pinnedPixelRatio === null) {
+      recordAdaptiveDprTransition({
+        atMs: performance.now(),
+        oldPixelRatio,
+        newPixelRatio: adaptiveDprState.pixelRatio,
+        reason: 'scene-reset',
+      });
+    }
   };
   const resolvePixelRatio = (): number =>
     pinnedPixelRatio ??
@@ -1331,7 +1355,7 @@ async function main(): Promise<void> {
   // `?hud=1` - the phone-readable panel. The overlay's fps covers the desktop
   // case, but it is too small to read at arm's length and carries none of the
   // splat-side state (budget, SH bands, GPU split) an A/B run turns on.
-  const perfHud = chrome.perfHud && params.get('hud') === '1' ? createPerfHud() : null;
+  const perfHud = chrome.perfHud && params.get('hud') === '1' ? createPerfHud(refreshHints) : null;
   if (perfHud) document.body.appendChild(perfHud.element);
   document.addEventListener('visibilitychange', () => perfHud?.reset());
   let hudSortCount = 0;
@@ -1554,10 +1578,23 @@ async function main(): Promise<void> {
     ...(Object.keys(frontierFoveation).length === 0 ? {} : { frontierFoveation }),
     ...(lodAlpha === undefined ? {} : { lodAlpha }),
   });
-  let benchmark =
-    benchmarkSeconds > 0 && !manualBenchmarkStart
-      ? createFrameBenchmark(Number(params.get('warmupSeconds')) || 15, benchmarkSeconds)
-      : null;
+  let benchmark: ReturnType<typeof createFrameBenchmark> | null = null;
+  let benchmarkStartedAtMs: number | undefined;
+  let benchmarkTransitionStartIndex = 0;
+  let benchmarkAdaptiveDprEnabled = false;
+  let completedAdaptiveDprTransitions: ReturnType<typeof scopeAdaptiveDprTransitions> = [];
+  const beginBenchmark = (): void => {
+    benchmarkStartedAtMs = performance.now();
+    benchmarkTransitionStartIndex = adaptiveDprTransitions.length;
+    benchmarkAdaptiveDprEnabled = adaptiveDpr && pinnedPixelRatio === null;
+    completedAdaptiveDprTransitions = [];
+    benchmark = createFrameBenchmark(
+      Number(params.get('warmupSeconds')) || 15,
+      benchmarkSeconds,
+      refreshHints,
+    );
+  };
+  if (benchmarkSeconds > 0 && !manualBenchmarkStart) beginBenchmark();
   let lastTimestampResolveAt = -Infinity;
   let timestampResolvePending: Promise<void> | null = null;
   let latestComputeGpuMs: number | undefined;
@@ -3816,7 +3853,7 @@ async function main(): Promise<void> {
       controls.setLookAt(centerX + 0.75, eyeY, centerZ + 0.75, centerX, eyeY, centerZ, true);
     }
     if ((e.key === 'b' || e.key === 'B') && benchmarkSeconds > 0) {
-      benchmark = createFrameBenchmark(Number(params.get('warmupSeconds')) || 15, benchmarkSeconds);
+      beginBenchmark();
       lastTimestampResolveAt = -Infinity;
       latestComputeGpuMs = undefined;
       latestRenderGpuMs = undefined;
@@ -3960,9 +3997,15 @@ async function main(): Promise<void> {
       adaptiveDpr &&
       pinnedPixelRatio === null &&
       mounted &&
+      document.visibilityState === 'visible' &&
       // In VR the canvas pixel ratio is irrelevant (rendering targets the XR
       // framebuffer) and resizing it mid-session would only churn the DOM.
       !renderer.xr.isPresenting &&
+      !(
+        splats instanceof StreamedSplatMesh &&
+        nearL0HoldActive &&
+        splats.initialRevealState.status === 'pending'
+      ) &&
       Number.isFinite(frameDelta) &&
       frameDelta > 0
     ) {
@@ -3973,8 +4016,10 @@ async function main(): Promise<void> {
         frameMs: frameDelta * 1000,
         max: adaptivePixelRatioMax(),
         min: adaptivePixelRatioMin(),
+        nowMs: timestamp,
       });
       adaptiveDprState = update.state;
+      if (update.transition) recordAdaptiveDprTransition(update.transition);
       if (update.changed) {
         renderer.setPixelRatio(adaptiveDprState.pixelRatio);
         renderer.setSize(window.innerWidth, window.innerHeight);
@@ -4219,6 +4264,13 @@ async function main(): Promise<void> {
       renderDrawCalls: renderer.info.render.drawCalls,
     });
     if (benchmarkResult && benchmarkOutput && benchmarkOutput.textContent === '') {
+      completedAdaptiveDprTransitions = scopeAdaptiveDprTransitions(
+        adaptiveDprTransitions,
+        benchmarkTransitionStartIndex,
+        benchmarkStartedAtMs ?? timestamp,
+        timestamp,
+        benchmarkAdaptiveDprEnabled,
+      );
       benchmark = null;
       benchmarkOutput.textContent = 'resolving';
       void Promise.resolve(timestampResolvePending)
@@ -4251,12 +4303,14 @@ async function main(): Promise<void> {
             sortStrategy: splats.sortStrategy,
             performanceProfile,
             sortIntervalMs: sortIntervalMs ?? 'automatic',
+            adaptiveDprEnabled: benchmarkAdaptiveDprEnabled,
             swapCap:
               swapCap ??
               (splats instanceof StreamedSplatMesh && splats.radStrategy === 'page-table'
                 ? DEFAULT_PAGE_TABLE_WRITES_PER_PLAN
                 : DEFAULT_CLASSIC_SPLATS_PER_SWAP),
             ...benchmarkResult,
+            adaptiveDprTransitions: completedAdaptiveDprTransitions,
             computeGpuMs: latestComputeGpuMs,
             renderGpuMs: latestRenderGpuMs,
             sortVerification,

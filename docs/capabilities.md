@@ -165,7 +165,7 @@ requirements met; not exercised here) · ❓ unverified, no device/report
 | Safari, macOS | WebGPU | ✅ | MacBook Air M3, 8 GB. Classified 2026-08-21 (`mem - desktop integrated`, no `deviceMemory`). Demo SD/HD measured 2026-08-25 in Safari and Chrome; default stays fill-constrained. |
 | Chrome, Android, Galaxy S7 (Mali, no WebGPU) | WebGL2 | 🔎 | Smoke only for the no-WebGPU budget tier (ROADMAP N4). Runs, low fps expected. Not a support claim. |
 | Chrome, Android, Galaxy S24 Ultra (Adreno 750) | WebGPU | ✅ | 2026-08-25, Chrome 151, public demo `?hud=1&gpuTimestamps=1`. HUD `mem 8 mobile discrete`, native dpr 2.625. Goose HD, streamed Dehaar / sandwijck SD vs HD below. Not a 60 Hz claim on dense scenes. |
-| Chrome, Android, Pixel 8a (Mali-G715) | WebGPU / WebGL2 | ✅ | 2026-09-15, Chrome 152 on Android 16/API 36, adapter `arm / valhall`. Three-repeat Goose/Kauz static matrix, main-viewer Tempel/hotel defaults, portrait/landscape DPR and coverage A/B, startup probes, and ten-minute Goose/Tempel thermal soaks. Baseline retained; no candidate promoted without a valid gate. |
+| Chrome, Android, Pixel 8a (Mali-G715) | WebGPU / WebGL2 | ✅ | 2026-09-15, Chrome 152 on Android 16/API 36, adapter `arm / valhall`. Three-repeat Goose/Kauz static matrix, main-viewer Tempel/hotel defaults, portrait/landscape DPR and coverage A/B, startup probes, and ten-minute Goose/Tempel thermal soaks. Device-neutral implementation validated on this Mali device; no global candidate promoted. |
 | Chrome, Android, other devices | WebGPU / WebGL2 | ❓ | Not exercised by this project. |
 | Firefox | WebGPU | ❓ | Firefox's WebGPU rollout status is not tracked by this project and has not been tested here. Where WebGPU is absent, the WebGL2 fallback applies. |
 | Firefox | WebGL2 | 🔎 | Nothing in the fallback path is Chromium-specific, but it has not been run here. |
@@ -293,9 +293,9 @@ pass an explicit `deviceProfile`.
 Veersetoren orbit used on the M3 Air (dense XZ pivot, not the outlier
 cinematic shell), Chrome and Safari WebGPU, SD vs HD, adaptive on/off,
 `?hud=1&gpuTimestamps=1`. Record browser, macOS, chip marketing name if known,
-`gpuClass`, memory signal, active splat count, median / p95 / p99, estimated
-refresh interval, missed refresh opportunities, and the literal >33.33 ms
-threshold count. M3 Air results do not close an M5 Max row (see also
+`gpuClass`, memory signal, active splat count, median / p95 / p99, observed
+callback cadence, supplied display refresh interval, missed refresh opportunities,
+and the literal >33.33 ms threshold count. M3 Air results do not close an M5 Max row (see also
 [render benchmark](render-benchmark.md)).
 
 **Implementation order.** Document here → unit-test classification hooks and
@@ -355,11 +355,10 @@ iPhone 15 non-Pro is still open.
 reported Android 16/API 36, 1080×2400 at 420 dpi, USB power, battery saver off,
 and an active 60 Hz mode. WebGPU exposed `vendor: arm`, `architecture: valhall`
 with no device string; Chrome exposed 8 GiB and the viewer classified it as
-`mobile discrete`. Runs used SD (`smooth`, 3σ, MSAA off) and adaptive DPR. The
-final HUD settled Goose at DPR 1.0 in all three adaptive runs after the
-scene-mount reset and 120-frame recovery dwell; pressure-heavy streamed
-defaults can remain at the 0.8 floor. Settings
-were restored to automatic brightness, portrait, 60 Hz, and battery saver off.
+`mobile discrete`. The rerun used one foreground Chrome tab, fixed
+`refreshHz=60`, SD (`smooth`, 3σ, MSAA off), stable residency, manual benchmark
+start, 10 seconds of warm-up, and 60 seconds of sampling. Settings were restored
+to automatic brightness, portrait, 60 Hz, and battery saver off.
 
 | Scene / backend / motion | Splats | Frame median / p95 / p99 | Result |
 | --- | ---: | ---: | --- |
@@ -367,8 +366,31 @@ were restored to automatic brightness, portrait, 60 Hz, and battery saver off.
 | Goose / WebGPU / orbit | 149,120 | 16.8 / 16.9 / 17.0 ms | Nonblank, 3 runs |
 | Goose / WebGL2 / stationary | 149,120 | 16.8 / 16.9 / 16.9 ms | Nonblank, 3 runs |
 | Goose / WebGL2 / orbit | 149,120 | 16.8 / 16.9 / 16.9 ms | Nonblank, 3 runs |
-| Kauz SH2 / WebGPU / orbit | 1,827,467 | 50.2 / 67.1 / 83.8 ms | Nonblank, 3 runs |
-| Kauz SH2 / WebGL2 / orbit | 1,827,467 | 50.3 / 67.1 / 83.7 ms | Nonblank, 3 runs |
+| Kauz SH2 source, rendered SH0 / WebGPU / orbit | 1,827,467 | 50.2 / 67.1 / 83.8 ms | Nonblank, 3 runs |
+| Kauz SH2 source, rendered SH0 / WebGL2 / orbit | 1,827,467 | 50.3 / 67.1 / 83.7 ms | Nonblank, 3 runs |
+
+**Foreground 60-second adaptive/pinned validation.** All runs used fixed
+`refreshHz=60`, SD/smooth/3σ, MSAA off, and stable residency. Values below are
+median / p95 / p99; normalized refresh source was `provided` in every run.
+
+| Scene / mode | Final DPR | Median / p95 / p99 | Result |
+| --- | ---: | ---: | --- |
+| Goose / WebGPU / adaptive (3 runs) | 1.0, 1.0, 1.0 | 16.8 / 16.9 / 16.9–17.0 ms | Startup quality preserved; one run recovered after intermittent callback pressure |
+| Goose / WebGPU / pinned 0.8 (3 runs) | 0.8 | 16.8 / 16.9 / 16.9 ms | Control |
+| Goose / WebGPU / pinned 1.0 (3 runs) | 1.0 | 16.8 / 16.9 / 16.9 ms | Control |
+| Tempel / WebGPU / adaptive (3 runs) | 0.8 | 16.8 / 33.6 / 33.7–50.2 ms | Prompt drop; failed probes obeyed the 30 s active-time backoff |
+| Tempel / WebGPU / pinned 0.8 (3 runs) | 0.8 | 16.8 / 33.6–33.7 / 33.8–50.3 ms | Control |
+| Tempel / WebGPU / pinned 1.0 (3 runs) | 1.0 | 16.8 / 33.6–33.7 / 33.7–33.8 ms | Control; dense callback cadence remains visible |
+| Goose / WebGL2 / adaptive (1 smoke) | 1.0 | 16.8 / 16.9 / 16.9 ms | Nonblank; no transition |
+
+All adaptive and pinned outputs reported display refresh source `provided`,
+display interval 16.7 ms, and callback p10 about 16.7 ms. Adaptive DPR stayed
+within 5% of the appropriate pinned control and matched pinned 0.8 on Tempel.
+DPR 1.0 remained safe for Goose but was not sustainable for Tempel; the 0.8
+result is therefore a speed-preserving decision, not a recovery failure. Probe
+retries were separated by active-time backoff, not rapid oscillation. This
+validates device-neutral behavior on Mali-G715 only; it is not broad Android
+GPU-family validation.
 
 The earlier main-viewer product-default captures were Goose 149,120 splats at
 16.8 / 16.9 / 17.0 ms, Tempel LCC2 596,842 residents at 16.8 / 33.7 / 33.7
@@ -378,19 +400,27 @@ counts remain threshold counts only. Tempel's tails aligned with staged
 uploads and compaction; hotel remained page-table CPU-bound while its settled
 view stayed near 60 Hz.
 
-The landscape DPR A/B (Tempel, adaptive off) held p95 at 33.6 ms for 1.0,
-0.9, and 0.8; p99 was 33.7, 33.7, and 50.3 ms respectively. The 1.5 px
-coverage floor was nonblank; 3.5 px reduced the captured resident cut from
-570,509 to 492,613 and worsened p95/p99 from 33.7/50.4 to 51.8/84.0 ms.
-Halving the classic Tempel swap cap from 32k to 16k left p95/p99 unchanged
-at 33.6/33.7 ms, reduced the settled cut to 497,208, and produced 84–185 ms
-outliers, so the default was retained.
+The landscape Tempel DPR A/B, minimum-splat-size A/B, and swap-cap A/B are
+diagnostic only: resident counts differed, streaming was active, and the DPR
+and minimum-size conditions were not each repeated three times. The observed
+landscape DPR p95 was 33.6 ms for 1.0, 0.9, and 0.8; p99 was 33.7, 33.7, and
+50.3 ms respectively. The 1.5 px coverage floor was nonblank; 3.5 px reduced
+the captured resident cut from 570,509 to 492,613 and worsened p95/p99 from
+33.7/50.4 to 51.8/84.0 ms. Halving the classic Tempel swap cap from 32k to
+16k left p95/p99 unchanged at 33.6/33.7 ms, reduced the settled cut to 497,208,
+and produced 84–185 ms outliers. None justifies a global default change.
 
 The budget-controller run was not promotion evidence: Chrome kept the budget
 tab in the background and reported a 1 rAF / ~1008 ms cadence, so the run was
 stopped rather than used to justify a governor. Contribution culling, float16
 pool textures, and compute projection remain opt-in; the browser suite covers
 their behavior, but no valid Pixel cross-scene performance gate promoted them.
+
+The scene reset, timing instrumentation, and adaptive controller are
+device-neutral viewer behavior. This Pixel run validates them on Mali-G715
+only; broad Android performance claims remain pending a repeat on the Adreno
+Galaxy S24 Ultra. The Galaxy S7 remains a WebGL2 correctness smoke test, not a
+performance target.
 
 Startup probes (`startupMetrics=1&uaMemory=0`) reached first usable Goose in
 0.98–1.34 s and Tempel in 3.53–3.72 s across three runs. Accounted mesh memory
@@ -406,8 +436,9 @@ status was moderate (2), not severe. The high-refresh diagnostic could not
 leave the active display mode because the Pixel service kept the requested
 display at 60 Hz.
 
-Raw JSON, screenshots, logs, thermal samples, and the controller are in the
-ignored `.tmp/android-pixel-8a/20260915-144500/` directory. This validates the
+Raw JSON, screenshots, logs, thermal samples, and controllers (including the
+generalized foreground matrix) are in the ignored
+`.tmp/android-pixel-8a/20260915-144500/` directory. This validates the
 Android gate only; it does not close the non-Pro iPhone 15 row or generalize
 the result to Android GPUs beyond this Mali device.
 
@@ -417,9 +448,13 @@ Chrome tabs on Android inflate p99). Wait until the Streaming pill is gone
 before calling the sample steady; five seconds of cinematic orbit is not
 enough on sandwijck. Copy
 browser, OS, GPU / `gpuClass`, backend, dataset, splat count, and HUD FPS.
-For a repeatable orbit, write median / p95 / p99 frame times, estimated refresh
-interval, and missed refresh opportunities. Report any literal >33.33 ms count
-as a threshold count, not missed vsyncs. A/B coverage with `?adaptiveDpr=0` and
+For a repeatable orbit, write median / p95 / p99 frame times, observed callback
+cadence (p10), display refresh interval when supplied by `?refreshHz=` or
+`screen.refreshRate`, its source (`provided`, `screen`, or `unavailable`), and
+missed refresh opportunities. Use `?refreshHz=60` when the display mode is fixed;
+callback cadence alone never becomes a display-rate estimate, including for
+slow or background runs.
+Report any literal >33.33 ms count as a threshold count, not missed vsyncs. A/B coverage with `?adaptiveDpr=0` and
 `?pixelRatio=1`, then `0.9`, then `0.8`, before raising `maxStdDev`. A/B the
 splat floor with `?minSplatPx=1.5` against `?minSplatPx=3.5` (3.5 px is the
 blobby zoomed-out reference). Run a ten-minute thermal soak on one sparse

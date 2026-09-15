@@ -48,15 +48,33 @@ let emaMs: number | undefined;
 let warmupRemaining = ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES;
 let last = performance.now();
 let sinceHud = 0;
+let healthyRecoveryMs = 0;
+let probationRemainingMs = 0;
+let cooldownRemainingMs = 0;
+let failedProbeDelayMs = 30_000;
+
+const recoveryDwellMs = 2_000;
+const probationMs = 5_000;
+const ordinaryCooldownMs = 10_000;
+const maxFailedProbeDelayMs = 5 * 60_000;
 
 renderer.setAnimationLoop(() => {
   const now = performance.now();
   const frameMs = now - last;
   last = now;
 
+  if (document.visibilityState !== 'visible') return;
+  const activeGap = Math.max(0, frameMs);
+  const activeTimerMs = activeGap > 250 ? 0 : Math.min(activeGap, 100);
+  if (activeGap > 250) healthyRecoveryMs = 0;
+
+  const probationWasActive = probationRemainingMs > 0;
+  probationRemainingMs = Math.max(0, probationRemainingMs - activeTimerMs);
+  cooldownRemainingMs = Math.max(0, cooldownRemainingMs - activeTimerMs);
+
   // Measure, then let the library decide whether to spend or save. It
-  // hysteresis-damps the decision, so the ratio does not oscillate on a
-  // frame that happened to be slow. Warmup skips one-time pipeline compiles.
+  // supplies the raw per-frame suggestion. Warmup skips one-time pipeline
+  // compiles; the host applies the dwell, probation, and retry policy below.
   const next = suggestAdaptivePixelRatio({
     frameMs,
     emaMs,
@@ -67,8 +85,40 @@ renderer.setAnimationLoop(() => {
   });
   emaMs = next.emaMs;
   warmupRemaining = next.warmupRemaining;
-  if (next.pixelRatio !== pixelRatio) {
+  if (next.pixelRatio < pixelRatio) {
+    const failedProbe = probationWasActive;
     pixelRatio = next.pixelRatio;
+    healthyRecoveryMs = 0;
+    probationRemainingMs = 0;
+    cooldownRemainingMs = failedProbe ? failedProbeDelayMs : ordinaryCooldownMs;
+    if (failedProbe) {
+      failedProbeDelayMs = Math.min(failedProbeDelayMs * 2, maxFailedProbeDelayMs);
+    }
+    renderer.setPixelRatio(pixelRatio);
+  } else if (probationRemainingMs > 0) {
+    healthyRecoveryMs = 0;
+  } else if (probationWasActive) {
+    // A probe that completed without pressure earns the initial retry delay.
+    failedProbeDelayMs = 30_000;
+    healthyRecoveryMs = 0;
+  } else if (emaMs === undefined || cooldownRemainingMs > 0) {
+    healthyRecoveryMs = 0;
+  } else if (emaMs > 22) {
+    healthyRecoveryMs = 0;
+  } else if (emaMs < 18 * 0.95) {
+    healthyRecoveryMs = Math.min(recoveryDwellMs, healthyRecoveryMs + activeTimerMs);
+  } else {
+    // Isolated neutral jitter decays the dwell instead of resetting it.
+    healthyRecoveryMs = Math.max(0, healthyRecoveryMs - activeTimerMs);
+  }
+  if (
+    next.pixelRatio > pixelRatio &&
+    healthyRecoveryMs >= recoveryDwellMs &&
+    cooldownRemainingMs === 0
+  ) {
+    pixelRatio = next.pixelRatio;
+    healthyRecoveryMs = 0;
+    probationRemainingMs = probationMs;
     renderer.setPixelRatio(pixelRatio); // cheap: it resizes the drawing buffer
   }
 

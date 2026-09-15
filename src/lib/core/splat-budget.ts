@@ -823,7 +823,7 @@ export interface AdaptivePixelRatioInput {
   max: number;
   /** Floor; defaults to `1`. */
   min?: number;
-  /** EMA of frame time from the previous call; omit on the first sample. */
+  /** EMA of frame time from the previous call; omit before the first sample. */
   emaMs?: number;
   /**
    * Samples still ignored before the EMA starts. Omit or `0` to start
@@ -863,9 +863,36 @@ export interface AdaptivePixelRatioResult {
  *
  * Steps are quarter-units with asymmetric thresholds (pressure to lower,
  * comfortable headroom to raise) so the ratio does not oscillate. The host
- * should apply lower suggestions immediately and dwell on higher suggestions
- * while the EMA remains healthy. One-off hitches (pipeline compiles, tab
- * resume) that are several times the EMA do not count as pressure.
+ * should apply lower suggestions immediately, but must not apply every upward
+ * suggestion. Gate a higher ratio behind two seconds of continuous healthy
+ * suggestions, a five-second probation, and the same retry backoff as the
+ * demo controller; this helper only returns the raw per-frame suggestion.
+ * After warm-up, an undefined EMA is seeded from `targetFrameMs` before the
+ * first sample is incorporated. This keeps one startup hitch from becoming an
+ * immediate downward step while retaining the normal 0.15 response to real
+ * sustained load. One-off hitches (pipeline compiles, tab resume) that are
+ * several times the EMA do not count as pressure.
+ *
+ * ```js
+ * const suggestion = suggestAdaptivePixelRatio({ frameMs, current, max, emaMs });
+ * if (suggestion.pixelRatio < current) {
+ *   const failedProbe = nowMs < probationUntilMs;
+ *   current = suggestion.pixelRatio; // lower immediately
+ *   upwardSinceMs = undefined;
+ *   probationUntilMs = 0;
+ *   nextProbeAtMs = nowMs + (failedProbe ? failedProbeDelayMs : 10_000);
+ *   if (failedProbe) failedProbeDelayMs = Math.min(failedProbeDelayMs * 2, 300_000);
+ * } else if (suggestion.pixelRatio > current && nowMs >= nextProbeAtMs && nowMs >= probationUntilMs) {
+ *   upwardSinceMs ??= nowMs;
+ *   if (nowMs - upwardSinceMs >= 2_000) {
+ *     current = suggestion.pixelRatio;
+ *     upwardSinceMs = undefined;
+ *     probationUntilMs = nowMs + 5_000;
+ *   }
+ * } else {
+ *   upwardSinceMs = undefined;
+ * }
+ * ```
  */
 export function suggestAdaptivePixelRatio(
   input: AdaptivePixelRatioInput,
@@ -892,7 +919,8 @@ export function suggestAdaptivePixelRatio(
     return { pixelRatio, emaMs: input.emaMs, warmupRemaining: 0 };
   }
   const alpha = 0.15;
-  const emaMs = input.emaMs === undefined ? frameMs : input.emaMs * (1 - alpha) + frameMs * alpha;
+  const emaBaseMs = input.emaMs ?? targetFrameMs;
+  const emaMs = emaBaseMs * (1 - alpha) + frameMs * alpha;
 
   let next = pixelRatio;
   if (emaMs > pressureFrameMs && next > min) {

@@ -62,7 +62,7 @@ describe('formatHud', () => {
     const text = formatHud(SAMPLE, [10, 10, 10, 10]);
     expect(text).toContain('100 rAF');
     expect(text).toContain('10.0 ms');
-    expect(text).toContain('refresh 10.0 ms  missed 0');
+    expect(text).toContain('callback p10 10.0 ms  refresh —  missed —');
     expect(text).toContain('cpu submit 5.2 ms');
     expect(text).toContain('sort 30.1 Hz  age 12 ms');
   });
@@ -150,6 +150,11 @@ describe('formatHud', () => {
     expect(text).toContain('—');
     expect(text).toContain('rAF');
   });
+
+  it('shows unavailable refresh normalization for throttled frames', () => {
+    const text = formatHud(SAMPLE, [33.3, 50, 1008]);
+    expect(text).toContain('refresh —  missed —');
+  });
 });
 
 describe('formatHud plan-apply line', () => {
@@ -168,10 +173,12 @@ describe('formatHud plan-apply line', () => {
 });
 
 describe('estimateRefreshMetrics', () => {
-  it('normalizes missed opportunities to the observed refresh cadence', () => {
+  it('keeps callback cadence separate from display refresh', () => {
     expect(estimateRefreshMetrics([16.7, 16.8, 33.4, 50.1])).toEqual({
-      estimatedRefreshMs: 16.7,
-      missedRefreshOpportunities: 3,
+      observedCallbackCadenceMs: 16.7,
+      displayRefreshMs: null,
+      missedRefreshOpportunities: null,
+      refreshSource: 'unavailable',
     });
   });
 });

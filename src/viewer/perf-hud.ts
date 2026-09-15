@@ -124,32 +124,6 @@ const WINDOW_FRAMES = 600;
 /** Repaint interval. Fast enough to feel live, slow enough to read. */
 const REPAINT_MS = 250;
 
-/** Refresh-normalized frame timing used by the HUD and benchmark reports. */
-export interface RefreshNormalizedMetrics {
-  /** Estimated display cadence from the fastest stable frame cohort. */
-  estimatedRefreshMs: number;
-  /** Number of refresh opportunities lost to observed callback gaps. */
-  missedRefreshOpportunities: number;
-}
-
-/** Estimates display cadence and missed refresh opportunities from frame gaps. */
-export function estimateRefreshMetrics(frames: readonly number[]): RefreshNormalizedMetrics {
-  const sorted = frames
-    .filter((frameMs) => Number.isFinite(frameMs) && frameMs > 0)
-    .sort((a, b) => a - b);
-  if (sorted.length === 0) {
-    return { estimatedRefreshMs: 0, missedRefreshOpportunities: 0 };
-  }
-  const estimatedRefreshMs = sorted[
-    Math.min(sorted.length - 1, Math.floor(sorted.length * 0.1))
-  ] as number;
-  const missedRefreshOpportunities = sorted.reduce(
-    (total, frameMs) => total + Math.max(0, Math.round(frameMs / estimatedRefreshMs) - 1),
-    0,
-  );
-  return { estimatedRefreshMs, missedRefreshOpportunities };
-}
-
 /**
  * Builds the panel. The caller appends {@link PerfHud.element} and calls
  * {@link PerfHud.record} once per frame; painting throttles itself.
@@ -161,7 +135,7 @@ export interface PerfHud {
   reset(): void;
 }
 
-export function createPerfHud(): PerfHud {
+export function createPerfHud(refreshHints: RefreshTimingHints = {}): PerfHud {
   const element = document.createElement('div');
   element.id = 'perf-hud';
   Object.assign(element.style, {
@@ -202,7 +176,7 @@ export function createPerfHud(): PerfHud {
       }
       if (nowMs - paintedAt < REPAINT_MS) return;
       paintedAt = nowMs;
-      element.textContent = formatHud(sample, frames);
+      element.textContent = formatHud(sample, frames, refreshHints);
     },
     reset(): void {
       frames.length = 0;
@@ -224,7 +198,11 @@ export function createPerfHud(): PerfHud {
  * the formatting is pure and is where a wrong number would mislead a whole
  * measurement session.
  */
-export function formatHud(sample: PerfHudSample, frames: readonly number[]): string {
+export function formatHud(
+  sample: PerfHudSample,
+  frames: readonly number[],
+  refreshHints: RefreshTimingHints = {},
+): string {
   const lines: string[] = [];
   if (frames.length > 0) {
     const sorted = [...frames].sort((a, b) => a - b);
@@ -233,17 +211,27 @@ export function formatHud(sample: PerfHudSample, frames: readonly number[]): str
       sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))] as number;
     const p95Ms = percentile(0.95);
     const p99Ms = percentile(0.99);
-    const { estimatedRefreshMs, missedRefreshOpportunities } = estimateRefreshMetrics(frames);
+    const {
+      observedCallbackCadenceMs,
+      displayRefreshMs,
+      missedRefreshOpportunities,
+      refreshSource,
+    } = estimateRefreshMetrics(frames, refreshHints);
     lines.push(
       `${fps(mean).padStart(5)} rAF  ${mean.toFixed(1).padStart(5)} ms` +
         `   p99 ${fps(p99Ms)} fps`,
     );
+    const callback =
+      observedCallbackCadenceMs === null ? '—' : `${observedCallbackCadenceMs.toFixed(1)} ms`;
+    const refresh =
+      displayRefreshMs === null ? '—' : `${displayRefreshMs.toFixed(1)} ms [${refreshSource}]`;
+    const missed = missedRefreshOpportunities === null ? '—' : `${missedRefreshOpportunities}`;
     lines.push(
       `frame p95 ${p95Ms.toFixed(1)}  p99 ${p99Ms.toFixed(1)} ms` +
-        `  refresh ${estimatedRefreshMs.toFixed(1)} ms  missed ${missedRefreshOpportunities}`,
+        `  callback p10 ${callback}  refresh ${refresh}  missed ${missed}`,
     );
   } else {
-    lines.push('  —   rAF');
+    lines.push('  —   rAF  callback p10 —  refresh —  missed —');
   }
 
   if (sample.cpuFrameMs !== undefined) lines.push(`cpu submit ${sample.cpuFrameMs.toFixed(1)} ms`);
@@ -401,3 +389,5 @@ export function hudBrowserName(userAgent: string): string {
     'browser ?'
   );
 }
+import { estimateRefreshMetrics, type RefreshTimingHints } from './frame-timing';
+export { estimateRefreshMetrics } from './frame-timing';

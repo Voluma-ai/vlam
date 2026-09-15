@@ -529,14 +529,14 @@ describe('recommendedXrFramebufferScale', () => {
 });
 
 describe('suggestAdaptivePixelRatio', () => {
-  it('clamps to min/max and initializes the EMA from the first sample', () => {
+  it('clamps to min/max and seeds the EMA from the target before the first sample', () => {
     const first = suggestAdaptivePixelRatio({
       frameMs: 20,
       current: 2,
       max: 2,
       min: 1,
     });
-    expect(first.emaMs).toBe(20);
+    expect(first.emaMs).toBeCloseTo(18.3);
     expect(first.pixelRatio).toBe(2);
   });
 
@@ -661,7 +661,36 @@ describe('suggestAdaptivePixelRatio', () => {
       warmupRemaining,
     });
     expect(after.pixelRatio).toBe(1.5);
-    expect(after.emaMs).toBeCloseTo(16.7);
+    expect(after.emaMs).toBeCloseTo(17.805);
+  });
+
+  it('does not lower on one first post-warmup hitch', () => {
+    const warmup = suggestAdaptivePixelRatio({
+      frameMs: 200,
+      current: 1,
+      max: 1,
+      min: 0.8,
+      warmupRemaining: 1,
+    });
+    const first = suggestAdaptivePixelRatio({
+      frameMs: 30,
+      current: warmup.pixelRatio,
+      max: 1,
+      min: 0.8,
+      emaMs: warmup.emaMs,
+      warmupRemaining: warmup.warmupRemaining,
+    });
+    expect(first.pixelRatio).toBe(1);
+    expect(first.emaMs).toBeCloseTo(19.8);
+    const second = suggestAdaptivePixelRatio({
+      frameMs: 30,
+      current: first.pixelRatio,
+      max: 1,
+      min: 0.8,
+      emaMs: first.emaMs,
+      warmupRemaining: first.warmupRemaining,
+    });
+    expect(second.pixelRatio).toBe(1);
   });
 
   it('ignores a hitch several times the EMA without stepping down', () => {
