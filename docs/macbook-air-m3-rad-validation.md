@@ -69,13 +69,14 @@ reviewable. These are full review findings, not just inline-comment titles.
    latency number; external references need matching provenance/readiness too.
 
 Before performance collection, also separate browser-wide memory measurement
-from timing: `snapshot()` currently awaits `measureUserAgentSpecificMemory()`
-before timestamping the screenshot window. Where supported, its pauses and GC
-can contaminate arrival and frame metrics. Add `--memory=off|sample`, default
-`off`, with `sample` used only in separate memory runs. Honor `--sampleMs`
-through its requested endpoint (the existing schedule stops at 60 seconds even
-when a longer interval is accepted). Record failures from page errors, renderer
-device loss and streaming errors, including runs that never show a first image.
+from timing. This is done: `scripts/rad-detail-benchmark.mjs` defaults to
+`--memory=off` and timestamps/screenshots before any
+`measureUserAgentSpecificMemory()` call. Use `--memory=sample` only in
+separate memory runs. `--sampleMs` is sampled through its requested endpoint
+rather than stopping at the historic 60 s table. Page errors, renderer device
+loss, streaming errors, and runs that never show a first image are recorded as
+failed rows with a null arrival number. Do not revert to awaiting browser-wide
+memory before the capture window.
 
 Run focused tests after these changes. Retain production behavior when an
 experiment is off. Do not proceed to performance claims with an unresolved

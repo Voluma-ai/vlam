@@ -609,10 +609,10 @@ async function main(): Promise<void> {
   // resource pressure) otherwise leaves a silently frozen canvas. Stop the
   // loop and offer a reload - on WebGPU via `device.lost`, on WebGL2 via the
   // canvas `webglcontextlost` event.
-  let deviceLost = false;
+  let deviceLost: string | null = null;
   const onDeviceLost = (reason: string): void => {
     if (deviceLost) return;
-    deviceLost = true;
+    deviceLost = reason;
     renderer.setAnimationLoop(null);
     showError({
       title: 'Graphics device lost',
@@ -4492,6 +4492,9 @@ async function main(): Promise<void> {
       },
       get separateTool(): SeparateTool | null {
         return separateTool;
+      },
+      get deviceLost(): string | null {
+        return deviceLost;
       },
       get radBenchmarkMemory(): Record<string, unknown> | null {
         if (!(splats instanceof StreamedSplatMesh) || splats.radStrategy !== 'page-table') {

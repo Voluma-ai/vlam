@@ -99,6 +99,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   displayed cut. The RAD detail runner now rejects zero-motion Poland orbit and
   turn routes, includes the motion interval in frame-tail statistics, and
   requires every RAD frontier to converge before using its frame as a reference.
+  It also defaults to `--memory=off` so browser-wide memory probes cannot delay
+  screenshot timestamps, samples through the requested `--sampleMs` endpoint,
+  and records missing first images, device loss, and streaming errors as failed
+  runs instead of arrival numbers.
 
 - The standalone Spark comparison now opens `.rad` captures through Spark's
   native paged loader instead of attempting a whole-file decode, applies the

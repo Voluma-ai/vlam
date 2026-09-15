@@ -68,8 +68,14 @@ allowance comparable on a capture that otherwise fits the machine's default.
 The runner requires a headed Chromium, defaults to native WebGPU, saves sampled
 frames and central-image error against the settled frame under ignored `.tmp/`,
 and supports `--backend=webgpu|webgl`,
-`--routes=overview-fly,direct,turn-return,orbit`, `--runs=5`, and
-`--cacheMode=cold|warm`. In warm mode, the first run primes the browser cache.
+`--routes=overview-fly,direct,turn-return,orbit`, `--runs=5`,
+`--cacheMode=cold|warm`, and `--memory=off|sample`. Memory defaults to `off`
+so `measureUserAgentSpecificMemory()` cannot delay screenshot timestamps;
+`--memory=sample` is only for separate memory runs. `--sampleMs` is sampled
+through its requested endpoint, not capped at the historic 60 s table. A run
+that never shows a first image, loses the GPU device, or finishes with a
+streaming error is recorded as failed and yields no arrival number. In warm
+mode, the first run primes the browser cache.
 For comparable-detail timing, capture one settled production-VLAM frame and
 pass it to every run with `--reference=<final.png> --thresholdMae=<fixed>`.
 Without `--reference`, each run compares against its own final frame and is

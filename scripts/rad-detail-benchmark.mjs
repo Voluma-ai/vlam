@@ -1,9 +1,16 @@
 /** Native-browser, screenshot-based RAD arrival probe. Run against separately
- * started baseline and rad-focus benchmark servers; see docs/formats/rad-notes.md.
- * Output is diagnostic until the route and pixel threshold are visually audited. */
+ * started baseline, rad-indexed, and rad-focus benchmark servers; see
+ * docs/formats/rad-notes.md. Output is diagnostic until the route and pixel
+ * threshold are visually audited. */
 import { chromium } from '@playwright/test';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
+import {
+  classifyBenchmarkFailures,
+  parseMemoryMode,
+  sampleSchedule,
+  stopToEquivalentMs,
+} from './rad-detail-benchmark-policy.mjs';
 
 const flags = Object.fromEntries(
   process.argv.slice(2).map((arg) => {
@@ -23,20 +30,15 @@ const cacheMode = flags.cacheMode ?? 'cold';
 const backend = flags.backend ?? 'webgpu';
 const referencePath = flags.reference;
 const thresholdMae = flags.thresholdMae === undefined ? null : Number(flags.thresholdMae);
+const memoryMode = parseMemoryMode(flags.memory);
 if (!['cold', 'warm'].includes(cacheMode)) throw new Error('Invalid cacheMode.');
 if (!['webgpu', 'webgl'].includes(backend)) throw new Error('Invalid backend.');
 if (thresholdMae !== null && (!Number.isFinite(thresholdMae) || thresholdMae < 0))
   throw new Error('Invalid thresholdMae.');
-if (
-  !Number.isInteger(runs) ||
-  runs < 1 ||
-  runs > 20 ||
-  !Number.isFinite(sampleMs) ||
-  sampleMs < 1000 ||
-  sampleMs > 120000
-) {
+if (!Number.isInteger(runs) || runs < 1 || runs > 20) {
   throw new Error('Invalid runs or sampleMs.');
 }
+const schedule = sampleSchedule(sampleMs);
 const manifest =
   scene === 'ply'
     ? { file: 'ply/medium.ply' }
@@ -106,35 +108,83 @@ async function centralMae(page, left, right) {
   );
 }
 
+function emptyViewerState(timestamp, error) {
+  return {
+    timestamp,
+    backend: null,
+    active: null,
+    frontier: null,
+    pagerMode: null,
+    poolCapacity: null,
+    poolMemory: null,
+    browserMemoryBytes: null,
+    plan: null,
+    fetch: null,
+    demand: null,
+    pending: null,
+    error,
+    deviceLost: null,
+  };
+}
+
+async function collectViewerState(page) {
+  try {
+    return await page.evaluate(() => {
+      const voluma = window.__voluma;
+      const splats = voluma?.splats;
+      return {
+        timestamp: performance.now(),
+        backend: voluma?.renderer?.backend?.isWebGPUBackend ? 'WebGPU' : 'WebGL2',
+        active: splats?.activeSplatCount ?? null,
+        frontier: splats?.frontierState ?? null,
+        pagerMode: splats?.indexedPageTable ? 'indexed' : 'classic',
+        poolCapacity: splats?.capacity ?? null,
+        poolMemory: voluma?.radBenchmarkMemory ?? null,
+        browserMemoryBytes: null,
+        plan: splats?.planTimings ?? null,
+        fetch: splats?.fetchCounts ?? null,
+        demand: splats?.demandDiagnostics ?? null,
+        pending: splats?.pendingChunkCount ?? null,
+        error: splats?.streamingError?.message ?? null,
+        deviceLost: voluma?.deviceLost ?? null,
+      };
+    });
+  } catch (error) {
+    return emptyViewerState(0, error instanceof Error ? error.message : String(error));
+  }
+}
+
 async function snapshot(page, stopAt, index, route) {
-  const state = await page.evaluate(async () => {
-    const splats = window.__voluma?.splats;
-    let browserMemoryBytes = null;
-    try {
-      browserMemoryBytes = (await performance.measureUserAgentSpecificMemory?.())?.bytes ?? null;
-    } catch {
-      // Requires cross-origin isolation in some Chromium builds; the pool
-      // estimate remains available and includes CPU/index/SH allocations.
-    }
-    return {
-      timestamp: performance.now(),
-      backend: window.__voluma?.renderer?.backend?.isWebGPUBackend ? 'WebGPU' : 'WebGL2',
-      active: splats?.activeSplatCount,
-      frontier: splats?.frontierState,
-      pagerMode: splats?.indexedPageTable ? 'indexed' : 'classic',
-      poolCapacity: splats?.capacity,
-      poolMemory: window.__voluma?.radBenchmarkMemory ?? null,
-      browserMemoryBytes,
-      plan: splats?.planTimings,
-      fetch: splats?.fetchCounts,
-      demand: splats?.demandDiagnostics,
-      pending: splats?.pendingChunkCount,
-      error: splats?.streamingError?.message,
-    };
-  });
+  // Timestamp and screenshot before any browser-wide memory probe. That API
+  // can GC-pause for seconds and would otherwise shift arrival and frame
+  // windows.
+  const state = await collectViewerState(page);
   const captureStartedAt = state.timestamp;
-  const screenshot = await page.screenshot();
-  const captureEndedAt = await page.evaluate(() => performance.now());
+  let screenshot = Buffer.alloc(0);
+  try {
+    screenshot = await page.screenshot();
+  } catch {
+    // Keep the JSON row even when the page is already gone.
+  }
+  let captureEndedAt = captureStartedAt;
+  try {
+    captureEndedAt = await page.evaluate(() => performance.now());
+  } catch {
+    captureEndedAt = captureStartedAt;
+  }
+  if (memoryMode === 'sample') {
+    try {
+      state.browserMemoryBytes = await page.evaluate(async () => {
+        try {
+          return (await performance.measureUserAgentSpecificMemory?.())?.bytes ?? null;
+        } catch {
+          return null;
+        }
+      });
+    } catch {
+      state.browserMemoryBytes = null;
+    }
+  }
   if (index === 0 || index === -1 || [4, 5, 8, 9].includes(index)) {
     const name = index === 0 ? 'stop' : index === -1 ? 'final' : `sample-${index}`;
     await writeFile(join(outputDir, `${route}-${name}.png`), screenshot);
@@ -292,6 +342,7 @@ async function runOne(route, run, sharedContext) {
   });
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  page.on('crash', () => errors.push('page crashed'));
   const params = new URLSearchParams({
     scene: sceneUrl,
     orientation: 'source',
@@ -311,84 +362,128 @@ async function runOne(route, run, sharedContext) {
     params.set('cameraTarget', manifest.camera.target.join(','));
   }
   await page.goto(`${base}/src/viewer/index.html?${params}`, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => window.__voluma?.splats?.activeSplatCount > 0, null, {
-    timeout: 120000,
-  });
-  const actualBackend = await page.evaluate(() =>
-    window.__voluma.renderer.backend.isWebGPUBackend ? 'webgpu' : 'webgl',
-  );
-  if (actualBackend !== backend)
-    throw new Error(`Requested ${backend}, but the viewer activated ${actualBackend}.`);
-  if (route === 'turn-return' || route === 'orbit') await page.waitForTimeout(7000);
-  else if (route === 'overview-fly') await page.waitForTimeout(1500);
-  const motion = await move(page, route);
-  if (route === 'orbit' || route === 'turn-return') {
+  let sawFirstImage = true;
+  try {
+    await page.waitForFunction(() => window.__voluma?.splats?.activeSplatCount > 0, null, {
+      timeout: 120000,
+    });
+  } catch {
+    sawFirstImage = false;
+  }
+  if (sawFirstImage) {
+    const actualBackend = await page.evaluate(() =>
+      window.__voluma.renderer.backend.isWebGPUBackend ? 'webgpu' : 'webgl',
+    );
+    if (actualBackend !== backend)
+      throw new Error(`Requested ${backend}, but the viewer activated ${actualBackend}.`);
+  }
+  if (sawFirstImage && (route === 'turn-return' || route === 'orbit'))
+    await page.waitForTimeout(7000);
+  else if (sawFirstImage && route === 'overview-fly') await page.waitForTimeout(1500);
+  const motion = sawFirstImage
+    ? await move(page, route)
+    : {
+        startedAt: 0,
+        endedAt: 0,
+        maxCameraTravel: 0,
+        configuredHorizontalRadius: 0,
+        effectiveHorizontalRadius: 0,
+      };
+  if (sawFirstImage && (route === 'orbit' || route === 'turn-return')) {
     if (motion.maxCameraTravel < 1) {
       throw new Error(`Route ${route} did not move the camera.`);
     }
   }
   const stopAt = motion.endedAt;
   const shots = [];
-  const schedule = [
-    0, 250, 500, 1000, 2000, 3500, 5000, 7500, 8000, 8500, 9000, 9500, 10000, 15000, 20000, 30000,
-    35000, 40000, 45000, 50000, 60000,
-  ].filter((ms) => ms <= sampleMs);
-  for (let index = 0; index < schedule.length; index++) {
-    const elapsed = await page.evaluate((start) => performance.now() - start, stopAt);
-    if (schedule[index] > elapsed) await page.waitForTimeout(schedule[index] - elapsed);
-    shots.push(await snapshot(page, stopAt, index, `${route}-${run}`));
+  if (sawFirstImage) {
+    for (let index = 0; index < schedule.length; index++) {
+      const elapsed = await page.evaluate((start) => performance.now() - start, stopAt);
+      if (schedule[index] > elapsed) await page.waitForTimeout(schedule[index] - elapsed);
+      shots.push(await snapshot(page, stopAt, index, `${route}-${run}`));
+    }
   }
   const final = await snapshot(page, stopAt, -1, `${route}-${run}`);
   const captureWindows = [...shots, final].map((shot) => [
     shot.captureStartedAt - 100,
     shot.captureEndedAt + 100,
   ]);
-  const frameDurations = await page.evaluate(
-    ({ motionStart, settledStart, excluded }) => {
-      const collect = (start) =>
-        window.__radFrames
-          .filter(([time]) => time >= start && !excluded.some(([a, b]) => time >= a && time <= b))
-          .map(([, duration]) => duration);
-      return { motion: collect(motionStart), settled: collect(settledStart) };
-    },
-    { motionStart: motion.startedAt, settledStart: stopAt, excluded: captureWindows },
-  );
+  let frameDurations = { motion: [], settled: [] };
+  try {
+    frameDurations = await page.evaluate(
+      ({ motionStart, settledStart, excluded }) => {
+        const collect = (start) =>
+          (window.__radFrames ?? [])
+            .filter(([time]) => time >= start && !excluded.some(([a, b]) => time >= a && time <= b))
+            .map(([, duration]) => duration);
+        return { motion: collect(motionStart), settled: collect(settledStart) };
+      },
+      { motionStart: motion.startedAt, settledStart: stopAt, excluded: captureWindows },
+    );
+  } catch {
+    frameDurations = { motion: [], settled: [] };
+  }
   const reference = sharedReference ?? final.screenshot;
   const errorsToReference = [];
-  for (const shot of shots)
-    errorsToReference.push(await centralMae(page, shot.screenshot, reference));
-  const finalCentralMae = await centralMae(page, final.screenshot, reference);
+  const canCompare = shots.length > 0 && reference.length > 0 && final.screenshot.length > 0;
+  if (canCompare) {
+    for (const shot of shots)
+      errorsToReference.push(await centralMae(page, shot.screenshot, reference));
+  }
+  const finalCentralMae = canCompare ? await centralMae(page, final.screenshot, reference) : null;
   const startError = errorsToReference[0];
   // An absolute 2 RGB levels across a large ROI accepted visibly soft cuts as
   // equivalent; 0.25 remains above tiny stationary capture/sort noise.
-  const threshold = thresholdMae ?? Math.max(0.25, startError * 0.1);
-  const errorsThroughFinal = [...errorsToReference, finalCentralMae];
+  const threshold =
+    thresholdMae ?? (Number.isFinite(startError) ? Math.max(0.25, startError * 0.1) : 0.25);
+  const errorsThroughFinal = [...errorsToReference, finalCentralMae].filter((error) =>
+    Number.isFinite(error),
+  );
   const firstEquivalent = shots.findIndex(
     (shot, i) =>
+      Number.isFinite(errorsToReference[i]) &&
       errorsToReference[i] <= threshold &&
       errorsThroughFinal.slice(i).every((error) => error <= threshold),
   );
-  const runStillPending = final.state.pending > 0 || frontierStillPending(final.state.frontier);
+  const runStillPending =
+    !sawFirstImage || final.state.pending > 0 || frontierStillPending(final.state.frontier);
   const referenceStillPending =
     runStillPending || (sharedReference !== null && (await referenceRunStillPending()));
   const browserMemorySamples = [...shots, final]
     .map((shot) => shot.state.browserMemoryBytes)
     .filter((bytes) => Number.isFinite(bytes));
+  const streamingError =
+    final.state.error ?? shots.map((shot) => shot.state.error).find(Boolean) ?? null;
+  const deviceLost =
+    final.state.deviceLost ?? shots.map((shot) => shot.state.deviceLost).find(Boolean) ?? null;
+  const failures = classifyBenchmarkFailures({
+    pageErrors: errors,
+    deviceLost,
+    streamingError,
+    sawFirstImage,
+  });
   const result = {
     label,
     backend,
+    memoryMode,
     cacheMode,
     scene,
     route,
     run,
     allowanceMB,
     budget,
-    stopToEquivalentCentralMs:
-      referenceStillPending || firstEquivalent < 0 ? null : shots[firstEquivalent].elapsedMs,
+    sampleMs,
+    stopToEquivalentCentralMs: stopToEquivalentMs({
+      failures,
+      referenceStillPending,
+      firstEquivalent,
+      samples: shots,
+    }),
     centralThresholdMae: threshold,
     referencePath: referencePath ?? null,
     referenceStillPending,
     runStillPending,
+    failures,
     motionDurationMs: motion.endedAt - motion.startedAt,
     motionDistance: motion.maxCameraTravel,
     configuredHorizontalRadius: motion.configuredHorizontalRadius,
@@ -405,7 +500,7 @@ async function runOne(route, run, sharedContext) {
     settledFrameP99Ms: percentile(frameDurations.settled, 0.99),
     peakBrowserMemoryBytes: browserMemorySamples.length ? Math.max(...browserMemorySamples) : null,
     poolMemory: final.state.poolMemory,
-    errors,
+    errors: failures,
   };
   await page.close();
   if (!sharedContext) await context.close();
@@ -428,6 +523,8 @@ try {
           route,
           run,
           arrivalMs: result.stopToEquivalentCentralMs,
+          memoryMode: result.memoryMode,
+          failures: result.failures,
           motionDistance: result.motionDistance,
           frameP95Ms: result.frameP95Ms,
           frameP99Ms: result.frameP99Ms,
