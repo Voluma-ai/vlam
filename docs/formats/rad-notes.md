@@ -75,7 +75,11 @@ so `measureUserAgentSpecificMemory()` cannot delay screenshot timestamps;
 through its requested endpoint, not capped at the historic 60 s table. A run
 that never shows a first image, loses the GPU device, or finishes with a
 streaming error is recorded as failed and yields no arrival number. In warm
-mode, the first run primes the browser cache.
+mode the runner performs one unmeasured priming load of the first route, then
+`--runs` measured loads on new pages that reuse the browser HTTP cache. That
+does not retain a decoded GPU/JS scene; each measured run still starts from an
+empty page. The prime is written to `prime.json` and is not mixed into
+`results.json`.
 For comparable-detail timing, capture one settled production-VLAM frame and
 pass it to every run with `--reference=<final.png> --thresholdMae=<fixed>`.
 Without `--reference`, each run compares against its own final frame and is

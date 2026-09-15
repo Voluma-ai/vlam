@@ -44,3 +44,40 @@ export function stopToEquivalentMs({ failures, referenceStillPending, firstEquiv
   if (failures.length > 0 || referenceStillPending || firstEquivalent < 0) return null;
   return samples[firstEquivalent]?.elapsedMs ?? null;
 }
+
+/**
+ * Warm mode reuses one browser context so HTTP responses can stay hot.
+ * Each measured run still opens a new page, so decoded GPU/JS scene state is
+ * not retained. The first load of a warm session is an unmeasured prime.
+ */
+export function warmPrimeRoute(cacheMode, routes) {
+  if (cacheMode !== 'warm') return null;
+  const route = routes[0];
+  if (!route) throw new Error('Warm cache mode requires at least one route.');
+  return route;
+}
+
+export function cacheSemantics({ cacheMode, role, httpCachePrimed }) {
+  const priming = role === 'prime';
+  return {
+    role,
+    cacheMode,
+    httpCache: priming
+      ? 'cold-prime'
+      : cacheMode === 'warm' && httpCachePrimed
+        ? 'warm-http'
+        : 'cold',
+    decodedSceneCache: 'fresh-page',
+    httpCachePrimed: priming ? false : Boolean(httpCachePrimed),
+  };
+}
+
+/** HTTP bytes can land even if the pager is still refining at sampleMs. */
+export function httpCacheWasPrimed(failures = []) {
+  return (
+    !failures.includes('no first image') &&
+    !failures.some(
+      (failure) => failure === 'page crashed' || String(failure).startsWith('device lost'),
+    )
+  );
+}

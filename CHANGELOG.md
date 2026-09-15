@@ -102,7 +102,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   It also defaults to `--memory=off` so browser-wide memory probes cannot delay
   screenshot timestamps, samples through the requested `--sampleMs` endpoint,
   and records missing first images, device loss, and streaming errors as failed
-  runs instead of arrival numbers.
+  runs instead of arrival numbers. Warm mode now issues one unmeasured HTTP
+  prime and keeps `--runs` measured samples on fresh pages, so a cold first
+  fetch is not mixed into warm arrival statistics.
 
 - The standalone Spark comparison now opens `.rad` captures through Spark's
   native paged loader instead of attempting a whole-file decode, applies the

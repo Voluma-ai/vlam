@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error This Node-only runner helper is deliberately plain ESM.
 import {
+  cacheSemantics,
   classifyBenchmarkFailures,
+  httpCacheWasPrimed,
   parseMemoryMode,
   sampleSchedule,
   stopToEquivalentMs,
+  warmPrimeRoute,
 } from '../../../scripts/rad-detail-benchmark-policy.mjs';
 
 describe('RAD detail benchmark policy', () => {
@@ -63,5 +66,40 @@ describe('RAD detail benchmark policy', () => {
         samples,
       }),
     ).toBeNull();
+  });
+
+  it('plans one unmeasured warm HTTP prime and keeps decoded scenes on fresh pages', () => {
+    expect(warmPrimeRoute('cold', ['direct', 'orbit'])).toBeNull();
+    expect(warmPrimeRoute('warm', ['orbit', 'direct'])).toBe('orbit');
+    expect(() => {
+      warmPrimeRoute('warm', []);
+    }).toThrow(/at least one route/);
+    expect(cacheSemantics({ cacheMode: 'warm', role: 'prime', httpCachePrimed: false })).toEqual({
+      role: 'prime',
+      cacheMode: 'warm',
+      httpCache: 'cold-prime',
+      decodedSceneCache: 'fresh-page',
+      httpCachePrimed: false,
+    });
+    expect(cacheSemantics({ cacheMode: 'warm', role: 'measured', httpCachePrimed: true })).toEqual({
+      role: 'measured',
+      cacheMode: 'warm',
+      httpCache: 'warm-http',
+      decodedSceneCache: 'fresh-page',
+      httpCachePrimed: true,
+    });
+    expect(cacheSemantics({ cacheMode: 'cold', role: 'measured', httpCachePrimed: false })).toEqual(
+      {
+        role: 'measured',
+        cacheMode: 'cold',
+        httpCache: 'cold',
+        decodedSceneCache: 'fresh-page',
+        httpCachePrimed: false,
+      },
+    );
+    expect(httpCacheWasPrimed([])).toBe(true);
+    expect(httpCacheWasPrimed(['streaming: still decoding'])).toBe(true);
+    expect(httpCacheWasPrimed(['no first image'])).toBe(false);
+    expect(httpCacheWasPrimed(['device lost: unknown'])).toBe(false);
   });
 });

@@ -191,10 +191,10 @@ node scripts/rad-detail-benchmark.mjs \
 
 Use 4189 for indexed, repeat with `--cacheMode=warm`, then with budget 4000000
 and its own reference. Alternate variant order across repetitions to reduce
-thermal bias. Warm samples require a separate unmeasured priming run: the
-runner currently includes the first cache-priming run, so exclude it explicitly
-or repair that behavior first. Fresh pages warm the HTTP cache, not a retained
-decoded scene cache; name this distinction in the report. Compare both actual
+thermal bias. Warm HTTP priming is done: the runner issues one unmeasured first
+route load, writes it to `prime.json`, then records `--runs` measured loads.
+Those measured pages reuse the browser HTTP cache only; decoded GPU/JS scene
+state is not retained (`decodedSceneCache: "fresh-page"`). Compare both actual
 motion tails and stop-to-equivalent-detail latency. Keep all failed runs in
 the denominator and report timeouts rather than dropping slower runs.
 

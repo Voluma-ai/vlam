@@ -6,10 +6,13 @@ import { chromium } from '@playwright/test';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import {
+  cacheSemantics,
   classifyBenchmarkFailures,
+  httpCacheWasPrimed,
   parseMemoryMode,
   sampleSchedule,
   stopToEquivalentMs,
+  warmPrimeRoute,
 } from './rad-detail-benchmark-policy.mjs';
 
 const flags = Object.fromEntries(
@@ -326,7 +329,12 @@ async function referenceRunStillPending() {
   }
 }
 
-async function runOne(route, run, sharedContext) {
+async function runOne(
+  route,
+  run,
+  sharedContext,
+  { role = 'measured', httpCachePrimed = false } = {},
+) {
   const context =
     sharedContext ?? (await browser.newContext({ viewport: { width: 1280, height: 720 } }));
   const page = await context.newPage();
@@ -466,7 +474,7 @@ async function runOne(route, run, sharedContext) {
     label,
     backend,
     memoryMode,
-    cacheMode,
+    ...cacheSemantics({ cacheMode, role, httpCachePrimed }),
     scene,
     route,
     run,
@@ -512,18 +520,43 @@ const sharedContext =
   cacheMode === 'warm'
     ? await browser.newContext({ viewport: { width: 1280, height: 720 } })
     : null;
+const primeRoute = warmPrimeRoute(cacheMode, routes);
 try {
+  let httpCachePrimed = false;
+  if (primeRoute) {
+    const prime = await runOne(primeRoute, 0, sharedContext, {
+      role: 'prime',
+      httpCachePrimed: false,
+    });
+    await writeFile(join(outputDir, 'prime.json'), JSON.stringify(prime, null, 2));
+    httpCachePrimed = httpCacheWasPrimed(prime.failures);
+    console.log(
+      JSON.stringify({
+        role: 'prime',
+        route: primeRoute,
+        httpCachePrimed,
+        failures: prime.failures,
+        decodedSceneCache: prime.decodedSceneCache,
+      }),
+    );
+  }
   for (const route of routes) {
     for (let run = 1; run <= runs; run++) {
-      const result = await runOne(route, run, sharedContext);
+      const result = await runOne(route, run, sharedContext, {
+        role: 'measured',
+        httpCachePrimed,
+      });
       results.push(result);
       await writeFile(join(outputDir, 'results.json'), JSON.stringify(results, null, 2));
       console.log(
         JSON.stringify({
+          role: result.role,
           route,
           run,
           arrivalMs: result.stopToEquivalentCentralMs,
           memoryMode: result.memoryMode,
+          httpCache: result.httpCache,
+          decodedSceneCache: result.decodedSceneCache,
           failures: result.failures,
           motionDistance: result.motionDistance,
           frameP95Ms: result.frameP95Ms,
