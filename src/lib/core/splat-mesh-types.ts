@@ -11,6 +11,9 @@ import {
 import type { SplatPool } from './splat-mesh-pool';
 import type { SplatShInputs, Vec3Uniform } from './splat-mesh-material';
 
+/** @internal Construction-only source label used by streamed diagnostics. */
+export const splatMeshSourceLabel = Symbol('vlam.splatMeshSourceLabel');
+
 /** Construction-time projected-footprint policy selected by a streamed format. */
 export type ProjectedFilterProfile = 'default' | 'lcc';
 

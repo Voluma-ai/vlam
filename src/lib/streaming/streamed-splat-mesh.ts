@@ -27,7 +27,6 @@ import {
   MAX_SH_BANDS,
   resolveSplatPerformanceProfile,
   SplatMesh,
-  splatMeshSourceLabel,
   isPageTableFoveation,
   resolveSplatFoveationMode,
   type SplatRange,
@@ -36,6 +35,7 @@ import {
   type SplatMeshOptions,
   type SplatUpdateOptions,
 } from '../core/splat-mesh';
+import { splatMeshSourceLabel } from '../core/splat-mesh-types';
 import type { SplatData } from '../core/splat-data';
 import { runKey, type LodRun, type LodScheduler } from './lod-scheduler';
 import { buildSogScene, type StreamedScene } from './lod-source';

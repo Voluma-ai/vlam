@@ -19,6 +19,7 @@ import {
   type SplatUpdateOptions,
   type UnifiedSourceView,
   resolveSplatFoveationMode,
+  splatMeshSourceLabel,
   type SplatFoveationMode,
 } from './splat-mesh-types';
 export * from './splat-mesh-types';
@@ -165,9 +166,6 @@ const UPLOAD_STAGING_CACHE_SIZE = 12;
  */
 const SH_COMPUTE_CACHE_VALIDATED_MAX_BYTES = 64 * 1024 * 1024;
 const APPLE_MAC_AUTO_SH_MIN_SPLATS = 8_000_000;
-
-/** @internal Construction-only source label used by streamed diagnostics. */
-export const splatMeshSourceLabel = Symbol('vlam.splatMeshSourceLabel');
 
 /** Next power of two ≥ n (n ≥ 1). Staging GPU textures are immutable-sized. */
 function uploadStagingBucketHeight(height: number): number {
