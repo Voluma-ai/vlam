@@ -42,7 +42,10 @@ function makeData(count: number): SplatData {
   return { count, positions, colors, covariances };
 }
 
-function makeStreamedMesh(options: Record<string, unknown> = {}): StreamedMesh {
+function makeStreamedMesh(
+  options: Record<string, unknown> = {},
+  sourceLabel?: string,
+): StreamedMesh {
   const scene = {
     source: {
       budget: 4 * WIDTH,
@@ -62,8 +65,11 @@ function makeStreamedMesh(options: Record<string, unknown> = {}): StreamedMesh {
     budget: number,
     capacity: number,
     options: unknown,
+    frontierWorkerCtor?: unknown,
+    neverRetireCoverageEarly?: boolean,
+    sourceLabel?: string,
   ) => StreamedMesh;
-  return new Ctor(scene, 4 * WIDTH, 4 * WIDTH, options);
+  return new Ctor(scene, 4 * WIDTH, 4 * WIDTH, options, undefined, false, sourceLabel);
 }
 
 /** The private surface these tests drive. */
@@ -303,8 +309,10 @@ describe('StreamedSplatMesh page-table chunk forwarding', () => {
 
   it('does not forward SH after a shared-pool downgrade', () => {
     const pool = new SplatPool({ capacity: 4 * WIDTH, packedShBands: 0 });
-    const mesh = makeStreamedMesh({ pool, shBands: 3 });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const mesh = makeStreamedMesh({ pool, shBands: 3 }, 'church-timelapse.rad');
     expect(mesh.shBands).toBe(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('church-timelapse.rad'));
 
     const sent = captureForward(mesh);
     (mesh as unknown as Internals).forwardChunkToWorker(1, makeTreeChunk(8));
@@ -313,6 +321,7 @@ describe('StreamedSplatMesh page-table chunk forwarding', () => {
 
     mesh.dispose();
     pool.dispose();
+    warn.mockRestore();
   });
 
   it('still forwards SH when the mesh actually renders it', () => {

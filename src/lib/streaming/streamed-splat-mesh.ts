@@ -35,6 +35,7 @@ import {
   type SplatMeshOptions,
   type SplatUpdateOptions,
 } from '../core/splat-mesh';
+import { splatMeshSourceLabel } from '../core/splat-mesh-types';
 import type { SplatData } from '../core/splat-data';
 import { runKey, type LodRun, type LodScheduler } from './lod-scheduler';
 import { buildSogScene, type StreamedScene } from './lod-source';
@@ -923,6 +924,7 @@ export class StreamedSplatMesh extends SplatMesh {
       httpDatasetSource(absoluteUrl, options.request),
       format,
       options,
+      absoluteUrl,
     );
   }
 
@@ -959,7 +961,12 @@ export class StreamedSplatMesh extends SplatMesh {
           });
     }
     try {
-      const mesh = await StreamedSplatMesh.fromSource(dataset.source, dataset.format, options);
+      const mesh = await StreamedSplatMesh.fromSource(
+        dataset.source,
+        dataset.format,
+        options,
+        dataset.name,
+      );
       // Hand ownership to the mesh rather than disposing here: a streamed mesh
       // keeps fetching chunk URLs for its whole life, so revoking now would
       // break it. Without this the blob URLs (and the `File` blobs they pin)
@@ -978,6 +985,7 @@ export class StreamedSplatMesh extends SplatMesh {
     source: SplatDatasetSource,
     format: Exclude<StreamedSplatFormat, 'auto'>,
     options: StreamedSplatMeshOptions,
+    sourceLabel = source.manifestUrl,
   ): Promise<StreamedSplatMesh> {
     // `format` is what makes this per-scene rather than per-device: an LCC-class
     // capture's splats grow as its budget tightens, so the two classes want
@@ -1259,6 +1267,7 @@ export class StreamedSplatMesh extends SplatMesh {
         },
         FrontierWorkerCtor,
         format === 'lcc',
+        sourceLabel,
       );
     } catch (error) {
       if (isAbortError(error)) throw error;
@@ -1290,8 +1299,13 @@ export class StreamedSplatMesh extends SplatMesh {
     options: StreamedSplatMeshOptions,
     FrontierWorkerCtor?: InlineWorkerCtor,
     neverRetireCoverageEarly = false,
+    sourceLabel?: string,
   ) {
-    super({ capacity }, options);
+    const meshOptions: SplatMeshOptions =
+      sourceLabel === undefined
+        ? options
+        : ({ ...options, [splatMeshSourceLabel]: sourceLabel } as SplatMeshOptions);
+    super({ capacity }, meshOptions);
     this.scene = scene;
     this.usesRadWave = scene.chunkOptions?.some((chunk) => chunk?.format === 'rad-chunk') ?? false;
     this.budgetValue = budget;

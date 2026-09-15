@@ -19,6 +19,7 @@ import {
   type SplatUpdateOptions,
   type UnifiedSourceView,
   resolveSplatFoveationMode,
+  splatMeshSourceLabel,
   type SplatFoveationMode,
 } from './splat-mesh-types';
 export * from './splat-mesh-types';
@@ -686,10 +687,16 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       packedShBands !== suppliedPool.packedShBands;
     const effectivePackedShBands = shMismatch ? 0 : packedShBands;
     if (shMismatch) {
+      const internalOptions = options as SplatMeshOptions & {
+        [splatMeshSourceLabel]?: string;
+      };
+      const sourceLabel =
+        internalOptions[splatMeshSourceLabel] ??
+        (isStatic ? `${source.format ?? 'SplatData'} source` : 'dynamic-capacity mesh');
       warn(
-        `SplatMesh: packed SH bands ${packedShBands} do not match the supplied pool's ` +
-          `${suppliedPool.packedShBands}; higher-order SH was disabled for this mesh to preserve ` +
-          `the shared-pool memory limit.`,
+        `SplatMesh: source ${JSON.stringify(sourceLabel)} requests packed SH${packedShBands}, ` +
+          `but the supplied pool provides SH${suppliedPool.packedShBands}; higher-order SH was ` +
+          `disabled for this mesh to preserve the shared-pool memory limit.`,
       );
     }
     const ownsPool = suppliedPool === undefined;
