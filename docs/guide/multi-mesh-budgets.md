@@ -55,6 +55,12 @@ could each reach 4M splats cost four 4M pools whether the total is 4M or 400k.
 So a governor redistributes *sharpness inside a fixed memory envelope*; it does
 not shrink the envelope.
 
+For an explicit hard envelope, pass the same `SplatPool` to each mesh. The pool
+is authoritative: matching packed-SH band requests share SH normally, while an
+incompatible request joins the pool with higher-order SH disabled (`shBands ===
+0`) and emits a warning. It never allocates a private SH pool outside the
+envelope, so the trade-off is SH quality rather than device memory safety.
+
 `estimateSplatPoolBytes` makes that concrete:
 
 ```ts

@@ -86,6 +86,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- Incompatible packed-SH requests now stay inside an explicitly supplied shared
+  pool. VLAM disables higher-order SH for the mismatched mesh instead of
+  allocating a private pool outside the host's memory envelope, and streamed
+  RAD forwarding omits the disabled SH data.
+
 - Frame benchmarks now classify only streamed mutations and actual uploads as
   swap frames; idle per-frame performance events no longer inflate swap counts
   or erase the non-swap frame average.

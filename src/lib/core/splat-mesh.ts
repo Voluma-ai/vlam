@@ -235,6 +235,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private readonly pool: SplatPool;
   /** False when the pool was supplied by the caller, and so outlives this mesh. */
   private readonly ownsPool: boolean;
+  /** Packed SH bands this mesh may read or write, independent of the pool. */
+  private readonly packedShBandsValue: 0 | 1 | 2 | 3;
+  /** True when a supplied pool forced packed SH off for this mesh. */
+  private readonly packedShDowngraded: boolean;
   private readonly splatIndexAttribute: THREE.StorageInstancedBufferAttribute;
   private readonly sourceIndexAttribute: THREE.StorageBufferAttribute;
   private dataTextures: readonly THREE.DataTexture[];
@@ -268,12 +272,12 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private get poolFloatTextures(): 'float32' | 'float16' {
     return this.pool.floatTextures;
   }
-  /** Bands of per-splat (non-palette) SH this pool stores; 0 when disabled. */
+  /** Bands of per-splat (non-palette) SH this mesh stores; 0 when disabled. */
   private get packedShBands(): 0 | 1 | 2 | 3 {
-    return this.pool.packedShBands;
+    return this.packedShBandsValue;
   }
   private get shPackedTextures(): readonly THREE.DataTexture[] {
-    return this.pool.shPackedTextures;
+    return this.packedShBands === 0 ? [] : this.pool.shPackedTextures;
   }
 
   /** True when constructed from a complete SplatData (single fixed range). */
@@ -672,20 +676,24 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           packedShBands === 0 ? 0 : Math.ceil(shCoefficientCount(packedShBands) / 4),
         ...(options.maxTextureSize === undefined ? {} : { maxTextureSize: options.maxTextureSize }),
       });
-    // A shared pool allocates its packed-SH textures once, so it can only serve
-    // tenants with its own band count. Rather than fail the load, such a mesh
-    // falls back to its own pool: in a multi-mesh scene it is usually one odd
-    // capture carrying SH, and sizing the shared pool for it would add
-    // ~64 B/splat across storage that mostly has no SH to read.
-    const shMismatch = suppliedPool !== undefined && packedShBands !== suppliedPool.packedShBands;
+    // A supplied pool is authoritative: preserving its memory envelope is more
+    // important than retaining higher-order SH for one tenant. The mesh keeps
+    // its own effective count so it never reads or writes the pool's SH
+    // textures when its request is incompatible.
+    const shMismatch =
+      suppliedPool !== undefined &&
+      packedShBands !== 0 &&
+      packedShBands !== suppliedPool.packedShBands;
+    const effectivePackedShBands = shMismatch ? 0 : packedShBands;
     if (shMismatch) {
       warn(
-        `a mesh with shBands ${packedShBands} cannot share a pool built for ` +
-          `${suppliedPool?.packedShBands}; it allocated its own pool instead.`,
+        `SplatMesh: packed SH bands ${packedShBands} do not match the supplied pool's ` +
+          `${suppliedPool.packedShBands}; higher-order SH was disabled for this mesh to preserve ` +
+          `the shared-pool memory limit.`,
       );
     }
-    const ownsPool = suppliedPool === undefined || shMismatch;
-    const pool = ownsPool ? makeOwnPool() : suppliedPool;
+    const ownsPool = suppliedPool === undefined;
+    const pool = suppliedPool ?? makeOwnPool();
     if (!isStatic && suppliedPool === undefined && experiments.initialPoolUpload === 'skip-empty') {
       // Only this mesh's new dynamic pool is known to contain no initial data.
       // Keep needsUpdate and all CPU images so three allocates the destination
@@ -731,7 +739,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
             THREE.FloatType,
           )
         : null;
-    const shPackedTextures = pool.shPackedTextures;
+    const shPackedTextures = effectivePackedShBands === 0 ? [] : pool.shPackedTextures;
 
     // One quad, instanced per splat. Corners span [-1, 1]; the vertex stage
     // scales them to ±3σ along the projected ellipse axes.
@@ -757,6 +765,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (projectionStrategy === 'auto') this.projectionStrategyState.reason = 'auto-pending';
     this.pool = pool;
     this.ownsPool = ownsPool;
+    this.packedShBandsValue = effectivePackedShBands;
+    this.packedShDowngraded = shMismatch;
     pool.register(this);
     this.sortScheduler = new WebGpuSortScheduler(sortIntervalMs, isMobile);
     this.sortStrategyValue = options.sortStrategy ?? 'counting';
@@ -808,10 +818,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       sh:
         isStatic && source.sh && shPaletteTexture
           ? { mode: 'palette', bands: source.sh.bands, paletteTexture: shPaletteTexture }
-          : packedShBands !== 0
+          : effectivePackedShBands !== 0
             ? {
                 mode: 'packed',
-                bands: packedShBands,
+                bands: effectivePackedShBands,
                 textures: shPackedTextures,
                 range: this.shRange,
               }
@@ -1302,7 +1312,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           '(per-file palettes cannot be merged into a shared pool).',
       );
     }
-    if (data.shPacked && this.packedShBands === 0) {
+    if (data.shPacked && this.packedShBands === 0 && !this.packedShDowngraded) {
       warn(
         `SplatMesh.${method}: per-splat SH was supplied but the pool has none allocated ` +
           (this.isStatic
@@ -2647,7 +2657,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         colors: this.backing.colors.slice(offset, offset + length),
         covarianceA: this.backing.covarianceA.slice(offset, offset + length),
         covarianceB: this.backing.covarianceB.slice(offset, offset + length),
-        shPacked: this.backing.shPacked.map((data) => data.slice(offset, offset + length)),
+        shPacked:
+          this.packedShBands === 0
+            ? []
+            : this.backing.shPacked.map((data) => data.slice(offset, offset + length)),
       };
     });
     this.pendingUploadRows = [];

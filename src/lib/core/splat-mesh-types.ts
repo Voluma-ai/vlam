@@ -416,6 +416,11 @@ export interface SplatMeshOptions {
    * it once every tenant is gone. `capacity` on the source is then only used
    * for the mesh's own draw list, not to size storage.
    *
+   * The supplied pool is authoritative for memory. If the mesh requests a
+   * different packed-SH band count, the mesh joins this pool with higher-order
+   * SH disabled (`shBands === 0`) instead of allocating a private pool; a
+   * warning explains the downgrade. Matching band counts retain packed SH.
+   *
    * Sharing costs a whole-pool stall when the pool fragments - see
    * {@link SplatMesh.compact}.
    */
