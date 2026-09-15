@@ -33,8 +33,15 @@ export async function createComparisonSpark(
       : reference
         ? false
         : undefined;
+  const maxPagedSplats =
+    kind === 'rad' && config.radBudget !== undefined
+      ? Math.ceil((config.radBudget * 1.5) / 65_536) * 65_536
+      : undefined;
   const spark = new SparkRenderer({
     renderer,
+    ...(kind === 'rad' && config.radBudget !== undefined
+      ? { lodSplatCount: config.radBudget, maxPagedSplats }
+      : {}),
     ...(aligned
       ? {
           ...(kind === 'rad' ? {} : { enableLod: false }),
@@ -50,7 +57,8 @@ export async function createComparisonSpark(
   const root = new Group();
   const meshes: SplatMesh[] = [];
   // Hotel `.rad` must keep Spark's paged LOD; disabling it tries to decode the tree whole.
-  const meshOptions = aligned && kind !== 'rad' ? { lod: false, enableLod: false } : {};
+  const meshOptions =
+    kind === 'rad' ? { paged: true as const } : aligned ? { lod: false, enableLod: false } : {};
   try {
     if (kind === 'lcc2') {
       const response = await fetch(url);
@@ -76,7 +84,10 @@ export async function createComparisonSpark(
       }
     } else {
       const mesh = new SplatMesh({ url, ...meshOptions });
-      mesh.rotation.x = Math.PI;
+      // Goose, hotel and the earlier optional LCC RAD are Y-down. The supplied
+      // Poland aerial capture is already Y-up and shares the viewer's source
+      // basis, so rotating it would put the fixed comparison camera below it.
+      if (config.scene !== 'poland') mesh.rotation.x = Math.PI;
       root.add(mesh);
       meshes.push(mesh);
     }
@@ -123,6 +134,8 @@ export async function createComparisonSpark(
         sortRadial: spark.sortRadial,
         minSortIntervalMs: spark.minSortIntervalMs,
         enableLod: spark.enableLod,
+        lodSplatCount: spark.lodSplatCount ?? 'device default',
+        maxPagedSplats: spark.maxPagedSplats,
         meshEnableLod:
           kind === 'lcc2'
             ? 'per-tile SOG (Spark has no LCC2 octree cut)'
@@ -177,6 +190,43 @@ export async function createComparisonSpark(
         }
         await waitForSort(true);
         renderer.render(scene, camera);
+        if (kind === 'rad') {
+          const pagerState = () => {
+            const pager = spark.pager as unknown as
+              | {
+                  fetchers: readonly unknown[];
+                  fetched: readonly unknown[];
+                  newUploads: readonly unknown[];
+                  readyUploads: readonly unknown[];
+                  lodTreeUpdates: readonly unknown[];
+                }
+              | undefined;
+            return (
+              pager !== undefined &&
+              pager.fetchers.length === 0 &&
+              pager.fetched.length === 0 &&
+              pager.newUploads.length === 0 &&
+              pager.readyUploads.length === 0 &&
+              pager.lodTreeUpdates.length === 0 &&
+              !spark.lodDirty &&
+              !spark.sorting &&
+              !spark.sortDirty
+            );
+          };
+          let stableSince: number | null = null;
+          while (stableSince === null || performance.now() - stableSince < 250) {
+            if (performance.now() > deadline) throw new Error('Spark RAD pager timed out.');
+            scene.updateMatrixWorld(true);
+            await spark.update({ scene, camera });
+            await waitForSort(true);
+            renderer.render(scene, camera);
+            stableSince = pagerState() ? (stableSince ?? performance.now()) : null;
+            await new Promise((resolve) => setTimeout(resolve, 16));
+          }
+          // WebGL does not preserve the drawing buffer across the final wait.
+          // Redraw synchronously so the caller can capture the settled pixels.
+          renderer.render(scene, camera);
+        }
       } finally {
         spark.autoUpdate = autoUpdate;
       }

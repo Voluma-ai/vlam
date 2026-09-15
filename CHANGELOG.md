@@ -21,11 +21,32 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- A benchmark-only `rad-indexed` page-table pager separates stable pool slots
+  from the displayed selection, stages bounded replacements off-screen, and
+  publishes complete index generations through the existing WebGPU, unified,
+  and WebGL2 atomic sort boundaries. It reserves up to 2× the maximum drawn
+  frontier and falls back to the classic pager rather than lowering quality
+  when that reservation is ineligible. Benchmark diagnostics include the
+  loaded pager mode, split upload/publication timings, shared settled-reference
+  comparisons, and a pool/index/CPU/SH-aware memory estimate. Stationary cuts
+  coalesce at geometric milestones plus one near-budget and one bounded
+  mid-budget follow-up, avoiding repeated million-entry sorts while still
+  publishing the final idle cut when a view settles below its configured cap;
+  production remains on the classic pager pending the large-scene native gate.
+- Indexed RAD publication uses a fixed-page bit-mapped slab lookup for the
+  65,536-splat staging pages, halving the measured multi-million-entry index
+  conversion on the Poland warm movement trial without changing slot ownership
+  or publication ordering.
 - A benchmark-only `rad-focus` request scheduler candidate for over-cache
   page-table RAD: incremental worker demand scans and camera-generation-aware
   cancellation prioritize nearby central chunks while leaving staged display
   updates intact. The production default remains unchanged pending route and
   visual performance validation; chunks may mix visible/off-screen locations.
+  Provisional scan replies now fill free slots without authorizing cancellation,
+  removing an initial native-WebGPU direct-load regression. A native-browser
+  screenshot runner records camera-stop-to-published-detail separately from
+  request and pager diagnostics; the first paired LCC trials still did not
+  meet the 25% median activation gate.
 - `VLAM_DEV_HTTP=1` lets a fresh Chromium profile use the local dev viewer on
   localhost without installing the developer's mkcert CA.
 - Opt-in streamed performance events now report the number of pool texture
@@ -71,6 +92,21 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   attributed without adding asynchronous readback to the measured loop.
 
 ### Fixed
+
+- Indexed RAD publication acknowledgments now carry and validate the active-list
+  version at the renderer's sort boundary. A stale asynchronous sort reply can
+  no longer acknowledge a newer candidate or release slots still used by the
+  displayed cut. The RAD detail runner now rejects zero-motion Poland orbit and
+  turn routes, includes the motion interval in frame-tail statistics, and
+  requires every RAD frontier to converge before using its frame as a reference.
+
+- The standalone Spark comparison now opens `.rad` captures through Spark's
+  native paged loader instead of attempting a whole-file decode, applies the
+  requested RAD draw budget and a bounded page pool, and waits for pager,
+  upload, LOD, and sort queues before measuring or capturing. VLAM comparisons
+  likewise wait for the final acknowledged RAD generation instead of timing an
+  indexed coarse cut. This makes the supplied 2.75 GB / 106.4M-leaf RAD usable
+  in the matched harness and keeps fixed WebGL captures nonblank.
 
 - Frame benchmarks now classify only streamed mutations and actual uploads as
   swap frames; idle per-frame performance events no longer inflate swap counts

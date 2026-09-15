@@ -6,6 +6,7 @@ export const COMPARISON_SCENES = [
   'goose',
   'hotel',
   'lcc',
+  'poland',
   'Langenthal-Manola4A',
   'Kauz-sh2',
 ] as const;

@@ -1356,7 +1356,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * an arbitrary hierarchy frontier, but the referenced pool rows must remain
    * resident for the lifetime of the mesh.
    */
-  protected replaceActiveIndices(indices: Uint32Array): void {
+  protected replaceActiveIndices(indices: Uint32Array): number {
     const source = this.sourceIndexAttribute.array as Uint32Array;
     if (indices.length > source.length) {
       throw new RangeError('SplatMesh.replaceActiveIndices: frontier exceeds pool capacity.');
@@ -1384,7 +1384,15 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.commitActiveListMutation(0, Math.max(previousCount, this.activeCount));
     this.queryEpoch++;
     this.contentRevision++;
+    return this.activeListVersion;
   }
+
+  /**
+   * Called when the current active-list generation and its matching order have
+   * crossed a rendering publication boundary. Streamed stable-slot pagers use
+   * it to delay slot reuse; ordinary meshes have nothing to acknowledge.
+   */
+  protected onActiveListPublished(_activeListVersion: number): void {}
 
   /** Fast identity-frontier variant that avoids allocating a large index array. */
   protected replaceActivePrefix(count: number): void {
@@ -1493,6 +1501,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   getUnifiedSourceView(): UnifiedSourceView {
     this.updateWorldMatrix(true, false);
     this.refreshSortBounds();
+    // Unified WebGPU gathers this index list and submits its matching global
+    // sort before control returns to the browser event loop. A worker reply
+    // caused by the acknowledgment cannot overwrite retired slots mid-gather.
+    this.onActiveListPublished(this.activeListVersion);
     // The view is rebuilt only when something it reflects actually changed;
     // a steady frame returns the cached object (and its world-bounds sphere)
     // instead of re-deriving both per source per frame. Identity checks on the
@@ -2628,6 +2640,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.drawListSorted = true;
     this.sortedActiveListVersion = publication.snapshot.activeListVersion;
     this.workerPublicationPending = null;
+    this.onActiveListPublished(publication.snapshot.activeListVersion);
   }
 
   /**
@@ -3746,6 +3759,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.projectionStrategyState.effective = 'compute';
     this.projectionStrategyState.reason =
       this.projectionStrategyValue === 'auto' ? this.automaticProjectionReason : 'explicit-compute';
+    this.onActiveListPublished(this.activeListVersion);
     return true;
   }
 
@@ -3898,6 +3912,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       // On WebGL2 `now` is 0 - harmless, cadence timing is WebGPU-only; the
       // call still clears the pending-force flag consumed above.
       this.sortScheduler.markAccepted(now);
+      if (this.sorter.kind !== 'worker') this.onActiveListPublished(this.activeListVersion);
       return true;
     }
     return false;

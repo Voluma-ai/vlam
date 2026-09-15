@@ -72,6 +72,16 @@ An additional `?scene=lcc` RAD can be placed at
 `.tmp/benchmark-assets/lcc/render.rad` with metadata in
 `.tmp/benchmark-assets/lcc.json`; it is an optional local capture, not part of
 the default cache download.
+The supplied 106,447,647-leaf Poland RAD can similarly be cached as
+`.tmp/benchmark-assets/poland/20K-Photo-103Mspats-4x2KM-Andrii_Shramko_Poland-JG-lod.rad`
+with its ignored `.tmp/benchmark-assets/poland.json` manifest and selected with
+`?scene=poland`. Passing `radBudget` sets the same LOD draw target in Spark and
+VLAM; the report records the resolved setting.
+For the Apple-hardware follow-up, use the
+[MacBook Air M3 RAD validation plan](macbook-air-m3-rad-validation.md), including
+its publication and route-validation prerequisites before timing the candidate.
+Unlike the Y-down hotel and earlier optional LCC RAD, this capture is already
+Y-up, so both comparison adapters retain its source basis.
 Re-running the command verifies/recreates metadata from the cached bytes;
 it does not silently replace the capture with a newer remote asset.
 

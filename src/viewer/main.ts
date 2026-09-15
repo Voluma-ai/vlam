@@ -9,6 +9,7 @@ import {
   detectSplatDeviceProfile,
   isFillConstrainedSplatDevice,
   probeSplatGpuClass,
+  estimateSplatPoolBytes,
   recommendedMaxPixelRatio,
   recommendedXrFramebufferScale,
   suggestAdaptivePixelRatio,
@@ -26,6 +27,7 @@ import {
 } from '../lib/core';
 import { loadSplatData, loadSplatDataFile, SplatLoadError } from '../lib/loaders';
 import {
+  ChunkCacheBudget,
   StreamedSplatMesh,
   type CollisionMeshTile,
   type StreamedSplatPerformanceEvent,
@@ -1441,6 +1443,16 @@ async function main(): Promise<void> {
   const cpuCacheBytes =
     cacheMbParam === null ? undefined : Math.round(Number(cacheMbParam) * 1024 * 1024) || undefined;
   const benchmarkSeconds = Number(params.get('benchmarkSeconds')) || 0;
+  // Benchmark-only single-mesh envelope. `cacheMB` is a floor for RAD, so it
+  // cannot exercise the over-cache scheduler on a capture which otherwise fits.
+  const radBenchmarkAllowanceMB = Number(params.get('radBenchmarkAllowanceMB'));
+  const radBenchmarkCacheBudget =
+    benchmarkSeconds > 0 &&
+    Number.isFinite(radBenchmarkAllowanceMB) &&
+    radBenchmarkAllowanceMB > 0 &&
+    (params.get('scene') ?? DEFAULT_SCENE).toLowerCase().endsWith('.rad')
+      ? new ChunkCacheBudget({ totalBytes: Math.round(radBenchmarkAllowanceMB * 1024 * 1024) })
+      : undefined;
   const swapCap = Number(params.get('swapCap')) || undefined;
   const manualBenchmarkStart = params.get('benchmarkStart') === 'manual';
   const sortIntervalParam = params.get('sortIntervalMs');
@@ -3251,6 +3263,7 @@ async function main(): Promise<void> {
       // it live (see the keydown handler). Other formats have none - no effect.
       environmentEnabled: params.get('env') !== '0',
       ...(cpuCacheBytes === undefined ? {} : { cpuCacheBytes }),
+      ...(radBenchmarkCacheBudget === undefined ? {} : { cacheBudget: radBenchmarkCacheBudget }),
       ...(swapCap === undefined ? {} : { maxSplatsPerSwap: swapCap }),
       ...(shBands === undefined ? {} : { shBands }),
       // Blob cull applies only to .rad (its coarse LOD nodes are the blobs).
@@ -4265,9 +4278,26 @@ async function main(): Promise<void> {
                     }
                   ).demandDiagnostics,
                   radPager: {
+                    mode: (
+                      splats as unknown as {
+                        indexedPageTable: boolean;
+                      }
+                    ).indexedPageTable
+                      ? 'indexed'
+                      : 'classic',
                     frontier: splats.frontierState,
                     planTimings: splats.planTimings,
                     fetchCounts: splats.fetchCounts,
+                    memory: {
+                      capacity: splats.capacity,
+                      estimatedPoolAndSortBytes: estimateSplatPoolBytes(splats.capacity, {
+                        capacityFactor: 1,
+                        shBands: splats.shBands as 0 | 1 | 2 | 3,
+                        sortStrategy: splats.sortStrategy,
+                        floatTextures:
+                          params.get('poolFloat') === 'float16' ? 'float16' : 'float32',
+                      }),
+                    },
                   },
                 }
               : {}),
@@ -4462,6 +4492,23 @@ async function main(): Promise<void> {
       },
       get separateTool(): SeparateTool | null {
         return separateTool;
+      },
+      get radBenchmarkMemory(): Record<string, unknown> | null {
+        if (!(splats instanceof StreamedSplatMesh) || splats.radStrategy !== 'page-table') {
+          return null;
+        }
+        return {
+          capacity: splats.capacity,
+          shBands: splats.shBands,
+          sortStrategy: splats.sortStrategy,
+          floatTextures: params.get('poolFloat') === 'float16' ? 'float16' : 'float32',
+          estimatedPoolAndSortBytes: estimateSplatPoolBytes(splats.capacity, {
+            capacityFactor: 1,
+            shBands: splats.shBands as 0 | 1 | 2 | 3,
+            sortStrategy: splats.sortStrategy,
+            floatTextures: params.get('poolFloat') === 'float16' ? 'float16' : 'float32',
+          }),
+        };
       },
     },
   });

@@ -128,6 +128,25 @@ describe('frontier worker delivery', () => {
     expect(frontierWorker.shouldPublishFrontier(false, 8, false, true, 100, 100)).toBe(false);
   });
 
+  it('coalesces small stationary indexed refinements until the cache is idle', () => {
+    const start = frontierWorker.shouldStartIndexedCandidate;
+    expect(start(0, 10, 100, false, 2, 0)).toBe(true); // first complete cover
+    expect(start(10, 39, 100, false, 2, 0)).toBe(false);
+    expect(start(10, 40, 100, false, 2, 0)).toBe(true); // geometric milestone
+    expect(start(95, 100, 100, false, 0, 199)).toBe(false);
+    expect(start(95, 100, 100, false, 0, 200)).toBe(true); // settled exact cut
+    expect(start(95, 96, 100, true, 3, 0)).toBe(true); // camera movement
+  });
+
+  it('allows one mid-budget indexed follow-up without changing the coarse ramp', () => {
+    const start = frontierWorker.shouldStartIndexedMidBudgetFollowup;
+    expect(start(34, 80, 100, false)).toBe(false);
+    expect(start(35, 52, 100, false)).toBe(false);
+    expect(start(35, 53, 100, false)).toBe(true);
+    expect(start(35, 80, 100, true)).toBe(false);
+    expect(start(90, 100, 100, false)).toBe(false);
+  });
+
   beforeEach(() => {
     plans.length = 0;
     traverseSpy.mockClear();
@@ -189,6 +208,88 @@ describe('frontier worker delivery', () => {
     expect(drain.appends.count + drain.moves.count + drain.degenerateCount).toBeLessThanOrEqual(
       PLAN_WRITE_CAP,
     );
+  });
+
+  it('holds a complete indexed parent cut until every child slot is staged and acknowledged', () => {
+    const fan = 1_000;
+    send({
+      type: 'init',
+      pagerMode: 'indexed',
+      capacity: 8_192,
+      chunkSize: CHUNK_SIZE,
+      cpuCacheBytes: 8 * 1024 * 1024 * 1024,
+      maxPlanWrites: CHUNK_SIZE,
+    });
+    const positions = new Float32Array(CHUNK_SIZE * 3);
+    const size = new Float32Array(CHUNK_SIZE).fill(0.01);
+    const childCount = new Uint16Array(CHUNK_SIZE);
+    const childStart = new Uint32Array(CHUNK_SIZE);
+    for (let i = 0; i < CHUNK_SIZE; i++) positions[i * 3 + 2] = 10;
+    size[0] = size[1] = 8;
+    childCount[0] = childCount[1] = fan;
+    childStart[0] = 10 * CHUNK_SIZE;
+    childStart[1] = 10 * CHUNK_SIZE + fan;
+    send({
+      type: 'chunk',
+      file: 0,
+      count: CHUNK_SIZE,
+      positions,
+      colors: new Uint8Array(CHUNK_SIZE * 4),
+      covariances: new Float32Array(CHUNK_SIZE * 6),
+      childCount,
+      childStart,
+      size,
+      shBands: 0,
+    });
+    plans.length = 0;
+    reschedule(1);
+    const coarse = plans.at(-1)!;
+    expect(coarse.candidateSlots?.length).toBe(CHUNK_SIZE);
+    const coarseGeneration = coarse.candidateGeneration as number;
+    send({ type: 'published', generation: coarseGeneration, activeListVersion: 1 });
+
+    for (const file of [10, 11]) {
+      const count = CHUNK_SIZE;
+      const leafPositions = new Float32Array(count * 3);
+      for (let i = 0; i < count; i++) leafPositions[i * 3 + 2] = 10;
+      send({
+        type: 'chunk',
+        file,
+        count,
+        positions: leafPositions,
+        colors: new Uint8Array(count * 4),
+        covariances: new Float32Array(count * 6),
+        childCount: new Uint16Array(count),
+        childStart: new Uint32Array(count),
+        size: new Float32Array(count).fill(0.01),
+        shBands: 0,
+      });
+    }
+
+    plans.length = 0;
+    reschedule(2, 1); // a camera move makes the complete replacement immediately eligible
+    const staged = plans.at(-1)!;
+    expect(staged.converged).toBe(false);
+    expect(staged.candidateSlots).toBeUndefined();
+    expect(staged.appends.count).toBe(CHUNK_SIZE);
+
+    reschedule(3, 2, true); // newer camera is coalesced behind this candidate
+    const ready = plans.at(-1)!;
+    expect(ready.converged).toBe(true);
+    expect(ready.candidateGeneration).toBe(staged.candidateGeneration);
+    expect(ready.candidateSlots?.length).toBe(2 * fan + CHUNK_SIZE - 2);
+
+    // Until the matching publication is acknowledged the worker emits no new
+    // selection, so neither the roots nor their children can be mixed on screen.
+    const beforeAck = plans.length;
+    reschedule(4, 3);
+    expect(plans.length).toBe(beforeAck);
+    send({
+      type: 'published',
+      generation: ready.candidateGeneration as number,
+      activeListVersion: 2,
+    });
+    expect(plans.length).toBeGreaterThan(beforeAck);
   });
 
   it('finishes the pending drain before re-traversing for a newly cached chunk', () => {

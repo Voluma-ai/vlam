@@ -52,6 +52,8 @@ export interface FrontierChunkMessage {
 
 export interface FrontierInitMessage {
   readonly type: 'init';
+  /** Stable-slot pager is an isolated benchmark path; classic remains default. */
+  readonly pagerMode?: 'classic' | 'indexed';
   readonly capacity: number;
   readonly chunkSize: number;
   readonly cpuCacheBytes: number;
@@ -59,6 +61,14 @@ export interface FrontierInitMessage {
   readonly maxPlanWrites: number;
   /** Minimum complete frontier size to publish before requested children arrive. */
   readonly initialPublishMinSplats?: number;
+}
+
+/** Releases the previous display only after the matching backend publication. */
+export interface FrontierPublishAckMessage {
+  readonly type: 'published';
+  readonly generation: number;
+  /** Active-list version that crossed the renderer's publication boundary. */
+  readonly activeListVersion: number;
 }
 
 /**
@@ -133,10 +143,13 @@ export interface FrontierDemandReply {
   readonly type: 'demand';
   readonly generation: number;
   readonly wants: readonly FrontierDemandWant[];
+  /** Partial wants can fill free slots, but never prove an omitted request obsolete. */
+  readonly complete?: boolean;
 }
 
 export type FrontierRequest =
   | FrontierInitMessage
+  | FrontierPublishAckMessage
   | FrontierChunkMessage
   | FrontierResizeMessage
   | FrontierCacheBudgetMessage
@@ -169,6 +182,12 @@ export interface FrontierPlanMessage {
   /** Newcomers written contiguously at `[appendStart, appendStart + appends.count)`. */
   readonly appendStart: number;
   readonly appends: PlanSplats;
+  /** Indexed-pager destination slots, aligned with `appends`; absent for classic plans. */
+  readonly writeSlots?: Uint32Array;
+  /** Candidate whose selected slots become drawable together after sorting. */
+  readonly candidateGeneration?: number;
+  /** Complete selected slot list. Present only when this candidate is ready to publish. */
+  readonly candidateSlots?: Uint32Array;
   /** Freed tail slots to degenerate. */
   readonly degenerateStart: number;
   readonly degenerateCount: number;

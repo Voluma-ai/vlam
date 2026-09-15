@@ -683,6 +683,8 @@ export class StreamedSplatMesh extends SplatMesh {
    * cache + traversal + pager off the main thread, and the always-active slab it
    * pages the returned frontier into. */
   private readonly frontierWorker: Worker | null;
+  /** Benchmark-only stable-slot pager, enabled only with its full 2× reservation. */
+  private readonly indexedPageTable: boolean = false;
   /**
    * The frontier's slots, as a list of equally sized pages rather than one
    * contiguous run.
@@ -715,6 +717,10 @@ export class StreamedSplatMesh extends SplatMesh {
     worstApplyMs: 0,
     writeMs: 0,
     residentMs: 0,
+    publicationMs: 0,
+    worstPublicationMs: 0,
+    indexMapMs: 0,
+    activeListMs: 0,
     moves: 0,
     appends: 0,
     worstSplats: 0,
@@ -758,6 +764,9 @@ export class StreamedSplatMesh extends SplatMesh {
   private get pageTableStagingSlots(): number {
     const draw = this.pageTableDrawBudget;
     if (draw <= 0) return 0;
+    if (this.indexedPageTable) {
+      return Math.min(this.slabCeiling, 2 * Math.min(this.maximumBudget, this.pageTableDrawTarget));
+    }
     return Math.min(this.slabCeiling, draw + Math.ceil(draw / 2));
   }
   /** The unclamped draw target (`foveationDrawBudget` or the default), kept so
@@ -776,6 +785,12 @@ export class StreamedSplatMesh extends SplatMesh {
   /** Page-table slot → stable `.rad` global splat ID. */
   private pageTableGlobals = new Uint32Array(0);
   private pageTableDisplayGeneration = -1;
+  /** Candidate generation waiting for the renderer's matching sort boundary. */
+  private indexedPublishGeneration: number | null = null;
+  /** Active-list version paired with {@link indexedPublishGeneration}. */
+  private indexedPublishActiveListVersion: number | null = null;
+  private indexedDisplayedSlots = new Uint32Array(0);
+  private indexedPendingDisplaySlots: Uint32Array | null = null;
   private frontierConverged = true;
   private pendingFrontierSplats = 0;
   private staleResidentSplats = 0;
@@ -809,6 +824,8 @@ export class StreamedSplatMesh extends SplatMesh {
   private demandGeneration = 0;
   private demandKey = '';
   private demandOutstanding = false;
+  /** A decoded chunk arrived during the scan; its omission cannot cancel work. */
+  private demandCacheDirty = false;
   private demandSentAt = -Infinity;
   private demandWants: readonly FrontierDemandWant[] = [];
   private readonly demandFirstSeen = new Map<number, number>();
@@ -1166,7 +1183,15 @@ export class StreamedSplatMesh extends SplatMesh {
     // Inactive staging must temporarily hold both sides of a large atomic
     // replacement. Ten extra percentage points avoid full-pool compaction on
     // the measured 1.6M-splat restaurant swap (~22 MB at a 3.5M budget).
-    const capacityFactor = options.experimentalStagedSwaps !== false ? 1.5 : 1.4;
+    const indexedCapacityEligible =
+      experiments.radPager === 'indexed' &&
+      format === 'rad' &&
+      2 * residentCeiling <= DATA_TEXTURE_WIDTH * 8192;
+    const capacityFactor = indexedCapacityEligible
+      ? 2
+      : options.experimentalStagedSwaps !== false
+        ? 1.5
+        : 1.4;
     const capacityRows = Math.max(
       1,
       Math.ceil((residentCeiling * capacityFactor) / DATA_TEXTURE_WIDTH),
@@ -1436,7 +1461,23 @@ export class StreamedSplatMesh extends SplatMesh {
       // without overwriting the drawn prefix. The ceiling stays a permission
       // to grow, not an up-front claim, so distant meshes still share the pool.
       this.slabCeiling = capacity;
+      const indexedRequired = 2 * Math.min(this.maximumBudget, this.pageTableDrawTarget);
+      this.indexedPageTable =
+        experiments.radPager === 'indexed' &&
+        capacity >= indexedRequired &&
+        // WebGPU's portable default and WebGL2's common floor are 8192 rows.
+        // A device exposing more may still use the classic path; never make the
+        // benchmark candidate the reason construction fails on a smaller limit.
+        indexedRequired <= DATA_TEXTURE_WIDTH * 8192;
       this.syncSlabPages(this.pageTableStagingSlots);
+      if (this.indexedPageTable && this.pagerSlots < indexedRequired) {
+        // A shared pool can satisfy the mesh's configured ceiling yet be unable
+        // to hand out the full double frontier right now. The experiment is
+        // all-or-nothing: fall back before worker construction, then return any
+        // excess pages above the classic staging target.
+        this.indexedPageTable = false;
+        this.syncSlabPages(this.pageTableStagingSlots);
+      }
       this.frontierWorker = new FrontierWorkerCtor();
       this.frontierWorker.onmessage = (
         e: MessageEvent<FrontierPlanMessage | FrontierDemandReply>,
@@ -1463,6 +1504,7 @@ export class StreamedSplatMesh extends SplatMesh {
       // budget hands out from a scene total by camera weight.
       this.postToWorker({
         type: 'init',
+        pagerMode: this.indexedPageTable ? 'indexed' : 'classic',
         capacity: this.pagerSlots,
         chunkSize: scene.chunkSize ?? 65536,
         cpuCacheBytes: this.cacheLimitBytes,
@@ -1563,6 +1605,75 @@ export class StreamedSplatMesh extends SplatMesh {
     }
   }
 
+  /** Indexed candidates write stable, possibly sparse slots without relocation. */
+  private writeIndexedSlabSlots(data: PlanSplats, slots: Uint32Array): void {
+    let i = 0;
+    while (i < slots.length) {
+      const start = slots[i] as number;
+      let run = 1;
+      while (i + run < slots.length && (slots[i + run] as number) === start + run) run++;
+      this.writeSlabSlots(slicePlanRun(data, i, run), start, run);
+      i += run;
+    }
+  }
+
+  /** Converts worker-local slab slots to the actual indices of shared pool pages. */
+  private poolIndicesForSlabSlots(slots: Uint32Array): Uint32Array {
+    const indices = new Uint32Array(slots.length);
+    // Resolve each page's backing range once. `poolRangeBacking` is a map
+    // lookup; doing it for every selected splat cost 14–16 ms at a 1M frontier
+    // and dominated the otherwise atomic publication. Pages cannot relocate
+    // during this synchronous loop, so a compact base table is equivalent.
+    const pageStarts = new Uint32Array(this.slabPages.length);
+    for (let page = 0; page < this.slabPages.length; page++) {
+      pageStarts[page] = this.poolRangeBacking(this.slabPages[page] as SplatRange).start;
+    }
+    // Huge RAD slabs use the fixed 2^16-splat page size. Bit operations avoid
+    // a division and multiplication for every selected splat during an
+    // otherwise atomic publication; the smaller-capacity fallback below keeps
+    // the mapping exact when the page is shorter than that power of two.
+    if (this.slabPageSplats === 65_536) {
+      for (let i = 0; i < slots.length; i++) {
+        const slot = slots[i] as number;
+        const page = slot >>> 16;
+        if (page >= pageStarts.length) {
+          throw new RangeError('Indexed RAD publication references unavailable storage.');
+        }
+        indices[i] = (pageStarts[page] as number) + (slot & 0xffff);
+      }
+      return indices;
+    }
+    for (let i = 0; i < slots.length; i++) {
+      const slot = slots[i] as number;
+      const page = Math.floor(slot / this.slabPageSplats);
+      if (page >= pageStarts.length) {
+        throw new RangeError('Indexed RAD publication references unavailable storage.');
+      }
+      indices[i] = (pageStarts[page] as number) + slot - page * this.slabPageSplats;
+    }
+    return indices;
+  }
+
+  protected override onActiveListPublished(activeListVersion: number): void {
+    const generation = this.indexedPublishGeneration;
+    if (generation === null || this.pageTableDisposed) return;
+    // A sort reply is asynchronous. It may describe the list that was active
+    // before a newer candidate replaced it, so it must never acknowledge that
+    // newer candidate or release slots still used by the displayed cut.
+    if (this.indexedPublishActiveListVersion !== activeListVersion) return;
+    const next = this.indexedPendingDisplaySlots;
+    if (!next) return;
+    const retained = new Set(next);
+    for (const slot of this.indexedDisplayedSlots) {
+      if (!retained.has(slot)) this.pageTableGlobals[slot] = 0xffffffff;
+    }
+    this.indexedDisplayedSlots = Uint32Array.from(next);
+    this.indexedPendingDisplaySlots = null;
+    this.indexedPublishGeneration = null;
+    this.indexedPublishActiveListVersion = null;
+    this.postToWorker({ type: 'published', generation, activeListVersion });
+  }
+
   /** Zeros slots `[slot, slot + count)`, splitting at page boundaries like
    * {@link writeSlabSlots}, so freed slots hold nothing drawable. */
   private degenerateSlabSlots(slot: number, count: number): void {
@@ -1630,17 +1741,33 @@ export class StreamedSplatMesh extends SplatMesh {
   }
 
   private applyDemand(reply: FrontierDemandReply): void {
-    this.demandOutstanding = false;
     if (
       this.pageTableDisposed ||
       reply.generation !== this.demandGeneration ||
       !this.focusedDemand
     ) {
       this.demandDiagnostics.staleReplies++;
+      if (reply.complete !== false) this.demandOutstanding = false;
       this.pendingWork = true;
       return;
     }
+    if (reply.complete === false) {
+      this.requestDemandWants(reply.wants);
+      return;
+    }
+    this.demandOutstanding = false;
     this.demandDiagnostics.replies++;
+    if (this.demandCacheDirty) {
+      // Use the provisional priorities, but rescan the newly decoded children
+      // before treating any omitted request as obsolete.
+      this.requestDemandWants(reply.wants);
+      this.demandCacheDirty = false;
+      this.demandGeneration++;
+      this.demandDiagnostics.generation = this.demandGeneration;
+      this.demandKey = '';
+      this.pendingWork = true;
+      return;
+    }
     this.demandReadyGeneration = reply.generation;
     this.demandWants = reply.wants;
     const missing = new Set(reply.wants.map((want) => want.file));
@@ -1671,9 +1798,13 @@ export class StreamedSplatMesh extends SplatMesh {
         entry.controller.abort();
       }
     }
-    const visible = this.demandWants.filter((w) => w.tier === 0);
+    this.requestDemandWants(this.demandWants);
+  }
+
+  private requestDemandWants(wants: readonly FrontierDemandWant[]): void {
+    const visible = wants.filter((w) => w.tier === 0);
     const now = performance.now();
-    const other = this.demandWants
+    const other = wants
       .filter((w) => w.tier !== 0)
       .sort((a, b) => {
         const ageA = now - (this.demandFirstSeen.get(a.file) ?? now);
@@ -2082,6 +2213,10 @@ export class StreamedSplatMesh extends SplatMesh {
     worstApplyMs: number;
     writeMs: number;
     residentMs: number;
+    publicationMs: number;
+    worstPublicationMs: number;
+    indexMapMs: number;
+    activeListMs: number;
     moves: number;
     appends: number;
     worstSplats: number;
@@ -4139,6 +4274,7 @@ export class StreamedSplatMesh extends SplatMesh {
         this.demandReadyGeneration !== this.demandGeneration
       ) {
         this.demandOutstanding = true;
+        this.demandCacheDirty = false;
         this.demandSentAt = now;
         this.postToWorker({
           type: 'demand',
@@ -4264,46 +4400,84 @@ export class StreamedSplatMesh extends SplatMesh {
     // main thread for seconds whenever a camera move churned the frontier.
     const applyStartedAt = performance.now();
     const slots = plan.moveSlots;
-    for (let i = 0; i < slots.length;) {
-      let run = 1;
-      while (i + run < slots.length && (slots[i + run] as number) === (slots[i] as number) + run) {
-        run++;
+    if (this.indexedPageTable) {
+      const writeSlots = plan.writeSlots ?? new Uint32Array(0);
+      if (writeSlots.length !== plan.appends.count) {
+        throw new Error('Indexed RAD plan has mismatched write slots and splats.');
       }
-      const start = slots[i] as number;
-      const clamped = Math.min(run, limit - start);
-      if (clamped > 0) this.writeSlabSlots(slicePlanRun(plan.moves, i, clamped), start, clamped);
-      i += run;
-    }
-    if (plan.appends.count > 0) {
-      const clamped = Math.min(plan.appends.count, limit - plan.appendStart);
-      if (clamped > 0) this.writeSlabSlots(plan.appends, plan.appendStart, clamped);
+      for (const slot of writeSlots) {
+        if (slot >= limit) throw new RangeError('Indexed RAD plan exceeds reserved storage.');
+      }
+      this.writeIndexedSlabSlots(plan.appends, writeSlots);
+    } else {
+      for (let i = 0; i < slots.length;) {
+        let run = 1;
+        while (
+          i + run < slots.length &&
+          (slots[i + run] as number) === (slots[i] as number) + run
+        ) {
+          run++;
+        }
+        const start = slots[i] as number;
+        const clamped = Math.min(run, limit - start);
+        if (clamped > 0) this.writeSlabSlots(slicePlanRun(plan.moves, i, clamped), start, clamped);
+        i += run;
+      }
+      if (plan.appends.count > 0) {
+        const clamped = Math.min(plan.appends.count, limit - plan.appendStart);
+        if (clamped > 0) this.writeSlabSlots(plan.appends, plan.appendStart, clamped);
+      }
     }
     const writeFinishedAt = performance.now();
     const drawn = Math.min(plan.displayCount ?? plan.residentCount, limit);
-    this.pageTableResident = Math.min(plan.residentCount, limit);
+    this.pageTableResident = this.indexedPageTable
+      ? this.pagerSlots
+      : Math.min(plan.residentCount, limit);
     // Freed tail slots leave the active list, so their data is not drawn - but
     // zero it anyway. It costs a fill over the freed range only, and it means a
     // slot that somehow ends up drawn without being written renders nothing
     // instead of whichever coarse node used to own it (one enormous splat).
     const degenerateStart = Math.min(plan.degenerateStart, limit);
     const degenerateCount = Math.min(plan.degenerateCount, limit - degenerateStart);
-    if (degenerateCount > 0) this.degenerateSlabSlots(degenerateStart, degenerateCount);
+    if (!this.indexedPageTable && degenerateCount > 0) {
+      this.degenerateSlabSlots(degenerateStart, degenerateCount);
+    }
     const residentFinishedAt = performance.now();
     // Spark holds `display` until the new mapping is fully paged. The pager
     // freezes `displayCount` at the last published cut while replacements
     // stage onto the tail, and only advances it when the worker publishes
     // (wanted chunks cached, cache full, or camera moved).
-    const presented =
-      plan.displayGeneration !== undefined
+    const indexedPublication = this.indexedPageTable ? plan.candidateSlots : undefined;
+    const presented = indexedPublication
+      ? plan.candidateGeneration !== this.pageTableDisplayGeneration
+      : plan.displayGeneration !== undefined
         ? plan.displayGeneration !== this.pageTableDisplayGeneration
         : drawn !== this.pageTableDrawn;
+    let indexMapMs = 0;
+    let activeListMs = 0;
     if (presented) {
-      this.setSlabResident(drawn);
-      this.pageTableDrawn = drawn;
-      this.pageTableDisplayGeneration =
-        plan.displayGeneration ?? this.pageTableDisplayGeneration + 1;
-      this.invalidateSort();
+      if (indexedPublication) {
+        const indexMapStartedAt = performance.now();
+        const poolIndices = this.poolIndicesForSlabSlots(indexedPublication);
+        const activeListStartedAt = performance.now();
+        const activeListVersion = this.replaceActiveIndices(poolIndices);
+        const activeListFinishedAt = performance.now();
+        indexMapMs = activeListStartedAt - indexMapStartedAt;
+        activeListMs = activeListFinishedAt - activeListStartedAt;
+        this.pageTableDrawn = indexedPublication.length;
+        this.pageTableDisplayGeneration = plan.candidateGeneration as number;
+        this.indexedPendingDisplaySlots = indexedPublication;
+        this.indexedPublishGeneration = plan.candidateGeneration as number;
+        this.indexedPublishActiveListVersion = activeListVersion;
+      } else {
+        this.setSlabResident(drawn);
+        this.pageTableDrawn = drawn;
+        this.pageTableDisplayGeneration =
+          plan.displayGeneration ?? this.pageTableDisplayGeneration + 1;
+        this.invalidateSort();
+      }
     }
+    const publicationFinishedAt = performance.now();
     const continuedOlderPlan = this.pageTableContinuePending;
     this.frontierConverged = plan.converged;
     this.pageTableContinuePending = !plan.converged;
@@ -4345,9 +4519,16 @@ export class StreamedSplatMesh extends SplatMesh {
     // Recorded because a churning frontier can make this the largest stall in a
     // frame, and a cap has to be aimed at whichever half dominates.
     const planTimings = this.planTimingsValue;
-    planTimings.applyMs = residentFinishedAt - applyStartedAt;
+    planTimings.applyMs = publicationFinishedAt - applyStartedAt;
     planTimings.writeMs = writeFinishedAt - applyStartedAt;
     planTimings.residentMs = residentFinishedAt - writeFinishedAt;
+    planTimings.publicationMs = publicationFinishedAt - residentFinishedAt;
+    planTimings.worstPublicationMs = Math.max(
+      planTimings.worstPublicationMs,
+      planTimings.publicationMs,
+    );
+    planTimings.indexMapMs = indexMapMs;
+    planTimings.activeListMs = activeListMs;
     planTimings.moves = plan.moveSlots.length;
     planTimings.appends = plan.appends.count;
     if (planTimings.applyMs > planTimings.worstApplyMs) {
@@ -4421,9 +4602,13 @@ export class StreamedSplatMesh extends SplatMesh {
     const tree = data.radTree;
     if (!tree) return;
     this.pageTableCachedFiles.add(file);
-    this.demandGeneration++;
-    this.demandDiagnostics.generation = this.demandGeneration;
-    this.demandKey = '';
+    if (this.demandOutstanding) {
+      this.demandCacheDirty = true;
+    } else {
+      this.demandGeneration++;
+      this.demandDiagnostics.generation = this.demandGeneration;
+      this.demandKey = '';
+    }
     // Only forward SH the pool will actually render. A `.rad` chunk decodes
     // whatever bands the file carries regardless of what was asked for, and the
     // worker charges its cache for every byte it is handed - 15 coefficients is

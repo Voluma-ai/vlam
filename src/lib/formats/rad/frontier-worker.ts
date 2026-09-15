@@ -16,6 +16,7 @@
  *  - worker → main `plan`     : `{ seq, moves, appends, degenerate, touched, … }`.
  */
 import { FrontierPager, type PagerPlan } from './frontier-pager';
+import { IndexedFrontierPager, type IndexedFrontierStage } from './indexed-frontier-pager';
 import {
   frontierView,
   gatherGlobals,
@@ -50,6 +51,45 @@ const cache = new Map<number, SplatData>();
 const cacheBytes = new Map<number, number>();
 const roots = new Set<number>();
 let pager: FrontierPager | null = null;
+let indexedPager: IndexedFrontierPager | null = null;
+let queuedIndexedCamera: FrontierRescheduleMessage | null = null;
+let lastIndexedChunkAt = Number.NEGATIVE_INFINITY;
+let indexedNearBudgetFollowupUsed = false;
+let indexedMidBudgetFollowupUsed = false;
+let indexedLastBudget = -1;
+const INDEXED_SETTLE_IDLE_MS = 200;
+
+/** Coalesces stationary refinements without delaying the first, moved, or settled cut. */
+export function shouldStartIndexedCandidate(
+  displayed: number,
+  desired: number,
+  budget: number,
+  cameraMoved: boolean,
+  uncachedTouchedCount: number,
+  msSinceChunk: number,
+): boolean {
+  if (displayed === 0 || cameraMoved) return true;
+  if (uncachedTouchedCount === 0 && msSinceChunk >= INDEXED_SETTLE_IDLE_MS) return true;
+  if (displayed >= budget * 0.9) return false;
+  return desired >= Math.min(budget * 0.9, displayed * 4);
+}
+
+/**
+ * A large view can settle well below its configured budget. Permit one later
+ * stationary cut after the coarse geometric ramp so that such a view does not
+ * wait for the idle-final publication. Keeping this to one cut, and arming it
+ * only beyond 35% of the budget, leaves the 1M near-budget cadence unchanged.
+ */
+export function shouldStartIndexedMidBudgetFollowup(
+  displayed: number,
+  desired: number,
+  budget: number,
+  used: boolean,
+): boolean {
+  return (
+    !used && displayed >= budget * 0.35 && displayed < budget * 0.9 && desired >= displayed * 1.5
+  );
+}
 let chunkSize = 65536;
 let cpuCacheBytes = 256 * 1024 * 1024;
 let maxPlanWrites = DEFAULT_PAGE_TABLE_WRITES_PER_PLAN;
@@ -141,6 +181,9 @@ let demandScan: FrontierDemandScan | null = null;
 let demandGeneration = 0;
 let demandChannel: MessageChannel | null = null;
 let pendingDemand: FrontierDemandMessage | null = null;
+let lastPartialDemandKey = '';
+let lastPartialDemandAt = -Infinity;
+let lastPartialDemandCount = 0;
 
 function yieldDemand(msg: FrontierDemandMessage): void {
   if (!demandChannel) {
@@ -163,6 +206,29 @@ function scanDemand(msg: FrontierDemandMessage): void {
   const wants = demandScan?.step(performance.now() + 4);
   if (generation !== demandGeneration) return;
   if (!wants) {
+    const now = performance.now();
+    if (
+      demandScan &&
+      demandScan.wantCount !== lastPartialDemandCount &&
+      now - lastPartialDemandAt >= 100
+    ) {
+      const partial = demandScan.partialWants();
+      const key = partial
+        .slice(0, 8)
+        .map((want) => want.file)
+        .join(',');
+      lastPartialDemandCount = demandScan.wantCount;
+      if (key && key !== lastPartialDemandKey) {
+        lastPartialDemandKey = key;
+        lastPartialDemandAt = now;
+        (self as unknown as Worker).postMessage({
+          type: 'demand',
+          generation,
+          wants: partial,
+          complete: false,
+        });
+      }
+    }
     yieldDemand(msg);
     return;
   }
@@ -216,8 +282,7 @@ function recordRoots(file: number, data: SplatData): void {
 
 function evict(): number[] {
   const evicted: number[] = [];
-  if (!pager || totalBytes <= cpuCacheBytes) return evicted;
-  const resident = pager;
+  if ((!pager && !indexedPager) || totalBytes <= cpuCacheBytes) return evicted;
   // Drop non-needed, non-0 chunks until under the cap. A finer policy can wait;
   // correctness holds because the traversal skips absent chunks and re-fetches
   // via the touched set - provided the main thread learns of the eviction.
@@ -232,7 +297,12 @@ function evict(): number[] {
   // protected the cache simply stays over its cap for a round; the next plan
   // retires the leavers and frees them.
   const candidates = [...cache.keys()]
-    .filter((f) => f !== 0 && !neededFiles.has(f) && !resident.hasResidentIn(f))
+    .filter(
+      (f) =>
+        f !== 0 &&
+        !neededFiles.has(f) &&
+        !(pager?.hasResidentIn(f) ?? indexedPager?.hasResidentIn(f) ?? false),
+    )
     .sort((a, b) => b - a); // evict the highest (finest, most transient) first
   for (const file of candidates) {
     if (totalBytes <= cpuCacheBytes) break;
@@ -312,6 +382,71 @@ function postPlan(
   ]);
 }
 
+/** Posts bounded stable-slot writes and, on the final stage, one complete index list. */
+function postIndexedPlan(
+  seq: number,
+  stage: IndexedFrontierStage | null,
+  touchedFiles: Uint32Array,
+  limit: number,
+): void {
+  const indexed = indexedPager;
+  if (!indexed) return;
+  const gatherStats = { missing: 0 };
+  const writeGlobals = stage?.globals ?? new Uint32Array(0);
+  const appends: PlanSplats = {
+    ...gatherGlobals(cache, writeGlobals, chunkSize, gatherStats),
+    globals: writeGlobals,
+  };
+  const publication = stage?.complete ? indexed.beginPublication(stage.generation) : null;
+  const emptyGlobals = new Uint32Array(0);
+  const moves: PlanSplats = {
+    ...gatherGlobals(cache, emptyGlobals, chunkSize),
+    globals: emptyGlobals,
+  };
+  const evicted = Uint32Array.from(evict());
+  const reply: FrontierPlanMessage = {
+    type: 'plan',
+    seq,
+    moveSlots: new Uint32Array(0),
+    moves,
+    appendStart: 0,
+    appends,
+    writeSlots: stage?.slots ?? new Uint32Array(0),
+    ...(stage ? { candidateGeneration: stage.generation } : {}),
+    ...(publication ? { candidateSlots: publication.slots } : {}),
+    degenerateStart: 0,
+    degenerateCount: 0,
+    touched: touchedFiles,
+    residentCount: indexed.residentCount,
+    displayCount: publication?.count ?? indexed.displayCount,
+    displayGeneration: publication?.generation,
+    gatherMissing: gatherStats.missing,
+    dropped: 0,
+    evicted,
+    solvedLimit: limit,
+    capacity: indexed.capacity,
+    converged: stage?.complete ?? true,
+    pendingFrontierSplats: indexed.pendingCount,
+    staleResidentSplats: Math.max(0, indexed.residentCount - indexed.displayCount),
+    cacheBytes: totalBytes,
+    cacheLimitBytes: cpuCacheBytes,
+    traversalStrategy: experiments.radTraversal,
+    traversalFallback: lastTraversalFallback,
+    traversalFallbackCount,
+    rootCoverInfeasible: lastRootCoverInfeasible,
+    traversalMs: lastTraversalMs,
+  };
+  (self as unknown as Worker).postMessage(reply, [
+    reply.moveSlots.buffer,
+    ...buffersOf(moves),
+    ...buffersOf(appends),
+    ...(stage ? [stage.slots.buffer] : []),
+    ...(publication ? [publication.slots.buffer] : []),
+    touchedFiles.buffer,
+    evicted.buffer,
+  ]);
+}
+
 /** The chunks the last full traversal wanted, and the cut it solved - replayed
  * by drain plans, which deliver that same frontier. */
 let lastTouched = new Uint32Array(0);
@@ -351,7 +486,22 @@ function protectPendingAppends(): void {
 }
 
 function reschedule(msg: FrontierRescheduleMessage): void {
-  if (!pager) return;
+  if (!pager && !indexedPager) return;
+
+  if (indexedPager) {
+    if (indexedPager.awaitingPublication) {
+      queuedIndexedCamera = msg;
+      return;
+    }
+    const pendingGeneration = indexedPager.candidateGeneration;
+    if (pendingGeneration !== null) {
+      queuedIndexedCamera = msg;
+      const stage = indexedPager.stage(pendingGeneration, maxPlanWrites);
+      if (stage) postIndexedPlan(msg.seq, stage, Uint32Array.from(lastTouched), lastLimit);
+      return;
+    }
+  }
+  const classicPager = pager;
 
   // Finish a publish-safe queued cut when the host asks, even if the latest
   // camera has moved. The host coalesces that newer camera and sends it again
@@ -359,8 +509,12 @@ function reschedule(msg: FrontierRescheduleMessage): void {
   // conservative delivery cap starve forever during an orbit. Identical idle
   // reschedules retain the original automatic drain behaviour.
   const key = planKey(msg);
-  if ((msg.continuePendingPlan || key === lastPlanKey) && pager.hasPendingDrain) {
-    const plan = pager.drain(maxPlanWrites, maxPlanWrites, maxPlanWrites);
+  if (
+    classicPager &&
+    (msg.continuePendingPlan || key === lastPlanKey) &&
+    classicPager.hasPendingDrain
+  ) {
+    const plan = classicPager.drain(maxPlanWrites, maxPlanWrites, maxPlanWrites);
     protectPendingAppends();
     postPlan(msg.seq, plan, Uint32Array.from(lastTouched), lastLimit, Uint32Array.from(evict()));
     return;
@@ -389,7 +543,7 @@ function reschedule(msg: FrontierRescheduleMessage): void {
   let limit: number;
   let result: ReturnType<typeof traverseFrontier>;
   if (experiments.radTraversal === 'bounded-threshold') {
-    const hardCap = Math.min(msg.budget, pager.capacity);
+    const hardCap = Math.min(msg.budget, pager?.capacity ?? indexedPager?.capacity ?? msg.budget);
     if (thresholdBudget !== hardCap) {
       thresholdBudget = hardCap;
       thresholdLimit = msg.limit;
@@ -467,18 +621,10 @@ function reschedule(msg: FrontierRescheduleMessage): void {
     cameraMoved,
     uncachedTouched.length,
     totalBytes >= cpuCacheBytes,
-    pager.hasPublishedDisplay,
+    pager?.hasPublishedDisplay ?? indexedPager?.hasPublishedDisplay ?? false,
     initialPublishMinSplats,
     result.count,
   );
-
-  const plan = pager.update(desiredGlobals, {
-    maxAppends: maxPlanWrites,
-    maxWrites: maxPlanWrites,
-    maxMoveSlotSpan: maxPlanWrites,
-    publish,
-  });
-  protectPendingAppends();
 
   const touched = Uint32Array.from(
     [...result.touched]
@@ -487,23 +633,98 @@ function reschedule(msg: FrontierRescheduleMessage): void {
       .map(([cc]) => cc),
   );
 
-  // Remember what this traversal answered, so an unchanged reschedule can drain
-  // the remainder instead of running it again.
   lastTouched = touched;
   lastLimit = limit;
   lastPlanKey = planKey(msg);
 
+  if (indexedPager) {
+    // Every traversal result is a complete tree cut over the chunks currently
+    // cached: missing descendants leave their selected covering parent in it.
+    // Publish that valid cut as soon as its own slots and sort are ready rather
+    // than waiting for every requested descendant chunk.
+    if (indexedPager.matchesDisplay(desiredGlobals)) {
+      postIndexedPlan(msg.seq, null, Uint32Array.from(touched), limit);
+      return;
+    }
+    // A complete cut is always safe, but publishing every newly cached cut
+    // repeatedly sorts a near-budget million-entry index list. Keep the first
+    // complete picture early, then publish stationary intermediate detail at
+    // geometric milestones. The existing readiness signal still publishes the
+    // final cut as soon as all touched chunks are cached (and every camera move
+    // remains eligible immediately).
+    const displayed = indexedPager.displayCount;
+    if (msg.budget !== indexedLastBudget) {
+      indexedLastBudget = msg.budget;
+      indexedNearBudgetFollowupUsed = false;
+      indexedMidBudgetFollowupUsed = false;
+    }
+    if (cameraMoved) {
+      indexedNearBudgetFollowupUsed = false;
+      indexedMidBudgetFollowupUsed = false;
+    }
+    const nearBudgetFollowup = displayed >= msg.budget * 0.9 && !indexedNearBudgetFollowupUsed;
+    const midBudgetFollowup = shouldStartIndexedMidBudgetFollowup(
+      displayed,
+      desiredGlobals.length,
+      msg.budget,
+      indexedMidBudgetFollowupUsed,
+    );
+    if (
+      !nearBudgetFollowup &&
+      !midBudgetFollowup &&
+      !shouldStartIndexedCandidate(
+        displayed,
+        desiredGlobals.length,
+        msg.budget,
+        cameraMoved,
+        uncachedTouched.length,
+        performance.now() - lastIndexedChunkAt,
+      )
+    ) {
+      postIndexedPlan(msg.seq, null, Uint32Array.from(touched), limit);
+      return;
+    }
+    if (nearBudgetFollowup && !cameraMoved) indexedNearBudgetFollowupUsed = true;
+    if (midBudgetFollowup && !cameraMoved) indexedMidBudgetFollowupUsed = true;
+    const generation = indexedPager.select(desiredGlobals);
+    const stage = indexedPager.stage(generation, maxPlanWrites);
+    if (stage) postIndexedPlan(msg.seq, stage, Uint32Array.from(touched), limit);
+    return;
+  }
+
+  const plan = pager!.update(desiredGlobals, {
+    maxAppends: maxPlanWrites,
+    maxWrites: maxPlanWrites,
+    maxMoveSlotSpan: maxPlanWrites,
+    publish,
+  });
+  protectPendingAppends();
+
+  // Remember what this traversal answered, so an unchanged reschedule can drain
+  // the remainder instead of running it again.
   postPlan(msg.seq, plan, Uint32Array.from(touched), limit, Uint32Array.from(evict()));
 }
 
 self.onmessage = (event: MessageEvent<FrontierRequest>): void => {
   const msg = event.data;
   if (msg.type === 'init') {
+    cache.clear();
+    cacheBytes.clear();
+    roots.clear();
+    neededFiles.clear();
+    totalBytes = 0;
     chunkSize = msg.chunkSize;
     cpuCacheBytes = msg.cpuCacheBytes;
     maxPlanWrites = msg.maxPlanWrites;
     initialPublishMinSplats = msg.initialPublishMinSplats ?? Number.POSITIVE_INFINITY;
-    pager = new FrontierPager(msg.capacity, chunkSize);
+    pager = msg.pagerMode === 'indexed' ? null : new FrontierPager(msg.capacity, chunkSize);
+    indexedPager =
+      msg.pagerMode === 'indexed' ? new IndexedFrontierPager(msg.capacity, chunkSize) : null;
+    queuedIndexedCamera = null;
+    lastIndexedChunkAt = Number.NEGATIVE_INFINITY;
+    indexedNearBudgetFollowupUsed = false;
+    indexedMidBudgetFollowupUsed = false;
+    indexedLastBudget = -1;
     solvedLimit = Number.POSITIVE_INFINITY;
     thresholdLimit = Number.POSITIVE_INFINITY;
     thresholdBudget = -1;
@@ -512,9 +733,19 @@ self.onmessage = (event: MessageEvent<FrontierRequest>): void => {
     lastCameraKey = null;
     return;
   }
+  if (msg.type === 'published') {
+    if (!indexedPager?.acknowledge(msg.generation)) return;
+    const queued = queuedIndexedCamera;
+    queuedIndexedCamera = null;
+    if (queued) reschedule(queued);
+    return;
+  }
   if (msg.type === 'resize') {
     // Only the pager's slot count changes; `cache` and its roots are untouched,
     // so a mesh growing or shrinking its storage re-downloads nothing.
+    // Indexed eligibility is fixed at construction. Its 2× reservation does
+    // not resize underneath an owned generation; budget changes only alter the
+    // cut passed to traversal.
     pager?.resize(msg.capacity);
     thresholdBudget = -1;
     return;
@@ -527,6 +758,7 @@ self.onmessage = (event: MessageEvent<FrontierRequest>): void => {
     return;
   }
   if (msg.type === 'chunk') {
+    if (indexedPager) lastIndexedChunkAt = performance.now();
     const data: SplatData = {
       count: msg.count,
       positions: msg.positions,
@@ -558,6 +790,9 @@ self.onmessage = (event: MessageEvent<FrontierRequest>): void => {
   }
   if (msg.type === 'demand') {
     demandGeneration = msg.generation;
+    lastPartialDemandKey = '';
+    lastPartialDemandAt = -Infinity;
+    lastPartialDemandCount = 0;
     const rootList = [...roots].filter((g) => cache.has(Math.floor(g / chunkSize)));
     demandScan = new FrontierDemandScan(cache, rootList, chunkSize, msg);
     scanDemand(msg);

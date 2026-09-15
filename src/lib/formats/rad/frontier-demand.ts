@@ -56,6 +56,15 @@ export class FrontierDemandScan {
   private rootIndex = 0;
   private readonly seeded = new Set<number>();
 
+  get wantCount(): number {
+    return this.wants.size;
+  }
+
+  /** A provisional priority list; omission is not evidence for cancellation. */
+  partialWants(): FrontierDemandWant[] {
+    return [...this.wants.values()].sort(compareDemand);
+  }
+
   constructor(
     private readonly cache: ReadonlyMap<number, SplatData>,
     private readonly roots: readonly number[],

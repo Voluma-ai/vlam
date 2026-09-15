@@ -181,6 +181,7 @@ describe('focused demand reconciliation', () => {
       demandGeneration: number;
       demandReadyGeneration: number;
       demandOutstanding: boolean;
+      demandCacheDirty: boolean;
       demandWants: FrontierDemandReply['wants'];
       demandFirstSeen: Map<number, number>;
       pageTableCachedFiles: Set<number>;
@@ -241,6 +242,30 @@ describe('focused demand reconciliation', () => {
     expect(requested).toHaveBeenCalledWith(3, 'priority');
     inner.applyDemand({ type: 'demand', generation: inner.demandGeneration, wants: [] });
     expect(old.signal.aborted).toBe(true);
+  });
+
+  it('uses partial demand to fill slots without canceling, then rescans a changed cache', () => {
+    const inner = fixture();
+    const requested = vi.spyOn(inner, 'requestChunk').mockImplementation(() => {});
+    const old = new AbortController();
+    inner.fetching.set(3, { controller: old, kind: 'priority' });
+    inner.demandGeneration = 5;
+    inner.demandOutstanding = true;
+    inner.applyDemand({
+      type: 'demand',
+      generation: 5,
+      complete: false,
+      wants: [{ file: 4, tier: 0, priority: 10 }],
+    });
+    expect(requested).toHaveBeenCalledWith(4, 'priority');
+    expect(old.signal.aborted).toBe(false);
+    expect(inner.demandOutstanding).toBe(true);
+    inner.demandCacheDirty = true;
+    inner.applyDemand({ type: 'demand', generation: 5, wants: [] });
+    expect(old.signal.aborted).toBe(false);
+    expect(inner.demandGeneration).toBe(6);
+    expect(inner.demandReadyGeneration).toBe(-1);
+    expect(inner.demandOutstanding).toBe(false);
   });
 
   it('keeps a lower-priority dependency progressing alongside seven visible requests', () => {

@@ -74,6 +74,12 @@ describe('shared comparison configuration', () => {
       comparisonConfig('/spark-benchmark.html', new URLSearchParams('preset=matched&sh=0')),
     ).toMatchObject({ engine: 'spark', preset: 'matched', sh: 0, backend: 'webgl' });
     expect(
+      comparisonConfig(
+        '/spark-benchmark.html',
+        new URLSearchParams('scene=poland&radBudget=4000000'),
+      ),
+    ).toMatchObject({ engine: 'spark', scene: 'poland', radBudget: 4_000_000, backend: 'webgl' });
+    expect(
       comparisonConfig('/vlam-benchmark.html', new URLSearchParams('backend=webgl&preset=matched')),
     ).toMatchObject({ engine: 'vlam', backend: 'webgl', preset: 'matched' });
   });

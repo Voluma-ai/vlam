@@ -609,7 +609,8 @@ export interface SplatPoolBytesOptions {
    * Pool capacity as a multiple of `splats`. `StreamedSplatMesh` allocates
    * 1.5× (the default here) so per-run row alignment and the
    * append-before-remove window during LOD swaps have somewhere to go; pass
-   * `1.4` to model `experimentalStagedSwaps: false`, or `1` for a static mesh.
+   * `2` for the benchmark-only indexed RAD pager, `1.4` to model
+   * `experimentalStagedSwaps: false`, or `1` for a static mesh.
    */
   capacityFactor?: number;
   /**

@@ -78,7 +78,7 @@ export async function createComparisonVlam(
       })
     : new SplatMesh(await loadSplatData(url), meshOptions);
   // Goose and hotel are Y-down captures; LCC2 already stands up via formatTransform.
-  if (kind !== 'lcc2') mesh.rotation.x = Math.PI;
+  if (kind !== 'lcc2' && config.scene !== 'poland') mesh.rotation.x = Math.PI;
   const sourceSplats =
     mesh instanceof StreamedSplatMesh
       ? (mesh.contentSplatCount ?? mesh.maxBudget)
@@ -221,12 +221,26 @@ export async function createComparisonVlam(
       await new Promise((resolve) => setTimeout(resolve, 16));
     }
     if (kind !== 'rad') return;
-    // Page-table `.rad` does not arm the LCC coverage hold. Wait until the
-    // frontier has something to draw and reports a complete first cut.
-    while (mesh.activeSplatCount === 0 || !mesh.frontierState.frontierConverged) {
+    // Page-table `.rad` does not arm the LCC coverage hold. A complete first
+    // cut is sufficient for interactive display, but this harness measures a
+    // settled renderer: wait through later fetches, bounded staging and the
+    // publication acknowledgment which reclaims the former display slots.
+    // Otherwise indexed timing can start on its coarse cut while classic has
+    // already reached its final frontier.
+    let stableSince: number | null = null;
+    for (;;) {
       if (performance.now() > deadline) timedOut('RAD frontier settle');
       mesh.update(camera, renderer);
       renderer.render(scene, camera);
+      const frontier = mesh.frontierState;
+      const settled =
+        mesh.activeSplatCount > 0 &&
+        mesh.pendingChunkCount === 0 &&
+        frontier.frontierConverged &&
+        frontier.pendingFrontierSplats === 0 &&
+        frontier.staleResidentSplats === 0;
+      stableSince = settled ? (stableSince ?? performance.now()) : null;
+      if (stableSince !== null && performance.now() - stableSince >= 250) break;
       await new Promise((resolve) => setTimeout(resolve, 16));
     }
   };

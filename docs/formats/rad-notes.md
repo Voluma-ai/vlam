@@ -38,11 +38,119 @@ This is not the production default until paired central-detail and frame-tail
 measurements, including pixel/coverage checks, pass the acceptance gate.
 RAD chunks mix locations, so this can avoid obsolete or low-value requests but
 cannot guarantee zero off-screen bytes.
+
+`VLAM_EXPERIMENT=rad-indexed` selects the isolated stable-slot pager. It keeps
+the published active-index list separate from a candidate, reuses unchanged
+global splats in place, and writes newcomers only into free slots. A complete
+candidate is handed to standalone WebGPU, unified WebGPU, or the WebGL2 sort
+worker as one index generation; the worker retains the previous display slots
+until that backend acknowledges its matching sorted publication. The variant
+reserves 2× its maximum drawn frontier. If that reservation does not fit the
+configured pool or the portable 8192-row device floor, initialization keeps the
+classic pager and the benchmark JSON reports `radPager.mode: "classic"`; it
+never lowers the draw target to qualify. `radPager.memory` estimates the actual
+pool, index/sort storage, CPU backing, and enabled packed SH allocation.
+
 The viewer's `?cacheMB=` supplies a cache *floor*, not a forced smaller
 allowance; a capture that fits its default allowance will correctly keep the
 legacy scheduler in both variants. The frame benchmark JSON includes internal
 demand generations, stale replies, cancellation counts, and known inline-RAD
 range bytes (not transport-level transferred-byte measurements).
+
+For native-browser arrival comparisons, start separate local benchmark servers
+with `VLAM_EXPERIMENT=baseline`, `VLAM_EXPERIMENT=rad-indexed`, and (when
+measuring request policy) `VLAM_EXPERIMENT=rad-focus`, on distinct ports.
+Then run `node scripts/rad-detail-benchmark.mjs --base=http://127.0.0.1:<port>
+--scene=lcc --label=<variant> --allowanceMB=768 --budget=1000000
+--sampleMs=60000`. The local-only `radBenchmarkAllowanceMB` viewer parameter is
+accepted only while benchmark instrumentation is enabled; it makes the cache
+allowance comparable on a capture that otherwise fits the machine's default.
+The runner requires a headed Chromium, defaults to native WebGPU, saves sampled
+frames and central-image error against the settled frame under ignored `.tmp/`,
+and supports `--backend=webgpu|webgl`,
+`--routes=overview-fly,direct,turn-return,orbit`, `--runs=5`, and
+`--cacheMode=cold|warm`. In warm mode, the first run primes the browser cache.
+For comparable-detail timing, capture one settled production-VLAM frame and
+pass it to every run with `--reference=<final.png> --thresholdMae=<fixed>`.
+Without `--reference`, each run compares against its own final frame and is
+diagnostic only; it must not be used for an indexed/classic speed claim.
+Its screenshot comparisons are diagnostic: choose the equivalence threshold
+from inspected images before using them as an acceptance gate, and reject runs
+whose reference frame is still pending. rAF frame tails exclude screenshot
+pauses. Request-to-decode time currently combines transport and decode, while
+known range bytes are not a measurement of actual network transfer.
+
+On 2026-09-15, five direct-load cold and warm native WebGPU trials used one
+30-second production-VLAM frame as the shared reference (central MAE threshold
+0.383), a 1280×720 viewport, 1M draw budget, and 768 MiB cache allowance on the
+available 10.1M-leaf LCC RAD. Indexed reached the equivalent-detail sample at a
+7.501 / 7.501 s cold / warm median in all ten trials; successful classic trials
+reached it at a 15.001 s median (four of five in each set). One classic cold
+reference was still refining at 20 s, and one clean classic warm rerun converged
+to a visibly different cut, so those trials were rejected rather than imputed.
+This is a measured 50.0% earlier sampled arrival on this route. An initial
+indexed build doubled median p99 to
+33.4 ms by publishing and sorting every near-budget cut. Resolving slab page
+bases once per publication and allowing one near-budget follow-up before an
+idle final cut restored cold and warm median p95 / p99 to 16.8 / 16.8 ms; cold
+worst p99 was 18.3 ms. Estimated pool-and-sort memory rose 398.8→528.7 MB
+(+32.6%).
+
+The supplied Poland capture subsequently exercised the intended scale: a
+2,754,121,856-byte single-file RAD (SHA-256
+`375af16fec68eea208a0e4df45ed3b25ea83eb22ffff8eeccb48df4bc42cc2d3`),
+106,447,647 leaf splats, 151,581,987 tree nodes, 2,313 chunks, and no SH. Five
+direct-load trials per cache mode used a bounds-derived 4×2 km aerial pose, the
+same 60-second production reference, central MAE threshold 0.25, 1280×720,
+4M draw budget, and 768 MiB cache allowance. Indexed reached equivalent detail
+at 7.501 / 7.500 s cold / warm median versus classic 9.123 / 8.388 s: 17.8% and
+10.6% earlier, respectively. Every final frame matched the shared reference;
+median p95 / p99 was 16.8 / 16.8 ms for all four sets. Indexed's worst p99 was
+33.2 ms cold and 20.3 ms warm versus classic's 16.8 ms, so the tail/device gate
+is not yet closed. Estimated pool-and-sort memory rose 808.9→1,073.0 MB
+(+32.6%), as expected from the 1.5×→2× reservation. A real-scene indexed
+WebGL2 smoke reached the same 2,611,810-splat cut without errors.
+
+The matched settled harness now truly pages Spark RAD instead of decoding the
+whole 2.75 GB file, gives Spark the same 4M LOD target and a chunk-aligned 1.5×
+page pool, and waits for both renderers' final pager/sort boundary. Five rotated
+native timestamp trials held VLAM classic and indexed at the same ~4M cut:
+median GPU time was 3.966 / 3.979 ms and median GPU p99 6.655 / 4.001 ms, with
+16.7 / 16.7 ms median frame intervals. Installed Spark 2.2 held a smaller
+3,382,402-splat cut and measured 3.260 ms median GPU, so that number is not an
+equivalent-detail speed comparison. All fixed captures were nonblank. Keep
+`rad-indexed` benchmark-only until movement routes, additional devices, and the
+observed arrival/frame-tail variance pass. The real unified-WebGPU parity
+harness was then run against the supplied Poland file at a 4M draw budget and
+the bounds-derived aerial pose. It reached a complete 1,862,866-splat cut with
+zero pending or stale residents, no page errors, and direct/unified settled
+central MAE 3.82 RGB levels. The harness now accepts `budget`, `budgets`,
+`cameraPosition`, `cameraTarget`, and `settleMs` query parameters and probes
+local range assets with GET rather than HEAD.
+
+The earlier five cold and five warm turn-and-return/orbit captures are retained
+as loading and publication diagnostics, but they are not valid movement
+evidence: the Poland manifest's aerial pose has zero horizontal radius, so the
+old route traced a point, and its frame sample began after the motion interval.
+The runner now derives a deterministic fallback radius for a top-down pose,
+records the travelled distance, rejects zero-motion orbit/turn routes, and
+reports frame tails over the motion-inclusive interval as well as the settled
+tail. It also requires every RAD frontier (including Poland) to be converged
+before a frame can become a shared reference. Re-run the paired cold/warm
+matrix with this corrected route before making an arrival or motion-performance
+claim.
+
+The first native Chromium/WebGPU trials on the local LCC pose at a 768 MiB
+allowance and 1M draw budget did **not** pass the activation gate. A request-only
+scan that waited for a complete reply regressed direct loading (about 40 s
+versus 15 s). Provisional demand replies removed that stall: direct loading
+reached the same settled central frame at the 15 s sample in both variants.
+The fly-to trials also reached it at about 10–15 s for legacy and 15 s for
+focus; inspected intermediate frames showed the focus image still visibly
+softer at 3.5 s in one paired run. These are exploratory, unpaired-in-time
+single runs rather than a cold/warm median. Keep `baseline` as the production
+default until repeated, visually audited runs meet the stated quality and
+frame-tail thresholds.
 
 Page-table fetches prioritize chunks requested by the current frontier. The
 coarse-base stream runs until the first complete display; after that it keeps

@@ -6,6 +6,7 @@ declare const __VLAM_EXPERIMENT__: string;
 export const experiments: ExperimentConfiguration = {
   initialPoolUpload: __VLAM_EXPERIMENT__ === 'skip-empty' ? 'skip-empty' : 'existing',
   radTraversal: __VLAM_EXPERIMENT__ === 'bounded-threshold' ? 'bounded-threshold' : 'heap',
+  radPager: __VLAM_EXPERIMENT__ === 'rad-indexed' ? 'indexed' : 'classic',
   radDemand: __VLAM_EXPERIMENT__ === 'rad-focus' ? 'focus' : 'legacy',
   remotePly:
     __VLAM_EXPERIMENT__ === 'exact-stream'
