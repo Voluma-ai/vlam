@@ -138,17 +138,29 @@ central MAE 3.82 RGB levels. The harness now accepts `budget`, `budgets`,
 `cameraPosition`, `cameraTarget`, and `settleMs` query parameters and probes
 local range assets with GET rather than HEAD.
 
-The earlier five cold and five warm turn-and-return/orbit captures are retained
-as loading and publication diagnostics, but they are not valid movement
-evidence: the Poland manifest's aerial pose has zero horizontal radius, so the
-old route traced a point, and its frame sample began after the motion interval.
-The runner now derives a deterministic fallback radius for a top-down pose,
-records the travelled distance, rejects zero-motion orbit/turn routes, and
-reports frame tails over the motion-inclusive interval as well as the settled
-tail. It also requires every RAD frontier (including Poland) to be converged
-before a frame can become a shared reference. Re-run the paired cold/warm
-matrix with this corrected route before making an arrival or motion-performance
-claim.
+The corrected Poland movement matrix used a fresh converged classic orbit
+reference and five cold/warm trials for both classic and indexed builds, with
+the same 4M budget, 768 MiB allowance, 1280×720 viewport, and 15-second sample
+window. The manifest still reports a zero configured horizontal radius, but the
+runner's deterministic fallback produced an effective radius of 694.2 and
+measured 694.2 units of camera travel on every turn-and-return and orbit run.
+All 40 measured runs converged to 2,611,810 active splats with zero pending or
+stale residents, no page errors, and `referenceStillPending: false`; final
+central MAE stayed below 0.00071. Frame tails now include the motion interval:
+median p95/p99 was 16.8/16.8 ms for every variant and route (the classic-cold
+orbit set had one 18.6/21.2 ms outlier). Turn-and-return arrival is effectively
+the already-settled pose (classic 250.1/251.7 ms cold/warm medians; indexed
+2.0/250.4 ms), while orbit post-motion equivalent-detail arrival measured
+5,001.1/5,001.1 ms for classic and 3,679.7/3,579.6 ms for indexed
+(cold/warm). These arrival values describe convergence after the route returns
+to the reference pose; they are not a standalone 25% release claim.
+
+Raw corrected reports and captures are retained under
+`.tmp/rad-detail-benchmark/2026-09-15T10-31-48.514Z-poland-corrected-reference`,
+`2026-09-15T10-32-55.690Z-poland-corrected-classic-cold`,
+`2026-09-15T10-39-14.744Z-poland-corrected-classic-warm`,
+`2026-09-15T10-45-47.222Z-poland-corrected-indexed-cold`, and
+`2026-09-15T10-50-55.641Z-poland-corrected-indexed-warm`.
 
 The first native Chromium/WebGPU trials on the local LCC pose at a 768 MiB
 allowance and 1M draw budget did **not** pass the activation gate. A request-only
