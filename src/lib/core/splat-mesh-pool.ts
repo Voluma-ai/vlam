@@ -8,7 +8,9 @@
  * bookkeeping the allocator runs on.
  *
  * {@link SplatPool} is public - a host builds one to let several meshes draw
- * from a shared memory envelope. The rest is internal.
+ * from a shared memory envelope. A mesh whose packed-SH request is incompatible
+ * with that pool is downgraded to `shBands === 0` rather than escaping the
+ * envelope into a private pool. The rest is internal.
  */
 import * as THREE from 'three/webgpu';
 import { dataTexturesUploaded, releaseDataTextureMirrors } from './data-texture-mirror';

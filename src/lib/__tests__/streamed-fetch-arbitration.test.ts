@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { writeCovariance, type SplatData } from '../core/splat-data';
+import { SplatPool } from '../core/splat-mesh-pool';
 
 /**
  * How a `StreamedSplatMesh` behaves as a client of the shared fetch scheduler:
@@ -298,6 +299,20 @@ describe('StreamedSplatMesh page-table chunk forwarding', () => {
     expect(sent[0]?.shBands).toBe(0);
     expect(sent[0]?.shPacked).toBeUndefined();
     mesh.dispose();
+  });
+
+  it('does not forward SH after a shared-pool downgrade', () => {
+    const pool = new SplatPool({ capacity: 4 * WIDTH, packedShBands: 0 });
+    const mesh = makeStreamedMesh({ pool, shBands: 3 });
+    expect(mesh.shBands).toBe(0);
+
+    const sent = captureForward(mesh);
+    (mesh as unknown as Internals).forwardChunkToWorker(1, makeTreeChunk(8));
+    expect(sent[0]?.shBands).toBe(0);
+    expect(sent[0]?.shPacked).toBeUndefined();
+
+    mesh.dispose();
+    pool.dispose();
   });
 
   it('still forwards SH when the mesh actually renders it', () => {

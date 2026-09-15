@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
 
 import { SplatMesh } from '../core/splat-mesh';
@@ -181,20 +181,57 @@ describe('SplatMesh sharing a SplatPool', () => {
     far.dispose();
   });
 
-  it('gives a mesh its own pool when its SH bands differ from the shared one', () => {
+  it('downgrades an SH mesh into an SH0 shared pool', () => {
     const pool = new SplatPool({ capacity: 4 * W, packedShBands: 0, packedShTextureCount: 0 });
     const plain = new SplatMesh(data(W), { pool });
-    // A shared pool allocates its packed-SH textures once, so it cannot serve a
-    // tenant needing more bands. Rather than fail the load, that mesh falls back
-    // to its own pool: in a multi-mesh scene it is usually one odd capture carrying
-    // SH, and sizing the shared pool for it would add ~64 B/splat across
-    // storage that mostly has no SH to read.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const withSh = new SplatMesh({ capacity: W }, { pool, shBands: 2 });
 
-    expect(pool.tenantCount).toBe(1); // only `plain` joined
-    // The SH mesh still works, on storage of its own.
-    expect(withSh.capacity).toBeGreaterThanOrEqual(W);
+    expect((withSh as unknown as { pool: SplatPool }).pool).toBe(pool);
+    expect(pool.tenantCount).toBe(2);
+    expect(withSh.shBands).toBe(0);
+    expect(
+      (withSh as unknown as { shPackedTextures: readonly unknown[] }).shPackedTextures,
+    ).toHaveLength(0);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('shared-pool memory limit'));
+    warn.mockRestore();
+
     withSh.dispose();
     plain.dispose();
+    pool.dispose();
+  });
+
+  it('keeps an SH-disabled mesh shared with an SH-capable pool', () => {
+    const pool = new SplatPool({ capacity: 4 * W, packedShBands: 3, packedShTextureCount: 4 });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const mesh = new SplatMesh({ capacity: W }, { pool, shBands: 0 });
+
+    expect((mesh as unknown as { pool: SplatPool }).pool).toBe(pool);
+    expect(pool.tenantCount).toBe(1);
+    expect(mesh.shBands).toBe(0);
+    expect(
+      (mesh as unknown as { shPackedTextures: readonly unknown[] }).shPackedTextures,
+    ).toHaveLength(0);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+
+    mesh.dispose();
+    pool.dispose();
+  });
+
+  it('retains matching packed SH while sharing the pool', () => {
+    const pool = new SplatPool({ capacity: 4 * W, packedShBands: 3, packedShTextureCount: 4 });
+    const mesh = new SplatMesh({ capacity: W }, { pool, shBands: 3 });
+
+    expect((mesh as unknown as { pool: SplatPool }).pool).toBe(pool);
+    expect(pool.tenantCount).toBe(1);
+    expect(mesh.shBands).toBe(3);
+    expect(
+      (mesh as unknown as { shPackedTextures: readonly unknown[] }).shPackedTextures,
+    ).toHaveLength(4);
+
+    mesh.dispose();
+    pool.dispose();
   });
 });
