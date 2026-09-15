@@ -807,8 +807,8 @@ export function recommendedXrFramebufferScale(
  *
  * First `renderer.compute` and first `copyTextureToTexture` each compile a
  * WebGPU pipeline (~200 ms). Seeding the EMA from those drops the ratio to
- * the floor, and a 60 Hz display's 16.7 ms vsync never beats the raise bar
- * (`targetFrameMs * 0.85` ≈ 15.3 ms), so the drop is permanent. Pass the
+ * the floor, and a 60 Hz display's 16.7–16.8 ms cadence now clears the raise
+ * bar (`targetFrameMs * 0.95` ≈ 17.1 ms). Pass the
  * returned {@link AdaptivePixelRatioResult.warmupRemaining} back each frame.
  */
 export const ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES = 5;
@@ -823,7 +823,7 @@ export interface AdaptivePixelRatioInput {
   max: number;
   /** Floor; defaults to `1`. */
   min?: number;
-  /** EMA of frame time from the previous call; omit on the first sample. */
+  /** EMA of frame time from the previous call; omit before the first sample. */
   emaMs?: number;
   /**
    * Samples still ignored before the EMA starts. Omit or `0` to start
@@ -862,9 +862,21 @@ export interface AdaptivePixelRatioResult {
  * `pixelRatio` changes.
  *
  * Steps are quarter-units with asymmetric thresholds (pressure to lower,
- * comfortable headroom to raise) so the ratio does not oscillate. One-off
- * hitches (pipeline compiles, tab resume) that are several times the EMA do
- * not count as pressure.
+ * comfortable headroom to raise) so the ratio does not oscillate. The host
+ * should gate lower suggestions behind a short continuous-pressure dwell and
+ * must not apply every upward suggestion. Gate a higher ratio behind two
+ * seconds of healthy active time, a five-second probation, and failed-probe
+ * backoff; this helper only returns the raw per-frame suggestion.
+ * After warm-up, an undefined EMA is seeded from `targetFrameMs` before the
+ * first sample is incorporated. This limits the influence of a startup hitch
+ * while retaining the normal 0.15 response to real sustained load. One-off
+ * hitches (pipeline compiles, tab resume) that are
+ * several times the EMA do not count as pressure.
+ *
+ * Timers for pressure, recovery, probation, and retry backoff must advance only
+ * while rendering is visible and active. Neutral jitter should decay recovery
+ * time instead of clearing it. See the `fast-on-phones` example for the complete
+ * host controller.
  */
 export function suggestAdaptivePixelRatio(
   input: AdaptivePixelRatioInput,
@@ -891,12 +903,13 @@ export function suggestAdaptivePixelRatio(
     return { pixelRatio, emaMs: input.emaMs, warmupRemaining: 0 };
   }
   const alpha = 0.15;
-  const emaMs = input.emaMs === undefined ? frameMs : input.emaMs * (1 - alpha) + frameMs * alpha;
+  const emaBaseMs = input.emaMs ?? targetFrameMs;
+  const emaMs = emaBaseMs * (1 - alpha) + frameMs * alpha;
 
   let next = pixelRatio;
   if (emaMs > pressureFrameMs && next > min) {
     next = Math.max(min, roundPixelRatio(next - 0.25));
-  } else if (emaMs < targetFrameMs * 0.85 && next < max) {
+  } else if (emaMs < targetFrameMs * 0.95 && next < max) {
     next = Math.min(max, roundPixelRatio(next + 0.25));
   }
   return { pixelRatio: clamp(next, min, max), emaMs, warmupRemaining: 0 };

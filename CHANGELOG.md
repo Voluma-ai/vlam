@@ -21,6 +21,20 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- The internal frame benchmarks now report `medianFrameMs`, independent
+  `observedCallbackCadenceMs` and `displayRefreshMs`, the display-rate source,
+  and refresh-normalized missed opportunities. Only valid `?refreshHz=` /
+  `screen.refreshRate` values produce a display rate; callback cadence remains
+  diagnostic. The literal `intervalsOver33_33ms` value remains a `>33.33 ms`
+  threshold count, not a missed-vsync total; this does not change the public API.
+
+- Adaptive DPR recovery now seeds the first post-warm-up EMA from the target,
+  accepts normal 60 Hz 16.7–16.8 ms frames as healthy, advances dwell/probation/
+  cooldown only on active frames, and tolerates neutral jitter by decaying health.
+  It requires 250 ms of continuous active pressure before reducing resolution,
+  two seconds of healthy active time for upward suggestions, and backs off
+  failed probes. Scene and performance-mode changes reset its state.
+
 - A benchmark-only `rad-focus` request scheduler candidate for over-cache
   page-table RAD: incremental worker demand scans and camera-generation-aware
   cancellation prioritize nearby central chunks while leaving staged display

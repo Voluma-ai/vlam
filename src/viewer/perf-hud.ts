@@ -3,7 +3,7 @@
  *
  * This exists because the numbers were otherwise unreachable on the devices that
  * need them most. The frame benchmark writes JSON into a `hidden` `<pre>` and
- * `console.info`, both of which require a tethered inspector ÔÇö and on Windows
+ * `console.info`, both of which require a tethered inspector — and on Windows
  * there is no Safari remote inspector for an iPhone at all. Anything measured on
  * that device has to be legible on its own screen.
  *
@@ -83,7 +83,7 @@ export interface PerfHudSample {
   lodStats?: { inFrustum: number; leaves: number; desired: number; filled: number } | undefined;
   /**
    * Lifetime chunk-fetch totals by kind plus cache state
-   * (`StreamedSplatMesh.fetchCounts`) ÔÇö what tells a scene that is still
+   * (`StreamedSplatMesh.fetchCounts`) — what tells a scene that is still
    * converging apart from one that is thrashing its cache.
    */
   fetchCounts?:
@@ -105,7 +105,7 @@ export interface PerfHudSample {
    *
    * Shown because a surprising budget is otherwise unattributable on a device
    * with no reachable console: the tiers key off `navigator.deviceMemory`, which
-   * some Android builds simply do not expose ÔÇö and when it is missing the
+   * some Android builds simply do not expose — and when it is missing the
    * low-power tier cannot fire at all, which looks identical to the tier being
    * wrong.
    */
@@ -135,7 +135,7 @@ export interface PerfHud {
   reset(): void;
 }
 
-export function createPerfHud(): PerfHud {
+export function createPerfHud(refreshHints: RefreshTimingHints = {}): PerfHud {
   const element = document.createElement('div');
   element.id = 'perf-hud';
   Object.assign(element.style, {
@@ -176,7 +176,7 @@ export function createPerfHud(): PerfHud {
       }
       if (nowMs - paintedAt < REPAINT_MS) return;
       paintedAt = nowMs;
-      element.textContent = formatHud(sample, frames);
+      element.textContent = formatHud(sample, frames, refreshHints);
     },
     reset(): void {
       frames.length = 0;
@@ -194,11 +194,15 @@ export function createPerfHud(): PerfHud {
  * hides completely, and those are what read as stutter.
  *
  * Exported for unit testing: the panel's DOM half needs a browser (and the
- * browser pane cannot paint it ÔÇö its tab stays hidden, so rAF never fires), but
+ * browser pane cannot paint it — its tab stays hidden, so rAF never fires), but
  * the formatting is pure and is where a wrong number would mislead a whole
  * measurement session.
  */
-export function formatHud(sample: PerfHudSample, frames: readonly number[]): string {
+export function formatHud(
+  sample: PerfHudSample,
+  frames: readonly number[],
+  refreshHints: RefreshTimingHints = {},
+): string {
   const lines: string[] = [];
   if (frames.length > 0) {
     const sorted = [...frames].sort((a, b) => a - b);
@@ -207,21 +211,27 @@ export function formatHud(sample: PerfHudSample, frames: readonly number[]): str
       sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))] as number;
     const p95Ms = percentile(0.95);
     const p99Ms = percentile(0.99);
-    // The fastest stable deltas approximate the display interval without a
-    // device-name table. A callback gap of >1.5 intervals missed at least one
-    // rAF opportunity; this still does not claim physical scan-out.
-    const refreshMs = percentile(0.1);
-    const missed = frames.reduce(
-      (total, ms) => total + Math.max(0, Math.round(ms / refreshMs) - 1),
-      0,
-    );
+    const {
+      observedCallbackCadenceMs,
+      displayRefreshMs,
+      missedRefreshOpportunities,
+      refreshSource,
+    } = estimateRefreshMetrics(frames, refreshHints);
     lines.push(
       `${fps(mean).padStart(5)} rAF  ${mean.toFixed(1).padStart(5)} ms` +
         `   p99 ${fps(p99Ms)} fps`,
     );
-    lines.push(`frame p95 ${p95Ms.toFixed(1)}  p99 ${p99Ms.toFixed(1)} ms  missed ${missed}`);
+    const callback =
+      observedCallbackCadenceMs === null ? '—' : `${observedCallbackCadenceMs.toFixed(1)} ms`;
+    const refresh =
+      displayRefreshMs === null ? '—' : `${displayRefreshMs.toFixed(1)} ms [${refreshSource}]`;
+    const missed = missedRefreshOpportunities === null ? '—' : `${missedRefreshOpportunities}`;
+    lines.push(
+      `frame p95 ${p95Ms.toFixed(1)}  p99 ${p99Ms.toFixed(1)} ms` +
+        `  callback p10 ${callback}  refresh ${refresh}  missed ${missed}`,
+    );
   } else {
-    lines.push('  ÔÇö   rAF');
+    lines.push('  —   rAF  callback p10 —  refresh —  missed —');
   }
 
   if (sample.cpuFrameMs !== undefined) lines.push(`cpu submit ${sample.cpuFrameMs.toFixed(1)} ms`);
@@ -233,8 +243,8 @@ export function formatHud(sample: PerfHudSample, frames: readonly number[]): str
     // The measurement the whole exercise turns on: render-heavy means
     // fill/overdraw-bound, compute-heavy means sort- or gather-bound. They want
     // completely different fixes.
-    const compute = sample.computeGpuMs?.toFixed(2) ?? 'ÔÇö';
-    const render = sample.renderGpuMs?.toFixed(2) ?? 'ÔÇö';
+    const compute = sample.computeGpuMs?.toFixed(2) ?? '—';
+    const render = sample.renderGpuMs?.toFixed(2) ?? '—';
     lines.push(`gpu  compute ${compute} ms  render ${render} ms`);
   } else if (sample.backend !== 'WebGPU') {
     // Timestamp queries are a WebGPU feature. Telling a WebGL2 device to "add
@@ -247,7 +257,7 @@ export function formatHud(sample: PerfHudSample, frames: readonly number[]): str
   // The stall block. Every figure here is a *monotonic maximum*, deliberately:
   // a half-second freeze that happened once while the camera swung is the whole
   // problem, and it is exactly what a mean or a short rolling window loses. Read
-  // them against `worst frame` ÔÇö whichever stage is close to it is the stall,
+  // them against `worst frame` — whichever stage is close to it is the stall,
   // and the ones far below it are ruled out.
   if (frames.length > 0) {
     const worstFrameMs = Math.max(...frames);
@@ -336,7 +346,7 @@ export function formatHud(sample: PerfHudSample, frames: readonly number[]): str
     // The signals the budget was actually chosen from. `resolveSplatBudget`
     // reads them and nothing downstream records which branch it took, so a
     // surprising budget is otherwise unattributable on a device with no console
-    // ÔÇö and `deviceMemory` is genuinely absent on some Android builds, which
+    // — and `deviceMemory` is genuinely absent on some Android builds, which
     // silently disables the low-power tier that depends on it.
     lines.push(
       `${sample.browser === undefined ? '' : `${sample.browser}  `}` +
@@ -379,3 +389,5 @@ export function hudBrowserName(userAgent: string): string {
     'browser ?'
   );
 }
+import { estimateRefreshMetrics, type RefreshTimingHints } from './frame-timing';
+export { estimateRefreshMetrics } from './frame-timing';

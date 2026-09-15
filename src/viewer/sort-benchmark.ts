@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { SplatMesh } from '../lib/core';
 import type { StreamedSplatPerformanceEvent } from '../lib/streaming';
+import { estimateRefreshMetrics, type RefreshTimingHints } from './frame-timing';
 
 type SortDebugMesh = {
   activeCount: number;
@@ -36,7 +37,7 @@ export type SlowFrameAttribution = {
   compacted: boolean;
 };
 
-export type FrameBenchmarkResult = Record<string, number | SlowFrameAttribution[]>;
+export type FrameBenchmarkResult = Record<string, number | string | null | SlowFrameAttribution[]>;
 
 /** Per-frame renderer counters kept separate from CPU frame timing. */
 export type FrameBenchmarkStats = {
@@ -60,8 +61,13 @@ export function isSwapPerformanceEvent(event: StreamedSplatPerformanceEvent): bo
 }
 
 /** Collects raw animation-loop timing after a configurable warm-up. */
-export function createFrameBenchmark(warmupSeconds: number, sampleSeconds: number) {
+export function createFrameBenchmark(
+  warmupSeconds: number,
+  sampleSeconds: number,
+  refreshHints: RefreshTimingHints = {},
+) {
   let startedAt: number | null = null;
+  let measurementStartedAtMs: number | null = null;
   let previous: number | null = null;
   const durations: number[] = [];
   const eventsByFrame: StreamedSplatPerformanceEvent[][] = [];
@@ -81,6 +87,7 @@ export function createFrameBenchmark(warmupSeconds: number, sampleSeconds: numbe
       pendingEvents = [];
       return null;
     }
+    measurementStartedAtMs ??= timestamp;
     if (previous !== null) {
       durations.push(timestamp - previous);
       // A mutation submitted during the previous frame affects the interval
@@ -109,6 +116,12 @@ export function createFrameBenchmark(warmupSeconds: number, sampleSeconds: numbe
     const meanOf = (values: readonly number[]): number =>
       values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
     const sortedDrawCalls = [...renderDrawCalls].sort((a, b) => a - b);
+    const {
+      observedCallbackCadenceMs,
+      displayRefreshMs,
+      missedRefreshOpportunities,
+      refreshSource,
+    } = estimateRefreshMetrics(durations, refreshHints);
     const worstFrameMs = sorted.at(-1) ?? 0;
     const p99FrameMs = at(sorted, 0.99);
     const slowFrames = durations
@@ -140,10 +153,17 @@ export function createFrameBenchmark(warmupSeconds: number, sampleSeconds: numbe
       sampleCount: durations.length,
       averageFps: 1000 / mean,
       meanFrameMs: mean,
+      medianFrameMs: at(sorted, 0.5),
       minimumFps: worstFrameMs > 0 ? 1000 / worstFrameMs : 0,
       onePercentLowFps: p99FrameMs > 0 ? 1000 / p99FrameMs : 0,
       p95FrameMs: at(sorted, 0.95),
       p99FrameMs,
+      observedCallbackCadenceMs,
+      displayRefreshMs,
+      missedRefreshOpportunities,
+      refreshSource,
+      // This is a literal threshold count, not a missed-vsync measurement.
+      intervalsOver33_33ms: durations.filter((frameMs) => frameMs > 1000 / 30).length,
       renderDrawCallsMean: meanOf(renderDrawCalls),
       renderDrawCallsP95: at(sortedDrawCalls, 0.95),
       renderDrawCallsMax: at(sortedDrawCalls, 1),
@@ -202,7 +222,12 @@ export function createFrameBenchmark(warmupSeconds: number, sampleSeconds: numbe
     };
     return result;
   };
-  return { record };
+  return {
+    record,
+    get measurementStartedAtMs(): number | null {
+      return measurementStartedAtMs;
+    },
+  };
 }
 
 /** Reads the GPU order buffer and verifies permutation and depth invariants. */

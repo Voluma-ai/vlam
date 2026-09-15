@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { formatHud, hudBrowserName, type PerfHudSample } from './perf-hud';
+import { estimateRefreshMetrics, formatHud, hudBrowserName, type PerfHudSample } from './perf-hud';
 
 /**
- * The panel's DOM half is verified visually (the browser pane cannot paint it ÔÇö
+ * The panel's DOM half is verified visually (the browser pane cannot paint it —
  * its tab stays hidden, so rAF never fires). Its formatting is pure, and is
  * where a wrong number would quietly mislead a whole on-device session, so it
  * is pinned here.
@@ -62,6 +62,7 @@ describe('formatHud', () => {
     const text = formatHud(SAMPLE, [10, 10, 10, 10]);
     expect(text).toContain('100 rAF');
     expect(text).toContain('10.0 ms');
+    expect(text).toContain('callback p10 10.0 ms  refresh —  missed —');
     expect(text).toContain('cpu submit 5.2 ms');
     expect(text).toContain('sort 30.1 Hz  age 12 ms');
   });
@@ -71,7 +72,7 @@ describe('formatHud', () => {
     // good ones is invisible in the mean and is exactly what reads as stutter.
     const frames = [...Array<number>(99).fill(10), 100];
     const text = formatHud(SAMPLE, frames);
-    // The 100 ms frame is the worst 1%, so the 1% low is 10 fps ÔÇö not the 100
+    // The 100 ms frame is the worst 1%, so the 1% low is 10 fps — not the 100
     // fps that indexing forward to the 99th *fastest* frame would report.
     expect(text).toContain('p99 10 fps');
     // ...and the mean stays healthy at 10.9 ms, which is the point of showing
@@ -91,7 +92,7 @@ describe('formatHud', () => {
 
   it('shows one side of the GPU split when only one resolved', () => {
     const text = formatHud({ ...SAMPLE, renderGpuMs: 9.25 }, [16.7]);
-    expect(text).toContain('compute ÔÇö');
+    expect(text).toContain('compute —');
     expect(text).toContain('render 9.25 ms');
   });
 
@@ -146,15 +147,20 @@ describe('formatHud', () => {
     // not finite. A panel showing NaN is worse than one showing a dash.
     const text = formatHud(SAMPLE, []);
     expect(text).not.toContain('NaN');
-    expect(text).toContain('ÔÇö');
+    expect(text).toContain('—');
     expect(text).toContain('rAF');
+  });
+
+  it('shows unavailable refresh normalization for throttled frames', () => {
+    const text = formatHud(SAMPLE, [33.3, 50, 1008]);
+    expect(text).toContain('refresh —  missed —');
   });
 });
 
 describe('formatHud plan-apply line', () => {
   it('surfaces the worst page-table plan application when there has been one', () => {
     // Applying a plan runs off the render loop's timing, so it never appears in
-    // frame attribution even though it stalls the same thread ÔÇö it shows up
+    // frame attribution even though it stalls the same thread — it shows up
     // only as a collapsed 1% low.
     const text = formatHud({ ...SAMPLE, worstPlanApplyMs: 412.5 }, [16.7]);
     expect(text).toContain('worst plan apply 412.5 ms');
@@ -163,6 +169,17 @@ describe('formatHud plan-apply line', () => {
   it('omits the line for a scene that has never applied a plan', () => {
     expect(formatHud({ ...SAMPLE, worstPlanApplyMs: 0 }, [16.7])).not.toContain('plan apply');
     expect(formatHud(SAMPLE, [16.7])).not.toContain('plan apply');
+  });
+});
+
+describe('estimateRefreshMetrics', () => {
+  it('keeps callback cadence separate from display refresh', () => {
+    expect(estimateRefreshMetrics([16.7, 16.8, 33.4, 50.1])).toEqual({
+      observedCallbackCadenceMs: 16.7,
+      displayRefreshMs: null,
+      missedRefreshOpportunities: null,
+      refreshSource: 'unavailable',
+    });
   });
 });
 

@@ -84,7 +84,7 @@ describe('createFrameBenchmark swap attribution', () => {
     ]);
   });
 
-  it('attributes a mutation to the following frame interval', () => {
+  it('attributes a mutation to the following frame interval and keeps display refresh separate', () => {
     const benchmark = createFrameBenchmark(0, 0.1);
     expect(benchmark.record(0)).toBeNull();
     expect(benchmark.record(10, [swapEvent()], { renderDrawCalls: 1 })).toBeNull();
@@ -95,6 +95,12 @@ describe('createFrameBenchmark swap attribution', () => {
       sampleCount: 3,
       minimumFps: 20,
       onePercentLowFps: 20,
+      medianFrameMs: 40,
+      observedCallbackCadenceMs: 10,
+      displayRefreshMs: null,
+      missedRefreshOpportunities: null,
+      refreshSource: 'unavailable',
+      intervalsOver33_33ms: 2,
       renderDrawCallsMean: 1,
       renderDrawCallsP95: 1,
       renderDrawCallsMax: 1,
@@ -128,6 +134,7 @@ describe('createFrameBenchmark swap attribution', () => {
     benchmark.record(0, [swapEvent()]);
     benchmark.record(40, [swapEvent()]);
     benchmark.record(50);
+    expect(benchmark.measurementStartedAtMs).toBe(50);
     benchmark.record(100);
 
     expect(benchmark.record(110)).toMatchObject({

@@ -12,6 +12,7 @@ import { loadSplatData } from '../lib/loaders';
 import { version as vlamVersion } from '../../package.json';
 import { BenchmarkGpuSampler, RenderBenchmarkSession } from './render-benchmark-session';
 import { applyComparisonCamera } from './comparison-config';
+import { estimateRefreshMetrics, type RefreshTimingHints } from './frame-timing';
 
 const params = new URLSearchParams(globalThis.location.search);
 const sceneUrl = params.get('scene') ?? '/goose.sog';
@@ -28,6 +29,11 @@ const profile: SplatPerformanceProfile =
 const maxStdDev = positiveParam('maxStdDev', 3);
 const shBands = parseShBands(params.get('sh'));
 const mode = params.get('mode') === 'orbit' ? 'orbit' : 'stationary';
+const refreshHz = positiveParam('refreshHz', 0);
+const refreshHints: RefreshTimingHints = {
+  ...(refreshHz > 0 ? { refreshHz } : {}),
+  screenRefreshRate: (screen as Screen & { refreshRate?: number }).refreshRate,
+};
 
 const canvasElement = document.querySelector<HTMLCanvasElement>('#canvas');
 const statusElement = document.querySelector<HTMLElement>('#status');
@@ -200,6 +206,8 @@ async function run(): Promise<void> {
     renderer.dispose();
   }
   const drawingBuffer = renderer.getDrawingBufferSize(new THREE.Vector2());
+  const { observedCallbackCadenceMs, displayRefreshMs, missedRefreshOpportunities, refreshSource } =
+    estimateRefreshMetrics(frameTimes, refreshHints);
   const gpuSummary = (samples: readonly number[]) => ({
     status: !gpuTimestamps ? 'disabled' : samples.length === 0 ? 'unavailable' : 'available',
     sampleCount: samples.length,
@@ -235,6 +243,12 @@ async function run(): Promise<void> {
       medianMs: percentile(frameTimes, 0.5),
       p95Ms: percentile(frameTimes, 0.95),
       p99Ms: percentile(frameTimes, 0.99),
+      observedCallbackCadenceMs,
+      displayRefreshMs,
+      missedRefreshOpportunities,
+      refreshSource,
+      // Literal threshold count; it is not a missed-vsync total.
+      intervalsOver33_33ms: frameTimes.filter((ms) => ms > 1000 / 30).length,
       medianFps: percentile(frameTimes, 0.5) > 0 ? 1000 / percentile(frameTimes, 0.5) : 0,
       cpuRenderSubmitMedianMs: percentile(cpuRenderSubmitTimes, 0.5),
       cpuRenderSubmitP95Ms: percentile(cpuRenderSubmitTimes, 0.95),

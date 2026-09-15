@@ -7,14 +7,11 @@ Git history, not in this queue.
 
 ## Next
 
-- **Mobile device gate** — validate a non-Pro iPhone 15 and complete the
-  thermal and orientation matrix on sparse and dense captures. Galaxy S7/WebGL2
-  is a smoke-test floor, not a performance target. Record browser, OS, GPU,
-  backend, dataset, splat count, FPS, orbit median / p95 / p99 plus
-  missed 16.6 ms and 33.3 ms deadlines; ten-minute thermal soak on one sparse
-  and one dense capture; portrait and landscape gaps, discs, popping; A/B
-  `?pixelRatio=1`, `0.9`, `0.8` with `?adaptiveDpr=0` before raising
-  `maxStdDev`; `?minSplatPx=1.5` vs `3.5`.
+- **Mobile device gate** — Android Pixel 8a/Mali validation is complete and
+  documented in the capabilities matrix. The remaining gate is the non-Pro
+  iPhone 15: complete the same thermal, orientation, deadline, DPR, and
+  coverage checks there. Galaxy S7/WebGL2 is a smoke-test floor, not a
+  performance target.
 
 ## Later
 
@@ -151,5 +148,5 @@ selection features until their benefits are measured and visually validated.
 
 | Work                        | Blocker                                  |
 | --------------------------- | ---------------------------------------- |
-| Mobile matrix               | Physical Android device max 4 years old  |
+| Mobile matrix               | Non-Pro iPhone 15 hardware                 |
 | Reference pixel comparisons | External datasets and viewers            |

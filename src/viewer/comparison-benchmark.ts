@@ -14,6 +14,7 @@ import {
   type ComparisonPose,
 } from './comparison-config';
 import type { ComparisonAdapter } from './comparison-adapter';
+import { estimateRefreshMetrics, type RefreshTimingHints } from './frame-timing';
 
 interface Manifest {
   source: string;
@@ -33,6 +34,11 @@ const links = document.querySelector<HTMLElement>('#links')!;
 const suiteOptions = comparisonSuiteOptions(params);
 const density = suiteOptions.density;
 const suiteRuns = comparisonSuite(suiteOptions);
+const refreshHz = Number(params.get('refreshHz'));
+const refreshHints: RefreshTimingHints = {
+  ...(Number.isFinite(refreshHz) && refreshHz > 0 ? { refreshHz } : {}),
+  screenRefreshRate: (screen as Screen & { refreshRate?: number }).refreshRate,
+};
 
 function download(name: string, href: string): void {
   const link = document.createElement('a');
@@ -226,8 +232,14 @@ async function run(): Promise<void> {
       ms: sample.ms + (computeByFrame.get(sample.frame) ?? 0),
     }));
     const frameSummary = summarize(session.frameTimes);
+    const {
+      observedCallbackCadenceMs,
+      displayRefreshMs,
+      missedRefreshOpportunities,
+      refreshSource,
+    } = estimateRefreshMetrics(session.frameTimes, refreshHints);
     const result = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       recordedAt: new Date().toISOString(),
       environment,
       experiments,
@@ -268,7 +280,11 @@ async function run(): Promise<void> {
       frame: {
         ...frameSummary,
         averageFps: frameSummary.meanMs ? 1000 / frameSummary.meanMs : null,
-        intervalsOver16_67ms: session.frameTimes.filter((ms) => ms > 1000 / 60).length,
+        observedCallbackCadenceMs,
+        displayRefreshMs,
+        missedRefreshOpportunities,
+        refreshSource,
+        // Literal threshold count; it is not a missed-vsync total.
         intervalsOver33_33ms: session.frameTimes.filter((ms) => ms > 1000 / 30).length,
       },
       cpuUpdateAndRender: summarize(cpu),
