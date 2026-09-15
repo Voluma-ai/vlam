@@ -11,7 +11,6 @@ import {
   probeSplatGpuClass,
   recommendedMaxPixelRatio,
   recommendedXrFramebufferScale,
-  suggestAdaptivePixelRatio,
   ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES,
   xrSessionInit,
   createWebGPURenderer,
@@ -71,6 +70,7 @@ import {
 } from './scene-url';
 import { createCollisionWorld, type CollisionWorld } from './collision';
 import { createFrameBenchmark, isSwapPerformanceEvent, verifyGpuSort } from './sort-benchmark';
+import { createAdaptiveDprState, updateAdaptiveDpr } from './adaptive-dpr';
 import { demoSortStrategy } from './sort-policy';
 import { createPerfHud, hudBrowserName } from './perf-hud';
 import { createSeparateTool, type SeparateTool } from './separate';
@@ -557,19 +557,21 @@ async function main(): Promise<void> {
     perfMode.enabled ? PERF_MODE_PIXEL_RATIO : pixelRatioCeiling();
   const adaptivePixelRatioMin = (): number =>
     perfMode.enabled ? PERF_MODE_ADAPTIVE_MIN_PIXEL_RATIO : 1;
-  let adaptiveEmaMs: number | undefined;
-  let adaptiveWarmupRemaining = ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES;
   // SD starts at 1 and may step down; HD starts at the quality ceiling.
-  let adaptivePixelRatio = adaptivePixelRatioMax();
+  let adaptiveDprState = createAdaptiveDprState(
+    adaptivePixelRatioMax(),
+    ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES,
+  );
   const resetAdaptivePixelRatio = (): void => {
-    adaptiveEmaMs = undefined;
-    adaptiveWarmupRemaining = ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES;
-    adaptivePixelRatio = adaptivePixelRatioMax();
+    adaptiveDprState = createAdaptiveDprState(
+      adaptivePixelRatioMax(),
+      ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES,
+    );
   };
   const resolvePixelRatio = (): number =>
     pinnedPixelRatio ??
     (adaptiveDpr
-      ? adaptivePixelRatio
+      ? adaptiveDprState.pixelRatio
       : perfMode.enabled
         ? PERF_MODE_PIXEL_RATIO
         : pixelRatioCeiling());
@@ -2612,6 +2614,11 @@ async function main(): Promise<void> {
     }
     if (options.frame ?? true) suppressStreamedUpdate = true;
     mounted = true;
+    if (options.frame ?? true) {
+      resetAdaptivePixelRatio();
+      renderer.setPixelRatio(resolvePixelRatio());
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
     if (syncEditingToolAvailability) {
       syncEditingToolAvailability(next.mesh);
     } else if (next.mesh instanceof StreamedSplatMesh) {
@@ -3952,6 +3959,7 @@ async function main(): Promise<void> {
     if (
       adaptiveDpr &&
       pinnedPixelRatio === null &&
+      mounted &&
       // In VR the canvas pixel ratio is irrelevant (rendering targets the XR
       // framebuffer) and resizing it mid-session would only churn the DOM.
       !renderer.xr.isPresenting &&
@@ -3961,19 +3969,14 @@ async function main(): Promise<void> {
       // SD adapts within [0.8, 1]; HD within [1, device ceiling]. Perf mode used
       // to skip this path entirely, which left fill-constrained laptops stuck
       // at dpr 1 on dense RAD views.
-      const suggestion = suggestAdaptivePixelRatio({
+      const update = updateAdaptiveDpr(adaptiveDprState, {
         frameMs: frameDelta * 1000,
-        current: adaptivePixelRatio,
         max: adaptivePixelRatioMax(),
         min: adaptivePixelRatioMin(),
-        emaMs: adaptiveEmaMs,
-        warmupRemaining: adaptiveWarmupRemaining,
       });
-      adaptiveEmaMs = suggestion.emaMs;
-      adaptiveWarmupRemaining = suggestion.warmupRemaining;
-      if (suggestion.pixelRatio !== adaptivePixelRatio) {
-        adaptivePixelRatio = suggestion.pixelRatio;
-        renderer.setPixelRatio(adaptivePixelRatio);
+      adaptiveDprState = update.state;
+      if (update.changed) {
+        renderer.setPixelRatio(adaptiveDprState.pixelRatio);
         renderer.setSize(window.innerWidth, window.innerHeight);
       }
     }

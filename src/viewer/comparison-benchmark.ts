@@ -14,6 +14,7 @@ import {
   type ComparisonPose,
 } from './comparison-config';
 import type { ComparisonAdapter } from './comparison-adapter';
+import { estimateRefreshMetrics } from './perf-hud';
 
 interface Manifest {
   source: string;
@@ -226,6 +227,9 @@ async function run(): Promise<void> {
       ms: sample.ms + (computeByFrame.get(sample.frame) ?? 0),
     }));
     const frameSummary = summarize(session.frameTimes);
+    const { estimatedRefreshMs, missedRefreshOpportunities } = estimateRefreshMetrics(
+      session.frameTimes,
+    );
     const result = {
       schemaVersion: 1,
       recordedAt: new Date().toISOString(),
@@ -268,7 +272,9 @@ async function run(): Promise<void> {
       frame: {
         ...frameSummary,
         averageFps: frameSummary.meanMs ? 1000 / frameSummary.meanMs : null,
-        intervalsOver16_67ms: session.frameTimes.filter((ms) => ms > 1000 / 60).length,
+        estimatedRefreshMs,
+        missedRefreshOpportunities,
+        // Literal threshold count; it is not a missed-vsync total.
         intervalsOver33_33ms: session.frameTimes.filter((ms) => ms > 1000 / 30).length,
       },
       cpuUpdateAndRender: summarize(cpu),

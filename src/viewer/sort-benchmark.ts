@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { SplatMesh } from '../lib/core';
 import type { StreamedSplatPerformanceEvent } from '../lib/streaming';
+import { estimateRefreshMetrics } from './perf-hud';
 
 type SortDebugMesh = {
   activeCount: number;
@@ -109,6 +110,7 @@ export function createFrameBenchmark(warmupSeconds: number, sampleSeconds: numbe
     const meanOf = (values: readonly number[]): number =>
       values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
     const sortedDrawCalls = [...renderDrawCalls].sort((a, b) => a - b);
+    const { estimatedRefreshMs, missedRefreshOpportunities } = estimateRefreshMetrics(durations);
     const worstFrameMs = sorted.at(-1) ?? 0;
     const p99FrameMs = at(sorted, 0.99);
     const slowFrames = durations
@@ -140,10 +142,15 @@ export function createFrameBenchmark(warmupSeconds: number, sampleSeconds: numbe
       sampleCount: durations.length,
       averageFps: 1000 / mean,
       meanFrameMs: mean,
+      medianFrameMs: at(sorted, 0.5),
       minimumFps: worstFrameMs > 0 ? 1000 / worstFrameMs : 0,
       onePercentLowFps: p99FrameMs > 0 ? 1000 / p99FrameMs : 0,
       p95FrameMs: at(sorted, 0.95),
       p99FrameMs,
+      estimatedRefreshMs,
+      missedRefreshOpportunities,
+      // This is a literal threshold count, not a missed-vsync measurement.
+      intervalsOver33_33ms: durations.filter((frameMs) => frameMs > 1000 / 30).length,
       renderDrawCallsMean: meanOf(renderDrawCalls),
       renderDrawCallsP95: at(sortedDrawCalls, 0.95),
       renderDrawCallsMax: at(sortedDrawCalls, 1),

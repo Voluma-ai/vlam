@@ -807,8 +807,8 @@ export function recommendedXrFramebufferScale(
  *
  * First `renderer.compute` and first `copyTextureToTexture` each compile a
  * WebGPU pipeline (~200 ms). Seeding the EMA from those drops the ratio to
- * the floor, and a 60 Hz display's 16.7 ms vsync never beats the raise bar
- * (`targetFrameMs * 0.85` ≈ 15.3 ms), so the drop is permanent. Pass the
+ * the floor, and a 60 Hz display's 16.7–16.8 ms cadence now clears the raise
+ * bar (`targetFrameMs * 0.95` ≈ 17.1 ms). Pass the
  * returned {@link AdaptivePixelRatioResult.warmupRemaining} back each frame.
  */
 export const ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES = 5;
@@ -862,9 +862,10 @@ export interface AdaptivePixelRatioResult {
  * `pixelRatio` changes.
  *
  * Steps are quarter-units with asymmetric thresholds (pressure to lower,
- * comfortable headroom to raise) so the ratio does not oscillate. One-off
- * hitches (pipeline compiles, tab resume) that are several times the EMA do
- * not count as pressure.
+ * comfortable headroom to raise) so the ratio does not oscillate. The host
+ * should apply lower suggestions immediately and dwell on higher suggestions
+ * while the EMA remains healthy. One-off hitches (pipeline compiles, tab
+ * resume) that are several times the EMA do not count as pressure.
  */
 export function suggestAdaptivePixelRatio(
   input: AdaptivePixelRatioInput,
@@ -896,7 +897,7 @@ export function suggestAdaptivePixelRatio(
   let next = pixelRatio;
   if (emaMs > pressureFrameMs && next > min) {
     next = Math.max(min, roundPixelRatio(next - 0.25));
-  } else if (emaMs < targetFrameMs * 0.85 && next < max) {
+  } else if (emaMs < targetFrameMs * 0.95 && next < max) {
     next = Math.min(max, roundPixelRatio(next + 0.25));
   }
   return { pixelRatio: clamp(next, min, max), emaMs, warmupRemaining: 0 };

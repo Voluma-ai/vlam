@@ -12,6 +12,7 @@ import { loadSplatData } from '../lib/loaders';
 import { version as vlamVersion } from '../../package.json';
 import { BenchmarkGpuSampler, RenderBenchmarkSession } from './render-benchmark-session';
 import { applyComparisonCamera } from './comparison-config';
+import { estimateRefreshMetrics } from './perf-hud';
 
 const params = new URLSearchParams(globalThis.location.search);
 const sceneUrl = params.get('scene') ?? '/goose.sog';
@@ -200,6 +201,7 @@ async function run(): Promise<void> {
     renderer.dispose();
   }
   const drawingBuffer = renderer.getDrawingBufferSize(new THREE.Vector2());
+  const { estimatedRefreshMs, missedRefreshOpportunities } = estimateRefreshMetrics(frameTimes);
   const gpuSummary = (samples: readonly number[]) => ({
     status: !gpuTimestamps ? 'disabled' : samples.length === 0 ? 'unavailable' : 'available',
     sampleCount: samples.length,
@@ -235,6 +237,10 @@ async function run(): Promise<void> {
       medianMs: percentile(frameTimes, 0.5),
       p95Ms: percentile(frameTimes, 0.95),
       p99Ms: percentile(frameTimes, 0.99),
+      estimatedRefreshMs,
+      missedRefreshOpportunities,
+      // Literal threshold count; it is not a missed-vsync total.
+      intervalsOver33_33ms: frameTimes.filter((ms) => ms > 1000 / 30).length,
       medianFps: percentile(frameTimes, 0.5) > 0 ? 1000 / percentile(frameTimes, 0.5) : 0,
       cpuRenderSubmitMedianMs: percentile(cpuRenderSubmitTimes, 0.5),
       cpuRenderSubmitP95Ms: percentile(cpuRenderSubmitTimes, 0.95),
