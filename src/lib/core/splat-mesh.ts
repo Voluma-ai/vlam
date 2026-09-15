@@ -166,6 +166,9 @@ const UPLOAD_STAGING_CACHE_SIZE = 12;
 const SH_COMPUTE_CACHE_VALIDATED_MAX_BYTES = 64 * 1024 * 1024;
 const APPLE_MAC_AUTO_SH_MIN_SPLATS = 8_000_000;
 
+/** @internal Construction-only source label used by streamed diagnostics. */
+export const splatMeshSourceLabel = Symbol('vlam.splatMeshSourceLabel');
+
 /** Next power of two ≥ n (n ≥ 1). Staging GPU textures are immutable-sized. */
 function uploadStagingBucketHeight(height: number): number {
   const h = Math.max(1, height | 0);
@@ -686,10 +689,16 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       packedShBands !== suppliedPool.packedShBands;
     const effectivePackedShBands = shMismatch ? 0 : packedShBands;
     if (shMismatch) {
+      const internalOptions = options as SplatMeshOptions & {
+        [splatMeshSourceLabel]?: string;
+      };
+      const sourceLabel =
+        internalOptions[splatMeshSourceLabel] ??
+        (isStatic ? `${source.format ?? 'SplatData'} source` : 'dynamic-capacity mesh');
       warn(
-        `SplatMesh: packed SH bands ${packedShBands} do not match the supplied pool's ` +
-          `${suppliedPool.packedShBands}; higher-order SH was disabled for this mesh to preserve ` +
-          `the shared-pool memory limit.`,
+        `SplatMesh: source ${JSON.stringify(sourceLabel)} requests packed SH${packedShBands}, ` +
+          `but the supplied pool provides SH${suppliedPool.packedShBands}; higher-order SH was ` +
+          `disabled for this mesh to preserve the shared-pool memory limit.`,
       );
     }
     const ownsPool = suppliedPool === undefined;
