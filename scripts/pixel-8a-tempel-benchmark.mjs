@@ -157,8 +157,8 @@ async function settle(page, settleMs) {
       const mesh = viewer?.splats;
       return Boolean(
         mesh &&
-          mesh.activeSplatCount > 0 &&
-          (!('isStreaming' in mesh) || mesh.isStreaming === false),
+        mesh.activeSplatCount > 0 &&
+        (!('isStreaming' in mesh) || mesh.isStreaming === false),
       );
     },
     undefined,

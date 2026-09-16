@@ -2267,12 +2267,7 @@ async function main(): Promise<void> {
       const distances = [innerDist, midDist, outerDist, farDist];
       for (let i = 0; i < lights.length; i++) {
         const light = lights[i] as THREE.DirectionalLight;
-        placeSun(
-          light,
-          focuses[i] as THREE.Vector3,
-          radii[i] as number,
-          distances[i] as number,
-        );
+        placeSun(light, focuses[i] as THREE.Vector3, radii[i] as number, distances[i] as number);
         light.shadow.needsUpdate = true;
       }
     };

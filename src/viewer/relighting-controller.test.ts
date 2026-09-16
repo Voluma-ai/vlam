@@ -11,7 +11,7 @@ describe('relighting tier controller', () => {
     const controller = new RelightingController({ constrainedDevice: true });
     let transition;
     for (let now = 0; now <= RELIGHTING_PRESSURE_DWELL_MS + 100; now += 100) {
-      transition = controller.observe(33.4, now);
+      transition ??= controller.observe(33.4, now);
     }
     expect(transition).toMatchObject({
       oldTier: 'balanced',
@@ -25,7 +25,7 @@ describe('relighting tier controller', () => {
     const controller = new RelightingController({ constrainedDevice: false });
     let transition;
     for (let now = 0; now <= RELIGHTING_PRESSURE_DWELL_MS + 100; now += 100) {
-      transition = controller.observe(50, now);
+      transition ??= controller.observe(50, now);
     }
     expect(transition).toMatchObject({
       oldTier: 'high',
