@@ -52,6 +52,12 @@ export interface PerfHudSample {
   computeGpuMs?: number | undefined;
   /** GPU render-pass milliseconds, when `?gpuTimestamps=1` is on. */
   renderGpuMs?: number | undefined;
+  /** Viewer-only proxy relighting quality settings. */
+  relighting?: {
+    tier: 'high' | 'balanced' | 'performance';
+    shadowMapSizes: readonly [number, number, number, number];
+    factorMapScale: number;
+  };
   /**
    * Worst page-table plan application seen so far, in milliseconds
    * (`StreamedSplatMesh.planTimings.worstApplyMs`).
@@ -340,6 +346,13 @@ export function formatHud(
   if (knobs.length > 0) lines.push(knobs.join('  '));
   if (sample.physicalSize) {
     lines.push(`buffer ${sample.physicalSize.width}×${sample.physicalSize.height}`);
+  }
+  if (sample.relighting) {
+    const relight = sample.relighting;
+    lines.push(
+      `relight ${relight.tier}  maps ${relight.shadowMapSizes.join('/')}  ` +
+        `factor ${relight.factorMapScale}`,
+    );
   }
   const device = sample.device;
   if (device) {
