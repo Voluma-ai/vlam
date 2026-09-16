@@ -60,8 +60,15 @@ function finitePositive(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+function mapShadowMapSizes(
+  sizes: RelightingShadowMapSizes,
+  map: (size: number) => number,
+): RelightingShadowMapSizes {
+  return [map(sizes[0]), map(sizes[1]), map(sizes[2]), map(sizes[3])];
+}
+
 function copyMapSizes(sizes: RelightingShadowMapSizes): RelightingShadowMapSizes {
-  return sizes.map((size) => Math.max(1, Math.floor(size))) as RelightingShadowMapSizes;
+  return mapShadowMapSizes(sizes, (size) => Math.max(1, Math.floor(size)));
 }
 
 /** Viewer-local adaptive relighting controller. */
@@ -92,9 +99,7 @@ export class RelightingController {
     const scales = TIER_SCALES[this.currentTier];
     const shadowMapSizes =
       this.shadowMapOverride ??
-      (DEFAULT_RELIGHTING_SHADOW_MAP_SIZES.map(
-        (size) => size * scales.shadow,
-      ) as RelightingShadowMapSizes);
+      mapShadowMapSizes(DEFAULT_RELIGHTING_SHADOW_MAP_SIZES, (size) => size * scales.shadow);
     return {
       tier: this.currentTier,
       shadowMapSizes,
