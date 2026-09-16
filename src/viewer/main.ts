@@ -135,6 +135,12 @@ import {
   overviewPositionsFromStreamedMesh,
   recommendedCameraFar,
 } from './orbit-framing';
+import {
+  RelightingController,
+  type RelightingShadowMapSizes,
+  type RelightingTier,
+  type RelightingTierTransition,
+} from './relighting-controller';
 
 /**
  * The scene loaded when no source is given. Any other scene comes from
@@ -209,6 +215,30 @@ function requestedScale(raw: string | null): THREE.Vector3 | null {
   return new THREE.Vector3(x, y, z);
 }
 
+function requestedRelightingTier(raw: string | null): RelightingTier | undefined {
+  if (raw === null) return undefined;
+  if (raw === 'high' || raw === 'balanced' || raw === 'performance') return raw;
+  throw new Error('Invalid relightTier: expected high, balanced or performance.');
+}
+
+function requestedRelightingQuad(
+  raw: string | null,
+  name: string,
+  integer: boolean,
+): RelightingShadowMapSizes | undefined {
+  if (raw === null) return undefined;
+  const values = raw.split(',').map((value) => Number(value.trim()));
+  if (
+    values.length !== 4 ||
+    values.some(
+      (value) => !Number.isFinite(value) || value <= 0 || (integer && !Number.isInteger(value)),
+    )
+  ) {
+    throw new Error(`Invalid ${name}: expected four positive ${integer ? 'integers' : 'numbers'}.`);
+  }
+  return values as [number, number, number, number];
+}
+
 /**
  * The mesh's view-dependent colour state for the debug line: the SH bands it
  * actually renders, which is what the scene had (and the device allowed), not
@@ -252,6 +282,10 @@ const PERF_MODE_MAX_STD_DEV = 3;
  * tested.
  */
 const PERF_MODE_BUDGET = 1_000_000;
+/** Dense top-level LOD allowance while adaptive relighting is under pressure. */
+const RELIGHTING_PERFORMANCE_BUDGET_SCALE = 0.5;
+/** Prevent a large desktop pool from turning the relative relighting cap into millions of splats. */
+const RELIGHTING_PERFORMANCE_BUDGET = 1_000_000;
 /**
  * Bumped when the default flipped to on for integrated/fallback desktops.
  * The old `vlam:performance-mode` key left Chrome (and any desktop session that
@@ -553,6 +587,10 @@ async function main(): Promise<void> {
     adaptiveDprParam === null
       ? isFillConstrainedSplatDevice(deviceProfile)
       : adaptiveDprParam !== '0';
+  let relightPixelRatioLimit = false;
+  const relightPixelRatioEnabled = (): boolean =>
+    relightPixelRatioLimit && adaptiveDprParam !== '0';
+  const adaptivePixelRatioEnabled = (): boolean => adaptiveDpr || relightPixelRatioEnabled();
   // HD uses the library quality ceiling (1.5 on integrated, 2 on discrete), not
   // min(native, ceiling). Clamping to `devicePixelRatio` made HD identical to
   // SD whenever the window reported 1, while `?pixelRatio=1.5` could still
@@ -560,7 +598,7 @@ async function main(): Promise<void> {
   // frame-time pressure.
   const pixelRatioCeiling = (): number => recommendedMaxPixelRatio(deviceProfile);
   const adaptivePixelRatioMax = (): number =>
-    perfMode.enabled ? PERF_MODE_PIXEL_RATIO : pixelRatioCeiling();
+    perfMode.enabled || relightPixelRatioEnabled() ? PERF_MODE_PIXEL_RATIO : pixelRatioCeiling();
   const adaptivePixelRatioMin = (): number =>
     perfMode.enabled ? PERF_MODE_ADAPTIVE_MIN_PIXEL_RATIO : 1;
   const refreshHz = Number(params.get('refreshHz'));
@@ -583,7 +621,7 @@ async function main(): Promise<void> {
       adaptivePixelRatioMax(),
       ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES,
     );
-    if (adaptiveDpr && pinnedPixelRatio === null) {
+    if (adaptivePixelRatioEnabled() && pinnedPixelRatio === null) {
       recordAdaptiveDprTransition({
         atMs: performance.now(),
         oldPixelRatio,
@@ -594,7 +632,7 @@ async function main(): Promise<void> {
   };
   const resolvePixelRatio = (): number =>
     pinnedPixelRatio ??
-    (adaptiveDpr
+    (adaptivePixelRatioEnabled()
       ? adaptiveDprState.pixelRatio
       : perfMode.enabled
         ? PERF_MODE_PIXEL_RATIO
@@ -780,11 +818,18 @@ async function main(): Promise<void> {
     // already reflects the cap, the device tier and the format's cost class.
     // Re-deriving a number here would discard the only one of those three this
     // call site can see.
-    const page = pageSplatBudgetForMesh({
+    let page = pageSplatBudgetForMesh({
       perfMode: perfMode.enabled,
       perfModeBudget: Math.min(PERF_MODE_BUDGET, mesh.maxBudget),
       maxBudget: mesh.maxBudget,
     });
+    if (relightController?.tier === 'performance') {
+      page = Math.min(
+        page,
+        RELIGHTING_PERFORMANCE_BUDGET,
+        Math.floor(mesh.maxBudget * RELIGHTING_PERFORMANCE_BUDGET_SCALE),
+      );
+    }
     applyPresentationSplatBudget(mesh, page, renderer.xr.isPresenting);
   };
   if (params.get('xr') !== '0' && typeof navigator !== 'undefined' && navigator.xr) {
@@ -1469,6 +1514,29 @@ async function main(): Promise<void> {
   const benchmarkSeconds = Number(params.get('benchmarkSeconds')) || 0;
   const swapCap = Number(params.get('swapCap')) || undefined;
   const manualBenchmarkStart = params.get('benchmarkStart') === 'manual';
+  const relightingTier = requestedRelightingTier(params.get('relightTier'));
+  const relightingShadowMapSizes = requestedRelightingQuad(
+    params.get('relightShadowMaps'),
+    'relightShadowMaps',
+    true,
+  );
+  const relightingFactorScaleParam = params.get('relightFactorScale');
+  const relightingFactorScale =
+    relightingFactorScaleParam === null ? undefined : Number(relightingFactorScaleParam);
+  if (
+    relightingFactorScale !== undefined &&
+    (!Number.isFinite(relightingFactorScale) || relightingFactorScale <= 0)
+  ) {
+    throw new Error('Invalid relightFactorScale: expected a positive number.');
+  }
+  const benchmarkMotionParam = params.get('benchmarkMotion');
+  if (
+    benchmarkMotionParam !== null &&
+    benchmarkMotionParam !== 'stationary' &&
+    benchmarkMotionParam !== 'fpv'
+  ) {
+    throw new Error('Invalid benchmarkMotion: expected stationary or fpv.');
+  }
   const sortIntervalParam = params.get('sortIntervalMs');
   const sortIntervalMs = sortIntervalParam === null ? undefined : Number(sortIntervalParam);
   // ?antialias=on|off forces the Mip-Splatting filter regardless of the scene's
@@ -1584,7 +1652,7 @@ async function main(): Promise<void> {
   let completedAdaptiveDprTransitions: ReturnType<typeof scopeAdaptiveDprTransitions> = [];
   const beginBenchmark = (): void => {
     benchmarkTransitionStartIndex = adaptiveDprTransitions.length;
-    benchmarkAdaptiveDprEnabled = adaptiveDpr && pinnedPixelRatio === null;
+    benchmarkAdaptiveDprEnabled = adaptivePixelRatioEnabled() && pinnedPixelRatio === null;
     completedAdaptiveDprTransitions = [];
     benchmark = createFrameBenchmark(
       Number(params.get('warmupSeconds')) || 15,
@@ -1850,6 +1918,9 @@ async function main(): Promise<void> {
   let relightFarSun: THREE.DirectionalLight | null = null;
   /** Shadow-factor material owned by the demo (proxy group borrows it). */
   let relightFactorMaterial: THREE.MeshStandardNodeMaterial | null = null;
+  let relightController: RelightingController | null = null;
+  let relightApplyQuality: (() => void) | null = null;
+  const relightingTierTransitions: RelightingTierTransition[] = [];
   let relightOrbitRadius = 8;
   /** Ortho half-extent of the far (scene-sized) sun shadow map. */
   let relightShadowRadius = 80;
@@ -1907,6 +1978,15 @@ async function main(): Promise<void> {
 
   const teardownRelight = (): void => {
     relightSetupSequence++;
+    relightApplyQuality = null;
+    relightController = null;
+    applySplatBudget();
+    if (relightPixelRatioLimit) {
+      relightPixelRatioLimit = false;
+      resetAdaptivePixelRatio();
+      renderer.setPixelRatio(resolvePixelRatio());
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
     relightAttachment?.dispose();
     relightAttachment = null;
     relightFactorMaterial?.dispose();
@@ -1940,13 +2020,48 @@ async function main(): Promise<void> {
       relightTarget.texture.generateMipmaps = false;
     }
     renderer.getDrawingBufferSize(relightSize);
-    // Full-res so orbiting shadow maps stay sharp; coverage edges are softened
-    // in-shader via `softness` (see setRelighting).
-    relightTarget.setSize(
-      Math.max(1, Math.floor(relightSize.x)),
-      Math.max(1, Math.floor(relightSize.y)),
-    );
+    const factorScale = relightController?.settings.factorMapScale ?? 1;
+    // Keep the default full resolution so orbiting shadow maps stay sharp. The
+    // factor scale is viewer-only and can be pinned for mobile attribution.
+    const width = Math.max(1, Math.floor(relightSize.x * factorScale));
+    const height = Math.max(1, Math.floor(relightSize.y * factorScale));
+    if (relightTarget.width !== width || relightTarget.height !== height) {
+      relightTarget.setSize(width, height);
+    }
     return relightTarget;
+  };
+
+  const relightingDiagnostics = (): Record<string, unknown> => {
+    const controller = relightController;
+    if (!controller) return { enabled: false };
+    const lights = [relightSun, relightMidSun, relightOuterSun, relightFarSun];
+    return {
+      ...controller.diagnostics(),
+      targetSize: relightTarget
+        ? { width: relightTarget.width, height: relightTarget.height }
+        : null,
+      cascades: lights.map((light) =>
+        light
+          ? {
+              mapSize: { width: light.shadow.mapSize.x, height: light.shadow.mapSize.y },
+              autoUpdate: light.shadow.autoUpdate,
+              needsUpdate: light.shadow.needsUpdate,
+            }
+          : null,
+      ),
+      transitions: relightingTierTransitions.slice(),
+    };
+  };
+
+  const relightingHudSettings = () => {
+    const controller = relightController;
+    if (!controller) return undefined;
+    const settings = controller.settings;
+    return {
+      tier: settings.tier,
+      shadowMapSizes: settings.shadowMapSizes,
+      factorMapScale: settings.factorMapScale,
+    };
   };
 
   const setupRelight = async (mesh: SplatMesh): Promise<void> => {
@@ -2009,6 +2124,18 @@ async function main(): Promise<void> {
     // Blend to scene starts at ~0.7×outerRadius — keep that past 100 m so the
     // mid/outer band does not sample the coarse scene map early.
     relightOuterRadius = 160;
+    relightingTierTransitions.length = 0;
+    relightController = new RelightingController({
+      constrainedDevice: isFillConstrainedSplatDevice(deviceProfile),
+      pinnedTier: relightingTier,
+      shadowMapSizes: relightingShadowMapSizes,
+      factorMapScale: relightingFactorScale,
+    });
+    relightPixelRatioLimit = true;
+    resetAdaptivePixelRatio();
+    renderer.setPixelRatio(resolvePixelRatio());
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    applySplatBudget(mesh);
 
     const configureSun = (
       light: THREE.DirectionalLight,
@@ -2017,7 +2144,12 @@ async function main(): Promise<void> {
       normalBias: number,
     ): void => {
       light.castShadow = true;
-      light.shadow.mapSize.set(mapSize, mapSize);
+      light.shadow.mapSize.set(Math.max(1, Math.floor(mapSize)), Math.max(1, Math.floor(mapSize)));
+      // The animated sun must use Three's normal per-frame shadow lifecycle.
+      // Manually retained ShadowNodes drifted because their texture/matrix
+      // updates were no longer synchronized with the render pass.
+      light.shadow.autoUpdate = true;
+      light.shadow.needsUpdate = true;
       light.shadow.bias = bias;
       light.shadow.normalBias = normalBias;
       light.shadow.radius = 2;
@@ -2028,34 +2160,52 @@ async function main(): Promise<void> {
     const relightSunColor = new THREE.Color(0xffa040);
 
     relightSun = new THREE.DirectionalLight(relightSunColor, 1);
-    configureSun(relightSun, 2048, -0.002, 0.12);
+    configureSun(relightSun, relightController.settings.shadowMapSizes[0], -0.002, 0.12);
     relightMidSun = new THREE.DirectionalLight(relightSunColor, 1);
-    configureSun(relightMidSun, 2048, -0.0025, 0.2);
+    configureSun(relightMidSun, relightController.settings.shadowMapSizes[1], -0.0025, 0.2);
     relightOuterSun = new THREE.DirectionalLight(relightSunColor, 1);
-    configureSun(relightOuterSun, 4096, -0.003, 0.22);
+    configureSun(relightOuterSun, relightController.settings.shadowMapSizes[2], -0.003, 0.22);
     relightFarSun = new THREE.DirectionalLight(relightSunColor, 1);
-    const farTexel = (2 * relightShadowRadius) / 2048;
-    configureSun(relightFarSun, 2048, -0.004, Math.max(0.35, farTexel * 1.5));
+    const farTexel =
+      (2 * relightShadowRadius) / Math.max(relightController.settings.shadowMapSizes[3], 1);
+    configureSun(
+      relightFarSun,
+      relightController.settings.shadowMapSizes[3],
+      -0.004,
+      Math.max(0.35, farTexel * 1.5),
+    );
 
-    relightFactorMaterial = createRelightingShadowFactorMaterial(relightSun, {
-      umbra: 0.5,
-      color: relightSunColor,
-      diffuse: 0.8,
-      direction: relightSunDir,
-      nearRadius: relightNearRadius,
-      midLight: relightMidSun,
-      midRadius: relightMidRadius,
-      outerLight: relightOuterSun,
-      outerRadius: relightOuterRadius,
-      farLight: relightFarSun,
-    });
-    relightFactorMaterial.side = THREE.FrontSide;
-    relightProxy.group.traverse((obj) => {
-      if (!(obj instanceof THREE.Mesh)) return;
-      obj.material = relightFactorMaterial!;
-      obj.castShadow = true;
-      obj.receiveShadow = true;
-    });
+    const applyRelightFactorMaterial = (): void => {
+      const performance = relightController?.tier === 'performance';
+      const previous = relightFactorMaterial;
+      relightFactorMaterial = createRelightingShadowFactorMaterial(relightSun!, {
+        umbra: 0.5,
+        color: relightSunColor,
+        diffuse: 0.8,
+        direction: relightSunDir,
+        nearRadius: relightNearRadius,
+        ...(performance
+          ? { farLight: relightFarSun! }
+          : {
+              midLight: relightMidSun!,
+              midRadius: relightMidRadius,
+              outerLight: relightOuterSun!,
+              outerRadius: relightOuterRadius,
+              farLight: relightFarSun!,
+            }),
+      });
+      relightFactorMaterial.side = THREE.FrontSide;
+      relightMidSun!.castShadow = !performance;
+      relightOuterSun!.castShadow = !performance;
+      relightProxy!.group.traverse((obj) => {
+        if (!(obj instanceof THREE.Mesh)) return;
+        obj.material = relightFactorMaterial!;
+        obj.castShadow = true;
+        obj.receiveShadow = true;
+      });
+      previous?.dispose();
+    };
+    applyRelightFactorMaterial();
 
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -2111,12 +2261,37 @@ async function main(): Promise<void> {
       const midDist = Math.max(relightOrbitRadius * 0.35, relightMidRadius * 2);
       const outerDist = Math.max(relightOrbitRadius * 0.5, relightOuterRadius * 2);
       const farDist = Math.max(relightOrbitRadius, relightShadowRadius * 2);
-      placeSun(relightSun, relightNearFocus, relightNearRadius, innerDist);
-      placeSun(relightMidSun, relightMidFocus, relightMidRadius, midDist);
-      placeSun(relightOuterSun, relightOuterFocus, relightOuterRadius, outerDist);
-      placeSun(relightFarSun, relightShadowFocus, relightShadowRadius, farDist);
+      const lights = [relightSun, relightMidSun, relightOuterSun, relightFarSun];
+      const focuses = [relightNearFocus, relightMidFocus, relightOuterFocus, relightShadowFocus];
+      const radii = [relightNearRadius, relightMidRadius, relightOuterRadius, relightShadowRadius];
+      const distances = [innerDist, midDist, outerDist, farDist];
+      for (let i = 0; i < lights.length; i++) {
+        const light = lights[i] as THREE.DirectionalLight;
+        placeSun(
+          light,
+          focuses[i] as THREE.Vector3,
+          radii[i] as number,
+          distances[i] as number,
+        );
+        light.shadow.needsUpdate = true;
+      }
     };
     applyRelightSun(0);
+
+    relightApplyQuality = (): void => {
+      if (!relightController) return;
+      applyRelightFactorMaterial();
+      const lights = [relightSun, relightMidSun, relightOuterSun, relightFarSun];
+      const sizes = relightController.settings.shadowMapSizes;
+      for (let i = 0; i < lights.length; i++) {
+        const light = lights[i];
+        if (!light) continue;
+        const mapSize = sizes[i] as number;
+        light.shadow.mapSize.set(mapSize, mapSize);
+        light.shadow.needsUpdate = true;
+      }
+      ensureRelightTarget();
+    };
 
     const target = ensureRelightTarget();
     relightAttachment = attachRelighting(mesh, {
@@ -2127,6 +2302,7 @@ async function main(): Promise<void> {
       softness: 2,
     });
     updateEffects = (t) => {
+      if (renderer.xr.isPresenting || !relightController) return;
       applyRelightSun(t);
     };
   };
@@ -3992,9 +4168,29 @@ async function main(): Promise<void> {
     timer.update();
     const frameDelta = timer.getDelta();
     if (
-      adaptiveDpr &&
+      relightController &&
+      !renderer.xr.isPresenting &&
+      mounted &&
+      Number.isFinite(frameDelta) &&
+      frameDelta > 0
+    ) {
+      const transition = relightController.observe(frameDelta * 1000, timestamp);
+      if (transition) {
+        relightingTierTransitions.push(transition);
+        applySplatBudget();
+        relightApplyQuality?.();
+      }
+    }
+    if (
+      adaptivePixelRatioEnabled() &&
       pinnedPixelRatio === null &&
       mounted &&
+      // Relighting is cheaper to reduce than the entire splat framebuffer.
+      // Let the constrained-device relight controller reach its lowest tier
+      // before adaptive DPR is allowed to reduce scene resolution.
+      (!relightController ||
+        !isFillConstrainedSplatDevice(deviceProfile) ||
+        relightController.tier === 'performance') &&
       document.visibilityState === 'visible' &&
       // In VR the canvas pixel ratio is irrelevant (rendering targets the XR
       // framebuffer) and resizing it mid-session would only churn the DOM.
@@ -4089,7 +4285,12 @@ async function main(): Promise<void> {
           false,
         );
       }
-      if (benchmark && !gizmoDragging && !cinematicOrbitWasMoving) {
+      if (
+        benchmark &&
+        benchmarkMotionParam !== 'stationary' &&
+        !gizmoDragging &&
+        !cinematicOrbitWasMoving
+      ) {
         controls.rotate(frameDelta * 0.35, 0, false);
       }
       if (!nearL0HoldActive && !gizmoDragging) {
@@ -4201,6 +4402,7 @@ async function main(): Promise<void> {
     if (!presenting) sampleFps();
     if (perfHud && !presenting) {
       const mesh = splats;
+      const relightingHud = relightingHudSettings();
       renderer.getDrawingBufferSize(drawingBufferSize);
       perfHud.record(
         {
@@ -4231,6 +4433,7 @@ async function main(): Promise<void> {
               })()),
           computeGpuMs: latestComputeGpuMs,
           renderGpuMs: latestRenderGpuMs,
+          ...(relightingHud === undefined ? {} : { relighting: relightingHud }),
           ...(mesh instanceof StreamedSplatMesh
             ? {
                 worstPlanApplyMs: mesh.planTimings.worstApplyMs,
@@ -4302,6 +4505,9 @@ async function main(): Promise<void> {
             performanceProfile,
             sortIntervalMs: sortIntervalMs ?? 'automatic',
             adaptiveDprEnabled: benchmarkAdaptiveDprEnabled,
+            benchmarkMotion: benchmarkMotionParam ?? 'orbit',
+            relighting: relightingDiagnostics(),
+            relightingTierTransitions: relightingTierTransitions.slice(),
             swapCap:
               swapCap ??
               (splats instanceof StreamedSplatMesh && splats.radStrategy === 'page-table'
@@ -4453,6 +4659,7 @@ async function main(): Promise<void> {
       if (pinnedMaxStdDev === undefined) {
         splats.setMaxStdDev(enabled ? PERF_MODE_MAX_STD_DEV : qualityMaxStdDev());
       }
+      relightApplyQuality?.();
       applyCameraFar();
     });
   }
@@ -4511,6 +4718,9 @@ async function main(): Promise<void> {
       },
       get updateEffects(): ((elapsed: number) => void) | null {
         return updateEffects;
+      },
+      get relighting(): Record<string, unknown> {
+        return relightingDiagnostics();
       },
       get collisionWorld(): CollisionWorld | null {
         return collisionWorld;
