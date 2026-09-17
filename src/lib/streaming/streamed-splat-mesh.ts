@@ -818,8 +818,15 @@ export class StreamedSplatMesh extends SplatMesh {
   private readonly radChunkResidency: boolean;
   private readonly radResidencyRequestedValue: 'indexed' | 'chunk-pages';
   private readonly radResidencyFallbackReasonValue: string | null;
-  private radChunkDisplayedGlobals = new Uint32Array(0);
+  private radChunkDisplayedGlobals: Uint32Array<ArrayBufferLike> = new Uint32Array(0);
+  private readonly radChunkDisplayedFiles = new Set<number>();
+  private radChunkDisplayedSelectionHashA: number | null = null;
+  private radChunkDisplayedSelectionHashB: number | null = null;
   private radChunkPendingGlobals: Uint32Array | null = null;
+  private radChunkPendingFiles: Set<number> | null = null;
+  private radChunkPendingSelectionHashA: number | null = null;
+  private radChunkPendingSelectionHashB: number | null = null;
+  private radChunkMappedSlots = new Uint32Array(0);
   private radChunkPublishGeneration: number | null = null;
   private radChunkPublishRevision: number | null = null;
   private radChunkPublishActiveListVersion: number | null = null;
@@ -855,9 +862,17 @@ export class StreamedSplatMesh extends SplatMesh {
   /** Backing store for {@link planTimings}. */
   private readonly planTimingsValue = {
     applyMs: 0,
+    handlerMs: 0,
     worstApplyMs: 0,
     writeMs: 0,
     residentMs: 0,
+    mappingMs: 0,
+    pageIdentityMs: 0,
+    activeListMs: 0,
+    installMs: 0,
+    protectionMs: 0,
+    unifiedGatherMs: 0,
+    sortMs: 0,
     moves: 0,
     appends: 0,
     worstSplats: 0,
@@ -1915,6 +1930,11 @@ export class StreamedSplatMesh extends SplatMesh {
     );
   }
 
+  /** Chunk pages own stable slots and do not use the reverse active-slot map. */
+  protected override tracksActivePoolSlots(): boolean {
+    return !this.radChunkResidency;
+  }
+
   private sampleRadDiagnosticValues(values: ArrayLike<number>, count = values.length): number[] {
     const size = Math.min(count, RAD_DIAGNOSTIC_SAMPLE_SIZE);
     if (size === 0) return [];
@@ -2086,20 +2106,53 @@ export class StreamedSplatMesh extends SplatMesh {
     );
   }
 
-  /** Records the page identity behind a complete chunk-page selection. */
-  private captureRadChunkPageIdentity(globals: ArrayLike<number>): Map<number, number> | null {
-    if (!this.radChunkAllocator) return null;
-    const identity = new Map<number, number>();
-    let previousFile = -1;
-    for (let i = 0; i < globals.length; i++) {
-      const file = Math.floor((globals[i] as number) / this.radChunkAllocator.chunkSize);
-      if (file === previousFile) continue;
-      previousFile = file;
-      const page = this.radChunkAllocator.pageOf(file);
-      if (page === undefined) return null;
-      identity.set(file, page);
+  /** Maps a complete selection once while retaining the page summary used by protection. */
+  private mapRadChunkSelection(
+    globals: ArrayLike<number>,
+  ): {
+    slots: Uint32Array;
+    pageIdentity: Map<number, number>;
+    mappingMs: number;
+    selectionHashA: number;
+    selectionHashB: number;
+  } | null {
+    const allocator = this.radChunkAllocator;
+    if (!allocator) return null;
+    const startedAt = performance.now();
+    if (this.radChunkMappedSlots.length < globals.length) {
+      this.radChunkMappedSlots = new Uint32Array(globals.length);
     }
-    return identity;
+    const slots = this.radChunkMappedSlots.subarray(0, globals.length);
+    const pageIdentity = new Map<number, number>();
+    const chunkSize = allocator.chunkSize;
+    let previousFile = -1;
+    let previousPage = -1;
+    let selectionHashA = 2166136261;
+    let selectionHashB = 3735928559;
+    const now = performance.now();
+    for (let i = 0; i < globals.length; i++) {
+      const global = globals[i] as number;
+      const file = Math.floor(global / chunkSize);
+      if (file !== previousFile) {
+        const page = allocator.pageOf(file);
+        if (page === undefined) return null;
+        previousFile = file;
+        previousPage = page;
+        pageIdentity.set(file, page);
+        const resident = this.radChunkPages.get(file);
+        if (resident) resident.lastUsed = now;
+      }
+      slots[i] = previousPage * chunkSize + (global - file * chunkSize);
+      selectionHashA = Math.imul(selectionHashA ^ global, 16777619) >>> 0;
+      selectionHashB = Math.imul(selectionHashB ^ (global + i), 2246822519) >>> 0;
+    }
+    return {
+      slots,
+      pageIdentity,
+      mappingMs: performance.now() - startedAt,
+      selectionHashA,
+      selectionHashB,
+    };
   }
 
   /** A page may not be reused while its selection is being sorted or rendered. */
@@ -2128,6 +2181,9 @@ export class StreamedSplatMesh extends SplatMesh {
       this.radChunkPendingSelectionIdValue = null;
       this.radChunkPendingHardValidityRevisionValue = this.radChunkHardValidityRevisionValue;
       this.radChunkPendingPageIdentity = null;
+      this.radChunkPendingFiles = null;
+      this.radChunkPendingSelectionHashA = null;
+      this.radChunkPendingSelectionHashB = null;
       this.radChunkPendingRevealQuality = null;
       if (this.indexedPendingDiagnostic) {
         this.rejectRadPublicationDiagnostic(this.indexedPendingDiagnostic, reason);
@@ -2249,7 +2305,13 @@ export class StreamedSplatMesh extends SplatMesh {
       const pendingSelectionId = this.radChunkPendingSelectionIdValue;
       const pendingDemandRevision = this.radChunkPublishRevision;
       this.renderedGenerationValue = generation;
-      this.radChunkDisplayedGlobals = Uint32Array.from(next);
+      this.radChunkDisplayedGlobals = next;
+      this.radChunkDisplayedSelectionHashA = this.radChunkPendingSelectionHashA;
+      this.radChunkDisplayedSelectionHashB = this.radChunkPendingSelectionHashB;
+      this.radChunkDisplayedFiles.clear();
+      if (this.radChunkPendingFiles) {
+        for (const file of this.radChunkPendingFiles) this.radChunkDisplayedFiles.add(file);
+      }
       this.pageTableDrawn = next.length;
       this.pageTableDisplayGeneration = generation;
       this.retainVisibleInstanceCount(next.length);
@@ -2264,6 +2326,9 @@ export class StreamedSplatMesh extends SplatMesh {
       this.radChunkPublishActiveListVersion = null;
       this.radChunkPendingSelectionIdValue = null;
       this.radChunkPendingPageIdentity = null;
+      this.radChunkPendingFiles = null;
+      this.radChunkPendingSelectionHashA = null;
+      this.radChunkPendingSelectionHashB = null;
       if (this.onPerformanceEvent !== undefined) {
         console.debug(
           '[vlam:rad-chunk-sort]',
@@ -3215,9 +3280,17 @@ export class StreamedSplatMesh extends SplatMesh {
    */
   get planTimings(): Readonly<{
     applyMs: number;
+    handlerMs: number;
     worstApplyMs: number;
     writeMs: number;
     residentMs: number;
+    mappingMs: number;
+    pageIdentityMs: number;
+    activeListMs: number;
+    installMs: number;
+    protectionMs: number;
+    unifiedGatherMs: number;
+    sortMs: number;
     moves: number;
     appends: number;
     worstSplats: number;
@@ -5537,12 +5610,12 @@ export class StreamedSplatMesh extends SplatMesh {
       plan.selectionGlobals
         ? plan.selectionGlobals
         : undefined;
-    const chunkPublicationSlots = chunkPublicationGlobals
-      ? this.poolIndicesForRadGlobals(chunkPublicationGlobals)
+    const chunkPublicationMapping = chunkPublicationGlobals
+      ? this.mapRadChunkSelection(chunkPublicationGlobals)
       : undefined;
-    const chunkPublicationPageIdentity = chunkPublicationGlobals
-      ? this.captureRadChunkPageIdentity(chunkPublicationGlobals)
-      : undefined;
+    const chunkPublicationSlots = chunkPublicationMapping?.slots;
+    const chunkPublicationPageIdentity = chunkPublicationMapping?.pageIdentity;
+    let activeListMs = 0;
     if (chunkCandidateOverBudget) {
       this.radChunkLastInvalidationReasonValue = 'draw-budget';
       this.pendingWork = true;
@@ -5579,13 +5652,10 @@ export class StreamedSplatMesh extends SplatMesh {
     const presented = this.radChunkResidency
       ? chunkPublicationGlobals !== undefined &&
         chunkPublicationSlots !== null &&
-        chunkPublicationGlobals.length !== this.radChunkDisplayedGlobals.length
-        ? true
-        : chunkPublicationGlobals !== undefined &&
-          chunkPublicationSlots !== null &&
-          chunkPublicationGlobals.some(
-            (global, index) => global !== this.radChunkDisplayedGlobals[index],
-          )
+        (chunkPublicationGlobals.length !== this.radChunkDisplayedGlobals.length ||
+          this.radChunkDisplayedSelectionHashA === null ||
+          chunkPublicationMapping?.selectionHashA !== this.radChunkDisplayedSelectionHashA ||
+          chunkPublicationMapping?.selectionHashB !== this.radChunkDisplayedSelectionHashB)
       : this.indexedPageTable
         ? indexedPublication !== undefined &&
           plan.candidateGeneration !== this.pageTableDisplayGeneration &&
@@ -5618,15 +5688,22 @@ export class StreamedSplatMesh extends SplatMesh {
     if (presented) {
       if (chunkPublicationGlobals && chunkPublicationSlots) {
         const previousVisibleCount = this.pageTableDrawn;
+        const activeListStartedAt = performance.now();
         this.radChunkPublishActiveListVersion = this.replaceActiveIndices(chunkPublicationSlots);
         this.retainVisibleInstanceCount(previousVisibleCount);
-        this.radChunkPendingGlobals = Uint32Array.from(chunkPublicationGlobals);
+        activeListMs = performance.now() - activeListStartedAt;
+        this.radChunkPendingGlobals = chunkPublicationGlobals;
         this.radChunkPublishGeneration = plan.candidateGeneration as number;
         this.radChunkPublishRevision = plan.candidateRevision ?? null;
         this.radChunkSelectionIdValue++;
         this.radChunkPendingSelectionIdValue = this.radChunkSelectionIdValue;
         this.radChunkPendingHardValidityRevisionValue = this.radChunkHardValidityRevisionValue;
         this.radChunkPendingPageIdentity = chunkPublicationPageIdentity ?? null;
+        this.radChunkPendingFiles = chunkPublicationPageIdentity
+          ? new Set(chunkPublicationPageIdentity.keys())
+          : null;
+        this.radChunkPendingSelectionHashA = chunkPublicationMapping?.selectionHashA ?? null;
+        this.radChunkPendingSelectionHashB = chunkPublicationMapping?.selectionHashB ?? null;
         this.radChunkSelectionCompletedAtValue = performance.now();
         this.radChunkSortSubmittedAtValue = this.radChunkSelectionCompletedAtValue;
         this.radChunkCameraObsoleteValue =
@@ -5640,8 +5717,10 @@ export class StreamedSplatMesh extends SplatMesh {
       } else if (indexedPublication) {
         const poolIndices = this.poolIndicesForSlabSlots(indexedPublication);
         const previousVisibleCount = this.pageTableDrawn;
+        const activeListStartedAt = performance.now();
         this.indexedPublishActiveListVersion = this.replaceActiveIndices(poolIndices);
         this.retainVisibleInstanceCount(previousVisibleCount);
+        activeListMs = performance.now() - activeListStartedAt;
         this.indexedPendingDisplaySlots = indexedPublication;
         this.indexedPublishGeneration = plan.candidateGeneration as number;
         this.indexedPublishRevision = plan.candidateRevision ?? null;
@@ -5819,14 +5898,38 @@ export class StreamedSplatMesh extends SplatMesh {
     // Recorded because a churning frontier can make this the largest stall in a
     // frame, and a cap has to be aimed at whichever half dominates.
     const planTimings = this.planTimingsValue;
-    planTimings.applyMs = residentFinishedAt - applyStartedAt;
+    const handlerFinishedAt = performance.now();
+    planTimings.applyMs = handlerFinishedAt - applyStartedAt;
+    planTimings.handlerMs = planTimings.applyMs;
     planTimings.writeMs = writeFinishedAt - applyStartedAt;
     planTimings.residentMs = residentFinishedAt - writeFinishedAt;
+    planTimings.mappingMs = chunkPublicationMapping?.mappingMs ?? 0;
+    planTimings.pageIdentityMs = 0;
+    planTimings.activeListMs = activeListMs;
     planTimings.moves = plan.moveSlots.length;
     planTimings.appends = plan.appends.count;
     if (planTimings.applyMs > planTimings.worstApplyMs) {
       planTimings.worstApplyMs = planTimings.applyMs;
       planTimings.worstSplats = planTimings.moves + planTimings.appends;
+    }
+    if (this.onPerformanceEvent !== undefined) {
+      console.debug(
+        '[vlam:rad-plan-timing]',
+        JSON.stringify({
+          seq: plan.seq,
+          generation: plan.candidateGeneration ?? null,
+          handlerMs: planTimings.handlerMs,
+          installMs: planTimings.installMs,
+          writeMs: planTimings.writeMs,
+          residentMs: planTimings.residentMs,
+          mappingMs: planTimings.mappingMs,
+          pageIdentityMs: planTimings.pageIdentityMs,
+          protectionMs: planTimings.protectionMs,
+          activeListMs: planTimings.activeListMs,
+          unifiedGatherMs: planTimings.unifiedGatherMs,
+          sortMs: planTimings.sortMs,
+        }),
+      );
     }
     // Follow the cut with the screen-radius band. One-pass selection stops at
     // the configured pixel target; leftover draw budget is a ceiling, not a
@@ -5894,22 +5997,18 @@ export class StreamedSplatMesh extends SplatMesh {
 
   /** Files that must keep their whole GPU page until the matching draw retires. */
   private protectedRadChunkFiles(): Set<number> {
-    const protectedFiles = new Set<number>([0]);
-    const chunkSize = this.scene.chunkSize ?? SLAB_PAGE_SPLATS;
-    for (const global of this.radChunkDisplayedGlobals) {
-      protectedFiles.add(Math.floor(global / chunkSize));
-    }
-    if (this.radChunkPendingGlobals) {
-      for (const global of this.radChunkPendingGlobals) {
-        protectedFiles.add(Math.floor(global / chunkSize));
-      }
+    const protectedFiles = new Set<number>([0, ...this.radChunkDisplayedFiles]);
+    if (this.radChunkPendingFiles) {
+      for (const file of this.radChunkPendingFiles) protectedFiles.add(file);
     }
     return protectedFiles;
   }
 
   /** Releases the least-recently-used unprotected chunk page. */
   private evictRadChunkPage(): boolean {
+    const protectionStartedAt = performance.now();
     const protectedFiles = this.protectedRadChunkFiles();
+    this.planTimingsValue.protectionMs = performance.now() - protectionStartedAt;
     let oldestFile: number | undefined;
     let oldestTime = Infinity;
     for (const [file, page] of this.radChunkPages) {
@@ -5935,11 +6034,13 @@ export class StreamedSplatMesh extends SplatMesh {
     const allocator = this.radChunkAllocator;
     if (!this.radChunkResidency || !allocator) return true;
     if (this.radChunkPages.has(file)) return true;
+    const installStartedAt = performance.now();
     let page = allocator.allocate(file, data.count);
     while (page === undefined && this.evictRadChunkPage()) {
       page = allocator.allocate(file, data.count);
     }
     if (page === undefined) {
+      this.planTimingsValue.installMs = performance.now() - installStartedAt;
       warn(
         `StreamedSplatMesh: RAD chunk ${file} could not obtain a stable GPU page; ` +
           'the chunk-page experiment remains on its previous complete selection.',
@@ -5952,9 +6053,11 @@ export class StreamedSplatMesh extends SplatMesh {
       this.pageTableCachedFiles.add(file);
       this.pageTableHostCacheRevision++;
       this.syncRadChunkPages();
+      this.planTimingsValue.installMs = performance.now() - installStartedAt;
       return true;
     } catch (error) {
       allocator.release(file);
+      this.planTimingsValue.installMs = performance.now() - installStartedAt;
       warn(`StreamedSplatMesh: failed to upload RAD chunk ${file}; retaining the old cut.`, error);
       return false;
     }

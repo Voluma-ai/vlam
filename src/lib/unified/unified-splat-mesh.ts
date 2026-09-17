@@ -140,6 +140,16 @@ export interface UnifiedSplatMeshOptions {
   sortMetric?: SplatSortMetric;
 }
 
+/** CPU submission timings for the last unified gather/sort preparation. */
+export interface UnifiedSplatPerformanceTimings {
+  totalMs: number;
+  gatherMs: number;
+  sortSubmitMs: number;
+  sourceCount: number;
+  activeCount: number;
+  sortSubmitted: boolean;
+}
+
 /**
  * Returns true when `renderer` can drive {@link UnifiedSplatMesh}.
  * Heterogeneous gather/sort/draw is WebGPU-only; WebGL2 hosts keep standalone
@@ -180,6 +190,14 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   private readonly sorter: SplatSorter;
   private readonly projectedSorter: SplatSorter | null;
   private readonly projectedPipeline: ProjectedSplatPipeline | null;
+  private readonly performanceTimingsValue: UnifiedSplatPerformanceTimings = {
+    totalMs: 0,
+    gatherMs: 0,
+    sortSubmitMs: 0,
+    sourceCount: 0,
+    activeCount: 0,
+    sortSubmitted: false,
+  };
   private computeProjectionActive = false;
   private readonly renderer: THREE.WebGPURenderer;
   private readonly sources: SourceRecord[] = [];
@@ -660,6 +678,11 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.prepare(camera);
   }
 
+  /** Returns the last unified gather/sort CPU submission timings. */
+  get performanceTimings(): Readonly<UnifiedSplatPerformanceTimings> {
+    return this.performanceTimingsValue;
+  }
+
   /**
    * Re-sorts and draws this unified source list for a secondary camera.
    * Mirrors and portals use this instead of rendering the hidden source meshes
@@ -702,6 +725,10 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     targetSize?: THREE.Vector2,
     forceSort = false,
   ): void {
+    const prepareStartedAt = performance.now();
+    let gatherMs = 0;
+    let sortSubmitMs = 0;
+    let sortSubmitted = false;
     if (!supportsUnifiedSplatMesh(this.renderer)) {
       throw new Error(
         'UnifiedSplatMesh requires a WebGPU backend (renderer.backend.isWebGPUBackend).',
@@ -825,6 +852,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         // `addSource` already rejects these.
         !view.hasSourcePlacement;
       if (!reusable) {
+        const gatherStartedAt = performance.now();
         record.gather.gather(
           this.renderer,
           view.activeCount,
@@ -833,6 +861,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
           viewCamera.matrixWorldInverse,
           effectiveOpacity,
         );
+        gatherMs += performance.now() - gatherStartedAt;
         if (!geometryMatches) geometryInvalidated = true;
         if (record.lastGather === null) {
           record.lastGather = {
@@ -889,6 +918,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     if (geometryInvalidated || layoutChanged) this.sortScheduler.invalidateContent();
 
     let sortReady = offset === 0;
+    const sortStartedAt = performance.now();
     if (this.computeProjectionActive && this.projectedPipeline && this.projectedSorter) {
       this.projectedPipeline.prepare(
         viewCamera.matrixWorldInverse,
@@ -902,6 +932,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
           this.bounds,
           cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
         );
+        sortSubmitted = true;
         sortReady = true;
       }
     } else if (offset > 0) {
@@ -923,6 +954,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
             cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
           )
         ) {
+          sortSubmitted = true;
           this.lastSortedState.copy(sortState);
           this.sortScheduler.markAccepted(now);
           // Worker replies publish later; gathering a source view is not enough.
@@ -930,6 +962,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         }
       }
     }
+    sortSubmitMs = performance.now() - sortStartedAt;
     if (sortReady && offset > 0) {
       this.readyPublicationVersion = ++this.unifiedPublicationVersion;
       this.readyPublication = admitted.map((record) => ({
@@ -947,6 +980,12 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     // is ever read back - see the field comment. The work buffer's own mirrors
     // are released by `WorkBufferGather.gather`.
     if (!this.mirrors.settled) this.mirrors.release(this.renderer);
+    this.performanceTimingsValue.totalMs = performance.now() - prepareStartedAt;
+    this.performanceTimingsValue.gatherMs = gatherMs;
+    this.performanceTimingsValue.sortSubmitMs = sortSubmitMs;
+    this.performanceTimingsValue.sourceCount = admitted.length;
+    this.performanceTimingsValue.activeCount = offset;
+    this.performanceTimingsValue.sortSubmitted = sortSubmitted;
   }
 
   override onAfterRender(

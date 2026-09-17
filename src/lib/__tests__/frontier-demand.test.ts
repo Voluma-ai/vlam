@@ -117,6 +117,10 @@ describe('page-table demand reconciliation', () => {
       pageTableDisplayGeneration: number;
       pageTableDrawBudget: number;
       pageTableSeq: number;
+      replaceActiveIndices: (indices: Uint32Array) => number;
+      sourceIndexAttribute: { array: Uint32Array };
+      activeSlotByPoolIndex: Uint32Array;
+      activeCount: number;
     };
     inner.pageTableInFlight = true;
     inner.pageTableCachedFiles.add(0);
@@ -303,6 +307,16 @@ describe('page-table demand reconciliation', () => {
     inner.onActiveListRendered(version as number);
     expect(inner.radChunkDisplayedGlobals).toEqual(new Uint32Array([0, 1]));
     expect(inner.radChunkPendingGlobals).toBeNull();
+  });
+
+  it('bulk-copies chunk-page selections without rebuilding the reverse slot map', () => {
+    const { inner } = chunkPagesFixture();
+    const reverseBefore = inner.activeSlotByPoolIndex.slice(0, 7);
+    inner.replaceActiveIndices(Uint32Array.from([0, 5, 6]));
+
+    expect(inner.activeCount).toBe(3);
+    expect(inner.sourceIndexAttribute.array.slice(0, 3)).toEqual(new Uint32Array([0, 5, 6]));
+    expect(inner.activeSlotByPoolIndex.slice(0, 7)).toEqual(reverseBefore);
   });
 
   it('rejects an unsafe chunk-page candidate when its page identity changes', () => {

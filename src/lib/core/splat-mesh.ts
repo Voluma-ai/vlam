@@ -1152,10 +1152,12 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // here for those writes repeatedly gathers and sorts the unchanged display.
     // replaceActiveIndices invalidates when the completed candidate is selected.
     // Active survivor rewrites still invalidate even when the count is unchanged.
-    for (let index = destination; index < destination + data.count; index++) {
-      if (this.activeSlotByPoolIndex[index] !== 0xffffffff) {
-        this.contentRevision++;
-        break;
+    if (this.tracksActivePoolSlots()) {
+      for (let index = destination; index < destination + data.count; index++) {
+        if (this.activeSlotByPoolIndex[index] !== 0xffffffff) {
+          this.contentRevision++;
+          break;
+        }
       }
     }
   }
@@ -1396,6 +1398,16 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       throw new RangeError('SplatMesh.replaceActiveIndices: frontier exceeds pool capacity.');
     }
 
+    const trackActivePoolSlots = this.tracksActivePoolSlots();
+    if (!trackActivePoolSlots) {
+      source.set(indices);
+      const previousCount = this.activeCount;
+      this.activeCount = indices.length;
+      this.commitActiveListMutation(0, Math.max(previousCount, this.activeCount));
+      this.queryEpoch++;
+      this.contentRevision++;
+      return this.activeListVersion;
+    }
     this.activeSlotByPoolIndex.fill(0xffffffff);
     for (let slot = 0; slot < indices.length; slot++) {
       const poolIndex = indices[slot] as number;
@@ -1404,13 +1416,13 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           'SplatMesh.replaceActiveIndices: frontier contains an invalid pool index.',
         );
       }
-      if (this.activeSlotByPoolIndex[poolIndex] !== 0xffffffff) {
+      if (trackActivePoolSlots && this.activeSlotByPoolIndex[poolIndex] !== 0xffffffff) {
         throw new Error(
           'SplatMesh.replaceActiveIndices: frontier contains duplicate pool indices.',
         );
       }
       source[slot] = poolIndex;
-      this.activeSlotByPoolIndex[poolIndex] = slot;
+      if (trackActivePoolSlots) this.activeSlotByPoolIndex[poolIndex] = slot;
     }
 
     const previousCount = this.activeCount;
@@ -1419,6 +1431,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.queryEpoch++;
     this.contentRevision++;
     return this.activeListVersion;
+  }
+
+  /** Whether arbitrary active-index replacements need a reverse pool-slot map. */
+  protected tracksActivePoolSlots(): boolean {
+    return true;
   }
 
   /** Called when a matching order has been installed and is ready to draw. */
