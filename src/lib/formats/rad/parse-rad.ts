@@ -318,32 +318,26 @@ function chunkToSplatData(chunk: DecodedChunk, reorder: boolean): SplatData {
 }
 
 /**
- * Spark's merged-node size-expansion factor: 1 for leaves (`alpha ≤ 1`), up to
- * 3.8 at `alpha = 2`. A merged node's `alpha ∈ (1,2]` encodes coverage
- * expansion - how much to enlarge the node so it covers its subtree - not
- * opacity. Spark's renderer applies it to the rendered gaussian; so do we (in
- * `writeSplat`). The LOD cut uses a steeper authored size - see
- * {@link radNodeSize}.
+ * Spark's tagged hierarchy expansion: 1 for leaves (`alpha ≤ 1`), up to 3.8 at
+ * `alpha = 2`. A merged node's `alpha ∈ (1,2]` encodes coverage expansion, not
+ * opacity. Spark 2.1's decoder writes this factor into lod-tree sizes; the
+ * renderer applies the same curve to the drawn gaussian in `writeSplat`.
+ * Covariance stays the raw fitted shape.
  */
 function radExpansion(alpha: number): number {
   return alpha <= 1 ? 1 : 1 + 0.7 * (alpha * 4 - 4);
 }
 
 /**
- * A LOD node's world-space size, matching Spark's `encode_lod_tree`
- * (`splat_encode.rs`): `2 · (max(alpha,1)·4 − 3) · avg(scale)`. This is the
- * size Spark's traversal compares against `pixel_scale_limit`, and it is
- * **steeper** than the rendered covariance expansion ({@link radExpansion}'s
- * `1 + 0.7·(4α−4)`, ≤3.8): at `alpha = 2` the traversal size factor is 5.
- * Using the render curve here made every merged node look 24–32% smaller to
- * the cut than to Spark's, so the descent stopped ~one LOD level early -
- * large-scale scenes rendered visibly coarser (streaky merged nodes) than
- * Spark at the same limit and budget.
+ * A LOD node's world-space size, matching Spark 2.1's tagged decoder:
+ * `2 · radExpansion(alpha) · avg(scale)`. At `alpha = 2` the factor is 3.8,
+ * not the steeper authored `max(α,1)·4 − 3` remap. Covariance is independent
+ * of this metadata.
  */
 function radNodeSize(alpha: number, scale: Float32Array, i: number): number {
   const avg =
     ((scale[i * 3] as number) + (scale[i * 3 + 1] as number) + (scale[i * 3 + 2] as number)) / 3;
-  return 2 * (Math.max(alpha, 1) * 4 - 3) * avg;
+  return 2 * radExpansion(alpha) * avg;
 }
 
 /** The trivial permutation - splats stay in file order (foveation path). */

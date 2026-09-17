@@ -277,6 +277,7 @@ describe('StreamedSplatMesh persistent channels (M7.6)', () => {
         moves: empty,
         appendStart,
         appends: splats,
+        writeSlots: Uint32Array.from(globals.map((_, i) => appendStart + i)),
         degenerateStart: appendStart + globals.length,
         degenerateCount: 0,
         touched: new Uint32Array(0),

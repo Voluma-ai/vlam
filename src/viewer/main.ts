@@ -1512,6 +1512,7 @@ async function main(): Promise<void> {
   const cpuCacheBytes =
     cacheMbParam === null ? undefined : Math.round(Number(cacheMbParam) * 1024 * 1024) || undefined;
   const benchmarkSeconds = Number(params.get('benchmarkSeconds')) || 0;
+  const detailedRadDiagnostics = params.get('log') === '1';
   const swapCap = Number(params.get('swapCap')) || undefined;
   const manualBenchmarkStart = params.get('benchmarkStart') === 'manual';
   const relightingTier = requestedRelightingTier(params.get('relightTier'));
@@ -1570,9 +1571,9 @@ async function main(): Promise<void> {
   const foveationDrawBudget = params.has('foveationDraw')
     ? Number(params.get('foveationDraw'))
     : undefined;
-  // Page-table RAD defaults to a complete intermediate 50%-budget first image.
-  // `?radInitialDisplay=0` restores the old target-detail hold for A/B;
-  // `coarse` remains a readable alias for the default, and a fraction tunes it.
+  // Single-scene RAD keeps complete early cuts behind the projected-quality
+  // reveal gate. `?radInitialDisplay=0` restores the old target-detail hold for
+  // A/B; `coarse` remains a 50% allocation-fraction alias for crossover runs.
   const radInitialDisplayParam = params.get('radInitialDisplay');
   const radInitialDisplayFraction =
     radInitialDisplayParam === null
@@ -1583,12 +1584,14 @@ async function main(): Promise<void> {
   // `?aspectClamp=K` caps a rendered splat's major/minor axis ratio at K, taming
   // far-field needle/spike artifacts from anisotropic / expanded coarse splats.
   const maxSplatAspect = params.has('aspectClamp') ? Number(params.get('aspectClamp')) : undefined;
-  // Page-table foveation ramp (Spark's `coneFov0`/`coneFov`/`coneFoveate`/
-  // `behindFoveate`): full detail inside `?coneFov0=` degrees of the view
-  // direction, falling to `?coneFoveate=` by `?coneFov=` and to
-  // `?behindFoveate=` behind. Off-cone content is coarsened, never dropped, so
-  // turning or zooming out never exposes an unpainted region.
+  // Desktop huge-RAD Spark-matching ramp: full detail inside 60°, falling to
+  // 0.4 by 120° and 0.2 behind. URL knobs still override. Off-cone content is
+  // coarsened, never dropped.
   const frontierFoveation = {
+    coneFov0: 60,
+    coneFov: 120,
+    coneFoveate: 0.4,
+    behindFoveate: 0.2,
     ...(params.has('coneFov0') ? { coneFov0: Number(params.get('coneFov0')) } : {}),
     ...(params.has('coneFov') ? { coneFov: Number(params.get('coneFov')) } : {}),
     ...(params.has('coneFoveate') ? { coneFoveate: Number(params.get('coneFoveate')) } : {}),
@@ -1641,9 +1644,14 @@ async function main(): Promise<void> {
     ...(foveationMode ? { foveationMode } : {}),
     ...(foveationTargetPx === undefined ? {} : { foveationTargetPx }),
     ...(foveationDrawBudget === undefined ? {} : { foveationDrawBudget }),
+    lodScale: params.has('lodScale') ? Number(params.get('lodScale')) : 2,
+    radInitialRevealPolicy:
+      radInitialDisplayFraction === undefined
+        ? ('projected-quality' as const)
+        : ('allocation-fraction' as const),
     ...(radInitialDisplayFraction === undefined ? {} : { radInitialDisplayFraction }),
     ...(maxSplatAspect === undefined ? {} : { maxSplatAspect }),
-    ...(Object.keys(frontierFoveation).length === 0 ? {} : { frontierFoveation }),
+    frontierFoveation,
     ...(lodAlpha === undefined ? {} : { lodAlpha }),
   });
   let benchmark: ReturnType<typeof createFrameBenchmark> | null = null;
@@ -1774,6 +1782,8 @@ async function main(): Promise<void> {
    */
   const preferStartupHold = params.get('initialReveal') !== 'progressive';
   let nearL0HoldActive = false;
+  /** True until page-table RAD publishes its first complete drawable generation. */
+  let awaitingFirstRadDisplay = false;
   /**
    * While `applyScene` awaits `fitToBox`, skip `update()` so the coverage hold
    * cannot freeze the pre-fit camera (mounted is already true, mesh is in the
@@ -3009,6 +3019,16 @@ async function main(): Promise<void> {
     syncSeparateTool();
     loadingTitle = null;
     loadingProgress = null;
+    if (
+      next.mesh instanceof StreamedSplatMesh &&
+      next.mesh.radStrategy === 'page-table' &&
+      !next.mesh.hasPublishedGeneration
+    ) {
+      loadingTitle = next.title;
+      awaitingFirstRadDisplay = true;
+    } else {
+      awaitingFirstRadDisplay = false;
+    }
     if (options.frame ?? true) {
       armStartupHoldAfterPose();
       suppressStreamedUpdate = false;
@@ -3472,7 +3492,7 @@ async function main(): Promise<void> {
       // per-update CPU timings a host can see (`getUpdateTimings` is protected),
       // and they are what separates an upload stall from a sort stall when the
       // 1% low collapses.
-      ...(benchmarkSeconds > 0 || perfHud
+      ...(benchmarkSeconds > 0 || perfHud || detailedRadDiagnostics
         ? {
             onPerformanceEvent: (event: StreamedSplatPerformanceEvent) => {
               if (benchmarkSeconds > 0 && isSwapPerformanceEvent(event)) {
@@ -4339,6 +4359,14 @@ async function main(): Promise<void> {
               `${describeLoadError(streamingError, sceneTitle).message}`,
             action: { label: 'Reload', onClick: () => location.reload() },
           });
+        }
+      }
+      if (mounted && splats instanceof StreamedSplatMesh && awaitingFirstRadDisplay) {
+        if (splats.hasPublishedGeneration) {
+          awaitingFirstRadDisplay = false;
+          loadingTitle = null;
+          loadingProgress = null;
+          if (!presenting) refreshOverlay();
         }
       }
       if (mounted && splats instanceof StreamedSplatMesh && nearL0HoldActive) {

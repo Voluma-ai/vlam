@@ -52,13 +52,57 @@ export interface FrontierChunkMessage {
 
 export interface FrontierInitMessage {
   readonly type: 'init';
+  /** Stable-slot pager is the page-table production path; classic remains for tests. */
+  readonly pagerMode?: 'classic' | 'indexed';
   readonly capacity: number;
   readonly chunkSize: number;
   readonly cpuCacheBytes: number;
   /** Most pool writes one plan may deliver, including freed-tail clears. */
   readonly maxPlanWrites: number;
-  /** Minimum complete frontier size to publish before requested children arrive. */
+  /**
+   * Minimum complete frontier size to publish before requested children arrive.
+   * `0` (default) publishes the first complete cover immediately. A very large
+   * value restores the target-detail hold.
+   */
   readonly initialPublishMinSplats?: number;
+  /** Enables detailed traversal samples for an explicit diagnostic run. */
+  readonly diagnostics?: boolean;
+}
+
+/** Requests one coherent worker-owned state snapshot. */
+export interface FrontierSnapshotMessage {
+  readonly type: 'snapshot';
+  readonly requestId: number;
+}
+
+/** Worker state captured without starting another traversal. */
+export interface FrontierSnapshotReply {
+  readonly type: 'snapshot';
+  readonly requestId: number;
+  readonly revision: number;
+  readonly traversalId: number;
+  readonly cacheRevision: number;
+  readonly threshold: number;
+  readonly budget: number;
+  readonly selectionCount: number;
+  readonly cachedFiles: Uint32Array;
+  readonly cameraLocal: readonly [number, number, number] | null;
+  readonly cameraForward: readonly [number, number, number] | null;
+  readonly displayedGeneration: number;
+  readonly candidateGeneration: number | null;
+  readonly awaitingPublication: boolean;
+  readonly dependencyFiles: Uint32Array;
+  readonly discoveryQueued: number;
+  readonly discoveryWaiting: number;
+  readonly skipSamples: readonly FrontierSkipSample[];
+}
+
+/** Releases the previous display only after the matching backend publication. */
+export interface FrontierPublishAckMessage {
+  readonly type: 'published';
+  readonly generation: number;
+  /** Active-list version that crossed the renderer's publication boundary. */
+  readonly activeListVersion: number;
 }
 
 /**
@@ -69,6 +113,12 @@ export interface FrontierInitMessage {
  */
 export interface FrontierResizeMessage {
   readonly type: 'resize';
+  readonly capacity: number;
+}
+
+/** Confirms that no indexed display or pending selection references the tail. */
+export interface FrontierResizeSafeMessage {
+  readonly type: 'resizeSafe';
   readonly capacity: number;
 }
 
@@ -99,6 +149,8 @@ export interface FrontierRescheduleMessage {
    * the traversal foveates rather than frustum-culls, so the scene stays covered
    * when the camera turns or zooms out. */
   readonly cameraForward: [number, number, number];
+  /** Local-position to clip matrix, column-major. */
+  readonly projection?: readonly number[];
   /** Foveation ramp, in degrees / weights (Spark's `coneFov0`/`coneFov`/…). */
   readonly coneFov0: number;
   readonly coneFov: number;
@@ -109,6 +161,12 @@ export interface FrontierRescheduleMessage {
   readonly limit: number;
   /** Maximum drawn splats; enforced inside the traversal, never after. */
   readonly budget: number;
+  /** Host-owned camera/configuration revision. Echoed by every demand reply. */
+  readonly revision?: number;
+  /** First-publish threshold for the current accepted draw allowance. */
+  readonly initialPublishMinSplats?: number;
+  /** Enables detailed traversal samples for an explicit diagnostic run. */
+  readonly diagnostics?: boolean;
 }
 
 /** Request-only camera snapshot. Its generation is independent of pager plans. */
@@ -129,14 +187,56 @@ export interface FrontierDemandWant {
   readonly priority: number;
 }
 
+export type FrontierDemandReason = 'traversed' | 'draining' | 'discovery';
+
 export interface FrontierDemandReply {
   readonly type: 'demand';
   readonly generation: number;
   readonly wants: readonly FrontierDemandWant[];
+  /** Partial wants can fill free slots, but never prove an omitted request obsolete. */
+  readonly complete: boolean;
+  /** Camera/configuration revision. Movement replaces queued demand promptly. */
+  readonly revision: number;
+  /** Traversal that produced this demand; `0` for incremental chunk discovery. */
+  readonly traversalId: number;
+  /** Why this demand was posted. Discovery/drain never imply a fresh quality cut. */
+  readonly reason?: FrontierDemandReason;
+}
+
+/**
+ * Why a pager plan was posted. `traversalId` alone cannot tell a held or drained
+ * reply from a walk that inspected nearby nodes and left them coarse.
+ */
+export type FrontierPlanReason =
+  | 'traversed'
+  | 'draining'
+  | 'awaiting-publication'
+  | 'capacity-blocked'
+  | 'unchanged-selection'
+  | 'intermediate'
+  | 'waiting-for-children'
+  | 'non-refinement'
+  | 'already-at-target';
+
+export type FrontierSkipReason =
+  'leaf' | 'below-threshold' | 'missing-children' | 'budget' | 'would-subdivide' | 'no-tree';
+
+/** Nearby selected node that was not subdivided, with the exact stop reason. */
+export interface FrontierSkipSample {
+  readonly global: number;
+  readonly center: readonly [number, number, number];
+  readonly size: number;
+  readonly childCount: number;
+  readonly childStart: number;
+  readonly pixelScale: number;
+  readonly reason: FrontierSkipReason;
+  readonly missingFiles: readonly number[];
 }
 
 export type FrontierRequest =
   | FrontierInitMessage
+  | FrontierSnapshotMessage
+  | FrontierPublishAckMessage
   | FrontierChunkMessage
   | FrontierResizeMessage
   | FrontierCacheBudgetMessage
@@ -158,7 +258,7 @@ export interface FrontierPlanMessage {
   readonly type: 'plan';
   readonly seq: number;
   /** Build-time-only traversal diagnostics for benchmark comparisons. */
-  readonly traversalStrategy?: 'heap' | 'bounded-threshold';
+  readonly traversalStrategy?: 'heap' | 'bounded-threshold' | 'one-pass';
   readonly traversalFallback?: boolean;
   readonly traversalFallbackCount?: number;
   readonly rootCoverInfeasible?: boolean;
@@ -169,6 +269,39 @@ export interface FrontierPlanMessage {
   /** Newcomers written contiguously at `[appendStart, appendStart + appends.count)`. */
   readonly appendStart: number;
   readonly appends: PlanSplats;
+  /** Indexed-pager destination slots, aligned with `appends`; absent for classic plans. */
+  readonly writeSlots?: Uint32Array;
+  /** Candidate whose selected slots become drawable together after sorting. */
+  readonly candidateGeneration?: number;
+  /** Complete selected slot list. Present only when this candidate is ready to publish. */
+  readonly candidateSlots?: Uint32Array;
+  /** Bounded-candidate ownership diagnostics for development traces. */
+  readonly candidateSize?: number;
+  readonly candidateNewSlots?: number;
+  readonly candidateReusedSlots?: number;
+  readonly candidateComplete?: boolean;
+  readonly candidateFinal?: boolean;
+  /** Projected-quality diagnostics for the candidate generation. */
+  readonly revealReady?: boolean;
+  readonly maxCentralProjectedRatio?: number;
+  readonly maxVisibleProjectedRatio?: number;
+  readonly candidateCancellationCount?: number;
+  readonly boundedCutRefusalReason?:
+    | 'waiting-for-children'
+    | 'non-refinement'
+    | 'already-at-target';
+  readonly protectedCacheBytes?: number;
+  readonly activePageTableFetches?: number;
+  /**
+   * Unique id of the last actual walk. Drain, publication-hold, and capacity
+   * replies keep that id; they do not reset it to `0`. Combine with
+   * {@link planReason} to tell a fresh cut from a held one.
+   */
+  readonly traversalId?: number;
+  /** Distinguishes a walk from drain / publication-hold / capacity / unchanged. */
+  readonly planReason?: FrontierPlanReason;
+  /** Highest-importance selected nodes that were not subdivided. */
+  readonly skipSamples?: readonly FrontierSkipSample[];
   /** Freed tail slots to degenerate. */
   readonly degenerateStart: number;
   readonly degenerateCount: number;
@@ -197,8 +330,8 @@ export interface FrontierPlanMessage {
    * forget them (`pageTableCachedFiles`) or they could never be refetched. */
   readonly evicted: Uint32Array;
   /**
-   * The cut this plan was built at - at or below the requested `limit`, because
-   * the worker refines past the quality target to spend the draw budget.
+   * The cut this plan was built at - the configured pixel target, unless a
+   * benchmark override still runs extra budget-filling walks.
    *
    * The host needs it because its screen-radius band was chosen for the *target*
    * cut: a finer cut selects smaller splats, and a band left at the coarse

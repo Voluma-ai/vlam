@@ -577,6 +577,29 @@ describe('UnifiedSplatMesh', () => {
       return vi.spyOn(sorter, 'sort');
     }
 
+    it('acknowledges sources only after the unified draw callback', async () => {
+      const renderer = mockRenderer();
+      const mesh = source();
+      const unified = new UnifiedSplatMesh(renderer, 1);
+      unified.addSource(mesh);
+      const notify = vi.spyOn(mesh, 'notifyUnifiedPublication');
+      const camera = new THREE.PerspectiveCamera();
+
+      unified.update(camera);
+      expect(notify).not.toHaveBeenCalled();
+
+      unified.onAfterRender({} as never, new THREE.Scene(), camera);
+      expect(notify).not.toHaveBeenCalled();
+      await Promise.resolve();
+      expect(notify).toHaveBeenCalledOnce();
+
+      unified.onAfterRender({} as never, new THREE.Scene(), camera);
+      await Promise.resolve();
+      expect(notify).toHaveBeenCalledOnce();
+      unified.dispose();
+      mesh.dispose();
+    });
+
     it('skips the sorter dispatch for a stationary camera with unchanged content', () => {
       const renderer = mockRenderer();
       const mesh = source();
@@ -645,6 +668,25 @@ describe('UnifiedSplatMesh', () => {
       // Settled again: the regathered content is now sorted, nothing changed.
       unified.update(camera);
       expect(sort).toHaveBeenCalledTimes(2);
+      unified.dispose();
+      mesh.dispose();
+    });
+
+    it('propagates a source reveal multiplier into the unified gather opacity', () => {
+      const renderer = mockRenderer();
+      const mesh = source();
+      const unified = new UnifiedSplatMesh(renderer, 1);
+      unified.addSource(mesh);
+      const gather = gatherSpies(unified)[0]!.gather;
+      const camera = new THREE.PerspectiveCamera();
+
+      unified.update(camera);
+      expect(gather.mock.calls[0]?.[5]).toBe(1);
+
+      (mesh as unknown as { setRevealMultiplier: (value: number) => void }).setRevealMultiplier(0);
+      unified.update(camera);
+      expect(gather.mock.calls[1]?.[5]).toBe(0);
+
       unified.dispose();
       mesh.dispose();
     });

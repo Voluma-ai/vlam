@@ -10,22 +10,36 @@ described below remains available with its existing defaults.
 
 A historical Spark 2.1.0 package was recovered from the local npm cache and
 aliased into one isolated benchmark server (`VLAM_SPARK_VERSION=2.1.0`,
-`VITE_SPARK_VERSION=2.1.0`). The normal installed development dependency and
-lockfile remain Spark 2.2.0. In that archived report, `renderer.version` is the
-actual aliased 2.1.0 package; `environment.spark` describes the installed
-2.2.0 package tree and must not be read as the active renderer.
+`VITE_SPARK_VERSION=2.1.0`). Recreate the alias with:
+
+```bash
+mkdir -p .tmp/spark-2.1
+npm pack @sparkjsdev/spark@2.1.0 --pack-destination .tmp/spark-2.1
+tar -xzf .tmp/spark-2.1/sparkjsdev-spark-2.1.0.tgz -C .tmp/spark-2.1
+VLAM_SPARK_VERSION=2.1.0 npm run benchmark:dev
+```
+
+The Vite alias resolves `.tmp/spark-2.1/package/dist/spark.module.js`. The
+normal installed development dependency and lockfile remain Spark 2.2.0. In
+archived 2.1.0 reports, `renderer.version` is the actual aliased 2.1.0 package;
+`environment.spark` describes the installed 2.2.0 package tree and must not be
+read as the active renderer.
 
 For build-time experiments, start a separate server for each variant with
 `VLAM_EXPERIMENT=baseline npm run benchmark:dev` or
 `VLAM_EXPERIMENT=skip-empty npm run benchmark:dev`. The effective settings are
 saved in comparison and memory reports. Empty-pool `skip-empty` is the
 published default; `baseline` restores the prior initial upload for A/B.
-Other selectable names (`bounded-threshold`, `exact-stream`,
-`approximate-sh-stream`, `first-vertex`) remain independent benchmark-only
-configurations. The bounded-threshold traversal has been evaluated and is not
-recommended for promotion. Remote PLY streaming is implemented as an isolated
-benchmark experiment. The WebGL candidate is also isolated and cannot be
-evaluated on the tested Chrome GPU path because its extension is unavailable.
+Other selectable names (`one-pass`, `heap`, `bounded-threshold`, `rad-decode-2`,
+`rad-decode-4`, `exact-stream`, `approximate-sh-stream`, `first-vertex`) remain
+independent benchmark-only configurations. `one-pass` is the page-table
+production default (Spark 2.1's single best-first walk). `heap` restores main's
+extra budget-filling walks for A/B. Decode stays on one worker unless a
+`rad-decode-*` server is started. The bounded-threshold traversal has been
+evaluated and is not recommended for promotion. Remote PLY streaming is
+implemented as an isolated benchmark experiment. The WebGL candidate is also
+isolated and cannot be evaluated on the tested Chrome GPU path because its
+extension is unavailable.
 
 ```bash
 npm install

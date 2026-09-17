@@ -44,6 +44,16 @@ export async function createComparisonSpark(
           encodeLinear: false,
         }
       : {}),
+    ...(kind === 'rad'
+      ? {
+          lodSplatCount: config.radBudget ?? 7_500_000,
+          lodRenderScale: 1,
+          coneFov0: 60,
+          coneFov: 120,
+          coneFoveate: 0.4,
+          behindFoveate: 0.2,
+        }
+      : {}),
     ...(maxStdDev === undefined ? {} : { maxStdDev }),
     ...(sortRadial === undefined ? {} : { sortRadial }),
   });
@@ -81,6 +91,15 @@ export async function createComparisonSpark(
       meshes.push(mesh);
     }
     await Promise.all(meshes.map((mesh) => mesh.initialized));
+    if (kind === 'rad') {
+      for (const mesh of meshes) {
+        mesh.lodScale = 2;
+        mesh.coneFov0 = 60;
+        mesh.coneFov = 120;
+        mesh.coneFoveate = 0.4;
+        mesh.behindFoveate = 0.2;
+      }
+    }
   } catch (error) {
     for (const mesh of meshes) mesh.dispose();
     spark.dispose();

@@ -517,6 +517,8 @@ export interface UnifiedSourceView {
    * scene may mix `.rad` and non-`.rad` sources.
    */
   readonly lodAlpha: boolean;
+  /** Internal startup-reveal multiplier applied by unified rendering. */
+  readonly revealMultiplier: number;
   /** Increments whenever pool-backed data or active residency changes. */
   readonly contentRevision: number;
 }

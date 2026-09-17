@@ -18,7 +18,7 @@ chunks, no SH). Read together with `ROADMAP.md` M14. Implemented under
   [`FrontierPager`](../../src/lib/formats/rad/frontier-pager.ts) +
   [`frontier-worker`](../../src/lib/formats/rad/frontier-worker.ts) page only the CPU-
   selected frontier into a fixed pool slab; sort/vertex cost tracks **drawn**
-  splats (`foveationDrawBudget`, default `PAGETABLE_DRAW_BUDGET` = 4M).
+  splats (`foveationDrawBudget`, default `PAGETABLE_DRAW_BUDGET` = 7.5M).
   The traversal **foveates rather than frustum-culls**, and enforces the draw
   budget inside the descent, see §"Coverage and budget" below.
 - **Moderate captures** (budget auto-lift): [`RadLodSource`](../../src/lib/formats/rad/rad.ts)
@@ -133,7 +133,10 @@ encoded value from the original texture channel and apply visual opacity
 `writeSplat` applies it: opacity is `min(alpha,1)`
 and the scales are multiplied by `radExpansion(alpha)` (1 for leaves, up to 3.8
 at alpha=2) so coarse nodes render enlarged enough to cover their subtree,
-matching Spark. Without it merged nodes render up to ~3.8× too small and leave
+matching Spark. Spark 2.1's tagged decoder also writes that 3.8 expansion into
+lod-tree hierarchy sizes; VLAM traversal metadata matches the decoder. Covariance
+stays the raw fitted shape and is not inflated to make size comparisons pass.
+Without the expansion, merged nodes render up to ~3.8× too small and leave
 gaps in the foveated far field.
 
 ## Whole-file vs. streamed
@@ -358,20 +361,41 @@ frontier (budget redistributes) and the shader drew it immediately.
 `solvedLimit` still refines while budget remains and does not coarsen
 after a clamp.
 
-**Earlier complete first image (page-table default).** The first fully staged,
-complete intermediate cover is published when it reaches 50% of the initial
-draw-splat budget, even if some requested child chunks have not arrived. This
-was chosen after the raw chunk-0 cover looked too coarse up close and the
-target-detail hold kept a large capture blank too long. It is a count of selected
-splats, not 50% of an image's pixel quality or of the bytes downloaded. The
-published cover remains visible until the normal atomic replacement is staged;
-the final draw budget, LOD target, and near-camera fetch priority are unchanged.
-The library option is `radInitialDisplayFraction`. In the viewer,
-`?radInitialDisplay=0` restores the previous target-detail hold for A/B,
-`?radInitialDisplay=coarse` explicitly selects the default, and a numeric
-fraction in `(0, 1]` tunes the threshold. Prefix RAD and other formats are
-unaffected. Watch for brief local quality changes when the first finer cut
-redistributes its fixed budget; the 50% gate alone does not prevent those.
+**First-reveal policies.** Display correctness is independent of first-reveal
+policy. Both policies publish only a complete hierarchy cover with a matching
+sort; incomplete replacements, unsorted generations, and mixed parent/child
+covers are failures.
+
+- `progressive` (library default): the first fully staged complete cover is
+  published as soon as it exists, including early coarse coverage while
+  requested children are still loading. Subsequent complete replacements
+  publish as they stage.
+  `?radInitialDisplay=0` restores the older target-detail hold for A/B.
+- `allocation-fraction`: the first fully staged complete cover is published
+  when it reaches `radInitialDisplayFraction` of the granted draw allocation
+  (default `0.5`). Incoming captures in a multi-splat crossover select this
+  explicitly. A complete traversal that finished at the pixel threshold or
+  leaves may publish below that gate; an empty request list, budget stop,
+  staging drain, or stale camera is not that signal. Recompute the threshold
+  when the accepted draw allowance changes. It is a selected-splat count, not
+  50% of downloaded bytes or of nearby projected quality. RAD storage chunks
+  and hierarchy nodes are not separate captures for this purpose.
+- `projected-quality`: the first complete, sorted and rendered generations stay
+  behind the processing cover until no selected internal node in the central
+  60° cone exceeds `4 × foveationTargetPx`, and no selected internal node
+  elsewhere in the visible frustum exceeds `8 × foveationTargetPx`. Leaves do
+  not block this gate because they cannot refine further. The Voluma
+  single-scene loader uses this policy explicitly; timeline/crossover captures
+  retain the separate 50% allocation gate. Spark 2.1 likewise keeps its early
+  working cut (about 0.4M active splats on the Jastrzębia Góra capture) under
+  its processing cover and first exposes the scene near its sharp ~1.8M cut.
+
+An explicit `radInitialRevealPolicy` takes precedence. If no policy is
+supplied, a numeric `radInitialDisplayFraction` still selects
+`allocation-fraction` so existing callers keep their hold.
+
+The published cover remains visible until the next complete replacement is
+staged and actually published. Prefix RAD and other formats are unaffected.
 
 The prefix reader (`RadLodSource`, moderate captures under the 6M lift
 ceiling) uses the same publish policy without a pager: every depth, including
@@ -393,7 +417,7 @@ the GPU cuts (`band` / `frontier`) the equivalent is `foveationTargetPx =
 1 / lodScale`.
 
 **Governed draw budget.** `setBudget` re-derives `pageTableDrawBudget =
-min(budget, foveationDrawBudget ?? 4M)` and it is posted every reschedule, so a
+min(budget, foveationDrawBudget ?? 7.5M)` and it is posted every reschedule, so a
 shared-budget governor drives the frontier's descent depth directly. A
 *caller-pinned* `foveationDrawBudget` outranks the budget, and a governor growing
 the mesh past it buys nothing, `setBudget` warns once when that happens rather
@@ -407,7 +431,8 @@ Two invariants of `traverseFrontier`, both taken from Spark's
 
 - **Foveation, not culling.** A node's traversal priority is
   `size / distance × foveate(angle)`, where `foveate` is 1 inside `coneFov0`
-  (90°), ramps to `coneFoveate` (0.4) at `coneFov` (120°), and to
+  (library default 90°, matching Spark's renderer default; the desktop huge-RAD
+  demo uses 60°), ramps to `coneFoveate` (0.4) at `coneFov` (120°), and to
   `behindFoveate` (0.2) behind the camera. Spark's `new_compute_pixel_scale`.
  Off-cone geometry stops *descending* earlier; it is never removed. So every
  root→leaf ray always ends in exactly one output node and the whole scene is
@@ -417,14 +442,15 @@ Two invariants of `traverseFrontier`, both taken from Spark's
  turning exposed a **black region** that stayed black until the next plan
  landed. Behind-camera / off-cone content must be *coarse*, not absent.
 - **Budget enforced inside the descent.** Before expanding a node the traversal
- checks `numSplats, 1 + childCount > maxSplats` and stops, then drains the rest
- of the heap into the output. One O(frontier) pass is therefore always complete
- *and* always within `foveationDrawBudget`, nothing for `FrontierPager` to
- truncate afterwards (`PagerPlan.dropped` is 0; a non-zero value now warns).
- The previous limit bisection (`searchLimitWithinBudget`, kept only for the
- legacy A/B cut) ran the whole traversal up to five times per reschedule and
- could still return an over-budget selection, so a camera move stalled for
- seconds and then dropped an arbitrary slice of the scene.
+ checks `numSplats − 1 + childCount > maxSplats` and stops. Spark 2.1 accepts
+ `lastPixelLimit` but does not use it; leftover draw budget is a ceiling, not a
+ reason to walk again toward `limit / 32`. Remaining heap entries are emitted
+ linearly while scratch buffers retain capacity. The `heap` experiment keeps
+ main's extra budget-filling walks for A/B; `one-pass` is the production default.
+ One O(frontier) pass is therefore always complete *and* always within
+ `foveationDrawBudget`. The previous limit bisection (`searchLimitWithinBudget`,
+ kept only for the legacy A/B cut) ran the whole traversal up to five times per
+ reschedule and could still return an over-budget selection.
 
 The cut limit is a fixed function of the projection, exactly as Spark computes
 it: `foveationTargetPx / focalY`, i.e. `targetPx · 2·tan(fovY/2) / renderHeight`.
@@ -433,13 +459,50 @@ it: `foveationTargetPx / focalY`, i.e. `targetPx · 2·tan(fovY/2) / renderHeigh
 `SparkRenderer.ts`), so nodes refine until they are about a pixel and the draw
 budget is the only thing that stops the descent. 
 
-**Fetch priority.** The chunks the traversal wanted but did not have (`touched`,
-biggest-on-screen first) are requested *before* the file-order background sweep,
-which is capped to leave `PAGETABLE_PRIORITY_SLOTS` (3, matching Spark's
-`numLodFetchers`) free and stops once the worker cache reports an eviction.
-Issued after the sweep, the touched requests were dropped by the in-flight cap on
-every tick, so the capture downloaded coarse→fine in file order while the region
-on screen waited.
+**Demand vs staging.** The worker posts a lightweight ordered demand reply
+*before* gathering render attributes. Fetch admission does not wait for the
+matching plan to apply. Chunk arrivals expand missing-child waiters and can
+discover grandchildren while the previous candidate is still staging; pending
+pager writes no longer block demand. Incomplete demand never proves omitted
+requests obsolete. One host-owned revision is carried on each posted
+reschedule and echoed by every associated demand reply. Camera/configuration
+identity includes projection, quality, foveation, and draw allowance; the
+newest coalesced view is preserved while the worker is busy, and the revision
+increments when that view is actually posted so in-flight replies stay
+applicable. Completing an older valid publication does not relabel its
+dependency requests as a newer view. An incomplete reply for an older
+revision is dropped. Page-table RAD no longer runs an independent coarse-base
+or file-order startup sweep — root coverage plus this demand list replace it.
+Other RAD modes keep their existing fetch ranking.
+
+**Indexed publication.** Page-table RAD stores selected splats in stable slots,
+stages newcomers only into slots unused by the displayed generation, and
+publishes candidate attributes, selected indices, count, and matching sort as
+one generation. The renderer acknowledges that boundary (GPU sort, worker
+publication, or unified gather+sort of the live index list — not merely
+preparing a source view, not `update()` without a matching accepted sort, and
+not a superseded snapshot) before old-only slots are released. A unified source that rebuilt its active list after staging
+still acknowledges the live generation so refinement is not stuck on the first
+cover. Distinguishes requested draw allowance, accepted
+draw allowance, and reserved storage: `reservedSlots ≥ 2 × acceptedDrawAllowance`
+including page rounding. Page-table construction uses a 2× capacity factor so
+that reservation can fit; other formats keep the 1.5× staged-swap slack. Device
+or shared-pool limits reduce and report the accepted allowance through
+`setBudget` rather than publishing incomplete coverage. If even complete root
+coverage cannot fit, the worker reports capacity blockage and retries when
+allocation changes. Physical shrink is a correlated handshake: retain old pages,
+publish a complete smaller cut, relocate surviving tail slots, and release tail
+storage only after a matching acknowledgment. A superseded resize ack releases
+nothing.
+
+**Fetch priority.** Demand preserves projected importance
+(`size / distance × lodScale × angular weight`) through deduplication and
+admission. The Spark-matching path does not add screen-tier or center-weight
+scoring. Coarse off-view coverage is retained. Off-view speculative refinement
+is optional and is not a page-table startup sweep. Chunk arrivals expand
+missing-child waiters using each descendant's own projected scale and the
+current pixel threshold, so an ancestor's high priority does not fetch
+unnecessary deeper branches.
 
 **Main-thread cost.** In `page-table` mode `RadFoveatedSource.needsParentSizes` is
 false: per-splat `parent_size` is a GPU-cut input the worker never reads, and
@@ -624,6 +687,40 @@ more than 40 ms of margin, versus the 120.6 ms isolated baseline. A separate
 attempt with a 62-second background callback gap was discarded from frame
 statistics; its swap-attributed work nevertheless remained below 8 ms, which
 confirms the gap was not produced by a page-table upload.
+
+## Spark-parity loading lessons
+
+- Scheduling fixes can remove churn without improving detail arrival.
+- Zero evictions can mean either healthy retention or stalled progress.
+- Atomic sorting cannot repair an incomplete hierarchy selection.
+- A fixed display count does not protect data overwritten underneath it.
+- Off-view coarse coverage is necessary; off-view speculative refinement is optional.
+- Single-scene loading uses projected-quality reveal; incoming crossover
+  captures opt into allocation-fraction. Both still require a complete cover
+  and matching sort.
+  The timeline exception publishes at 50% of the current effective allocation
+  *or* a traversal that proves the quality threshold or leaves.
+- Host-owned demand revisions are independent of publication generations.
+- Worker plan replies name why they were posted: `traversed`, `draining`,
+  `awaiting-publication`, `capacity-blocked`, or `unchanged-selection`. A
+  `traversalId` of a previous walk is not a fresh quality decision.
+- Indexed publication acks only after the matching sort is actually visible.
+- Indexed reservation is `2 × acceptedDrawAllowance`; a reduced accepted grant
+  cannot silently count as equivalent-budget parity.
+- The existing RAD asset is not proven to require reformatting merely because
+  VLAM is slow.
+- Spark 2.1's WASM decoder and VLAM agree on JG chunk 0 child links and
+  hierarchy sizes. A coarse frozen cut with only chunk 0 resident is
+  `missing-children`, not a decoder mismatch.
+- App wrappers (desktop foveation, main-mesh `lodScale: 2`, selection-collapse
+  protection, authored-camera hold) are not Spark library behavior and must be
+  recorded separately in A/B runs. Spark's traversal has no special 50 m
+  scheduler. The Voluma desktop RAD loader now applies those wrappers explicitly.
+- Decode-worker count stays at 1 until measured 2- and 4-worker pools justify a
+  change; more concurrency must not recreate eviction/refetch churn.
+- Traversal IDs count each actual walk once. Continuation and hold replies
+  contribute zero new traversal time. A 90% draw-count signal is not
+  “equivalent sharp.”
 
 ## Other gaps / next steps
 - **Coordinate frame:** Spark's loader documents the 180°-X OpenCV→OpenGL

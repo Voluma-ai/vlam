@@ -1,9 +1,10 @@
 import * as THREE from 'three/webgpu';
+import type { WebGLRenderer } from 'three';
 import { uniform } from 'three/tsl';
 import { ComputeSorter, releaseRendererAttributes } from '../core/compute-sorter';
 import { RadixSorter } from '../core/radix-sorter';
 import { clampDepthOfFieldSettings, type DepthOfFieldSettings } from '../core/depth-of-field';
-import { SplatMesh } from '../core/splat-mesh';
+import { SplatMesh, getSplatPublicationToken } from '../core/splat-mesh';
 import type { SplatPickOptions, SplatPickResult, UnifiedSourceView } from '../core/splat-mesh';
 import { isFillConstrainedSplatDevice } from '../core/splat-budget';
 import { WebGpuSortScheduler } from '../core/sort-scheduler';
@@ -60,6 +61,11 @@ interface LayoutEntry {
   source: SplatMesh;
   offset: number;
   activeCount: number;
+}
+
+interface UnifiedPublication {
+  readonly source: SplatMesh;
+  readonly token: number;
 }
 
 /** Registration settings for one source in a {@link UnifiedSplatMesh}. */
@@ -226,6 +232,11 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   private sourceProjectedFilterProfile: 'default' | 'lcc' | null = null;
   private overflowedSourceCount = 0;
   private overflowedSplatCount = 0;
+  private unifiedPublicationVersion = 0;
+  private readyPublicationVersion = -1;
+  private readyPublication: readonly UnifiedPublication[] | null = null;
+  private queuedPublicationVersion = -1;
+  private renderedPublicationVersion = -1;
   private disposed = false;
 
   constructor(
@@ -622,6 +633,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.assertNotDisposed('removeSource');
     const index = this.sources.findIndex((entry) => entry.source === source);
     if (index < 0) return false;
+    this.readyPublicationVersion = -1;
+    this.readyPublication = null;
     const [record] = this.sources.splice(index, 1);
     if (record) {
       record.gather.dispose();
@@ -791,13 +804,14 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         previous.offset === sliceOffset &&
         previous.activeCount === view.activeCount;
       const last = record.lastGather;
+      const effectiveOpacity = record.opacity * view.revealMultiplier;
       const geometryMatches =
         last !== null &&
         ownedSameSlice &&
         last.activeCount === view.activeCount &&
         last.contentRevision === view.contentRevision &&
         last.offset === sliceOffset &&
-        last.opacity === record.opacity &&
+        last.opacity === effectiveOpacity &&
         last.matrixWorld.equals(view.matrixWorld);
       const reusable =
         geometryMatches &&
@@ -817,7 +831,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
           sliceOffset,
           view.matrixWorld,
           viewCamera.matrixWorldInverse,
-          record.opacity,
+          effectiveOpacity,
         );
         if (!geometryMatches) geometryInvalidated = true;
         if (record.lastGather === null) {
@@ -825,7 +839,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
             activeCount: view.activeCount,
             contentRevision: view.contentRevision,
             offset: sliceOffset,
-            opacity: record.opacity,
+            opacity: effectiveOpacity,
             matrixWorld: view.matrixWorld.clone(),
             localCameraPosition: view.localCameraPosition.value.clone(),
           };
@@ -833,7 +847,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
           record.lastGather.activeCount = view.activeCount;
           record.lastGather.contentRevision = view.contentRevision;
           record.lastGather.offset = sliceOffset;
-          record.lastGather.opacity = record.opacity;
+          record.lastGather.opacity = effectiveOpacity;
           record.lastGather.matrixWorld.copy(view.matrixWorld);
           record.lastGather.localCameraPosition.copy(view.localCameraPosition.value);
         }
@@ -874,6 +888,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     // this. DoF is a live draw uniform and reaches neither branch.
     if (geometryInvalidated || layoutChanged) this.sortScheduler.invalidateContent();
 
+    let sortReady = offset === 0;
     if (this.computeProjectionActive && this.projectedPipeline && this.projectedSorter) {
       this.projectedPipeline.prepare(
         viewCamera.matrixWorldInverse,
@@ -887,6 +902,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
           this.bounds,
           cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
         );
+        sortReady = true;
       }
     } else if (offset > 0) {
       const now = performance.now();
@@ -909,8 +925,20 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         ) {
           this.lastSortedState.copy(sortState);
           this.sortScheduler.markAccepted(now);
+          // Worker replies publish later; gathering a source view is not enough.
+          sortReady = this.sorter.kind !== 'worker';
         }
       }
+    }
+    if (sortReady && offset > 0) {
+      this.readyPublicationVersion = ++this.unifiedPublicationVersion;
+      this.readyPublication = admitted.map((record) => ({
+        source: record.source,
+        token: getSplatPublicationToken(record.source),
+      }));
+    } else if (geometryInvalidated || layoutChanged || offset === 0) {
+      this.readyPublicationVersion = -1;
+      this.readyPublication = null;
     }
     (this.geometry as THREE.InstancedBufferGeometry).instanceCount = this.computeProjectionActive
       ? this.workBuffer.capacity
@@ -919,6 +947,36 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     // is ever read back - see the field comment. The work buffer's own mirrors
     // are released by `WorkBufferGather.gather`.
     if (!this.mirrors.settled) this.mirrors.release(this.renderer);
+  }
+
+  override onAfterRender(
+    _renderer: WebGLRenderer,
+    _scene: THREE.Scene,
+    _camera: THREE.Camera,
+  ): void {
+    const version = this.readyPublicationVersion;
+    const publication = this.readyPublication;
+    if (
+      this.disposed ||
+      version < 0 ||
+      publication === null ||
+      this.renderedPublicationVersion === version ||
+      this.queuedPublicationVersion === version
+    )
+      return;
+    this.queuedPublicationVersion = version;
+    queueMicrotask(() => {
+      if (this.queuedPublicationVersion === version) this.queuedPublicationVersion = -1;
+      if (
+        this.disposed ||
+        this.readyPublicationVersion !== version ||
+        this.readyPublication !== publication ||
+        this.renderedPublicationVersion === version
+      )
+        return;
+      this.renderedPublicationVersion = version;
+      for (const { source, token } of publication) source.notifyUnifiedPublication(token);
+    });
   }
 
   dispose(): void {

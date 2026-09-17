@@ -450,6 +450,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * cut targets a fixed on-screen size. Unused in `'band'` mode.
    */
   private readonly pixelScaleLimit = uniform(0);
+  /** Internal draw multiplier for streamed startup reveal gates. */
+  private readonly revealMultiplier = uniform(1);
   /**
    * Core projected-2D depth of field (live uniforms). Aperture `0` disables.
    * Prefer this over the `depthOfFieldPreset` modifier for camera DoF.
@@ -524,9 +526,13 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   /** One-frame queue-headroom hint used before a staged atomic commit. */
   private deferSortRequestOnce = false;
   /** Bumped by every active-list mutation; identifies a draw list. */
-  private activeListVersion = 0;
+  protected activeListVersion = 0;
   /** The active list the current depth order was built from. */
   private sortedActiveListVersion = -1;
+  /** Last active-list version whose matching order reached a real draw. */
+  private renderedActiveListVersion = -1;
+  /** Active-list version with a post-render notification queued. */
+  private renderedActiveListQueuedVersion = -1;
   private sortStrategyValue: SplatSortStrategy;
   private sortStrategyRevision = 0;
   private readonly sortMetric: SplatSortMetric;
@@ -1373,7 +1379,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * an arbitrary hierarchy frontier, but the referenced pool rows must remain
    * resident for the lifetime of the mesh.
    */
-  protected replaceActiveIndices(indices: Uint32Array): void {
+  protected replaceActiveIndices(indices: Uint32Array): number {
     const source = this.sourceIndexAttribute.array as Uint32Array;
     if (indices.length > source.length) {
       throw new RangeError('SplatMesh.replaceActiveIndices: frontier exceeds pool capacity.');
@@ -1401,6 +1407,22 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.commitActiveListMutation(0, Math.max(previousCount, this.activeCount));
     this.queryEpoch++;
     this.contentRevision++;
+    return this.activeListVersion;
+  }
+
+  /** Called when a matching order has been installed and is ready to draw. */
+  protected onActiveListReady(_activeListVersion: number): void {}
+
+  /** Called from a microtask after the matching order has actually rendered. */
+  protected onActiveListRendered(_activeListVersion: number): void {}
+
+  /**
+   * Unified rendering has submitted this mesh's current indices with a matching
+   * sort. Receipt of a source view is not, by itself, publication.
+   */
+  notifyUnifiedPublication(activeListVersion = this.activeListVersion): void {
+    if (this.disposed || activeListVersion !== this.activeListVersion) return;
+    this.onActiveListRendered(activeListVersion);
   }
 
   /** Fast identity-frontier variant that avoids allocating a large index array. */
@@ -1528,6 +1550,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       cached.colorsTexture === this.materialInputs.textures.colorsTexture &&
       cached.minPixelSize === this.minPixelSize &&
       cached.minContribution === this.minContribution &&
+      cached.revealMultiplier === this.revealMultiplier.value &&
       this.cachedUnifiedViewMatrixWorld.equals(this.matrixWorld) &&
       this.cachedUnifiedViewLocalBounds.equals(this.boundingSphereLocal)
     ) {
@@ -1562,6 +1585,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       projectedFilterProfile: this.projectedFilterProfile,
       // Fixed at construction, so it needs no cache-invalidation key.
       lodAlpha: this.lodAlpha,
+      revealMultiplier: this.revealMultiplier.value,
       contentRevision: this.contentRevision,
     };
     return this.cachedUnifiedView;
@@ -1593,6 +1617,43 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    */
   get effectiveVisibility(): boolean {
     return this.unifiedPickVisibility ?? this.visible;
+  }
+
+  /** True while a CPU-order worker sorter owns the draw-list publication boundary. */
+  protected isWorkerPublicationEnabled(): boolean {
+    return this.workerPublicationEnabled;
+  }
+
+  /** True while an owning UnifiedSplatMesh is responsible for publication. */
+  protected isUnifiedSource(): boolean {
+    return this.unifiedPickVisibility !== null;
+  }
+
+  /** True when the live active list already has a matching accepted sort. */
+  protected hasMatchingPublishedSort(): boolean {
+    return this.sortedActiveListVersion === this.activeListVersion;
+  }
+
+  /** Keeps a staged active list from changing the standalone draw count before publication. */
+  protected retainVisibleInstanceCount(count: number): void {
+    if (!this.workerPublicationEnabled) {
+      (this.geometry as THREE.InstancedBufferGeometry).instanceCount = count;
+    }
+  }
+
+  /** Sets an internal visual multiplier without changing the active draw list. */
+  protected setRevealMultiplier(value: number): void {
+    if (!Number.isFinite(value) || value < 0 || value > 1) {
+      throw new RangeError('SplatMesh reveal multiplier must be a finite number in [0, 1].');
+    }
+    this.revealMultiplier.value = value;
+    // Keep the draw submitted so post-render publication can acknowledge and
+    // refine hidden generations, but make the suppression independent of the
+    // fragment-alpha path. Some WebGPU material variants can preserve a stale
+    // alpha output while a graph is rebuilding; disabling color writes keeps
+    // those staged generations out of the user's framebuffer as well.
+    const material = Array.isArray(this.material) ? this.material[0] : this.material;
+    if (material) material.colorWrite = value !== 0;
   }
 
   /**
@@ -2391,6 +2452,31 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * compilation, and an empty post-release array can poison SwiftShader.
    */
   override onAfterRender(renderer: WebGLRenderer, _scene: THREE.Scene, camera: THREE.Camera): void {
+    const activeListVersion = this.activeListVersion;
+    if (
+      !this.disposed &&
+      !this.orderIsForeign &&
+      this.sortedActiveListVersion === activeListVersion &&
+      this.renderedActiveListVersion !== activeListVersion &&
+      this.renderedActiveListQueuedVersion !== activeListVersion
+    ) {
+      this.renderedActiveListQueuedVersion = activeListVersion;
+      queueMicrotask(() => {
+        if (this.renderedActiveListQueuedVersion === activeListVersion) {
+          this.renderedActiveListQueuedVersion = -1;
+        }
+        if (
+          this.disposed ||
+          this.activeListVersion !== activeListVersion ||
+          this.sortedActiveListVersion !== activeListVersion ||
+          this.orderIsForeign ||
+          this.renderedActiveListVersion === activeListVersion
+        )
+          return;
+        this.renderedActiveListVersion = activeListVersion;
+        this.onActiveListRendered(activeListVersion);
+      });
+    }
     if (
       this.storageModeValue !== 'render-only' ||
       this.cpuStorageReleased ||
@@ -2645,6 +2731,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.drawListSorted = true;
     this.sortedActiveListVersion = publication.snapshot.activeListVersion;
     this.workerPublicationPending = null;
+    this.onActiveListReady(publication.snapshot.activeListVersion);
   }
 
   /**
@@ -3009,7 +3096,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   }
 
   /** Rewrites the active-splat list (pool indices, range by range). */
-  private rebuildActiveList(): void {
+  protected rebuildActiveList(): void {
     const source = this.sourceIndexAttribute.array as Uint32Array;
     const identity = this.getPoolIndexTemplate();
     let cursor = 0;
@@ -3296,6 +3383,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         frustumMargin: this.frustumMargin,
         localCameraPosition: this.localCameraPosition,
         pixelScaleLimit: this.pixelScaleLimit,
+        revealMultiplier: this.revealMultiplier,
         dofFocusDistance: this.dofFocusDistance,
         dofAperture: this.dofAperture,
         screenBandMin: this.screenBandMin,
@@ -3766,6 +3854,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.projectionStrategyState.effective = 'compute';
     this.projectionStrategyState.reason =
       this.projectionStrategyValue === 'auto' ? this.automaticProjectionReason : 'explicit-compute';
+    this.onActiveListReady(this.activeListVersion);
     return true;
   }
 
@@ -3913,11 +4002,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       )
     ) {
       this.lastSortedState.copy(this.currentSortState);
-      this.sortedActiveListVersion = this.activeListVersion;
       this.orderIsForeign = false; // the buffer now holds the primary order again
       // On WebGL2 `now` is 0 - harmless, cadence timing is WebGPU-only; the
       // call still clears the pending-force flag consumed above.
       this.sortScheduler.markAccepted(now);
+      if (this.sorter.kind !== 'worker') {
+        this.sortedActiveListVersion = this.activeListVersion;
+        this.onActiveListReady(this.activeListVersion);
+      }
       return true;
     }
     return false;
@@ -4032,6 +4124,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         this.radixSorterLoad = null;
       });
   }
+}
+
+/** @internal Returns the exact source active-list token for unified rendering. */
+export function getSplatPublicationToken(mesh: SplatMesh): number {
+  return (mesh as unknown as { activeListVersion: number }).activeListVersion;
 }
 
 const _appendBox = new THREE.Box3();
