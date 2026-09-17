@@ -52,8 +52,8 @@ export interface FrontierChunkMessage {
 
 export interface FrontierInitMessage {
   readonly type: 'init';
-  /** Stable-slot pager is the page-table production path; classic remains for tests. */
-  readonly pagerMode?: 'classic' | 'indexed';
+  /** Stable-slot pager is the indexed path; chunk-pages keeps whole RAD chunks resident. */
+  readonly pagerMode?: 'classic' | 'indexed' | 'chunk-pages';
   readonly capacity: number;
   readonly chunkSize: number;
   readonly cpuCacheBytes: number;
@@ -137,6 +137,12 @@ export interface FrontierResizeSafeMessage {
 export interface FrontierCacheBudgetMessage {
   readonly type: 'cacheBudget';
   readonly cpuCacheBytes: number;
+}
+
+/** Current whole-chunk GPU residency, mirrored into the traversal worker. */
+export interface FrontierChunkPagesMessage {
+  readonly type: 'chunkPages';
+  readonly files: Uint32Array;
 }
 
 export interface FrontierRescheduleMessage {
@@ -248,6 +254,7 @@ export type FrontierRequest =
   | FrontierChunkMessage
   | FrontierResizeMessage
   | FrontierCacheBudgetMessage
+  | FrontierChunkPagesMessage
   | FrontierDemandMessage
   | FrontierRescheduleMessage;
 
@@ -289,6 +296,8 @@ export interface FrontierPlanMessage {
   readonly cancelledCandidateGeneration?: number;
   /** Complete selected slot list. Present only when this candidate is ready to publish. */
   readonly candidateSlots?: Uint32Array;
+  /** Complete selected RAD global-id list for whole-chunk residency. */
+  readonly selectionGlobals?: Uint32Array;
   /** Bounded worker-side candidate node sample for an explicit diagnostic run. */
   readonly diagnosticCandidateGlobals?: Uint32Array;
   readonly diagnosticCut?: FrontierCutDiagnostic;

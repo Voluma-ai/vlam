@@ -141,6 +141,28 @@ describe('frontier worker delivery', () => {
     expect(frontierWorker.shouldPublishFrontier(8, false, 100, 10, true)).toBe(true);
   });
 
+  it('returns selection globals without gathering selected splat attributes in chunk-page mode', () => {
+    send({
+      type: 'init',
+      pagerMode: 'chunk-pages',
+      capacity: CHUNK_SIZE * 4,
+      chunkSize: CHUNK_SIZE,
+      cpuCacheBytes: 8 * 1024 * 1024,
+      maxPlanWrites: PLAN_WRITE_CAP,
+    });
+    send({ type: 'chunkPages', files: Uint32Array.from([0]) });
+    sendRootChunk(1, 1);
+    reschedule(1);
+
+    const plan = plans.at(-1)!;
+    expect(plan.selectionGlobals?.length).toBeGreaterThan(0);
+    expect(plan.candidateSlots).toBeUndefined();
+    expect(plan.appends.count).toBe(0);
+    expect(plan.moves.count).toBe(0);
+    expect(demands.at(-1)?.wants.map((want) => want.file)).toEqual([1]);
+    expect(demands.some((reply) => reply.reason === 'discovery')).toBe(false);
+  });
+
   beforeEach(() => {
     plans.length = 0;
     demands.length = 0;
@@ -204,9 +226,11 @@ describe('frontier worker delivery', () => {
     });
 
     plans.length = 0;
-    reschedule(2);
+    reschedule(2, 1); // camera revision must still use a bounded replacement
     const refinement = plans.at(-1)!;
     expect(refinement.candidateComplete).toBe(true);
+    expect(refinement.planReason).toBe('intermediate');
+    expect(refinement.touched.length).toBeGreaterThan(0);
     expect(refinement.candidateSlots?.length).toBeGreaterThan(first.candidateSlots!.length);
     expect(refinement.candidateNewSlots).toBeLessThanOrEqual(512_000);
   });
@@ -757,6 +781,56 @@ describe('frontier worker delivery', () => {
     expect(
       radFrontier.hierarchyIntermediateCut(cache, roots, cut, roots, chunkSize, maxNewSplats),
     ).toMatchObject({ cut: null, reason: 'non-refinement' });
+  });
+
+  it('refines ready descendants within one candidate and counts only its final new slots', () => {
+    const chunkSize = 16;
+    const cache = new Map<number, import('../core/splat-data').SplatData>();
+    cache.set(0, {
+      count: 1,
+      positions: new Float32Array(0),
+      colors: new Uint8Array(0),
+      covariances: new Float32Array(0),
+      radTree: {
+        childCount: new Uint16Array([3]),
+        childStart: new Uint32Array([chunkSize]),
+        size: new Float32Array([1]),
+      },
+    });
+    cache.set(1, {
+      count: 3,
+      positions: new Float32Array(0),
+      colors: new Uint8Array(0),
+      covariances: new Float32Array(0),
+      radTree: {
+        childCount: new Uint16Array([3, 3, 3]),
+        childStart: new Uint32Array([chunkSize * 2, chunkSize * 2 + 3, chunkSize * 2 + 6]),
+        size: new Float32Array([1, 1, 1]),
+      },
+    });
+    cache.set(2, {
+      count: 9,
+      positions: new Float32Array(0),
+      colors: new Uint8Array(0),
+      covariances: new Float32Array(0),
+      radTree: {
+        childCount: new Uint16Array(9),
+        childStart: new Uint32Array(9),
+        size: new Float32Array(9),
+      },
+    });
+    const result = radFrontier.hierarchyIntermediateCut(
+      cache,
+      [0],
+      [0],
+      Array.from({ length: 9 }, (_, index) => chunkSize * 2 + index),
+      chunkSize,
+      5,
+    );
+    expect(result.reason).toBe('bounded');
+    expect(result.cut).toHaveLength(5);
+    expect(result.newCount).toBe(5);
+    expect(radFrontier.validateHierarchyCut(cache, [0], result.cut!, chunkSize).valid).toBe(true);
   });
 
   it('rejects an ancestor and descendant published together', () => {

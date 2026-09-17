@@ -1070,6 +1070,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     return this.appendRangeWithState(data, false);
   }
 
+  /** Appends data into a fixed-capacity inactive range. */
+  protected appendInactivePage(data: SplatData, capacity: number): SplatRange {
+    return this.appendRangeWithState(data, false, capacity);
+  }
+
   /** Reserves an inactive pool range whose data can be filled over multiple frames. */
   protected reserveInactiveRange(count: number): SplatRange {
     if (!Number.isInteger(count) || count < 0) {
@@ -1142,11 +1147,17 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     _appendBox.setFromArray(data.positions);
     this.localBounds.union(_appendBox);
     this.boundsDirty = true;
-    // The unified renderer reuses its gathered work buffer while this is
-    // unchanged. A paging plan that only relocates survivors leaves the resident
-    // count alone, so without this bump the gather (and the sort that follows
-    // it) would be skipped and the frame would keep the previous frontier.
-    this.contentRevision++;
+    // Only writes to the selected cut invalidate unified gather/sort. RAD
+    // stages new candidates in inactive slots over many batches; invalidating
+    // here for those writes repeatedly gathers and sorts the unchanged display.
+    // replaceActiveIndices invalidates when the completed candidate is selected.
+    // Active survivor rewrites still invalidate even when the count is unchanged.
+    for (let index = destination; index < destination + data.count; index++) {
+      if (this.activeSlotByPoolIndex[index] !== 0xffffffff) {
+        this.contentRevision++;
+        break;
+      }
+    }
   }
 
   /**
@@ -1454,7 +1465,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.invalidateSort();
   }
 
-  private appendRangeWithState(data: SplatData, active: boolean): SplatRange {
+  private appendRangeWithState(data: SplatData, active: boolean, reservedCount = data.count): SplatRange {
+    if (!Number.isInteger(reservedCount) || reservedCount < data.count) {
+      throw new RangeError('SplatMesh.appendRange: reserved capacity must fit the data.');
+    }
     if (data.count === 0) {
       // Zero rows must not touch the free list: allocateRows(0) would return
       // a span start without consuming it, and the matching removeRange would
@@ -1464,7 +1478,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       return empty;
     }
     const width = SplatMesh.DATA_TEXTURE_WIDTH;
-    const rowCount = Math.ceil(data.count / width);
+    const rowCount = Math.ceil(reservedCount / width);
     const startRow = allocateRowSpan(this.freeRowSpans, rowCount, this.poolRows);
     const start = startRow * width;
 
@@ -1473,8 +1487,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // Rows shared with removed ranges may hold stale splats past
     // data.count; they are inactive (not in sourceIndex), so harmless.
 
-    const handle: SplatRange = Object.freeze({ count: data.count });
-    const record: RangeRecord = { startRow, rowCount, start, count: data.count, active };
+    const handle: SplatRange = Object.freeze({ count: reservedCount });
+    const record: RangeRecord = { startRow, rowCount, start, count: reservedCount, active };
     this.ranges.set(handle, record);
     this.markRowsWritten(startRow, rowCount);
 
@@ -1492,7 +1506,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.boundsDirty = true;
 
     if (active) this.activateRecord(record);
-    this.contentRevision++;
+    if (active) this.contentRevision++;
     return handle;
   }
 
@@ -1510,7 +1524,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (record.rowCount > 0) {
       this.freeRowSpans = releaseRowSpan(this.freeRowSpans, record.startRow, record.rowCount);
     }
-    this.contentRevision++;
+    if (record.active) this.contentRevision++;
   }
 
   /** Maximum number of splats the pool can hold (row-aligned internally). */

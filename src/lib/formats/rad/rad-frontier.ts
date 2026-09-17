@@ -828,7 +828,8 @@ export function validateHierarchyCut(
  * Builds one hierarchy-valid refinement step from a published cut toward a
  * finer cut. A parent is replaced only by its complete immediate child range,
  * so every returned cut remains a cover even while the final selection is
- * staged in later plans.
+ * staged in later plans. Ready descendants may refine further within the same
+ * candidate; hierarchy depth does not impose extra publication barriers.
  *
  * This is intentionally a worker-side helper. It never coarsens a cut and it
  * refuses children whose chunks are not resident, because publishing those
@@ -905,7 +906,7 @@ export function hierarchyIntermediateCut(
   const nextSet = new Set(current);
   const originalSet = new Set(current);
   const replacements = new Map<number, number[]>();
-  let newCount = 0;
+  let candidateNewCount = 0;
   let changed = false;
   while (heap.size > 0) {
     const global = heap.pop();
@@ -939,15 +940,20 @@ export function hierarchyIntermediateCut(
       waitingForChildren = true;
       continue;
     }
-    const added = children.reduce((count, child) => count + (originalSet.has(child) ? 0 : 1), 0);
-    // The displayed parent stays resident until the matching publication is
-    // acknowledged, so it cannot fund any of the candidate's new children.
-    // Count every child that was not already present in the displayed cut.
-    if (newCount + added > maxNewSplats) {
+    const added = children.reduce(
+      (count, child) => count + (!nextSet.has(child) && !originalSet.has(child) ? 1 : 0),
+      0,
+    );
+    const resultingNewCount = candidateNewCount - (originalSet.has(global) ? 0 : 1) + added;
+    // Count new slots in the resulting candidate. A temporary intermediate
+    // node that is replaced again does not consume a slot in the final cut.
+    // Update only this replacement's contribution: scanning nextSet for every
+    // split makes large intermediate cuts quadratic and stalls refinement.
+    if (resultingNewCount > maxNewSplats) {
       waitingForChildren = true;
       continue;
     }
-    newCount += added;
+    candidateNewCount = resultingNewCount;
     nextSet.delete(global);
     replacements.set(global, children);
     for (const child of children) {
@@ -976,6 +982,10 @@ export function hierarchyIntermediateCut(
   if (new Set(next).size !== next.length) {
     return { cut: null, reason: 'invalid-cut', newCount: 0 };
   }
+  const newCount = next.reduce(
+    (count, candidate) => count + (originalSet.has(candidate) ? 0 : 1),
+    0,
+  );
   return { cut: next, reason: 'bounded', newCount };
 }
 

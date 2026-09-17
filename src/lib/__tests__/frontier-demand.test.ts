@@ -78,7 +78,7 @@ describe('page-table demand reconciliation', () => {
       pageTableInFlight: boolean;
       pageTableFetchPriority: readonly number[];
       handleFrontierMessage: (reply: FrontierDemandReply | { type: 'plan' }) => void;
-      applyFrontierPlan: (plan: { type: 'plan' }) => void;
+      applyFrontierPlan: (plan: Record<string, unknown>) => void;
       reschedulePageTable: (
         camera: THREE.Vector3,
         forward: THREE.Vector3,
@@ -94,14 +94,106 @@ describe('page-table demand reconciliation', () => {
       lastPostedCamera: readonly [number, number, number] | null;
       lastPostedForward: readonly [number, number, number] | null;
       lastPostedProjection: readonly number[] | null;
+      onActiveListReady: (activeListVersion: number) => void;
       onActiveListRendered: (activeListVersion: number) => void;
       notifyUnifiedPublication: () => void;
       rebuildActiveList: () => void;
       frontierWorker: WorkerStub;
+      radChunkResidency: boolean;
+      radChunkAllocator: {
+        chunkSize: number;
+        residentCount: number;
+        capacityPages: number;
+        pageOf: (file: number) => number | undefined;
+        poolSlots: (globals: ArrayLike<number>) => Uint32Array | null;
+      } | null;
+      radChunkPages: Map<number, { lastUsed: number }>;
+      radChunkDisplayedGlobals: Uint32Array;
+      radChunkPendingGlobals: Uint32Array | null;
+      radChunkPublishGeneration: number | null;
+      radChunkPublishActiveListVersion: number | null;
+      radChunkSelectionIdValue: number;
+      radChunkLastInvalidationReasonValue: string | null;
+      pageTableDisplayGeneration: number;
+      pageTableDrawBudget: number;
+      pageTableSeq: number;
     };
     inner.pageTableInFlight = true;
     inner.pageTableCachedFiles.add(0);
     return inner;
+  }
+
+  function chunkPagesFixture() {
+    const inner = fixture() as ReturnType<typeof fixture> & {
+      radChunkAllocator: {
+        chunkSize: number;
+        residentCount: number;
+        capacityPages: number;
+        pageOf: (file: number) => number | undefined;
+        poolSlots: (globals: ArrayLike<number>) => Uint32Array | null;
+      } | null;
+      radChunkPages: Map<number, { lastUsed: number }>;
+      radChunkDisplayedGlobals: Uint32Array;
+      radChunkPendingGlobals: Uint32Array | null;
+      radChunkPublishGeneration: number | null;
+      radChunkPublishActiveListVersion: number | null;
+      radChunkSelectionIdValue: number;
+      radChunkLastInvalidationReasonValue: string | null;
+      pageTableDisplayGeneration: number;
+      pageTableDrawBudget: number;
+      pageTableSeq: number;
+    };
+    const pages = new Map<number, number>([[0, 0], [1, 1]]);
+    inner.radChunkResidency = true;
+    inner.radChunkAllocator = {
+      chunkSize: 4,
+      residentCount: 2,
+      capacityPages: 2,
+      pageOf: (file) => pages.get(file),
+      poolSlots: (globals) => {
+        const slots = new Uint32Array(globals.length);
+        for (let i = 0; i < globals.length; i++) {
+          const global = globals[i] as number;
+          const page = pages.get(Math.floor(global / 4));
+          if (page === undefined) return null;
+          slots[i] = page * 4 + (global % 4);
+        }
+        return slots;
+      },
+    };
+    inner.radChunkPages.set(0, { lastUsed: 0 });
+    inner.radChunkPages.set(1, { lastUsed: 0 });
+    return { inner, pages };
+  }
+
+  function chunkPlan(generation: number, revision: number, globals: number[]) {
+    return {
+      type: 'plan' as const,
+      seq: generation,
+      moveSlots: new Uint32Array(0),
+      moves: { count: 0 },
+      appendStart: 0,
+      appends: { count: 0 },
+      degenerateStart: 0,
+      degenerateCount: 0,
+      touched: new Uint32Array(0),
+      residentCount: globals.length,
+      displayCount: globals.length,
+      candidateGeneration: generation,
+      candidateRevision: revision,
+      candidateComplete: true,
+      selectionGlobals: Uint32Array.from(globals),
+      planGeneration: generation,
+      planBudget: globals.length,
+      solvedLimit: 0,
+      gatherMissing: 0,
+      dropped: 0,
+      evicted: new Uint32Array(0),
+      capacity: 8192,
+      converged: true,
+      cacheBytes: 0,
+      cacheLimitBytes: 1024,
+    };
   }
 
   function demand(
@@ -170,6 +262,65 @@ describe('page-table demand reconciliation', () => {
     expect(inner.demandWants.map((want) => want.file)).toEqual([2, 9]);
     expect(started[0]).toBe(9);
     expect(started).toContain(2);
+  });
+
+  it('preserves first-touch order and lets chunk-page requests finish in flight', () => {
+    const inner = fixture();
+    inner.radChunkResidency = true;
+    const started: number[] = [];
+    vi.spyOn(inner, 'requestChunk').mockImplementation((file) => {
+      started.push(file);
+    });
+    const old = new AbortController();
+    inner.fetching.set(3, { controller: old, kind: 'priority' });
+    inner.demandGeneration = 1;
+    inner.applyDemand(
+      demand(1, [
+        { file: 9, tier: 0, priority: 1 },
+        { file: 2, tier: 0, priority: 8 },
+      ]),
+    );
+    expect(inner.demandWants.map((want) => want.file)).toEqual([9, 2]);
+    expect(started).toEqual([9, 2]);
+    expect(old.signal.aborted).toBe(false);
+  });
+
+  it('publishes a complete resident cut while camera demand is newer', () => {
+    const { inner } = chunkPagesFixture();
+    inner.demandGeneration = 2;
+    inner.demandNeedsNewRevision = true;
+    inner.applyFrontierPlan(chunkPlan(1, 1, [0, 1]));
+    expect(inner.radChunkPendingGlobals).toEqual(new Uint32Array([0, 1]));
+    expect(inner.radChunkSelectionIdValue).toBe(1);
+
+    inner.applyFrontierPlan(chunkPlan(2, 2, [4, 5]));
+    expect(inner.radChunkPendingGlobals).toEqual(new Uint32Array([0, 1]));
+    expect(inner.radChunkSelectionIdValue).toBe(1);
+
+    const version = inner.radChunkPublishActiveListVersion;
+    expect(version).not.toBeNull();
+    inner.onActiveListReady(version as number);
+    inner.onActiveListRendered(version as number);
+    expect(inner.radChunkDisplayedGlobals).toEqual(new Uint32Array([0, 1]));
+    expect(inner.radChunkPendingGlobals).toBeNull();
+  });
+
+  it('rejects an unsafe chunk-page candidate when its page identity changes', () => {
+    const { inner, pages } = chunkPagesFixture();
+    inner.applyFrontierPlan(chunkPlan(1, 1, [0, 1]));
+    pages.set(0, 1);
+    const version = inner.radChunkPublishActiveListVersion;
+    inner.onActiveListReady(version as number);
+    expect(inner.radChunkPendingGlobals).toBeNull();
+    expect(inner.radChunkLastInvalidationReasonValue).toBe('page-identity-changed');
+  });
+
+  it('does not stage a chunk-page selection above the current draw budget', () => {
+    const { inner } = chunkPagesFixture();
+    inner.pageTableDrawBudget = 1;
+    inner.applyFrontierPlan(chunkPlan(1, 1, [0, 1]));
+    expect(inner.radChunkPendingGlobals).toBeNull();
+    expect(inner.radChunkLastInvalidationReasonValue).toBe('draw-budget');
   });
 
   it('keeps the newest camera while the worker is busy without dropping live demand', () => {
@@ -342,6 +493,49 @@ describe('page-table demand reconciliation', () => {
     expect(reschedule).toHaveBeenCalledOnce();
     expect(reschedule.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ x: 0, y: 0, z: 0 }));
     expect(reschedule.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ x: 0, y: 0, z: -1 }));
+  });
+
+  it('reschedules after rejecting a complete candidate from an older revision', () => {
+    const inner = fixture();
+    const empty = {
+      count: 0,
+      globals: new Uint32Array(0),
+      positions: new Float32Array(0),
+      colors: new Uint8Array(0),
+      covariances: new Float32Array(0),
+    };
+    inner.demandGeneration = 2;
+    inner.applyFrontierPlan({
+      type: 'plan',
+      seq: 1,
+      moveSlots: new Uint32Array(0),
+      moves: empty,
+      appendStart: 0,
+      appends: empty,
+      writeSlots: new Uint32Array(0),
+      degenerateStart: 0,
+      degenerateCount: 0,
+      touched: new Uint32Array(0),
+      residentCount: 1,
+      displayCount: 1,
+      displayGeneration: 1,
+      gatherMissing: 0,
+      dropped: 0,
+      evicted: new Uint32Array(0),
+      solvedLimit: 0.02,
+      capacity: 8192,
+      converged: true,
+      pendingFrontierSplats: 0,
+      staleResidentSplats: 0,
+      cacheBytes: 0,
+      cacheLimitBytes: 1024,
+      candidateGeneration: 1,
+      candidateRevision: 1,
+      candidateComplete: true,
+      candidateSlots: Uint32Array.from([0]),
+    });
+    expect(inner.pendingWork).toBe(true);
+    expect(inner.demandNeedsNewRevision).toBe(true);
   });
 
   it('ignores a stale publication callback after a newer candidate active list exists', () => {

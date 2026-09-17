@@ -26,6 +26,23 @@ chunks, no SH). Read together with `ROADMAP.md` M14. Implemented under
 - **A/B legacy modes:** `?foveationMode=band` (screen-radius band) and
   `?foveationMode=frontier` (whole-chunk GPU per-splat cut), see history doc.
 
+The internal `rad-chunk-pages` benchmark variant adds a stable-residency path
+for large single-scene captures. Each resident 65,536-node chunk owns one
+contiguous inactive pool page; the worker returns only the selected global node
+indices, which the host maps to those physical slots. A selection update never
+re-gathers covariance, color, or SH. The target is 256 pages, reduced only when
+the capture, device memory estimate, or draw budget cannot support it; the
+existing indexed selected-splat path is retained and reports the fallback.
+Displayed and pending selections protect their pages until the corresponding
+active-list publication has rendered.
+
+Spark 2.1's reference path uses a stable WASM sorter over its selected-node
+indices. VLAM keeps the same full-precision depth ordering contract, but its
+publication boundary installs physical pool indices and lets the existing
+WebGPU counting sorter (or the WebGL2 worker sorter) order them. Chunk uploads
+therefore do not invalidate the displayed gather/sort; only a changed selection
+does. This is an implementation difference, not a relaxed ordering guarantee.
+
 `VLAM_EXPERIMENT=rad-focus` benchmark-server variant trials a separate,
 request-only camera traversal on captures whose estimated decoded size exceeds
 their current cache allowance (`baseline` keeps the legacy order). It coalesces

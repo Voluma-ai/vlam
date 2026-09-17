@@ -9,6 +9,8 @@ export interface ExperimentConfiguration {
   radTraversal: 'one-pass' | 'heap' | 'bounded-threshold';
   /** Decode workers shared by streamed RAD. Benchmarks may try 1, 2, or 4. */
   radDecodeWorkers: 1 | 2 | 4;
+  /** RAD GPU residency strategy; chunk-pages keeps whole authored chunks resident. */
+  radResidency: 'indexed' | 'chunk-pages';
   remotePly: 'buffered' | 'exact-stream' | 'approximate-sh-stream';
   webglProvokingVertex: 'existing' | 'first-vertex';
 }
@@ -17,6 +19,7 @@ export const experiments: ExperimentConfiguration = {
   initialPoolUpload: 'skip-empty',
   radTraversal: 'one-pass',
   radDecodeWorkers: 1,
+  radResidency: 'indexed',
   remotePly: 'buffered',
   webglProvokingVertex: 'existing',
 } as const;

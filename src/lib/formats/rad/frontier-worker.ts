@@ -63,6 +63,8 @@ let cacheClock = 0;
 const roots = new Set<number>();
 let pager: FrontierPager | null = null;
 let indexed: IndexedFrontierPager | null = null;
+let chunkPagesMode = false;
+const gpuResidentFiles = new Set<number>();
 let chunkSize = 65536;
 let cpuCacheBytes = 256 * 1024 * 1024;
 let maxPlanWrites = DEFAULT_PAGE_TABLE_WRITES_PER_PLAN;
@@ -111,6 +113,7 @@ let lastBudget = 0;
 let indexedTargetGlobals: number[] | null = null;
 let indexedTargetCameraKey: string | null = null;
 let indexedCandidateCancellationCount = 0;
+let chunkPageGeneration = 0;
 let lastBoundedCutRefusalReason: FrontierPlanMessage['boundedCutRefusalReason'] = undefined;
 let indexedTargetDirty = false;
 let indexedCandidateBounded = false;
@@ -245,6 +248,7 @@ function residentPager(): { hasResidentIn(file: number): boolean } | null {
 
 function evict(): number[] {
   const evicted: number[] = [];
+  if (chunkPagesMode) return evicted;
   refreshProtectedFiles();
   const resident = residentPager();
   if (!resident || totalBytes <= cpuCacheBytes) return evicted;
@@ -314,7 +318,7 @@ function rankTouched(touched: ReadonlyMap<number, number>): FrontierDemandWant[]
     if (cache.has(file)) continue;
     wants.push({ file, tier: 0, priority });
   }
-  wants.sort(compareDemand);
+  if (!chunkPagesMode) wants.sort(compareDemand);
   return wants;
 }
 
@@ -326,6 +330,21 @@ function postDemand(
 ): void {
   const wants = rankTouched(lastTouched);
   demandRevision = revision;
+  if (diagnosticsEnabled) {
+    console.debug(
+      '[vlam:rad-demand]',
+      JSON.stringify({
+        revision,
+        complete,
+        reason,
+        traversalId,
+        wants: wants.length,
+        wantFiles: wants.slice(0, 16).map((want) => want.file),
+        waiters: waiters.length,
+        discoveryQueued: Math.max(0, discoveryQueue.length - discoveryCursor),
+      }),
+    );
+  }
   const reply = {
     type: 'demand' as const,
     generation: revision,
@@ -436,7 +455,7 @@ function applySelection(result: FrontierTraversalResult): number[] {
     for (let k = 0; k < locals.length; k++) desiredGlobals.push(base + (locals[k] as number));
   }
   lastTouched = result.touched;
-  resetDiscovery(result.waiters);
+  resetDiscovery(chunkPagesMode ? [] : result.waiters);
   return desiredGlobals;
 }
 
@@ -588,8 +607,10 @@ function ingestChunk(msg: Extract<FrontierRequest, { type: 'chunk' }>): void {
   cacheRevision++;
   recordRoots(msg.file, data);
   if (indexed) indexedTargetDirty = true;
-  if (expandWaiters()) postDemand(false, 0, demandRevision, 'discovery');
-  scheduleDiscoveryContinuation();
+  if (!chunkPagesMode) {
+    if (expandWaiters()) postDemand(false, 0, demandRevision, 'discovery');
+    scheduleDiscoveryContinuation();
+  }
 }
 
 function postClassicPlan(
@@ -722,6 +743,25 @@ function postIndexedPlan(
       planReason: 'waiting-for-children',
     };
   }
+  if (diagnosticsEnabled && indexed) {
+    console.debug(
+      '[vlam:rad-plan]',
+      JSON.stringify({
+        seq,
+        candidateGeneration: replyExtras.candidateGeneration ?? null,
+        candidateComplete: replyExtras.candidateComplete ?? false,
+        candidateSize: replyExtras.candidateSize ?? null,
+        candidateNewSlots: replyExtras.candidateNewSlots ?? null,
+        candidateReusedSlots: replyExtras.candidateReusedSlots ?? null,
+        candidateRevision: indexedCandidateRevision,
+        planReason: replyExtras.planReason ?? null,
+        touched: touchedFiles.length,
+        converged: replyExtras.converged ?? indexed.pendingCount === 0,
+        pending: indexed.pendingCount,
+        waitingPublication: indexed.awaitingPublication,
+      }),
+    );
+  }
   const reply: FrontierPlanMessage = {
     type: 'plan',
     seq,
@@ -787,6 +827,66 @@ function postIndexedPlan(
   ]);
 }
 
+function postChunkPagesPlan(
+  seq: number,
+  globals: Uint32Array,
+  touchedFiles: Uint32Array,
+  limit: number,
+  converged: boolean,
+  revision: number,
+  cameraKeyValue: string,
+  revealQuality: FrontierRevealQuality,
+): void {
+  const generation = ++chunkPageGeneration;
+  const reply: FrontierPlanMessage = {
+    type: 'plan',
+    seq,
+    moveSlots: new Uint32Array(0),
+    moves: emptySplats(),
+    appendStart: 0,
+    appends: emptySplats(),
+    writeSlots: new Uint32Array(0),
+    candidateGeneration: generation,
+    candidateRevision: revision,
+    candidateCameraKey: cameraKeyValue,
+    candidateSize: globals.length,
+    candidateNewSlots: 0,
+    candidateReusedSlots: globals.length,
+    candidateComplete: true,
+    candidateFinal: converged,
+    revealReady: revealQuality.revealReady,
+    maxCentralProjectedRatio: revealQuality.maxCentralProjectedRatio,
+    maxVisibleProjectedRatio: revealQuality.maxVisibleProjectedRatio,
+    selectionGlobals: globals,
+    degenerateStart: 0,
+    degenerateCount: 0,
+    touched: touchedFiles,
+    residentCount: globals.length,
+    displayCount: globals.length,
+    displayGeneration: generation,
+    gatherMissing: 0,
+    dropped: 0,
+    evicted: new Uint32Array(0),
+    solvedLimit: limit,
+    capacity: gpuResidentFiles.size * chunkSize,
+    converged,
+    pendingFrontierSplats: 0,
+    staleResidentSplats: 0,
+    cacheBytes: totalBytes,
+    cacheLimitBytes: cpuCacheBytes,
+    traversalStrategy: experiments.radTraversal,
+    traversalFallback: lastTraversalFallback,
+    traversalFallbackCount,
+    rootCoverInfeasible: lastRootCoverInfeasible,
+    traversalMs: lastTraversalMs,
+    traversalId: lastTraversalId,
+    skipSamples: lastSkipSamples,
+    protectedCacheBytes: protectedCacheBytes(),
+    ...viewCamera(),
+  };
+  (self as unknown as Worker).postMessage(reply, [globals.buffer, touchedFiles.buffer]);
+}
+
 function solveFrontier(msg: FrontierRescheduleMessage): FrontierTraversalResult {
   const rootList = [...roots].filter((g) => cache.has(Math.floor(g / chunkSize)));
   const view = frontierView(
@@ -799,7 +899,7 @@ function solveFrontier(msg: FrontierRescheduleMessage): FrontierTraversalResult 
   const startedAt = performance.now();
   lastTraversalId = nextTraversalId++;
   lastTraversalMs = 0;
-  const hardCap = Math.min(msg.budget, (indexed ?? pager)!.capacity);
+  const hardCap = chunkPagesMode ? msg.budget : Math.min(msg.budget, (indexed ?? pager)!.capacity);
   let result: FrontierTraversalResult;
   if (experiments.radTraversal === 'bounded-threshold') {
     if (thresholdBudget !== hardCap) {
@@ -900,7 +1000,9 @@ function drainIndexed(msg: FrontierRescheduleMessage): void {
   if (!indexed) return;
   const generation = indexed.candidateGeneration;
   if (generation === null) return;
-  const diagnosticCandidateGlobals = diagnosticGlobalSample(indexed.candidateGlobals);
+  const diagnosticCandidateGlobals = diagnosticsEnabled
+    ? diagnosticGlobalSample(indexed.candidateGlobals)
+    : undefined;
   const stage = indexed.stage(generation, maxPlanWrites);
   if (!stage) return;
   protectPendingAppends();
@@ -953,7 +1055,11 @@ function updateIndexed(
 ): void {
   if (!indexed) return;
   const targetCameraKey = cameraKey(msg);
-  const cameraRevisionChanged = indexedTargetCameraKey !== targetCameraKey;
+  const targetRevision = msg.revision ?? demandRevision;
+  const candidateRevisionChanged =
+    indexedCandidateRevision !== null && indexedCandidateRevision !== targetRevision;
+  const cameraRevisionChanged =
+    indexedTargetCameraKey !== targetCameraKey || candidateRevisionChanged;
   indexedTargetCameraKey = targetCameraKey;
   // The target is mutable while a same-camera candidate stages. The candidate
   // is not: it remains the exact cut selected at its own generation.
@@ -1011,7 +1117,7 @@ function updateIndexed(
   }
   if (indexed.candidateGeneration === null) {
     let candidateGlobals = desiredGlobals;
-    const bounded = allowIntermediate && indexed.hasPublishedDisplay && !cameraRevisionChanged;
+    let bounded = allowIntermediate && indexed.hasPublishedDisplay;
     if (bounded) {
       const result = hierarchyIntermediateCut(
         cache,
@@ -1023,37 +1129,46 @@ function updateIndexed(
         lastView ?? undefined,
       );
       if (!result.cut) {
-        lastBoundedCutRefusalReason = result.reason;
-        postIndexedPlan(
-          msg.seq,
-          new Uint32Array(0),
-          new Uint32Array(0),
-          Uint32Array.from(lastTouchedFiles),
-          lastLimit,
-          Uint32Array.from(evict()),
-          {
-            converged: false,
-            planReason: result.reason === 'invalid-cut' ? 'non-refinement' : result.reason,
-            candidateFinal: result.reason === 'already-at-target',
-          },
-        );
-        return;
+        if (result.reason === 'non-refinement' || result.reason === 'already-at-target') {
+          // A camera/configuration change may coarsen or reorder the cut. The
+          // displayed selection cannot cover that target by descendant-only
+          // replacement, so use the complete target in one atomic publish.
+          bounded = false;
+          candidateGlobals = desiredGlobals;
+        } else {
+          lastBoundedCutRefusalReason = result.reason;
+          postIndexedPlan(
+            msg.seq,
+            new Uint32Array(0),
+            new Uint32Array(0),
+            Uint32Array.from(lastTouchedFiles),
+            lastLimit,
+            Uint32Array.from(evict()),
+            {
+              converged: false,
+              planReason: result.reason === 'invalid-cut' ? 'non-refinement' : result.reason,
+            },
+          );
+          return;
+        }
       }
-      candidateGlobals = result.cut;
-      if (result.newCount > MAX_INTERMEDIATE_CANDIDATE_NEW_SPLATS) {
-        lastBoundedCutRefusalReason = 'waiting-for-children';
-        postIndexedPlan(
-          msg.seq,
-          new Uint32Array(0),
-          new Uint32Array(0),
-          Uint32Array.from(lastTouchedFiles),
-          lastLimit,
-          Uint32Array.from(evict()),
-          { converged: false, planReason: 'waiting-for-children' },
-        );
-        return;
+      if (result.cut) {
+        candidateGlobals = result.cut;
+        if (result.newCount > MAX_INTERMEDIATE_CANDIDATE_NEW_SPLATS) {
+          lastBoundedCutRefusalReason = 'waiting-for-children';
+          postIndexedPlan(
+            msg.seq,
+            new Uint32Array(0),
+            new Uint32Array(0),
+            Uint32Array.from(lastTouchedFiles),
+            lastLimit,
+            Uint32Array.from(evict()),
+            { converged: false, planReason: 'waiting-for-children' },
+          );
+          return;
+        }
+        lastBoundedCutRefusalReason = undefined;
       }
-      lastBoundedCutRefusalReason = undefined;
     } else {
       lastBoundedCutRefusalReason = undefined;
     }
@@ -1126,7 +1241,9 @@ function updateIndexed(
   }
   const generation = indexed.candidateGeneration;
   if (generation === null) return;
-  const diagnosticCandidateGlobals = diagnosticGlobalSample(indexed.candidateGlobals);
+  const diagnosticCandidateGlobals = diagnosticsEnabled
+    ? diagnosticGlobalSample(indexed.candidateGlobals)
+    : undefined;
   const stage = indexed.stage(generation, maxPlanWrites);
   const extras: MutablePlanExtras = {
     candidateGeneration: generation,
@@ -1186,6 +1303,7 @@ function reschedule(msg: FrontierRescheduleMessage): void {
   demandRevision = revision;
 
   const draining =
+    !chunkPagesMode &&
     (msg.continuePendingPlan || key === lastPlanKey) &&
     ((pager?.hasPendingDrain ?? false) || (indexed !== null && indexed.pendingCount > 0));
 
@@ -1212,8 +1330,8 @@ function reschedule(msg: FrontierRescheduleMessage): void {
     return;
   }
 
-  if (!pager && !indexed) return;
-  const infeasibleKey = `${camKey}|${(indexed ?? pager)!.capacity}`;
+  if (!pager && !indexed && !chunkPagesMode) return;
+  const infeasibleKey = `${camKey}|${chunkPagesMode ? gpuResidentFiles.size : (indexed ?? pager)!.capacity}`;
   if (lastRootCoverInfeasible && lastInfeasibleKey === infeasibleKey) {
     lastTraversalMs = 0;
     postDemand(true, lastTraversalId, revision);
@@ -1240,12 +1358,9 @@ function reschedule(msg: FrontierRescheduleMessage): void {
     msg.projection ?? [],
     msg.limit,
   );
-  lastTouchedFiles = Uint32Array.from(
-    [...result.touched]
-      .filter(([cc]) => !cache.has(cc))
-      .sort((a, b) => b[1] - a[1])
-      .map(([cc]) => cc),
-  );
+  const touchedFiles = [...result.touched].filter(([cc]) => !cache.has(cc));
+  if (!chunkPagesMode) touchedFiles.sort((a, b) => b[1] - a[1]);
+  lastTouchedFiles = Uint32Array.from(touchedFiles.map(([cc]) => cc));
   lastSkipSamples =
     diagnosticsEnabled && lastView ? skipSamplesFor(result, lastView, lastLimit, msg.budget) : [];
   postDemand(true, lastTraversalId, revision, 'traversed');
@@ -1256,7 +1371,7 @@ function reschedule(msg: FrontierRescheduleMessage): void {
     result.waiters.length === 0 && !result.budgetClamped && lastTraversalId > 0;
   const publish = shouldPublishFrontier(
     uncachedTouched,
-    indexed?.hasPublishedDisplay ?? pager!.hasPublishedDisplay,
+    chunkPagesMode ? false : (indexed?.hasPublishedDisplay ?? pager!.hasPublishedDisplay),
     initialPublishMinSplats,
     result.count,
     qualityComplete,
@@ -1265,6 +1380,19 @@ function reschedule(msg: FrontierRescheduleMessage): void {
   lastPlanKey = key;
   lastPublish = publish;
   lastInfeasibleKey = result.rootCoverInfeasible ? infeasibleKey : null;
+  if (chunkPagesMode) {
+    postChunkPagesPlan(
+      msg.seq,
+      Uint32Array.from(desiredGlobals),
+      Uint32Array.from(lastTouchedFiles),
+      lastLimit,
+      result.waiters.length === 0 && !result.budgetClamped,
+      revision,
+      camKey,
+      desiredRevealQuality,
+    );
+    return;
+  }
   if (indexed) {
     // The helper itself rejects coarsening or a camera cut that is not a
     // hierarchy refinement. Those cases fall back to the existing full-cut
@@ -1307,9 +1435,15 @@ self.onmessage = (event: MessageEvent<FrontierRequest>): void => {
       indexed = new IndexedFrontierPager(msg.capacity, chunkSize);
       indexedCandidateBounded = false;
       pager = null;
+      chunkPagesMode = false;
+    } else if (msg.pagerMode === 'chunk-pages') {
+      indexed = null;
+      pager = null;
+      chunkPagesMode = true;
     } else {
       pager = new FrontierPager(msg.capacity, chunkSize);
       indexed = null;
+      chunkPagesMode = false;
     }
     solvedLimit = Number.POSITIVE_INFINITY;
     thresholdLimit = Number.POSITIVE_INFINITY;
@@ -1331,6 +1465,7 @@ self.onmessage = (event: MessageEvent<FrontierRequest>): void => {
     indexedTargetGlobals = null;
     indexedTargetCameraKey = null;
     indexedCandidateCancellationCount = 0;
+    chunkPageGeneration = 0;
     indexedCandidateBounded = false;
     indexedCandidateRevealQuality = null;
     indexedCandidateRevision = null;
@@ -1356,6 +1491,23 @@ self.onmessage = (event: MessageEvent<FrontierRequest>): void => {
     roots.clear();
     totalBytes = 0;
     neededFiles = new Set();
+    gpuResidentFiles.clear();
+    return;
+  }
+  if (msg.type === 'chunkPages') {
+    if (!chunkPagesMode) return;
+    const next = new Set(Array.from(msg.files));
+    for (const file of cache.keys()) {
+      if (next.has(file)) continue;
+      const bytes = cacheBytes.get(file) ?? 0;
+      totalBytes -= bytes;
+      cache.delete(file);
+      cacheBytes.delete(file);
+      cacheRecency.delete(file);
+    }
+    gpuResidentFiles.clear();
+    for (const file of next) gpuResidentFiles.add(file);
+    cacheRevision++;
     return;
   }
   if (msg.type === 'published') {
