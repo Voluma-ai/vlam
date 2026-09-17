@@ -371,6 +371,55 @@ describe('frontier worker delivery', () => {
     expect(plans[1]?.traversalId).toBe(first.traversalId);
   });
 
+  it('keeps every source chunk resident while a capped candidate drains', () => {
+    const chunkSize = 16;
+    send({
+      type: 'init',
+      pagerMode: 'indexed',
+      capacity: 64,
+      chunkSize,
+      cpuCacheBytes: 900,
+      maxPlanWrites: 4,
+      diagnostics: true,
+    });
+    const rootChildCount = new Uint16Array(chunkSize);
+    const rootChildStart = new Uint32Array(chunkSize);
+    rootChildCount[0] = 8;
+    rootChildStart[0] = chunkSize;
+    send({
+      type: 'chunk',
+      file: 0,
+      count: chunkSize,
+      positions: new Float32Array(chunkSize * 3),
+      colors: new Uint8Array(chunkSize * 4),
+      covariances: new Float32Array(chunkSize * 6),
+      childCount: rootChildCount,
+      childStart: rootChildStart,
+      size: new Float32Array(chunkSize).fill(8),
+      shBands: 0,
+    });
+    send({
+      type: 'chunk',
+      file: 1,
+      count: chunkSize,
+      positions: new Float32Array(chunkSize * 3),
+      colors: new Uint8Array(chunkSize * 4),
+      covariances: new Float32Array(chunkSize * 6),
+      childCount: new Uint16Array(chunkSize),
+      childStart: new Uint32Array(chunkSize),
+      size: new Float32Array(chunkSize).fill(0.01),
+      shBands: 0,
+    });
+
+    plans.length = 0;
+    reschedule(1);
+    for (let seq = 2; seq < 20 && !plans.at(-1)?.candidateSlots; seq++) {
+      reschedule(seq);
+    }
+    expect(plans.length).toBeGreaterThan(1);
+    expect(plans.every((plan) => plan.gatherMissing === 0)).toBe(true);
+  });
+
   it('re-traverses when the camera moves', () => {
     sendTree(ROOTS, FAN);
     reschedule(1);
@@ -690,10 +739,12 @@ describe('frontier worker delivery', () => {
       expect(branchCoverage).toEqual(new Array(rootCount).fill(fan));
       for (const global of cut) {
         if (next.cut!.includes(global)) continue;
-        const root = global as number;
+        const root = global;
         expect(root).toBeLessThan(chunkSize);
         const start = rootChildStart[root] as number;
-        const children = next.cut!.filter((candidate) => candidate >= start && candidate < start + fan);
+        const children = next.cut!.filter(
+          (candidate) => candidate >= start && candidate < start + fan,
+        );
         expect(children).toHaveLength(fan);
       }
       cut = next.cut!;
@@ -706,5 +757,38 @@ describe('frontier worker delivery', () => {
     expect(
       radFrontier.hierarchyIntermediateCut(cache, roots, cut, roots, chunkSize, maxNewSplats),
     ).toMatchObject({ cut: null, reason: 'non-refinement' });
+  });
+
+  it('rejects an ancestor and descendant published together', () => {
+    const chunkSize = 16;
+    const cache = new Map<number, import('../core/splat-data').SplatData>();
+    cache.set(0, {
+      count: 1,
+      positions: new Float32Array(0),
+      colors: new Uint8Array(0),
+      covariances: new Float32Array(0),
+      radTree: {
+        childCount: new Uint16Array([1]),
+        childStart: new Uint32Array([chunkSize]),
+        size: new Float32Array([1]),
+      },
+    });
+    cache.set(1, {
+      count: 1,
+      positions: new Float32Array(0),
+      colors: new Uint8Array(0),
+      covariances: new Float32Array(0),
+      radTree: {
+        childCount: new Uint16Array([0]),
+        childStart: new Uint32Array([0]),
+        size: new Float32Array([0.5]),
+      },
+    });
+    expect(radFrontier.validateHierarchyCut(cache, [0], [0, chunkSize], chunkSize)).toEqual({
+      valid: false,
+      ancestorOverlap: true,
+      duplicate: false,
+      missing: false,
+    });
   });
 });

@@ -4,6 +4,7 @@ import {
   type FrontierFoveation,
   type FrontierSkipReason,
   type FrontierSkipSample,
+  type FrontierCutDiagnostic,
 } from './frontier-worker-protocol';
 
 /**
@@ -761,9 +762,67 @@ export type HierarchyIntermediateCutResult =
   | { readonly cut: number[]; readonly reason: 'bounded'; readonly newCount: number }
   | {
       readonly cut: null;
-      readonly reason: 'waiting-for-children' | 'non-refinement' | 'already-at-target';
+      readonly reason:
+        'waiting-for-children' | 'non-refinement' | 'already-at-target' | 'invalid-cut';
       readonly newCount: 0;
     };
+
+/**
+ * Validates a selected RAD cut for an explicit diagnostic run. The walk stops
+ * at selected nodes in the normal case, but continues below selected nodes so
+ * an ancestor/descendant overlap is reported rather than hidden by the cut.
+ */
+export function validateHierarchyCut(
+  chunkMap: ReadonlyMap<number, SplatData>,
+  roots: readonly number[],
+  globals: ArrayLike<number>,
+  chunkSize: number,
+): FrontierCutDiagnostic {
+  const selected = new Set<number>();
+  let duplicate = false;
+  for (const global of Array.from(globals)) {
+    if (selected.has(global)) duplicate = true;
+    selected.add(global);
+  }
+  const seenSelected = new Set<number>();
+  const visiting = new Set<number>();
+  let ancestorOverlap = false;
+  const visit = (global: number, selectedAncestor: boolean): void => {
+    if (visiting.has(global)) return;
+    const file = Math.floor(global / chunkSize);
+    const data = chunkMap.get(file);
+    const local = global - file * chunkSize;
+    if (!data?.radTree || local < 0 || local >= data.count) return;
+    visiting.add(global);
+    const isSelected = selected.has(global);
+    if (isSelected) {
+      seenSelected.add(global);
+      if (selectedAncestor) ancestorOverlap = true;
+    }
+    const childCount = data.radTree.childCount[local] as number;
+    const childStart = data.radTree.childStart[local] as number;
+    for (let i = 0; i < childCount; i++) {
+      visit(childStart + i, selectedAncestor || isSelected);
+    }
+    visiting.delete(global);
+  };
+  for (const root of roots) visit(root, false);
+  let missing = false;
+  for (const global of selected) {
+    const file = Math.floor(global / chunkSize);
+    const data = chunkMap.get(file);
+    const local = global - file * chunkSize;
+    if (!data?.radTree || local < 0 || local >= data.count || !seenSelected.has(global)) {
+      missing = true;
+    }
+  }
+  return {
+    valid: !duplicate && !ancestorOverlap && !missing,
+    ancestorOverlap,
+    duplicate,
+    missing,
+  };
+}
 
 /**
  * Builds one hierarchy-valid refinement step from a published cut toward a
@@ -788,7 +847,8 @@ export function hierarchyIntermediateCut(
   if (maxNewSplats <= 0) {
     return { cut: null, reason: 'waiting-for-children', newCount: 0 };
   }
-  const desired = new Set(Array.from(desiredGlobals));
+  const desiredValues = Array.from(desiredGlobals);
+  const desired = new Set(desiredValues);
   const current = currentGlobals.length
     ? Array.from(currentGlobals)
     : roots.filter((global) => {
@@ -798,6 +858,9 @@ export function hierarchyIntermediateCut(
       });
   if (current.length === 0 || (currentGlobals.length === 0 && current.length > maxNewSplats)) {
     return { cut: null, reason: 'waiting-for-children', newCount: 0 };
+  }
+  if (new Set(current).size !== current.length || desired.size !== desiredValues.length) {
+    return { cut: null, reason: 'invalid-cut', newCount: 0 };
   }
   if (current.length === desired.size && current.every((global) => desired.has(global))) {
     return { cut: null, reason: 'already-at-target', newCount: 0 };
@@ -876,10 +939,7 @@ export function hierarchyIntermediateCut(
       waitingForChildren = true;
       continue;
     }
-    const added = children.reduce(
-      (count, child) => count + (originalSet.has(child) ? 0 : 1),
-      0,
-    );
+    const added = children.reduce((count, child) => count + (originalSet.has(child) ? 0 : 1), 0);
     // The displayed parent stays resident until the matching publication is
     // acknowledged, so it cannot fund any of the candidate's new children.
     // Count every child that was not already present in the displayed cut.
@@ -913,6 +973,9 @@ export function hierarchyIntermediateCut(
     for (const child of children) append(child);
   };
   for (const global of current) append(global);
+  if (new Set(next).size !== next.length) {
+    return { cut: null, reason: 'invalid-cut', newCount: 0 };
+  }
   return { cut: next, reason: 'bounded', newCount };
 }
 

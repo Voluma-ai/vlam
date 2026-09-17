@@ -186,6 +186,20 @@ describe('IndexedFrontierPager', () => {
     expect(pager.canStage([2, 3, 4, 5], 8)).toBe(true);
   });
 
+  it('protects source files for the whole candidate while writes are capped', () => {
+    const pager = new IndexedFrontierPager(8, 2);
+    const generation = pager.select([0, 2, 4]);
+    pager.stage(generation, 1);
+    expect(pager.candidateFiles).toEqual([0, 1, 2]);
+    expect(pager.hasResidentIn(1)).toBe(false);
+  });
+
+  it('rejects duplicate globals instead of silently changing the selected cut', () => {
+    const pager = new IndexedFrontierPager(4);
+    expect(pager.canStage([0, 0], 4)).toBe(false);
+    expect(() => pager.select([0, 0], 4)).toThrow(/duplicate/);
+  });
+
   it('shrinks only after publication releases unused tail slots', () => {
     const pager = new IndexedFrontierPager(8);
     const generation = pager.select([0, 1]);

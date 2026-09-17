@@ -21,6 +21,7 @@ import {
   frontierView,
   gatherGlobals,
   hierarchyIntermediateCut,
+  validateHierarchyCut,
   pixelScaleOf,
   traverseFrontier,
   traverseFrontierBounded,
@@ -67,6 +68,9 @@ let cpuCacheBytes = 256 * 1024 * 1024;
 let maxPlanWrites = DEFAULT_PAGE_TABLE_WRITES_PER_PLAN;
 let totalBytes = 0;
 let neededFiles = new Set<number>();
+/** Evictions are logically charged immediately but physically removed only
+ * after the plan has gathered the source rows it is about to publish. */
+const deferredEvictions = new Set<number>();
 let solvedLimit = Number.POSITIVE_INFINITY;
 let thresholdLimit = Number.POSITIVE_INFINITY;
 let thresholdBudget = -1;
@@ -111,6 +115,49 @@ let lastBoundedCutRefusalReason: FrontierPlanMessage['boundedCutRefusalReason'] 
 let indexedTargetDirty = false;
 let indexedCandidateBounded = false;
 let indexedCandidateRevealQuality: FrontierRevealQuality | null = null;
+let indexedCandidateRevision: number | null = null;
+let indexedCandidateCameraKey: string | null = null;
+let indexedCancelledCandidateGeneration: number | undefined;
+let indexedDiagnosticCut: FrontierPlanMessage['diagnosticCut'] | undefined;
+
+const DIAGNOSTIC_GLOBAL_SAMPLE = 4096;
+
+function diagnosticGlobalSample(globals: ArrayLike<number>): Uint32Array | undefined {
+  if (!diagnosticsEnabled || globals.length === 0) return undefined;
+  const count = Math.min(globals.length, DIAGNOSTIC_GLOBAL_SAMPLE);
+  const sample = new Uint32Array(count);
+  if (globals.length <= count) {
+    for (let i = 0; i < count; i++) sample[i] = globals[i] as number;
+    return sample;
+  }
+  const head = Math.floor(count / 2);
+  for (let i = 0; i < head; i++) sample[i] = globals[i] as number;
+  for (let i = head; i < count; i++) {
+    sample[i] = globals[globals.length - count + i] as number;
+  }
+  return sample;
+}
+
+function markIndexedCancellation(generation: number | null): void {
+  if (generation === null) return;
+  indexedCancelledCandidateGeneration = generation;
+  indexedCandidateRevision = null;
+  indexedCandidateCameraKey = null;
+  indexedDiagnosticCut = undefined;
+}
+
+function diagnosticCutForGlobals(globals: ArrayLike<number>): FrontierPlanMessage['diagnosticCut'] {
+  if (globals.length > DIAGNOSTIC_GLOBAL_SAMPLE * 2) {
+    const unique = new Set(Array.from(globals));
+    return {
+      valid: unique.size === globals.length,
+      ancestorOverlap: false,
+      duplicate: unique.size !== globals.length,
+      missing: false,
+    };
+  }
+  return validateHierarchyCut(cache, [...roots], globals, chunkSize);
+}
 
 function revealQualityExtras(quality: FrontierRevealQuality | null): MutablePlanExtras {
   if (!quality) return {};
@@ -202,7 +249,10 @@ function evict(): number[] {
   const resident = residentPager();
   if (!resident || totalBytes <= cpuCacheBytes) return evicted;
   const candidates = [...cache.keys()]
-    .filter((f) => f !== 0 && !neededFiles.has(f) && !resident.hasResidentIn(f))
+    .filter(
+      (f) =>
+        f !== 0 && !deferredEvictions.has(f) && !neededFiles.has(f) && !resident.hasResidentIn(f),
+    )
     .sort((a, b) => {
       const importance = (lastTouched.get(a) ?? 0) - (lastTouched.get(b) ?? 0);
       return importance || (cacheRecency.get(a) ?? 0) - (cacheRecency.get(b) ?? 0);
@@ -210,20 +260,32 @@ function evict(): number[] {
   for (const file of candidates) {
     if (totalBytes <= cpuCacheBytes) break;
     totalBytes -= cacheBytes.get(file) ?? 0;
-    cache.delete(file);
-    cacheBytes.delete(file);
-    cacheRecency.delete(file);
+    deferredEvictions.add(file);
     evicted.push(file);
-  }
-  if (evicted.length > 0) {
-    cacheRevision++;
-    if (indexed) indexedTargetDirty = true;
   }
   return evicted;
 }
 
+function commitEvictions(evictedFiles: ArrayLike<number>): void {
+  let committed = false;
+  for (const file of Array.from(evictedFiles)) {
+    if (!deferredEvictions.delete(file)) continue;
+    cache.delete(file);
+    cacheBytes.delete(file);
+    cacheRecency.delete(file);
+    committed = true;
+  }
+  if (committed) {
+    cacheRevision++;
+    if (indexed) indexedTargetDirty = true;
+  }
+}
+
 function refreshProtectedFiles(): void {
   const protectedFiles = new Set<number>([0]);
+  if (indexed) {
+    for (const file of indexed.candidateFiles) protectedFiles.add(file);
+  }
   for (const waiter of waiters) {
     protectedFiles.add(Math.floor(waiter.parentGlobal / chunkSize));
     for (const file of waiter.files) protectedFiles.add(file);
@@ -339,6 +401,7 @@ function viewCamera(): Partial<FrontierPlanMessage> {
 function protectPendingAppends(): void {
   if (indexed) {
     refreshProtectedFiles();
+    for (const file of indexed.candidateFiles) neededFiles.add(file);
     return;
   }
   refreshProtectedFiles();
@@ -585,6 +648,7 @@ function postClassicPlan(
     ...viewCamera(),
     ...extras,
   };
+  commitEvictions(evictedFiles);
   (self as unknown as Worker).postMessage(reply, [
     moveSlots.buffer,
     ...buffersOf(moves),
@@ -608,26 +672,76 @@ function postIndexedPlan(
     writeGlobals.length === 0
       ? emptySplats()
       : { ...gatherGlobals(cache, writeGlobals, chunkSize, gatherStats), globals: writeGlobals };
+  const missingFiles = new Set<number>();
+  if (gatherStats.missing > 0) {
+    for (const global of writeGlobals) {
+      const file = Math.floor(global / chunkSize);
+      if (!cache.has(file)) missingFiles.add(file);
+    }
+  }
+  if (diagnosticsEnabled && missingFiles.size > 0) {
+    console.debug(
+      '[vlam:rad-gather-mismatch]',
+      JSON.stringify({
+        missing: gatherStats.missing,
+        missingFiles: [...missingFiles].slice(0, 32),
+        residentFiles: indexed?.residentFiles.filter((file) => missingFiles.has(file)) ?? [],
+        pendingEvictions: [...deferredEvictions].filter((file) => missingFiles.has(file)),
+      }),
+    );
+  }
+  let replyWriteSlots = writeSlots;
+  let replyAppends = appends;
+  let replyExtras = extras;
+  if (gatherStats.missing > 0 && indexed) {
+    const candidateGeneration = indexed.candidateGeneration;
+    const awaitingGeneration = indexed.awaitingPublicationGeneration;
+    const cancelledGeneration = candidateGeneration ?? awaitingGeneration;
+    if (candidateGeneration !== null) indexed.cancel();
+    if (awaitingGeneration !== null) indexed.cancelUnpublishedPublication();
+    if (cancelledGeneration !== null) {
+      markIndexedCancellation(cancelledGeneration);
+      indexedCandidateCancellationCount++;
+    } else {
+      indexedCandidateRevision = null;
+      indexedCandidateCameraKey = null;
+      indexedDiagnosticCut = undefined;
+    }
+    indexedTargetDirty = true;
+    indexedCandidateRevealQuality = null;
+    indexedCandidateBounded = false;
+    replyWriteSlots = new Uint32Array(0);
+    replyAppends = emptySplats();
+    replyExtras = {
+      ...extras,
+      candidateGeneration: cancelledGeneration ?? undefined,
+      candidateComplete: false,
+      candidateFinal: false,
+      candidateSlots: undefined,
+      converged: false,
+      planReason: 'waiting-for-children',
+    };
+  }
   const reply: FrontierPlanMessage = {
     type: 'plan',
     seq,
     moveSlots: new Uint32Array(0),
     moves: emptySplats(),
     appendStart: 0,
-    appends,
-    writeSlots,
+    appends: replyAppends,
+    writeSlots: replyWriteSlots,
     degenerateStart: 0,
     degenerateCount: 0,
     touched: touchedFiles,
     residentCount: indexed!.residentCount,
     displayCount: indexed!.displayCount,
-    displayGeneration: extras.candidateGeneration ?? indexed!.candidateGeneration ?? 0,
+    displayGeneration: replyExtras.candidateGeneration ?? indexed!.candidateGeneration ?? 0,
     gatherMissing: gatherStats.missing,
     dropped: 0,
     evicted: evictedFiles,
     solvedLimit: limit,
     capacity: indexed!.capacity,
-    converged: extras.converged ?? indexed!.pendingCount === 0,
+    converged: replyExtras.converged ?? indexed!.pendingCount === 0,
     pendingFrontierSplats: indexed!.pendingCount,
     staleResidentSplats: 0,
     cacheBytes: totalBytes,
@@ -640,20 +754,36 @@ function postIndexedPlan(
     traversalId: lastTraversalId,
     skipSamples: lastSkipSamples,
     candidateCancellationCount: indexedCandidateCancellationCount,
+    ...(indexedCandidateRevision !== null
+      ? {
+          candidateRevision: indexedCandidateRevision,
+          candidateCameraKey: indexedCandidateCameraKey ?? undefined,
+        }
+      : {}),
+    ...(indexedCancelledCandidateGeneration !== undefined
+      ? { cancelledCandidateGeneration: indexedCancelledCandidateGeneration }
+      : {}),
     ...(lastBoundedCutRefusalReason
       ? { boundedCutRefusalReason: lastBoundedCutRefusalReason }
       : {}),
+    ...(diagnosticsEnabled && missingFiles.size > 0
+      ? { diagnosticGatherMissingFiles: Uint32Array.from([...missingFiles].slice(0, 32)) }
+      : {}),
     protectedCacheBytes: protectedCacheBytes(),
     ...viewCamera(),
-    ...extras,
+    ...replyExtras,
   };
+  indexedCancelledCandidateGeneration = undefined;
+  commitEvictions(evictedFiles);
   (self as unknown as Worker).postMessage(reply, [
     ...buffersOf(reply.moves),
-    ...buffersOf(appends),
-    writeSlots.buffer,
+    ...buffersOf(replyAppends),
+    replyWriteSlots.buffer,
     touchedFiles.buffer,
     evictedFiles.buffer,
     ...(reply.candidateSlots ? [reply.candidateSlots.buffer] : []),
+    ...(reply.diagnosticCandidateGlobals ? [reply.diagnosticCandidateGlobals.buffer] : []),
+    ...(reply.diagnosticGatherMissingFiles ? [reply.diagnosticGatherMissingFiles.buffer] : []),
   ]);
 }
 
@@ -770,6 +900,7 @@ function drainIndexed(msg: FrontierRescheduleMessage): void {
   if (!indexed) return;
   const generation = indexed.candidateGeneration;
   if (generation === null) return;
+  const diagnosticCandidateGlobals = diagnosticGlobalSample(indexed.candidateGlobals);
   const stage = indexed.stage(generation, maxPlanWrites);
   if (!stage) return;
   protectPendingAppends();
@@ -787,6 +918,8 @@ function drainIndexed(msg: FrontierRescheduleMessage): void {
     candidateReusedSlots: indexed.candidateReusedCount,
     candidateComplete: stage.complete,
     candidateFinal: stage.complete && indexedCandidateIsFinal(),
+    ...(diagnosticCandidateGlobals ? { diagnosticCandidateGlobals } : {}),
+    ...(indexedDiagnosticCut ? { diagnosticCut: indexedDiagnosticCut } : {}),
     ...revealQualityExtras(indexedCandidateRevealQuality),
   };
   if (stage.complete && lastPublish && !indexed.awaitingPublication) {
@@ -828,11 +961,14 @@ function updateIndexed(
   indexedTargetDirty = false;
   if (cameraRevisionChanged) {
     if (indexed.candidateGeneration !== null) {
+      markIndexedCancellation(indexed.candidateGeneration);
       indexed.cancel();
       indexedCandidateRevealQuality = null;
       indexedCandidateCancellationCount++;
     }
+    const awaitingGeneration = indexed.awaitingPublicationGeneration;
     if (indexed.cancelUnpublishedPublication()) {
+      markIndexedCancellation(awaitingGeneration);
       indexedCandidateRevealQuality = null;
       indexedCandidateCancellationCount++;
     }
@@ -897,7 +1033,7 @@ function updateIndexed(
           Uint32Array.from(evict()),
           {
             converged: false,
-            planReason: result.reason,
+            planReason: result.reason === 'invalid-cut' ? 'non-refinement' : result.reason,
             candidateFinal: result.reason === 'already-at-target',
           },
         );
@@ -921,7 +1057,11 @@ function updateIndexed(
     } else {
       lastBoundedCutRefusalReason = undefined;
     }
-    if (bounded && countNewGlobals(indexed.displayGlobals, candidateGlobals) > MAX_INTERMEDIATE_CANDIDATE_NEW_SPLATS) {
+    if (
+      bounded &&
+      countNewGlobals(indexed.displayGlobals, candidateGlobals) >
+        MAX_INTERMEDIATE_CANDIDATE_NEW_SPLATS
+    ) {
       lastBoundedCutRefusalReason = 'waiting-for-children';
       postIndexedPlan(
         msg.seq,
@@ -947,6 +1087,26 @@ function updateIndexed(
       return;
     }
     indexed.select(candidateGlobals, slotLimit);
+    indexedCandidateRevision = lastRevision;
+    indexedCandidateCameraKey = targetCameraKey;
+    indexedDiagnosticCut = diagnosticsEnabled
+      ? diagnosticCutForGlobals(candidateGlobals)
+      : undefined;
+    if (indexedDiagnosticCut && !indexedDiagnosticCut.valid) {
+      markIndexedCancellation(indexed.candidateGeneration);
+      indexed.cancel();
+      lastBoundedCutRefusalReason = 'invalid-cut';
+      postIndexedPlan(
+        msg.seq,
+        new Uint32Array(0),
+        new Uint32Array(0),
+        Uint32Array.from(lastTouchedFiles),
+        lastLimit,
+        Uint32Array.from(evict()),
+        { converged: false, planReason: 'non-refinement', diagnosticCut: indexedDiagnosticCut },
+      );
+      return;
+    }
     indexedCandidateBounded = bounded;
     indexedCandidateRevealQuality =
       candidateGlobals === desiredGlobals
@@ -966,6 +1126,7 @@ function updateIndexed(
   }
   const generation = indexed.candidateGeneration;
   if (generation === null) return;
+  const diagnosticCandidateGlobals = diagnosticGlobalSample(indexed.candidateGlobals);
   const stage = indexed.stage(generation, maxPlanWrites);
   const extras: MutablePlanExtras = {
     candidateGeneration: generation,
@@ -976,6 +1137,8 @@ function updateIndexed(
     candidateReusedSlots: indexed.candidateReusedCount,
     candidateComplete: !!stage?.complete,
     candidateFinal: !!stage?.complete && indexedCandidateIsFinal(),
+    ...(diagnosticCandidateGlobals ? { diagnosticCandidateGlobals } : {}),
+    ...(indexedDiagnosticCut ? { diagnosticCut: indexedDiagnosticCut } : {}),
     ...revealQualityExtras(indexedCandidateRevealQuality),
   };
   // Once a complete display exists, every hierarchy-valid intermediate cut is
@@ -1170,6 +1333,10 @@ self.onmessage = (event: MessageEvent<FrontierRequest>): void => {
     indexedCandidateCancellationCount = 0;
     indexedCandidateBounded = false;
     indexedCandidateRevealQuality = null;
+    indexedCandidateRevision = null;
+    indexedCandidateCameraKey = null;
+    indexedCancelledCandidateGeneration = undefined;
+    indexedDiagnosticCut = undefined;
     lastBoundedCutRefusalReason = undefined;
     indexedTargetDirty = false;
     lastInfeasibleKey = null;
@@ -1184,6 +1351,7 @@ self.onmessage = (event: MessageEvent<FrontierRequest>): void => {
     cache.clear();
     cacheBytes.clear();
     cacheRecency.clear();
+    deferredEvictions.clear();
     cacheClock = 0;
     roots.clear();
     totalBytes = 0;
@@ -1192,7 +1360,11 @@ self.onmessage = (event: MessageEvent<FrontierRequest>): void => {
   }
   if (msg.type === 'published') {
     if (!indexed) return;
-    indexed.acknowledge(msg.generation);
+    if (indexed.acknowledge(msg.generation)) {
+      indexedCandidateRevision = null;
+      indexedCandidateCameraKey = null;
+      indexedDiagnosticCut = undefined;
+    }
     const safe = indexed.consumeResizeSafeCapacity();
     if (safe !== null) {
       (self as unknown as Worker).postMessage({ type: 'resizeSafe', capacity: safe });

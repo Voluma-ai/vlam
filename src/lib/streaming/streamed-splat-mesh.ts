@@ -69,6 +69,7 @@ import {
   type FrontierRequest,
   type FrontierResizeSafeMessage,
   type FrontierPlanReason,
+  type FrontierCutDiagnostic,
   type FrontierSkipSample,
   type FrontierSnapshotReply,
   type PlanSplats,
@@ -113,6 +114,35 @@ type FrontierGenerationTraceEvent = {
   maxCentralProjectedRatio?: number;
   maxVisibleProjectedRatio?: number;
 };
+
+type RadPublicationDiagnostic = {
+  frameApplied: number;
+  frameSortReady: number | null;
+  frameRendered: number | null;
+  generation: number;
+  revision: number | null;
+  cameraKey: string | null;
+  candidateSize: number;
+  candidateGlobals: number[];
+  slotToNode: Array<{ slot: number; global: number }>;
+  activeListVersion: number | null;
+  sortedIndices: number[];
+  sortedIndicesSource: 'gpu-readback' | 'cpu-mirror' | 'unavailable';
+  drawCount: number | null;
+  phase: 'pending' | 'rendered' | 'rejected';
+  rejection?: string;
+  currentRevision?: number;
+  currentRevisionPending?: boolean;
+  cut?: FrontierCutDiagnostic;
+  slotChecks: {
+    duplicate: boolean;
+    outOfRange: boolean;
+    displayedMutation: boolean;
+  };
+};
+
+const RAD_DIAGNOSTIC_RING_SIZE = 32;
+const RAD_DIAGNOSTIC_SAMPLE_SIZE = 4096;
 
 /** Vite's `?worker&inline` default export - a Worker subclass constructor. */
 type InlineWorkerCtor = new () => Worker;
@@ -824,6 +854,7 @@ export class StreamedSplatMesh extends SplatMesh {
   private indexedPageTable = false;
   private indexedPublishGeneration: number | null = null;
   private indexedPublishActiveListVersion: number | null = null;
+  private indexedPublishRevision: number | null = null;
   private indexedPublishedGeneration = -1;
   private sortReadyGenerationValue: number | null = null;
   private renderedGenerationValue: number | null = null;
@@ -860,6 +891,9 @@ export class StreamedSplatMesh extends SplatMesh {
   private protectedCacheBytesValue = 0;
   private lastSkipSamples: readonly FrontierSkipSample[] = [];
   private readonly frontierGenerationTrace: FrontierGenerationTraceEvent[] = [];
+  private readonly radPublicationDiagnostics: RadPublicationDiagnostic[] = [];
+  private indexedPendingDiagnostic: RadPublicationDiagnostic | null = null;
+  private radDiagnosticRenderer: THREE.WebGPURenderer | null = null;
   private revealReadyValue = false;
   private maxCentralProjectedRatioValue = 0;
   private maxVisibleProjectedRatioValue = 0;
@@ -909,6 +943,7 @@ export class StreamedSplatMesh extends SplatMesh {
   private demandKey = '';
   /** True when the latest camera/config has not yet been posted to the worker. */
   private demandNeedsNewRevision = false;
+  private radFrame = 0;
   private demandWants: readonly FrontierDemandWant[] = [];
   private readonly demandFirstSeen = new Map<number, number>();
   private demandReadyGeneration = -1;
@@ -1755,9 +1790,126 @@ export class StreamedSplatMesh extends SplatMesh {
     );
   }
 
+  private sampleRadDiagnosticValues(values: ArrayLike<number>, count = values.length): number[] {
+    const size = Math.min(count, RAD_DIAGNOSTIC_SAMPLE_SIZE);
+    if (size === 0) return [];
+    const sample = new Array<number>(size);
+    if (count <= size) {
+      for (let i = 0; i < size; i++) sample[i] = values[i] as number;
+      return sample;
+    }
+    const head = Math.floor(size / 2);
+    for (let i = 0; i < head; i++) sample[i] = values[i] as number;
+    for (let i = head; i < size; i++) sample[i] = values[count - size + i] as number;
+    return sample;
+  }
+
+  private sortedRadDiagnosticIndices(count: number): number[] {
+    const mesh = this as unknown as {
+      splatIndexAttribute?: { array?: ArrayLike<number> };
+    };
+    const array = mesh.splatIndexAttribute?.array;
+    return array ? this.sampleRadDiagnosticValues(array, count) : [];
+  }
+
+  private finishRadPublicationDiagnostic(
+    diagnostic: RadPublicationDiagnostic,
+    count: number,
+  ): void {
+    const renderer = this.radDiagnosticRenderer;
+    const mesh = this as unknown as {
+      splatIndexAttribute?: THREE.StorageInstancedBufferAttribute;
+    };
+    const attribute = mesh.splatIndexAttribute;
+    const isWebGpu =
+      (renderer?.backend as { isWebGPUBackend?: boolean } | undefined)?.isWebGPUBackend === true;
+    if (!renderer || !attribute || !isWebGpu || count === 0) {
+      diagnostic.sortedIndices = this.sortedRadDiagnosticIndices(count);
+      diagnostic.sortedIndicesSource = attribute ? 'cpu-mirror' : 'unavailable';
+      this.recordRadPublicationDiagnostic(diagnostic);
+      return;
+    }
+
+    const sampleCount = Math.min(count, RAD_DIAGNOSTIC_SAMPLE_SIZE);
+    const headCount = Math.ceil(sampleCount / 2);
+    const tailCount = sampleCount - headCount;
+    const read = (offset: number, length: number): Promise<number[]> =>
+      renderer
+        .getArrayBufferAsync(
+          attribute,
+          null,
+          offset * Float32Array.BYTES_PER_ELEMENT,
+          length * Float32Array.BYTES_PER_ELEMENT,
+        )
+        .then((buffer) => Array.from(new Float32Array(buffer)));
+    void Promise.all([
+      read(0, headCount),
+      tailCount > 0 ? read(count - tailCount, tailCount) : Promise.resolve([]),
+    ])
+      .then(([head, tail]) => {
+        diagnostic.sortedIndices = head.concat(tail);
+        diagnostic.sortedIndicesSource = 'gpu-readback';
+        this.recordRadPublicationDiagnostic(diagnostic);
+      })
+      .catch(() => {
+        diagnostic.sortedIndices = this.sortedRadDiagnosticIndices(count);
+        diagnostic.sortedIndicesSource = 'unavailable';
+        this.recordRadPublicationDiagnostic(diagnostic);
+      });
+  }
+
+  private recordRadPublicationDiagnostic(diagnostic: RadPublicationDiagnostic): void {
+    if (this.onPerformanceEvent === undefined) return;
+    this.radPublicationDiagnostics.push(diagnostic);
+    if (this.radPublicationDiagnostics.length > RAD_DIAGNOSTIC_RING_SIZE) {
+      this.radPublicationDiagnostics.shift();
+    }
+    console.debug('[vlam:rad-publication]', JSON.stringify(diagnostic));
+  }
+
+  private indexedPublicationIsCurrent(): boolean {
+    return (
+      (this.indexedPublishRevision === null ||
+        this.indexedPublishRevision === this.demandGeneration) &&
+      !this.demandNeedsNewRevision
+    );
+  }
+
+  private discardIndexedPublication(reason: string): void {
+    const pending = this.indexedPendingDisplaySlots;
+    const previous = this.indexedDisplayedSlots;
+    if (!pending && this.indexedPublishGeneration === null) return;
+    const previousSet = new Set(previous);
+    if (pending) {
+      for (const slot of pending) {
+        if (!previousSet.has(slot) && slot < this.pageTableGlobals.length) {
+          this.degenerateSlabSlots(slot, 1);
+        }
+      }
+    }
+    this.replaceActiveIndices(this.poolIndicesForSlabSlots(previous));
+    this.retainVisibleInstanceCount(previous.length);
+    this.indexedPendingDisplaySlots = null;
+    this.indexedPublishGeneration = null;
+    this.indexedPublishActiveListVersion = null;
+    this.indexedPublishRevision = null;
+    this.indexedPendingRevealQuality = null;
+    if (this.indexedPendingDiagnostic) {
+      this.indexedPendingDiagnostic.phase = 'rejected';
+      this.indexedPendingDiagnostic.rejection = reason;
+      this.indexedPendingDiagnostic.frameRendered = this.radFrame;
+      this.recordRadPublicationDiagnostic(this.indexedPendingDiagnostic);
+      this.indexedPendingDiagnostic = null;
+    }
+  }
+
   protected override onActiveListReady(activeListVersion: number): void {
     const generation = this.indexedPublishGeneration;
     if (generation === null || this.pageTableDisposed) return;
+    if (!this.indexedPublicationIsCurrent()) {
+      this.discardIndexedPublication('stale-camera-or-configuration-revision');
+      return;
+    }
     if (activeListVersion !== this.indexedPublishActiveListVersion) return;
     const next = this.indexedPendingDisplaySlots;
     if (!next) return;
@@ -1765,6 +1917,11 @@ export class StreamedSplatMesh extends SplatMesh {
     // The candidate order is now installed, so draw its exact visible count.
     // The old slot ownership remains protected until onActiveListRendered.
     this.retainVisibleInstanceCount(next.length);
+    if (this.indexedPendingDiagnostic) {
+      this.indexedPendingDiagnostic.frameSortReady = this.radFrame;
+      this.indexedPendingDiagnostic.activeListVersion = activeListVersion;
+      this.indexedPendingDiagnostic.drawCount = next.length;
+    }
     this.recordFrontierTrace('sort-ready', {
       generation,
       activeCount: next.length,
@@ -1774,6 +1931,10 @@ export class StreamedSplatMesh extends SplatMesh {
   protected override onActiveListRendered(activeListVersion: number): void {
     const generation = this.indexedPublishGeneration;
     if (generation === null || this.pageTableDisposed) return;
+    if (!this.indexedPublicationIsCurrent()) {
+      this.discardIndexedPublication('stale-camera-or-configuration-revision');
+      return;
+    }
     // Unified gather+sort and GPU/worker publication must describe the live
     // indices. A superseded snapshot (older `activeListVersion`) releases nothing.
     if (activeListVersion !== this.indexedPublishActiveListVersion) return;
@@ -1793,6 +1954,7 @@ export class StreamedSplatMesh extends SplatMesh {
     this.indexedPendingDisplaySlots = null;
     this.indexedPublishGeneration = null;
     this.indexedPublishActiveListVersion = null;
+    this.indexedPublishRevision = null;
     this.indexedPublishedGeneration = generation;
     if (
       this.radRevealPolicy === 'projected-quality' &&
@@ -1820,6 +1982,14 @@ export class StreamedSplatMesh extends SplatMesh {
       generation,
       activeCount: this.pageTableDrawn,
     });
+    if (this.indexedPendingDiagnostic) {
+      const diagnostic = this.indexedPendingDiagnostic;
+      this.indexedPendingDiagnostic = null;
+      diagnostic.frameRendered = this.radFrame;
+      diagnostic.drawCount = this.pageTableDrawn;
+      diagnostic.phase = 'rendered';
+      this.finishRadPublicationDiagnostic(diagnostic, this.pageTableDrawn);
+    }
     this.postToWorker({ type: 'published', generation, activeListVersion });
     this.workerAcknowledgedGenerationValue = generation;
     this.indexedStagingGeneration = null;
@@ -2698,6 +2868,8 @@ export class StreamedSplatMesh extends SplatMesh {
     renderer: THREE.WebGPURenderer,
     options: SplatUpdateOptions = {},
   ): void {
+    this.radFrame++;
+    this.radDiagnosticRenderer = this.onPerformanceEvent ? renderer : null;
     const now = performance.now();
     camera.updateMatrixWorld();
     this.updateWorldMatrix(true, false);
@@ -4747,6 +4919,10 @@ export class StreamedSplatMesh extends SplatMesh {
   private applyFrontierPlan(plan: FrontierPlanMessage): void {
     this.pageTableInFlight = false;
     if (this.pageTableDisposed || this.slabPages.length === 0) return;
+    if (plan.seq < this.pageTableSeq) {
+      this.pendingWork = true;
+      return;
+    }
     // Storage may have moved since this plan was built (a reschedule answered
     // from the old capacity, then a resize landed). Such a plan must still be
     // applied, clamped to the slots that exist: the worker's pager has already
@@ -4774,6 +4950,22 @@ export class StreamedSplatMesh extends SplatMesh {
       const writeSlots = plan.writeSlots ?? new Uint32Array(0);
       if (writeSlots.length !== plan.appends.count) {
         throw new Error('StreamedSplatMesh: indexed plan write slots do not match appends.');
+      }
+      const displayed = new Set(this.indexedDisplayedSlots);
+      const seen = new Set<number>();
+      let duplicate = false;
+      let outOfRange = false;
+      let displayedMutation = false;
+      for (const slot of writeSlots) {
+        if (seen.has(slot)) duplicate = true;
+        seen.add(slot);
+        if (slot >= limit) outOfRange = true;
+        if (displayed.has(slot)) displayedMutation = true;
+      }
+      if (duplicate || outOfRange || displayedMutation) {
+        this.discardIndexedPublication('invalid-indexed-slot-write');
+        this.pendingWork = true;
+        return;
       }
       this.writeIndexedSlabSlots(plan.appends, writeSlots);
     } else {
@@ -4807,8 +4999,20 @@ export class StreamedSplatMesh extends SplatMesh {
       this.degenerateSlabSlots(degenerateStart, degenerateCount);
     }
     const residentFinishedAt = performance.now();
+    const candidateRevisionCurrent =
+      (plan.candidateRevision === undefined || plan.candidateRevision === this.demandGeneration) &&
+      !this.demandNeedsNewRevision;
+    if (
+      this.indexedPageTable &&
+      plan.cancelledCandidateGeneration !== undefined &&
+      plan.cancelledCandidateGeneration === this.indexedPublishGeneration
+    ) {
+      this.discardIndexedPublication('worker-cancelled-candidate');
+    }
     const indexedPublication =
-      this.indexedPageTable && plan.candidateComplete === true ? plan.candidateSlots : undefined;
+      this.indexedPageTable && plan.candidateComplete === true && candidateRevisionCurrent
+        ? plan.candidateSlots
+        : undefined;
     if (this.indexedPageTable && plan.candidateGeneration !== undefined) {
       this.indexedStagingGeneration = plan.candidateGeneration;
     }
@@ -4832,6 +5036,50 @@ export class StreamedSplatMesh extends SplatMesh {
         this.retainVisibleInstanceCount(previousVisibleCount);
         this.indexedPendingDisplaySlots = indexedPublication;
         this.indexedPublishGeneration = plan.candidateGeneration as number;
+        this.indexedPublishRevision = plan.candidateRevision ?? null;
+        const candidateGlobals = plan.diagnosticCandidateGlobals ?? new Uint32Array(0);
+        const slotToNode = this.sampleRadDiagnosticValues(indexedPublication).map((slot) => ({
+          slot,
+          global: this.pageTableGlobals[slot] ?? 0xffffffff,
+        }));
+        const slotSet = new Set<number>();
+        let duplicateSlots = false;
+        let outOfRangeSlots = false;
+        for (const slot of indexedPublication) {
+          if (slotSet.has(slot)) duplicateSlots = true;
+          slotSet.add(slot);
+          if (slot >= limit) outOfRangeSlots = true;
+        }
+        this.indexedPendingDiagnostic = {
+          frameApplied: this.radFrame,
+          frameSortReady: null,
+          frameRendered: null,
+          generation: plan.candidateGeneration as number,
+          revision: plan.candidateRevision ?? null,
+          cameraKey: plan.candidateCameraKey ?? null,
+          candidateSize: plan.candidateSize ?? candidateGlobals.length,
+          candidateGlobals: Array.from(candidateGlobals),
+          slotToNode,
+          activeListVersion: null,
+          sortedIndices: [],
+          sortedIndicesSource: 'unavailable',
+          drawCount: null,
+          phase: 'pending',
+          cut: plan.diagnosticCut,
+          slotChecks: {
+            duplicate: duplicateSlots,
+            outOfRange: outOfRangeSlots,
+            displayedMutation: false,
+          },
+        };
+        if (duplicateSlots || outOfRangeSlots || plan.diagnosticCut?.valid === false) {
+          this.indexedPendingDiagnostic.phase = 'rejected';
+          this.indexedPendingDiagnostic.rejection = 'invalid-candidate';
+          this.recordRadPublicationDiagnostic(this.indexedPendingDiagnostic);
+          this.indexedPendingDiagnostic = null;
+          this.discardIndexedPublication('invalid-candidate');
+          return;
+        }
       } else {
         this.setSlabResident(drawn);
         this.pageTableDrawn = drawn;
@@ -4903,6 +5151,29 @@ export class StreamedSplatMesh extends SplatMesh {
         maxCentralProjectedRatio: plan.maxCentralProjectedRatio,
         maxVisibleProjectedRatio: plan.maxVisibleProjectedRatio,
       });
+      if (!candidateRevisionCurrent && plan.candidateComplete) {
+        this.recordRadPublicationDiagnostic({
+          frameApplied: this.radFrame,
+          frameSortReady: null,
+          frameRendered: this.radFrame,
+          generation: plan.candidateGeneration,
+          revision: plan.candidateRevision ?? null,
+          cameraKey: plan.candidateCameraKey ?? null,
+          candidateSize: plan.candidateSize ?? plan.diagnosticCandidateGlobals?.length ?? 0,
+          candidateGlobals: Array.from(plan.diagnosticCandidateGlobals ?? []),
+          slotToNode: [],
+          activeListVersion: null,
+          sortedIndices: [],
+          sortedIndicesSource: 'unavailable',
+          drawCount: null,
+          phase: 'rejected',
+          rejection: 'stale-camera-or-configuration-revision',
+          currentRevision: this.demandGeneration,
+          currentRevisionPending: this.demandNeedsNewRevision,
+          cut: plan.diagnosticCut,
+          slotChecks: { duplicate: false, outOfRange: false, displayedMutation: false },
+        });
+      }
       if (plan.candidateComplete) {
         this.recordFrontierTrace('staging-complete', {
           generation: plan.candidateGeneration,
@@ -4944,6 +5215,17 @@ export class StreamedSplatMesh extends SplatMesh {
       warn(
         `StreamedSplatMesh: page-table plan gathered ${plan.gatherMissing} splats from ` +
           `evicted chunks; they render as holes.`,
+      );
+    }
+    if (plan.diagnosticGatherMissingFiles && plan.diagnosticGatherMissingFiles.length > 0) {
+      console.debug(
+        '[vlam:rad-gather-mismatch]',
+        JSON.stringify({
+          frameApplied: this.radFrame,
+          generation: plan.candidateGeneration ?? null,
+          revision: plan.candidateRevision ?? null,
+          missingFiles: Array.from(plan.diagnosticGatherMissingFiles),
+        }),
       );
     }
     // Applying a plan runs off the render loop's own timing, so its cost is

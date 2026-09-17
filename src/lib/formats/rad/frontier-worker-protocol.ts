@@ -218,6 +218,14 @@ export type FrontierPlanReason =
   | 'non-refinement'
   | 'already-at-target';
 
+/** Opt-in worker-side validation of a candidate hierarchy cut. */
+export interface FrontierCutDiagnostic {
+  readonly valid: boolean;
+  readonly ancestorOverlap: boolean;
+  readonly duplicate: boolean;
+  readonly missing: boolean;
+}
+
 export type FrontierSkipReason =
   'leaf' | 'below-threshold' | 'missing-children' | 'budget' | 'would-subdivide' | 'no-tree';
 
@@ -273,8 +281,19 @@ export interface FrontierPlanMessage {
   readonly writeSlots?: Uint32Array;
   /** Candidate whose selected slots become drawable together after sorting. */
   readonly candidateGeneration?: number;
+  /** Camera/configuration revision that selected the candidate. */
+  readonly candidateRevision?: number;
+  /** Camera/configuration key that selected the candidate. */
+  readonly candidateCameraKey?: string;
+  /** Candidate generation discarded before it could be acknowledged. */
+  readonly cancelledCandidateGeneration?: number;
   /** Complete selected slot list. Present only when this candidate is ready to publish. */
   readonly candidateSlots?: Uint32Array;
+  /** Bounded worker-side candidate node sample for an explicit diagnostic run. */
+  readonly diagnosticCandidateGlobals?: Uint32Array;
+  readonly diagnosticCut?: FrontierCutDiagnostic;
+  /** Bounded source chunks absent while gathering this plan's writes. */
+  readonly diagnosticGatherMissingFiles?: Uint32Array;
   /** Bounded-candidate ownership diagnostics for development traces. */
   readonly candidateSize?: number;
   readonly candidateNewSlots?: number;
@@ -287,9 +306,7 @@ export interface FrontierPlanMessage {
   readonly maxVisibleProjectedRatio?: number;
   readonly candidateCancellationCount?: number;
   readonly boundedCutRefusalReason?:
-    | 'waiting-for-children'
-    | 'non-refinement'
-    | 'already-at-target';
+    'waiting-for-children' | 'non-refinement' | 'already-at-target' | 'invalid-cut';
   readonly protectedCacheBytes?: number;
   readonly activePageTableFetches?: number;
   /**

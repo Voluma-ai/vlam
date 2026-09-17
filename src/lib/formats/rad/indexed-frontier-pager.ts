@@ -33,6 +33,7 @@ export class IndexedFrontierPager {
   private candidate: {
     generation: number;
     globals: number[];
+    files: Set<number>;
     slots: number[];
     cursor: number;
     owned: number[];
@@ -110,6 +111,18 @@ export class IndexedFrontierPager {
     return this.candidate?.generation ?? null;
   }
 
+  get candidateGlobals(): Uint32Array {
+    return Uint32Array.from(this.candidate?.globals ?? []);
+  }
+
+  get candidateFiles(): readonly number[] {
+    return this.candidate ? [...this.candidate.files] : [];
+  }
+
+  get awaitingPublicationGeneration(): number | null {
+    return this.awaitingAck?.generation ?? null;
+  }
+
   get awaitingPublication(): boolean {
     return this.awaitingAck !== null;
   }
@@ -147,7 +160,9 @@ export class IndexedFrontierPager {
     if (this.awaitingAck || this.candidate || slotLimit > this.capacity || slotLimit < 0) {
       return false;
     }
-    const unique = new Set(globals);
+    const values = [...globals];
+    const unique = new Set(values);
+    if (unique.size !== values.length) return false;
     if (unique.size > slotLimit) return false;
     let writes = 0;
     for (const global of unique) {
@@ -163,7 +178,11 @@ export class IndexedFrontierPager {
   select(globals: Iterable<number>, slotLimit = this.capacity): number {
     if (this.awaitingAck) throw new Error('A publication is awaiting acknowledgment.');
     this.cancel();
-    const unique = [...new Set(globals)];
+    const values = [...globals];
+    const unique = [...new Set(values)];
+    if (unique.length !== values.length) {
+      throw new RangeError('Frontier candidate contains duplicate globals.');
+    }
     if (unique.length > slotLimit || slotLimit > this.capacity || slotLimit < 0) {
       throw new RangeError('Frontier exceeds slot capacity.');
     }
@@ -171,6 +190,7 @@ export class IndexedFrontierPager {
     this.candidate = {
       generation,
       globals: unique,
+      files: new Set(unique.map((global) => Math.floor(global / this.chunkSize))),
       slots: [],
       cursor: 0,
       owned: [],
