@@ -484,9 +484,9 @@ describe('StreamedSplatMesh page-table governance', () => {
   });
 
   it('rejects an unsupported reveal policy instead of enabling a silent hold', () => {
-    expect(() => makeMesh({ options: { radInitialRevealPolicy: 'camera-local-detail' as never } })).toThrow(
-      /progressive.*allocation-fraction.*projected-quality/,
-    );
+    expect(() =>
+      makeMesh({ options: { radInitialRevealPolicy: 'camera-local-detail' as never } }),
+    ).toThrow(/progressive.*allocation-fraction.*projected-quality/);
   });
 
   it('posts the host-owned demand revision with each reschedule', () => {

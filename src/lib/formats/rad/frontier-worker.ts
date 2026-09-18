@@ -397,23 +397,23 @@ function postDemand(
   (self as unknown as Worker).postMessage(reply);
 }
 
-function postTraversalDemand(job: ActiveChunkTraversal, complete: boolean): void {
+function postTraversalDemand(job: ActiveChunkTraversal): void {
   const wants: FrontierDemandWant[] = [];
   for (const [file, priority] of job.job.touched) {
     if (cache.has(file)) continue;
     wants.push({ file, tier: 0, priority });
   }
-  if (!complete && wants.length > 3) wants.length = 3;
+  if (wants.length > 3) wants.length = 3;
   job.lastDemandSize = job.job.touched.size;
   const reply = {
     type: 'demand' as const,
     generation: job.msg.revision ?? demandRevision,
     wants,
-    complete,
+    complete: false,
     revision: job.msg.revision ?? demandRevision,
     traversalId: job.traversalId,
     seq: job.msg.seq,
-    reason: complete ? ('traversed' as const) : ('traversal-slice' as const),
+    reason: 'traversal-slice' as const,
     traversalStartedAt: job.startedAt,
     firstSliceAt: job.firstSliceAt,
   };
@@ -1455,7 +1455,7 @@ function runChunkTraversalSlice(job: ActiveChunkTraversal): void {
   );
   if (activeChunkTraversal !== job) return;
   if (!job.earlyDemandPosted && job.job.touched.size > 0) {
-    postTraversalDemand(job, false);
+    postTraversalDemand(job);
     job.earlyDemandPosted = true;
   }
   if (!step.done) {

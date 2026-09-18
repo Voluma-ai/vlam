@@ -2,12 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { SplatLoadError } from '../../lib/loaders';
 import { describeLoadError } from '../failure';
 import { filesFromDirectoryInput } from '../drop-zone';
-import {
-  validateSceneUrl,
-  isRadScene,
-  isStreamedScene,
-  isSupportedSplatFile,
-} from '../scene-url';
+import { validateSceneUrl, isRadScene, isStreamedScene, isSupportedSplatFile } from '../scene-url';
 
 /**
  * The welcome panel's URL box can only fail in ways the user can act on, so

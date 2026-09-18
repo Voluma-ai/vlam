@@ -142,9 +142,10 @@ function referenceSort(
   const keys = pool.map((poolIndex, i) => {
     // The worker stores depths in a Float32Array but tracks min/max in
     // doubles; Math.fround + >>> 0 reproduce that arithmetic bit-for-bit.
-    const key = Math.floor(
-      Math.min(Math.max((Math.fround(depths[i] as number) - min) * scale, 0), KEY_MAX),
-    ) >>> 0;
+    const key =
+      Math.floor(
+        Math.min(Math.max((Math.fround(depths[i] as number) - min) * scale, 0), KEY_MAX),
+      ) >>> 0;
     keyOf.set(poolIndex, key);
     return key;
   });
