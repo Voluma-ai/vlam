@@ -53,8 +53,7 @@ export function computeProjection(
     mode,
     estimateMemoryBytes: (capacity) => ({
       steadyGpu:
-        estimateProjectedSplatSteadyBytes(capacity) +
-        estimateComputeSorterSteadyBytes(capacity),
+        estimateProjectedSplatSteadyBytes(capacity) + estimateComputeSorterSteadyBytes(capacity),
       peakCpuAndGpu:
         estimateProjectedSplatPeakBytes(capacity) + estimateComputeSorterPeakBytes(capacity),
     }),
