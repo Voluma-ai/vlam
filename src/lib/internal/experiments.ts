@@ -19,7 +19,7 @@ export const experiments: ExperimentConfiguration = {
   initialPoolUpload: 'skip-empty',
   radTraversal: 'one-pass',
   radDecodeWorkers: 1,
-  radResidency: 'indexed',
+  radResidency: 'chunk-pages',
   remotePly: 'buffered',
   webglProvokingVertex: 'existing',
 } as const;

@@ -17,6 +17,7 @@ import { FrontierPager, type PagerPlan } from './frontier-pager';
 import { IndexedFrontierPager } from './indexed-frontier-pager';
 import {
   createFrontierScratch,
+  FrontierTraversalJob,
   explainFrontierNode,
   frontierView,
   gatherGlobals,
@@ -54,6 +55,7 @@ import type {
   FrontierDemandWant,
   FrontierSkipSample,
   FrontierSnapshotReply,
+  FrontierTraversalCancelledReply,
 } from './frontier-worker-protocol';
 
 const cache = new Map<number, SplatData>();
@@ -122,6 +124,42 @@ let indexedCandidateRevision: number | null = null;
 let indexedCandidateCameraKey: string | null = null;
 let indexedCancelledCandidateGeneration: number | undefined;
 let indexedDiagnosticCut: FrontierPlanMessage['diagnosticCut'] | undefined;
+
+const CHUNK_PAGE_TRAVERSAL_SLICE_MS = 4;
+interface ActiveChunkTraversal {
+  readonly msg: FrontierRescheduleMessage;
+  readonly job: FrontierTraversalJob;
+  readonly view: FrontierView;
+  readonly traversalId: number;
+  readonly startedAt: number;
+  readonly cacheRevision: number;
+  firstSliceAt: number | undefined;
+  lastDemandSize: number;
+  earlyDemandPosted: boolean;
+}
+let activeChunkTraversal: ActiveChunkTraversal | null = null;
+
+const traversalSliceQueue: ActiveChunkTraversal[] = [];
+const testRuntime =
+  (globalThis as { process?: { env?: { NODE_ENV?: string } } }).process?.env?.NODE_ENV === 'test';
+const traversalSliceChannel =
+  !testRuntime && typeof MessageChannel !== 'undefined' ? new MessageChannel() : null;
+
+if (traversalSliceChannel) {
+  traversalSliceChannel.port1.onmessage = () => {
+    const job = traversalSliceQueue.shift();
+    if (job) runChunkTraversalSlice(job);
+  };
+}
+
+function scheduleChunkTraversalSlice(job: ActiveChunkTraversal): void {
+  if (traversalSliceChannel) {
+    traversalSliceQueue.push(job);
+    traversalSliceChannel.port2.postMessage(0);
+  } else {
+    setTimeout(() => runChunkTraversalSlice(job), 0);
+  }
+}
 
 const DIAGNOSTIC_GLOBAL_SAMPLE = 4096;
 
@@ -327,6 +365,7 @@ function postDemand(
   traversalId: number,
   revision = demandRevision,
   reason: 'traversed' | 'draining' | 'discovery' = complete ? 'traversed' : 'discovery',
+  seq?: number,
 ): void {
   const wants = rankTouched(lastTouched);
   demandRevision = revision;
@@ -353,6 +392,30 @@ function postDemand(
     revision,
     traversalId,
     reason,
+    ...(seq === undefined ? {} : { seq }),
+  };
+  (self as unknown as Worker).postMessage(reply);
+}
+
+function postTraversalDemand(job: ActiveChunkTraversal, complete: boolean): void {
+  const wants: FrontierDemandWant[] = [];
+  for (const [file, priority] of job.job.touched) {
+    if (cache.has(file)) continue;
+    wants.push({ file, tier: 0, priority });
+  }
+  if (!complete && wants.length > 3) wants.length = 3;
+  job.lastDemandSize = job.job.touched.size;
+  const reply = {
+    type: 'demand' as const,
+    generation: job.msg.revision ?? demandRevision,
+    wants,
+    complete,
+    revision: job.msg.revision ?? demandRevision,
+    traversalId: job.traversalId,
+    seq: job.msg.seq,
+    reason: complete ? ('traversed' as const) : ('traversal-slice' as const),
+    traversalStartedAt: job.startedAt,
+    firstSliceAt: job.firstSliceAt,
   };
   (self as unknown as Worker).postMessage(reply);
 }
@@ -833,9 +896,15 @@ function postChunkPagesPlan(
   touchedFiles: Uint32Array,
   limit: number,
   converged: boolean,
+  budgetClamped: boolean,
   revision: number,
   cameraKeyValue: string,
   revealQuality: FrontierRevealQuality,
+  traversalTiming?: {
+    startedAt: number;
+    firstSliceAt: number | undefined;
+    completedAt: number;
+  },
 ): void {
   const generation = ++chunkPageGeneration;
   const reply: FrontierPlanMessage = {
@@ -870,6 +939,7 @@ function postChunkPagesPlan(
     solvedLimit: limit,
     capacity: gpuResidentFiles.size * chunkSize,
     converged,
+    budgetClamped,
     pendingFrontierSplats: 0,
     staleResidentSplats: 0,
     cacheBytes: totalBytes,
@@ -879,6 +949,13 @@ function postChunkPagesPlan(
     traversalFallbackCount,
     rootCoverInfeasible: lastRootCoverInfeasible,
     traversalMs: lastTraversalMs,
+    ...(traversalTiming
+      ? {
+          traversalStartedAt: traversalTiming.startedAt,
+          firstSliceAt: traversalTiming.firstSliceAt,
+          traversalCompletedAt: traversalTiming.completedAt,
+        }
+      : {}),
     traversalId: lastTraversalId,
     skipSamples: lastSkipSamples,
     protectedCacheBytes: protectedCacheBytes(),
@@ -1043,6 +1120,91 @@ function drainIndexed(msg: FrontierRescheduleMessage): void {
     lastLimit,
     Uint32Array.from(evict()),
     extras,
+  );
+}
+
+function completeSolvedFrontier(
+  msg: FrontierRescheduleMessage,
+  result: FrontierTraversalResult,
+  traversalTiming?: {
+    startedAt: number;
+    firstSliceAt: number | undefined;
+    completedAt: number;
+  },
+): void {
+  const desiredGlobals = applySelection(result);
+  const desiredRevealQuality = assessFrontierRevealQuality(
+    cache,
+    desiredGlobals,
+    chunkSize,
+    lastView as FrontierView,
+    msg.projection ?? [],
+    msg.limit,
+  );
+  const touchedFiles = [...result.touched].filter(([cc]) => !cache.has(cc));
+  if (!chunkPagesMode) touchedFiles.sort((a, b) => b[1] - a[1]);
+  lastTouchedFiles = Uint32Array.from(touchedFiles.map(([cc]) => cc));
+  lastSkipSamples =
+    diagnosticsEnabled && lastView ? skipSamplesFor(result, lastView, lastLimit, msg.budget) : [];
+  postDemand(true, lastTraversalId, msg.revision ?? demandRevision, 'traversed', msg.seq);
+
+  const uncachedTouched = lastTouchedFiles.length;
+  const poseKey = cameraPoseKey(msg);
+  const camKey = cameraKey(msg);
+  const qualityComplete =
+    result.waiters.length === 0 && !result.budgetClamped && lastTraversalId > 0;
+  const publish = shouldPublishFrontier(
+    uncachedTouched,
+    chunkPagesMode ? false : (indexed?.hasPublishedDisplay ?? pager!.hasPublishedDisplay),
+    initialPublishMinSplats,
+    result.count,
+    qualityComplete,
+  );
+
+  lastCameraKey = poseKey;
+  lastPlanKey = planKey(msg);
+  lastPublish = publish;
+  const infeasibleKey = `${camKey}|${chunkPagesMode ? gpuResidentFiles.size : (indexed ?? pager)!.capacity}`;
+  lastInfeasibleKey = result.rootCoverInfeasible ? infeasibleKey : null;
+  if (chunkPagesMode) {
+    postChunkPagesPlan(
+      msg.seq,
+      Uint32Array.from(desiredGlobals),
+      Uint32Array.from(lastTouchedFiles),
+      lastLimit,
+      result.waiters.length === 0 && !result.budgetClamped,
+      result.budgetClamped,
+      msg.revision ?? demandRevision,
+      camKey,
+      desiredRevealQuality,
+      traversalTiming,
+    );
+    return;
+  }
+  if (indexed) {
+    updateIndexed(
+      msg,
+      desiredGlobals,
+      desiredRevealQuality,
+      publish,
+      publish || indexed.hasPublishedDisplay,
+    );
+    return;
+  }
+  const plan = pager!.update(desiredGlobals, {
+    maxAppends: maxPlanWrites,
+    maxWrites: maxPlanWrites,
+    maxMoveSlotSpan: maxPlanWrites,
+    publish,
+  });
+  protectPendingAppends();
+  postClassicPlan(
+    msg.seq,
+    plan,
+    Uint32Array.from(lastTouchedFiles),
+    lastLimit,
+    Uint32Array.from(evict()),
+    { planReason: 'traversed' },
   );
 }
 
@@ -1284,6 +1446,81 @@ function updateIndexed(
   );
 }
 
+function runChunkTraversalSlice(job: ActiveChunkTraversal): void {
+  if (activeChunkTraversal !== job) return;
+  if (job.firstSliceAt === undefined) job.firstSliceAt = performance.now();
+  const step = job.job.step(
+    CHUNK_PAGE_TRAVERSAL_SLICE_MS,
+    job.earlyDemandPosted ? Number.POSITIVE_INFINITY : 3,
+  );
+  if (activeChunkTraversal !== job) return;
+  if (!job.earlyDemandPosted && job.job.touched.size > 0) {
+    postTraversalDemand(job, false);
+    job.earlyDemandPosted = true;
+  }
+  if (!step.done) {
+    scheduleChunkTraversalSlice(job);
+    return;
+  }
+
+  const completedAt = performance.now();
+  activeChunkTraversal = null;
+  lastView = job.view;
+  lastTraversalId = job.traversalId;
+  lastTraversalMs = completedAt - job.startedAt;
+  lastTraversalFallback = false;
+  lastRootCoverInfeasible = job.job.result.rootCoverInfeasible;
+  lastLimit = job.msg.limit;
+  completeSolvedFrontier(job.msg, job.job.result, {
+    startedAt: job.startedAt,
+    firstSliceAt: job.firstSliceAt,
+    completedAt,
+  });
+}
+
+function rescheduleChunkPages(msg: FrontierRescheduleMessage): void {
+  if (msg.diagnostics !== undefined) diagnosticsEnabled = msg.diagnostics;
+  if (msg.initialPublishMinSplats !== undefined) {
+    initialPublishMinSplats = msg.initialPublishMinSplats;
+  }
+  if (activeChunkTraversal) {
+    const cancelled: FrontierTraversalCancelledReply = {
+      type: 'traversalCancelled',
+      seq: activeChunkTraversal.msg.seq,
+      revision: activeChunkTraversal.msg.revision ?? demandRevision,
+      cancelledAt: performance.now(),
+    };
+    (self as unknown as Worker).postMessage(cancelled);
+  }
+
+  lastRevision = msg.revision ?? demandRevision;
+  lastBudget = msg.budget;
+  demandRevision = lastRevision;
+  lastDemandCameraKey = cameraKey(msg);
+  const snapshot = new Map(cache);
+  const rootList = [...roots].filter((global) => snapshot.has(Math.floor(global / chunkSize)));
+  const view = frontierView(
+    { x: msg.cameraLocal[0], y: msg.cameraLocal[1], z: msg.cameraLocal[2] },
+    { x: msg.cameraForward[0], y: msg.cameraForward[1], z: msg.cameraForward[2] },
+    msg,
+  );
+  const job: ActiveChunkTraversal = {
+    msg,
+    job: new FrontierTraversalJob(snapshot, rootList, chunkSize, view, msg.limit, msg.budget, {
+      collectDiagnostics: diagnosticsEnabled,
+    }),
+    view,
+    traversalId: nextTraversalId++,
+    startedAt: performance.now(),
+    cacheRevision,
+    firstSliceAt: undefined,
+    lastDemandSize: 0,
+    earlyDemandPosted: false,
+  };
+  activeChunkTraversal = job;
+  scheduleChunkTraversalSlice(job);
+}
+
 function reschedule(msg: FrontierRescheduleMessage): void {
   if (msg.diagnostics !== undefined) diagnosticsEnabled = msg.diagnostics;
   lastRevision = msg.revision ?? demandRevision;
@@ -1348,85 +1585,13 @@ function reschedule(msg: FrontierRescheduleMessage): void {
     }
     return;
   }
-  const result = solveFrontier(msg);
-  const desiredGlobals = applySelection(result);
-  const desiredRevealQuality = assessFrontierRevealQuality(
-    cache,
-    desiredGlobals,
-    chunkSize,
-    lastView as FrontierView,
-    msg.projection ?? [],
-    msg.limit,
-  );
-  const touchedFiles = [...result.touched].filter(([cc]) => !cache.has(cc));
-  if (!chunkPagesMode) touchedFiles.sort((a, b) => b[1] - a[1]);
-  lastTouchedFiles = Uint32Array.from(touchedFiles.map(([cc]) => cc));
-  lastSkipSamples =
-    diagnosticsEnabled && lastView ? skipSamplesFor(result, lastView, lastLimit, msg.budget) : [];
-  postDemand(true, lastTraversalId, revision, 'traversed');
-
-  const uncachedTouched = lastTouchedFiles.length;
-  lastCameraKey = poseKey;
-  const qualityComplete =
-    result.waiters.length === 0 && !result.budgetClamped && lastTraversalId > 0;
-  const publish = shouldPublishFrontier(
-    uncachedTouched,
-    chunkPagesMode ? false : (indexed?.hasPublishedDisplay ?? pager!.hasPublishedDisplay),
-    initialPublishMinSplats,
-    result.count,
-    qualityComplete,
-  );
-
-  lastPlanKey = key;
-  lastPublish = publish;
-  lastInfeasibleKey = result.rootCoverInfeasible ? infeasibleKey : null;
-  if (chunkPagesMode) {
-    postChunkPagesPlan(
-      msg.seq,
-      Uint32Array.from(desiredGlobals),
-      Uint32Array.from(lastTouchedFiles),
-      lastLimit,
-      result.waiters.length === 0 && !result.budgetClamped,
-      revision,
-      camKey,
-      desiredRevealQuality,
-    );
-    return;
-  }
-  if (indexed) {
-    // The helper itself rejects coarsening or a camera cut that is not a
-    // hierarchy refinement. Those cases fall back to the existing full-cut
-    // path; a pure refinement may still be delivered in bounded covers while
-    // the camera/configuration revision settles.
-    updateIndexed(
-      msg,
-      desiredGlobals,
-      desiredRevealQuality,
-      publish,
-      publish || indexed.hasPublishedDisplay,
-    );
-    return;
-  }
-  const plan = pager!.update(desiredGlobals, {
-    maxAppends: maxPlanWrites,
-    maxWrites: maxPlanWrites,
-    maxMoveSlotSpan: maxPlanWrites,
-    publish,
-  });
-  protectPendingAppends();
-  postClassicPlan(
-    msg.seq,
-    plan,
-    Uint32Array.from(lastTouchedFiles),
-    lastLimit,
-    Uint32Array.from(evict()),
-    { planReason: 'traversed' },
-  );
+  completeSolvedFrontier(msg, solveFrontier(msg));
 }
 
 self.onmessage = (event: MessageEvent<FrontierRequest>): void => {
   const msg = event.data;
   if (msg.type === 'init') {
+    activeChunkTraversal = null;
     chunkSize = msg.chunkSize;
     cpuCacheBytes = msg.cpuCacheBytes;
     maxPlanWrites = msg.maxPlanWrites;
@@ -1562,6 +1727,10 @@ self.onmessage = (event: MessageEvent<FrontierRequest>): void => {
     // Host demand messages are ignored: the authoritative walk posts demand
     // itself, before gather, and chunk arrivals expand waiters without a
     // second competing scanner.
+    return;
+  }
+  if (chunkPagesMode && experiments.radTraversal === 'one-pass') {
+    rescheduleChunkPages(msg);
     return;
   }
   reschedule(msg);

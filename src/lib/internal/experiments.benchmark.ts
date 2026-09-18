@@ -5,7 +5,9 @@ declare const __VLAM_EXPERIMENT__: string;
 /** Benchmark-server replacement for the library's disabled controls. */
 export const experiments: ExperimentConfiguration = {
   initialPoolUpload:
-    __VLAM_EXPERIMENT__ === 'skip-empty' || __VLAM_EXPERIMENT__ === 'rad-chunk-pages'
+    __VLAM_EXPERIMENT__ === 'skip-empty' ||
+    __VLAM_EXPERIMENT__ === 'rad-chunk-pages' ||
+    __VLAM_EXPERIMENT__ === 'rad-indexed'
       ? 'skip-empty'
       : 'existing',
   radTraversal:

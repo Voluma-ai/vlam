@@ -8,6 +8,7 @@
 export class RadChunkPageAllocator {
   private readonly freePages: number[] = [];
   private readonly pages = new Map<number, { page: number; count: number }>();
+  private revisionValue = 0;
 
   constructor(
     readonly capacityPages: number,
@@ -25,6 +26,11 @@ export class RadChunkPageAllocator {
   /** Number of chunks currently backed by stable pool pages. */
   get residentCount(): number {
     return this.pages.size;
+  }
+
+  /** Changes whenever a file-to-page identity can become stale. */
+  get revision(): number {
+    return this.revisionValue;
   }
 
   /** Files with an allocated GPU page, in file order. */
@@ -51,6 +57,7 @@ export class RadChunkPageAllocator {
     const page = this.freePages.pop();
     if (page === undefined) return undefined;
     this.pages.set(file, { page, count });
+    this.revisionValue++;
     return page;
   }
 
@@ -61,6 +68,7 @@ export class RadChunkPageAllocator {
     this.pages.delete(file);
     this.freePages.push(entry.page);
     this.freePages.sort((a, b) => b - a);
+    this.revisionValue++;
     return true;
   }
 

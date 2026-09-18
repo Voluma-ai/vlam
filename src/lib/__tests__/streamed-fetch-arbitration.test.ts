@@ -80,6 +80,10 @@ interface Internals {
   sweepAllowed: () => boolean;
   scene: { maxResidentSplats: number };
   cacheLimitBytes: number;
+  cache: Map<number, unknown>;
+  radChunkResidency: boolean;
+  cameraEpoch: number;
+  reclaimStalePriorityFetches: () => void;
   fetching: Map<number, { controller: AbortController; kind: string }>;
   loader: { load: (url: string, options: { signal: AbortSignal }) => Promise<SplatData> };
 }
@@ -207,6 +211,39 @@ describe('StreamedSplatMesh fetch arbitration', () => {
       mesh.dispose();
       scheduler.dispose();
     }
+  });
+
+  it('releases a reclaimed priority slot and ignores a late stale completion', async () => {
+    const scheduler = new ChunkFetchScheduler({ maxGlobalInflight: 1 });
+    const mesh = makeStreamedMesh({ fetchScheduler: scheduler, fetchWeight: () => 1 });
+    const inner = mesh as unknown as Internals;
+    inner.radChunkResidency = true;
+    const forward = vi.spyOn(inner, 'forwardChunkToWorker').mockImplementation(() => {});
+    const pending: ((data: SplatData) => void)[] = [];
+    let loads = 0;
+    inner.loader.load = () =>
+      new Promise<SplatData>((resolve) => {
+        loads++;
+        pending.push(resolve);
+      });
+    inner.cameraEpoch = 1;
+    inner.requestChunk(1, 'priority');
+    expect(loads).toBe(1);
+    inner.cameraEpoch = 2;
+    inner.reclaimStalePriorityFetches();
+    expect(inner.fetching.get(1)?.controller.signal.aborted).toBe(true);
+
+    pending[0]?.(makeData(4));
+    await flush();
+    expect(inner.cache.has(1)).toBe(false);
+    expect(forward).not.toHaveBeenCalled();
+    expect(scheduler.inflight).toBe(0);
+
+    inner.requestChunk(2, 'priority');
+    expect(loads).toBe(2);
+
+    mesh.dispose();
+    scheduler.dispose();
   });
 
   it('tags fetches by kind so a shed can target the speculative ones', () => {

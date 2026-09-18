@@ -73,6 +73,7 @@ import {
   type FrontierCutDiagnostic,
   type FrontierSkipSample,
   type FrontierSnapshotReply,
+  type FrontierTraversalCancelledReply,
   type PlanSplats,
 } from '../formats/rad/frontier-worker-protocol';
 import { RadChunkPageAllocator } from '../formats/rad/rad-chunk-page-allocator';
@@ -749,7 +750,15 @@ export class StreamedSplatMesh extends SplatMesh {
    * speculative ones without touching the detail that is actually on screen. */
   private readonly fetching = new Map<
     number,
-    { controller: AbortController; kind: ChunkFetchKind; classicWant?: ClassicFetchWant }
+    {
+      controller: AbortController;
+      kind: ChunkFetchKind;
+      classicWant?: ClassicFetchWant;
+      demandGeneration: number;
+      cameraEpoch: number;
+      demandKey: string;
+      requestedCameraPosition: readonly [number, number, number] | null;
+    }
   >();
   /** This mesh's camera-projected share of the scene's fetch bandwidth. */
   private fetchWeight: (() => number) | undefined;
@@ -821,6 +830,8 @@ export class StreamedSplatMesh extends SplatMesh {
     { readonly range: SplatRange; readonly count: number; lastUsed: number }
   >();
   private readonly radChunkAllocator: RadChunkPageAllocator | null;
+  private readonly radChunkPageLookup = new Map<number, number>();
+  private radChunkPageLookupRevision = -1;
   private readonly radChunkResidency: boolean;
   private readonly radResidencyRequestedValue: 'indexed' | 'chunk-pages';
   private readonly radResidencyFallbackReasonValue: string | null;
@@ -832,6 +843,7 @@ export class StreamedSplatMesh extends SplatMesh {
   private radChunkPendingFiles: Set<number> | null = null;
   private radChunkPendingSelectionHashA: number | null = null;
   private radChunkPendingSelectionHashB: number | null = null;
+  private radChunkPendingBudgetSettled = false;
   private radChunkMappedSlots = new Uint32Array(0);
   private radChunkPublishGeneration: number | null = null;
   private radChunkPublishRevision: number | null = null;
@@ -1021,6 +1033,12 @@ export class StreamedSplatMesh extends SplatMesh {
    * dropped. `pageTableInFlight` coalesces to one outstanding traversal. */
   private pageTableSeq = 0;
   private pageTableInFlight = false;
+  /** Sequence currently allowed to clear the in-flight traversal state. */
+  private pageTableActiveSeq = 0;
+  /** Replacement walk waiting for its first partial or complete demand. */
+  private replacementAwaitingFirstDemandSeq: number | null = null;
+  /** Replacement allowed to finish while subsequent movement coalesces. */
+  private pageTableReplacementSeq: number | null = null;
   /** Finish the worker's current bounded cut before solving the latest camera. */
   private pageTableContinuePending = false;
   private pageTableDisposed = false;
@@ -1039,24 +1057,53 @@ export class StreamedSplatMesh extends SplatMesh {
    * These outrank the background sweep - they are the detail actually on screen. */
   private pageTableFetchPriority: readonly number[] = [];
   private demandGeneration = 0;
+  /** Current camera revision whose unchanged, budget-full cut needs no more pages. */
+  private radChunkDemandSettledRevision = -1;
+  private radChunkDemandSettledCamera: readonly [number, number, number] | null = null;
+  private radChunkDemandSettledForward: readonly [number, number, number] | null = null;
+  private radChunkDemandSettledLimit = 0;
+  private radChunkDemandSettledConfig = '';
+  /** Changes with each queued camera/configuration identity, before posting. */
+  private cameraEpoch = 0;
   private demandKey = '';
+  private latestDemandCamera: readonly [number, number, number] | null = null;
   /** True when the latest camera/config has not yet been posted to the worker. */
   private demandNeedsNewRevision = false;
   private radFrame = 0;
   private demandWants: readonly FrontierDemandWant[] = [];
   private readonly demandFirstSeen = new Map<number, number>();
   private demandReadyGeneration = -1;
+  /** Prevents repeated reclamation while one hard relocation is still queued. */
+  private hardRelocationPending = false;
   /** Internal benchmark counters; never part of the exported mesh interface. */
   private readonly demandDiagnostics = {
     generation: 0,
+    cameraEpoch: 0,
+    demandKey: '',
+    requestedCameraPosition: null as readonly [number, number, number] | null,
     replies: 0,
     staleReplies: 0,
     cancellations: 0,
+    staleRequestsCancelled: 0,
+    protectedFilesRetained: [] as number[],
+    staleCancellationReason: null as string | null,
+    activeRequestsBeforeReclamation: 0,
+    activeRequestsAfterReclamation: 0,
+    hardRelocations: 0,
     requests: 0,
     completed: 0,
     knownRequestedBytes: 0,
     knownCompletedBytes: 0,
     requestToDecodeMs: 0,
+    hardRelocationDetectedAt: null as number | null,
+    replacementTraversalPostedAt: null as number | null,
+    oldTraversalCancelledAt: null as number | null,
+    firstReplacementSliceAt: null as number | null,
+    firstCurrentRevisionDemandAt: null as number | null,
+    firstCurrentRevisionFetchAt: null as number | null,
+    completedTraversalAt: null as number | null,
+    firstPublicationAt: null as number | null,
+    cameraToFirstFetchMs: null as number | null,
   };
   /** Frontier-cut target node size (px) and foveation ramp; see `frontierView`. */
   private pageTableTargetPx = DEFAULT_FOVEATION_TARGET_PX;
@@ -1739,6 +1786,7 @@ export class StreamedSplatMesh extends SplatMesh {
         e: MessageEvent<
           | FrontierPlanMessage
           | FrontierDemandReply
+          | FrontierTraversalCancelledReply
           | FrontierResizeSafeMessage
           | FrontierSnapshotReply
         >,
@@ -2115,9 +2163,7 @@ export class StreamedSplatMesh extends SplatMesh {
   }
 
   /** Maps a complete selection once while retaining the page summary used by protection. */
-  private mapRadChunkSelection(
-    globals: ArrayLike<number>,
-  ): {
+  private mapRadChunkSelection(globals: ArrayLike<number>): {
     slots: Uint32Array;
     pageIdentity: Map<number, number>;
     mappingMs: number;
@@ -2133,6 +2179,10 @@ export class StreamedSplatMesh extends SplatMesh {
     const slots = this.radChunkMappedSlots.subarray(0, globals.length);
     const pageIdentity = new Map<number, number>();
     const chunkSize = allocator.chunkSize;
+    if (this.radChunkPageLookupRevision !== allocator.revision) {
+      this.radChunkPageLookup.clear();
+      this.radChunkPageLookupRevision = allocator.revision;
+    }
     let previousFile = -1;
     let previousPage = -1;
     let selectionHashA = 2166136261;
@@ -2142,8 +2192,10 @@ export class StreamedSplatMesh extends SplatMesh {
       const global = globals[i] as number;
       const file = Math.floor(global / chunkSize);
       if (file !== previousFile) {
-        const page = allocator.pageOf(file);
+        const cachedPage = this.radChunkPageLookup.get(file);
+        const page = cachedPage === undefined ? allocator.pageOf(file) : cachedPage;
         if (page === undefined) return null;
+        if (cachedPage === undefined) this.radChunkPageLookup.set(file, page);
         previousFile = file;
         previousPage = page;
         pageIdentity.set(file, page);
@@ -2192,6 +2244,7 @@ export class StreamedSplatMesh extends SplatMesh {
       this.radChunkPendingFiles = null;
       this.radChunkPendingSelectionHashA = null;
       this.radChunkPendingSelectionHashB = null;
+      this.radChunkPendingBudgetSettled = false;
       this.radChunkPendingRevealQuality = null;
       if (this.indexedPendingDiagnostic) {
         this.rejectRadPublicationDiagnostic(this.indexedPendingDiagnostic, reason);
@@ -2225,7 +2278,9 @@ export class StreamedSplatMesh extends SplatMesh {
     if (this.radChunkResidency) {
       const generation = this.radChunkPublishGeneration;
       if (generation === null || this.pageTableDisposed) return;
-      if (this.radChunkPendingHardValidityRevisionValue !== this.radChunkHardValidityRevisionValue) {
+      if (
+        this.radChunkPendingHardValidityRevisionValue !== this.radChunkHardValidityRevisionValue
+      ) {
         this.discardIndexedPublication('hard-validity-revision');
         this.pendingWork = true;
         this.lastScheduleTime = -Infinity;
@@ -2289,7 +2344,9 @@ export class StreamedSplatMesh extends SplatMesh {
     if (this.radChunkResidency) {
       const generation = this.radChunkPublishGeneration;
       if (generation === null || this.pageTableDisposed) return;
-      if (this.radChunkPendingHardValidityRevisionValue !== this.radChunkHardValidityRevisionValue) {
+      if (
+        this.radChunkPendingHardValidityRevisionValue !== this.radChunkHardValidityRevisionValue
+      ) {
         this.discardIndexedPublication('hard-validity-revision');
         this.pendingWork = true;
         this.lastScheduleTime = -Infinity;
@@ -2323,8 +2380,16 @@ export class StreamedSplatMesh extends SplatMesh {
       this.pageTableDrawn = next.length;
       this.pageTableDisplayGeneration = generation;
       this.retainVisibleInstanceCount(next.length);
-      this.radChunkCommittedSelectionIdValue = pendingSelectionId ?? this.radChunkCommittedSelectionIdValue;
+      this.radChunkCommittedSelectionIdValue =
+        pendingSelectionId ?? this.radChunkCommittedSelectionIdValue;
       this.radChunkRenderedAtValue = performance.now();
+      if (
+        this.demandDiagnostics.hardRelocationDetectedAt !== null &&
+        pendingDemandRevision === this.demandGeneration &&
+        this.demandDiagnostics.firstPublicationAt === null
+      ) {
+        this.demandDiagnostics.firstPublicationAt = this.radChunkRenderedAtValue;
+      }
       this.radChunkCameraObsoleteValue =
         pendingDemandRevision !== null &&
         (pendingDemandRevision !== this.demandGeneration || this.demandNeedsNewRevision);
@@ -2337,6 +2402,9 @@ export class StreamedSplatMesh extends SplatMesh {
       this.radChunkPendingFiles = null;
       this.radChunkPendingSelectionHashA = null;
       this.radChunkPendingSelectionHashB = null;
+      const budgetSettled = this.radChunkPendingBudgetSettled;
+      this.radChunkPendingBudgetSettled = false;
+      if (budgetSettled) this.settleRadChunkDemand();
       if (this.onPerformanceEvent !== undefined) {
         console.debug(
           '[vlam:rad-chunk-sort]',
@@ -2529,11 +2597,19 @@ export class StreamedSplatMesh extends SplatMesh {
   /** Applies a worker reply, turning malformed messages into a terminal fault. */
   private handleFrontierMessage(
     plan:
-      FrontierPlanMessage | FrontierDemandReply | FrontierResizeSafeMessage | FrontierSnapshotReply,
+      | FrontierPlanMessage
+      | FrontierDemandReply
+      | FrontierTraversalCancelledReply
+      | FrontierResizeSafeMessage
+      | FrontierSnapshotReply,
   ): void {
     try {
       if (plan.type === 'demand') this.applyDemand(plan);
-      else if (plan.type === 'resizeSafe') this.applyIndexedResizeSafe(plan.capacity);
+      else if (plan.type === 'traversalCancelled') {
+        if (plan.seq < this.pageTableActiveSeq) {
+          this.demandDiagnostics.oldTraversalCancelledAt = performance.now();
+        }
+      } else if (plan.type === 'resizeSafe') this.applyIndexedResizeSafe(plan.capacity);
       else if (plan.type === 'snapshot') this.applyFrontierSnapshot(plan);
       else this.applyFrontierPlan(plan);
     } catch (error) {
@@ -2583,10 +2659,27 @@ export class StreamedSplatMesh extends SplatMesh {
   }
 
   private applyDemand(reply: FrontierDemandReply): void {
-    if (this.pageTableDisposed || reply.revision < this.demandGeneration) {
+    if (
+      this.pageTableDisposed ||
+      reply.revision < this.demandGeneration ||
+      (reply.seq !== undefined && reply.seq < this.pageTableActiveSeq)
+    ) {
       this.demandDiagnostics.staleReplies++;
       this.pendingWork = true;
       return;
+    }
+    if (this.radChunkResidency && reply.revision === this.radChunkDemandSettledRevision) {
+      this.demandReadyGeneration = reply.revision;
+      this.demandWants = [];
+      this.demandFirstSeen.clear();
+      return;
+    }
+    const currentSequence = reply.seq === undefined || reply.seq === this.pageTableActiveSeq;
+    if (currentSequence && reply.revision === this.demandGeneration) {
+      this.demandDiagnostics.firstCurrentRevisionDemandAt ??= performance.now();
+      if (reply.firstSliceAt !== undefined) {
+        this.demandDiagnostics.firstReplacementSliceAt ??= performance.now();
+      }
     }
     if (this.onPerformanceEvent !== undefined) {
       console.debug(
@@ -2627,6 +2720,16 @@ export class StreamedSplatMesh extends SplatMesh {
       }
     }
     this.reconcileDemand(reply.complete);
+    if (currentSequence && this.replacementAwaitingFirstDemandSeq === this.pageTableActiveSeq) {
+      this.replacementAwaitingFirstDemandSeq = null;
+      if (this.demandNeedsNewRevision) {
+        // Do not replace this walk again on every motion frame: that would
+        // starve complete-cut publication until the camera stops. The latest
+        // pose stays queued and runs immediately after this complete cut.
+        this.pendingWork = true;
+        this.lastScheduleTime = -Infinity;
+      }
+    }
     this.pendingWork = true;
   }
 
@@ -2662,11 +2765,36 @@ export class StreamedSplatMesh extends SplatMesh {
       }
     }
     if (!this.pageTableCachedFiles.has(0)) this.requestChunk(0, 'priority');
+    // A queued camera has superseded the worker's last demand. Its wants and
+    // touched files describe the old view; re-requesting them here would refill
+    // the slots that a hard relocation just reclaimed before the new walk can
+    // answer.
+    if (
+      this.radChunkResidency &&
+      (this.demandNeedsNewRevision || this.demandReadyGeneration !== this.demandGeneration)
+    ) {
+      return;
+    }
     for (const want of this.demandWants) this.requestChunk(want.file, 'priority');
     if (this.radChunkResidency) return;
     if (this.demandReadyGeneration !== this.demandGeneration || this.demandNeedsNewRevision) {
       for (const file of this.pageTableFetchPriority) this.requestChunk(file, 'priority');
     }
+  }
+
+  /** Keeps the previous same-camera demand useful while the next cooperative
+   * walk runs, without letting an obsolete full list churn a saturated pool. */
+  private boundChunkPageCarryoverDemand(): void {
+    const allocator = this.radChunkAllocator;
+    if (!allocator) return;
+    const freePages = Math.max(
+      0,
+      allocator.capacityPages - allocator.residentCount - this.pageTableActiveFetches(),
+    );
+    const limit = Math.max(3, freePages);
+    this.demandWants = this.demandWants
+      .filter((want) => !this.pageTableCachedFiles.has(want.file) && !this.fetching.has(want.file))
+      .slice(0, limit);
   }
 
   /**
@@ -2994,6 +3122,23 @@ export class StreamedSplatMesh extends SplatMesh {
     selectionId: number;
     committedSelectionId: number;
     demandRevision: number;
+    cameraEpoch: number;
+    demandKey: string;
+    requestedCameraPosition: readonly [number, number, number] | null;
+    staleCancellationReason: string | null;
+    staleRequestsCancelled: number;
+    protectedFilesRetained: readonly number[];
+    activeRequestsBeforeReclamation: number;
+    activeRequestsAfterReclamation: number;
+    hardRelocationDetectedAt: number | null;
+    replacementTraversalPostedAt: number | null;
+    oldTraversalCancelledAt: number | null;
+    firstReplacementSliceAt: number | null;
+    firstCurrentRevisionDemandAt: number | null;
+    firstCurrentRevisionFetchAt: number | null;
+    completedTraversalAt: number | null;
+    firstPublicationAt: number | null;
+    cameraToFirstFetchMs: number | null;
     hardValidityRevision: number;
     selectionCompletedAt: number | null;
     sortSubmittedAt: number | null;
@@ -3039,6 +3184,23 @@ export class StreamedSplatMesh extends SplatMesh {
       selectionId: this.radChunkSelectionIdValue,
       committedSelectionId: this.radChunkCommittedSelectionIdValue,
       demandRevision: this.demandGeneration,
+      cameraEpoch: this.cameraEpoch,
+      demandKey: this.demandKey,
+      requestedCameraPosition: this.latestDemandCamera,
+      staleCancellationReason: this.demandDiagnostics.staleCancellationReason,
+      staleRequestsCancelled: this.demandDiagnostics.staleRequestsCancelled,
+      protectedFilesRetained: this.demandDiagnostics.protectedFilesRetained,
+      activeRequestsBeforeReclamation: this.demandDiagnostics.activeRequestsBeforeReclamation,
+      activeRequestsAfterReclamation: this.demandDiagnostics.activeRequestsAfterReclamation,
+      hardRelocationDetectedAt: this.demandDiagnostics.hardRelocationDetectedAt,
+      replacementTraversalPostedAt: this.demandDiagnostics.replacementTraversalPostedAt,
+      oldTraversalCancelledAt: this.demandDiagnostics.oldTraversalCancelledAt,
+      firstReplacementSliceAt: this.demandDiagnostics.firstReplacementSliceAt,
+      firstCurrentRevisionDemandAt: this.demandDiagnostics.firstCurrentRevisionDemandAt,
+      firstCurrentRevisionFetchAt: this.demandDiagnostics.firstCurrentRevisionFetchAt,
+      completedTraversalAt: this.demandDiagnostics.completedTraversalAt,
+      firstPublicationAt: this.demandDiagnostics.firstPublicationAt,
+      cameraToFirstFetchMs: this.demandDiagnostics.cameraToFirstFetchMs,
       hardValidityRevision: this.radChunkHardValidityRevisionValue,
       selectionCompletedAt: this.radChunkSelectionCompletedAtValue,
       sortSubmittedAt: this.radChunkSortSubmittedAtValue,
@@ -5388,6 +5550,7 @@ export class StreamedSplatMesh extends SplatMesh {
     if (this.pageTableDisposed) return;
     const camera: [number, number, number] = [cameraLocal.x, cameraLocal.y, cameraLocal.z];
     const forward: [number, number, number] = [forwardLocal.x, forwardLocal.y, forwardLocal.z];
+    this.latestDemandCamera = camera;
     const limit = this.pageTableLimit / this.lodScaleValue;
     const fov = this.pageTableFoveation;
     const key = pageTableDemandKey(
@@ -5398,9 +5561,56 @@ export class StreamedSplatMesh extends SplatMesh {
       this.pageTableDrawBudget,
       fov,
     );
-    if (key !== this.demandKey) {
+    const demandChanged = key !== this.demandKey;
+    if (this.radChunkDemandSettledRevision >= 0) {
+      if (this.radChunkDemandSettlementIsCurrent(camera, forward, limit)) {
+        this.demandKey = key;
+        this.pendingWork = false;
+        return;
+      }
+      this.radChunkDemandSettledRevision = -1;
+      this.radChunkDemandSettledCamera = null;
+      this.radChunkDemandSettledForward = null;
+    }
+    const hardRelocation =
+      this.lastPostedCamera !== null && squaredDistance3(camera, this.lastPostedCamera) > 1;
+    const firstHardRelocation =
+      hardRelocation && !this.hardRelocationPending && this.pageTableReplacementSeq === null;
+    if (demandChanged) {
       this.demandKey = key;
+      this.cameraEpoch++;
       this.demandNeedsNewRevision = true;
+    }
+    if (hardRelocation && !demandChanged && firstHardRelocation) {
+      this.cameraEpoch++;
+      this.demandNeedsNewRevision = true;
+    }
+    if (firstHardRelocation) {
+      this.hardRelocationPending = true;
+      this.demandDiagnostics.hardRelocationDetectedAt = performance.now();
+      this.demandDiagnostics.replacementTraversalPostedAt = null;
+      this.demandDiagnostics.oldTraversalCancelledAt = null;
+      this.demandDiagnostics.firstReplacementSliceAt = null;
+      this.demandDiagnostics.firstCurrentRevisionDemandAt = null;
+      this.demandDiagnostics.firstCurrentRevisionFetchAt = null;
+      this.demandDiagnostics.completedTraversalAt = null;
+      this.demandDiagnostics.firstPublicationAt = null;
+      this.demandDiagnostics.cameraToFirstFetchMs = null;
+    }
+    this.demandDiagnostics.cameraEpoch = this.cameraEpoch;
+    this.demandDiagnostics.demandKey = key;
+    this.demandDiagnostics.requestedCameraPosition = camera;
+    if (firstHardRelocation) this.reclaimStalePriorityFetches();
+    const supersedeInFlight = this.pageTableInFlight && firstHardRelocation;
+    if (this.radChunkResidency && (this.demandNeedsNewRevision || supersedeInFlight)) {
+      // A new walk owns queued priority from this point. Let requests already
+      // on the wire finish, but do not let the previous cut refill their slots
+      // while JavaScript computes the replacement demand.
+      this.demandWants = [];
+      this.demandFirstSeen.clear();
+      this.demandReadyGeneration = -1;
+    } else if (this.radChunkResidency && !this.pageTableInFlight) {
+      this.boundChunkPageCarryoverDemand();
     }
     this.reconcileDemand(
       this.demandReadyGeneration === this.demandGeneration && !this.demandNeedsNewRevision,
@@ -5408,11 +5618,24 @@ export class StreamedSplatMesh extends SplatMesh {
     if (!this.pageTableCachedFiles.has(0)) this.requestChunk(0, 'priority');
     void frustum;
     void now;
-    if (this.pageTableInFlight) {
+    if (this.pageTableInFlight && !supersedeInFlight) {
+      if (this.demandNeedsNewRevision) {
+        // The worker is finishing an older bounded walk. Keep the newest pose
+        // queued so its reply immediately posts the latest revision.
+        this.pendingWork = true;
+        this.lastScheduleTime = -Infinity;
+      }
       if (this.onPerformanceEvent !== undefined) {
         console.debug(
           '[vlam:rad-reschedule]',
-          JSON.stringify({ state: 'blocked-in-flight', demandGeneration: this.demandGeneration }),
+          JSON.stringify({
+            state: 'blocked-in-flight',
+            demandGeneration: this.demandGeneration,
+            cameraEpoch: this.cameraEpoch,
+            cameraKey: this.demandKey,
+            cameraPosition: camera,
+            queuedRevision: this.demandNeedsNewRevision,
+          }),
         );
       }
       return;
@@ -5425,15 +5648,27 @@ export class StreamedSplatMesh extends SplatMesh {
       this.demandDiagnostics.generation = this.demandGeneration;
       this.demandReadyGeneration = -1;
       this.demandNeedsNewRevision = false;
+      if (this.radChunkResidency) {
+        this.demandWants = [];
+        this.demandFirstSeen.clear();
+      }
     }
     this.pageTableInFlight = true;
     this.lastPostedCamera = camera;
+    this.hardRelocationPending = false;
     this.lastPostedForward = forward;
     this.lastPostedProjection = projection.length ? Array.from(projection) : [];
     this.lastPostedLimit = limit;
+    const seq = ++this.pageTableSeq;
+    this.pageTableActiveSeq = seq;
+    if (firstHardRelocation) {
+      this.replacementAwaitingFirstDemandSeq = seq;
+      this.pageTableReplacementSeq = seq;
+      this.demandDiagnostics.replacementTraversalPostedAt = performance.now();
+    }
     this.postToWorker({
       type: 'reschedule',
-      seq: ++this.pageTableSeq,
+      seq,
       ...(this.pageTableContinuePending ? { continuePendingPlan: true } : {}),
       cameraLocal: camera,
       cameraForward: forward,
@@ -5456,6 +5691,9 @@ export class StreamedSplatMesh extends SplatMesh {
           state: 'posted',
           seq: this.pageTableSeq,
           revision: this.demandGeneration,
+          cameraEpoch: this.cameraEpoch,
+          cameraKey: this.demandKey,
+          cameraPosition: camera,
         }),
       );
     }
@@ -5471,13 +5709,17 @@ export class StreamedSplatMesh extends SplatMesh {
    * frontier wants next, and reschedules again if chunks are still streaming.
    */
   private applyFrontierPlan(plan: FrontierPlanMessage): void {
-    this.pageTableInFlight = false;
     if (this.pageTableDisposed || (!this.radChunkResidency && this.slabPages.length === 0)) {
       return;
     }
     if (plan.seq < this.pageTableSeq) {
       this.pendingWork = true;
       return;
+    }
+    if (plan.seq === this.pageTableActiveSeq) {
+      this.pageTableInFlight = false;
+      if (this.pageTableReplacementSeq === plan.seq) this.pageTableReplacementSeq = null;
+      this.demandDiagnostics.completedTraversalAt = performance.now();
     }
     // Storage may have moved since this plan was built (a reschedule answered
     // from the old capacity, then a resize landed). Such a plan must still be
@@ -5639,10 +5881,7 @@ export class StreamedSplatMesh extends SplatMesh {
       this.pendingWork = true;
       this.lastScheduleTime = -Infinity;
     }
-    if (
-      chunkPublicationGlobals &&
-      (!chunkPublicationSlots || !chunkPublicationPageIdentity)
-    ) {
+    if (chunkPublicationGlobals && (!chunkPublicationSlots || !chunkPublicationPageIdentity)) {
       if (this.onPerformanceEvent !== undefined) {
         console.debug(
           '[vlam:rad-chunk-publication]',
@@ -5722,6 +5961,11 @@ export class StreamedSplatMesh extends SplatMesh {
           : null;
         this.radChunkPendingSelectionHashA = chunkPublicationMapping?.selectionHashA ?? null;
         this.radChunkPendingSelectionHashB = chunkPublicationMapping?.selectionHashB ?? null;
+        this.radChunkPendingBudgetSettled =
+          plan.budgetClamped === true &&
+          this.radChunkDrawBudgetSaturated(chunkPublicationGlobals.length) &&
+          (this.radChunkAllocator?.residentCount ?? 0) >=
+            (this.radChunkAllocator?.capacityPages ?? Number.POSITIVE_INFINITY);
         this.radChunkSelectionCompletedAtValue = performance.now();
         this.radChunkSortSubmittedAtValue = this.radChunkSelectionCompletedAtValue;
         this.radChunkCameraObsoleteValue =
@@ -5776,10 +6020,21 @@ export class StreamedSplatMesh extends SplatMesh {
         this.invalidateSort();
       }
     }
+    const budgetSettled =
+      this.radChunkResidency &&
+      plan.budgetClamped === true &&
+      chunkPublicationGlobals !== undefined &&
+      chunkPublicationSlots !== null &&
+      !presented &&
+      this.radChunkDrawBudgetSaturated(chunkPublicationGlobals.length) &&
+      (this.radChunkAllocator?.residentCount ?? 0) >=
+        (this.radChunkAllocator?.capacityPages ?? Number.POSITIVE_INFINITY);
+    if (budgetSettled) this.settleRadChunkDemand();
+    const converged = plan.converged || budgetSettled;
     const continuedOlderPlan = this.pageTableContinuePending;
-    this.frontierConverged = plan.converged;
-    this.pageTableContinuePending = !plan.converged;
-    if (continuedOlderPlan && plan.converged) {
+    this.frontierConverged = converged;
+    this.pageTableContinuePending = !converged;
+    if (continuedOlderPlan && converged) {
       // The drain deliberately ignored the newer camera bundled with its
       // request. Re-solve that coalesced view immediately instead of waiting
       // for the idle timer or another movement threshold.
@@ -5997,9 +6252,9 @@ export class StreamedSplatMesh extends SplatMesh {
     // while the worker is still ramping its budget up to the governed one - that
     // ramp is what keeps a hard camera cut from arriving as one ~100 ms plan, so
     // the next pass must follow immediately or detail stalls where it stopped.
-    if (this.fetching.size > 0 || !plan.converged) {
+    if (this.fetching.size > 0 || !converged) {
       this.pendingWork = true;
-      if (!plan.converged) this.lastScheduleTime = -Infinity;
+      if (!converged) this.lastScheduleTime = -Infinity;
     }
     if (
       this.indexedPageTable &&
@@ -6019,7 +6274,60 @@ export class StreamedSplatMesh extends SplatMesh {
     if (this.radChunkPendingFiles) {
       for (const file of this.radChunkPendingFiles) protectedFiles.add(file);
     }
+    for (const file of this.scene.pinnedFiles) protectedFiles.add(file);
     return protectedFiles;
+  }
+
+  /** Stops demand once a complete budget-full walk reproduces the displayed cut. */
+  private settleRadChunkDemand(): void {
+    this.radChunkDemandSettledRevision = this.demandGeneration;
+    this.radChunkDemandSettledCamera = this.lastPostedCamera;
+    this.radChunkDemandSettledForward = this.lastPostedForward;
+    this.radChunkDemandSettledLimit = this.lastPostedLimit;
+    this.radChunkDemandSettledConfig = this.radChunkDemandConfig();
+    this.frontierConverged = true;
+    this.pageTableContinuePending = false;
+    this.demandWants = [];
+    this.demandFirstSeen.clear();
+    const protectedFiles = this.protectedRadChunkFiles();
+    for (const [file, entry] of this.fetching) {
+      if (
+        entry.kind === 'priority' &&
+        entry.classicWant === undefined &&
+        !protectedFiles.has(file) &&
+        !entry.controller.signal.aborted
+      ) {
+        entry.controller.abort();
+      }
+    }
+  }
+
+  private radChunkDrawBudgetSaturated(count: number): boolean {
+    return this.pageTableDrawBudget > 0 && count >= this.pageTableDrawBudget * 0.99;
+  }
+
+  private radChunkDemandSettlementIsCurrent(
+    camera: readonly [number, number, number],
+    forward: readonly [number, number, number],
+    limit: number,
+  ): boolean {
+    const settledCamera = this.radChunkDemandSettledCamera;
+    const settledForward = this.radChunkDemandSettledForward;
+    if (!settledCamera || !settledForward) return false;
+    if (squaredDistance3(camera, settledCamera) > 1) return false;
+    const forwardDot =
+      forward[0] * settledForward[0] +
+      forward[1] * settledForward[1] +
+      forward[2] * settledForward[2];
+    if (forwardDot < 0.999961923) return false;
+    const scale = Math.max(Math.abs(limit), Math.abs(this.radChunkDemandSettledLimit), 1e-9);
+    if (Math.abs(limit - this.radChunkDemandSettledLimit) / scale > 0.01) return false;
+    return this.radChunkDemandSettledConfig === this.radChunkDemandConfig();
+  }
+
+  private radChunkDemandConfig(): string {
+    const fov = this.pageTableFoveation;
+    return `${this.pageTableDrawBudget}|${fov.coneFov0}|${fov.coneFov}|${fov.coneFoveate}|${fov.behindFoveate}`;
   }
 
   /** Releases the least-recently-used unprotected chunk page. */
@@ -6193,7 +6501,13 @@ export class StreamedSplatMesh extends SplatMesh {
   private pageTableActiveFetches(): number {
     let active = 0;
     for (const entry of this.fetching.values()) {
-      if (entry.kind === 'priority' && entry.classicWant === undefined) active++;
+      if (
+        entry.kind === 'priority' &&
+        entry.classicWant === undefined &&
+        !entry.controller.signal.aborted
+      ) {
+        active++;
+      }
     }
     return active;
   }
@@ -6229,6 +6543,63 @@ export class StreamedSplatMesh extends SplatMesh {
   private abortFetches(kind: ChunkFetchKind): void {
     for (const entry of this.fetching.values()) {
       if (entry.kind === kind) entry.controller.abort();
+    }
+  }
+
+  /** Reclaims old-camera RAD priority slots after a translation-only cut. */
+  private reclaimStalePriorityFetches(): void {
+    if (!this.radChunkResidency) return;
+    const protectedFiles = this.protectedRadChunkFiles();
+    const activeBefore = this.pageTableActiveFetches();
+    const retained = new Set<number>();
+    let cancelled = 0;
+    for (const [file, entry] of this.fetching) {
+      if (entry.kind !== 'priority' || entry.classicWant !== undefined) continue;
+      if (entry.cameraEpoch === this.cameraEpoch || entry.controller.signal.aborted) continue;
+      if (protectedFiles.has(file)) {
+        retained.add(file);
+        continue;
+      }
+      entry.controller.abort();
+      cancelled++;
+      if (this.onPerformanceEvent !== undefined) {
+        console.debug(
+          '[vlam:rad-fetch-cancel]',
+          JSON.stringify({
+            file,
+            reason: 'hard-relocation',
+            demandGeneration: entry.demandGeneration,
+            cameraEpoch: entry.cameraEpoch,
+            cameraKey: entry.demandKey,
+            cameraPosition: entry.requestedCameraPosition,
+            currentCameraEpoch: this.cameraEpoch,
+            currentCameraKey: this.demandKey,
+            currentCameraPosition: this.latestDemandCamera,
+          }),
+        );
+      }
+    }
+    this.demandDiagnostics.staleRequestsCancelled = cancelled;
+    this.demandDiagnostics.protectedFilesRetained = [...retained].sort((a, b) => a - b);
+    this.demandDiagnostics.staleCancellationReason = 'hard-relocation';
+    this.demandDiagnostics.activeRequestsBeforeReclamation = activeBefore;
+    this.demandDiagnostics.activeRequestsAfterReclamation = this.pageTableActiveFetches();
+    this.demandDiagnostics.hardRelocations++;
+    if (this.onPerformanceEvent !== undefined) {
+      console.debug(
+        '[vlam:rad-reclaim]',
+        JSON.stringify({
+          reason: 'hard-relocation',
+          demandGeneration: this.demandGeneration,
+          cameraEpoch: this.cameraEpoch,
+          cameraKey: this.demandKey,
+          cameraPosition: this.latestDemandCamera,
+          staleRequestsCancelled: cancelled,
+          protectedFilesRetained: [...retained].sort((a, b) => a - b),
+          activeRequestsBeforeReclamation: activeBefore,
+          activeRequestsAfterReclamation: this.pageTableActiveFetches(),
+        }),
+      );
     }
   }
 
@@ -6278,11 +6649,36 @@ export class StreamedSplatMesh extends SplatMesh {
       this.demandDiagnostics.requests++;
       this.demandDiagnostics.knownRequestedBytes += knownBytes;
     }
-    this.fetching.set(file, { controller, kind, classicWant });
+    this.fetching.set(file, {
+      controller,
+      kind,
+      classicWant,
+      demandGeneration: this.demandGeneration,
+      cameraEpoch: this.cameraEpoch,
+      demandKey: this.demandKey,
+      requestedCameraPosition: this.latestDemandCamera ?? this.lastPostedCamera,
+    });
+    if (
+      this.demandDiagnostics.hardRelocationDetectedAt !== null &&
+      this.demandDiagnostics.firstCurrentRevisionFetchAt === null &&
+      this.demandReadyGeneration === this.demandGeneration
+    ) {
+      this.demandDiagnostics.firstCurrentRevisionFetchAt = requestedAt;
+      this.demandDiagnostics.cameraToFirstFetchMs =
+        requestedAt - this.demandDiagnostics.hardRelocationDetectedAt;
+    }
     if (this.onPerformanceEvent !== undefined && this.frontierWorker) {
       console.debug(
         '[vlam:rad-fetch-start]',
-        JSON.stringify({ file, kind, active: this.pageTableActiveFetches() }),
+        JSON.stringify({
+          file,
+          kind,
+          active: this.pageTableActiveFetches(),
+          demandGeneration: this.demandGeneration,
+          cameraEpoch: this.cameraEpoch,
+          cameraKey: this.demandKey,
+          cameraPosition: this.latestDemandCamera ?? this.lastPostedCamera,
+        }),
       );
     }
     this.loader
@@ -6295,7 +6691,9 @@ export class StreamedSplatMesh extends SplatMesh {
         // A chunk that resolved just before dispose still lands here one
         // microtask later; keeping it would repopulate the cleared cache (or
         // post to a terminated frontier worker).
-        if (this.disposed) return;
+        // Abort can race a loader that has already resolved. Do not forward a
+        // stale old-camera chunk after reclamation has handed the slot away.
+        if (this.disposed || controller.signal.aborted) return;
         if (this.frontierWorker) {
           this.demandDiagnostics.completed++;
           this.demandDiagnostics.knownCompletedBytes += knownBytes;
@@ -6346,7 +6744,11 @@ export class StreamedSplatMesh extends SplatMesh {
         // whole pipe until the pool is torn down.
         if (this.fetchHandle) this.fetchScheduler?.release(this.fetchHandle);
         if (this.frontierWorker) this.reconcileDemand(false);
-        this.pendingWork = true;
+        this.pendingWork = !(
+          this.radChunkResidency &&
+          this.radChunkDemandSettledRevision === this.demandGeneration &&
+          this.fetching.size === 0
+        );
       });
   }
 
@@ -6423,6 +6825,16 @@ const _sphere = new THREE.Sphere();
 /** Camera forward in mesh-local space, for the page-table traversal's foveation. */
 const _cameraForward = new THREE.Vector3();
 const _drawSize = new THREE.Vector2();
+
+function squaredDistance3(
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+): number {
+  const dx = a[0] - b[0];
+  const dy = a[1] - b[1];
+  const dz = a[2] - b[2];
+  return dx * dx + dy * dy + dz * dz;
+}
 
 /** Validates the page-table RAD first-image fraction; zero restores the old hold. */
 function validateRadInitialDisplayFraction(value: number | undefined): number {

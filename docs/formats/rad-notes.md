@@ -26,13 +26,15 @@ chunks, no SH). Read together with `ROADMAP.md` M14. Implemented under
 - **A/B legacy modes:** `?foveationMode=band` (screen-radius band) and
   `?foveationMode=frontier` (whole-chunk GPU per-splat cut), see history doc.
 
-The internal `rad-chunk-pages` benchmark variant adds a stable-residency path
-for large single-scene captures. Each resident 65,536-node chunk owns one
+Eligible desktop large single-scene captures use stable chunk-page residency
+by default. The internal `rad-indexed` experiment restores the selected-splat
+pager for rollback and comparison; unsupported devices, small captures, and
+timeline captures also retain that indexed fallback. Each resident 65,536-node chunk owns one
 contiguous inactive pool page; the worker returns only the selected global node
 indices, which the host maps to those physical slots. A selection update never
 re-gathers covariance, color, or SH. The target is 256 pages, reduced only when
 the capture, device memory estimate, or draw budget cannot support it; the
-existing indexed selected-splat path is retained and reports the fallback.
+indexed selected-splat path is retained and reports the fallback.
 Displayed and pending selections protect their pages until the corresponding
 active-list publication has rendered.
 
@@ -740,6 +742,19 @@ confirms the gap was not produced by a page-table upload.
   “equivalent sharp.”
 
 ## Other gaps / next steps
+
+### Chunk-page promotion (2026-09-18)
+
+Eligible desktop large single-scene RAD captures now use stable chunk-page
+residency by default. The corrected external Spark 2.1 campaign completed five
+valid cold and five valid warm pairs: equivalent-detail was 0.91× Spark cold
+and 1.04× warm, warm frame p95 was 19.4 ms, settled-idle p99 was 20.0 ms,
+and no settled-idle interval exceeded 250 ms. One Spark warm attempt failed
+before loading with `TypeError: Failed to fetch`; its pair was excluded and a
+replacement valid pair supplied the fifth warm result. `rad-indexed` remains
+the explicit rollback experiment, while unsupported devices, small captures,
+timeline captures, and split view retain indexed fallback.
+
 - **Coordinate frame:** Spark's loader documents the 180°-X OpenCV→OpenGL
   correction (`quaternion.set(1, 0, 0, 0)`) for loaded splats, including `.rad`.
   `yUpTransformForFormat('rad')` therefore applies that cosmetic correction in

@@ -5,6 +5,7 @@ import {
   explainFrontierNode,
   frontierView,
   searchLimitWithinBudget,
+  FrontierTraversalJob,
   traverseFrontier,
   traverseFrontierBounded,
 } from '../formats/rad/rad-frontier';
@@ -105,6 +106,25 @@ describe('traverseFrontier', () => {
     expect(count).toBe(2);
     expect(Array.from(selection.get(0) ?? []).sort((a, b) => a - b)).toEqual([1, 2]);
     expect(touched.has(1)).toBe(true); // chunk 1 is the detail to fetch next
+  });
+
+  it('produces the synchronous cut when resumed after early demand', () => {
+    const full = buildChunkMap(sampleTree(), 4);
+    const partial = new Map([[0, full.get(0)!]]);
+    const expected = traverseFrontier(partial, [0], 4, cam, 2, 3);
+    const job = new FrontierTraversalJob(partial, [0], 4, cam, 2, 3);
+    expect(job.step(Number.POSITIVE_INFINITY, 1).done).toBe(false);
+    while (!job.step(Number.POSITIVE_INFINITY).done) {
+      // Resume the same owned scratch state until materialization completes.
+    }
+    const actual = job.result;
+    expect(actual.count).toBe(expected.count);
+    expect([...actual.touched]).toEqual([...expected.touched]);
+    expect(actual.waiters).toEqual(expected.waiters);
+    expect(actual.budgetClamped).toBe(expected.budgetClamped);
+    expect([...actual.selection].map(([file, locals]) => [file, Array.from(locals)])).toEqual(
+      [...expected.selection].map(([file, locals]) => [file, Array.from(locals)]),
+    );
   });
 
   it('stops descending once the budget is reached, and still covers the scene', () => {

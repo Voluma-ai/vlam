@@ -77,6 +77,10 @@ export interface PerfHudSample {
         lastPlanAppends: number;
         lastPlanMoves: number;
         planGeneration: number;
+        cameraEpoch?: number;
+        staleRequestsCancelled?: number;
+        activeRequestsBeforeReclamation?: number;
+        activeRequestsAfterReclamation?: number;
       }
     | undefined;
   /** Worst per-update CPU cost by stage, as monotonic maxima. */
@@ -281,6 +285,12 @@ export function formatHud(
         `  stale ${frontier.staleResidentSplats}  move ${frontier.lastPlanMoves}` +
         `  append ${frontier.lastPlanAppends}  gen ${frontier.planGeneration}`,
     );
+    if (frontier.cameraEpoch !== undefined) {
+      lines.push(
+        `camera epoch ${frontier.cameraEpoch}  stale-cancel ${frontier.staleRequestsCancelled ?? 0}` +
+          `  active ${frontier.activeRequestsBeforeReclamation ?? 0}→${frontier.activeRequestsAfterReclamation ?? 0}`,
+      );
+    }
   }
   const worst = sample.worstUpdate;
   if (worst && worst.cpuMs > 0) {

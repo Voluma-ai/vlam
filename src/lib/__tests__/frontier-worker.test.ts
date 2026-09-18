@@ -5,6 +5,7 @@ import type {
   FrontierRequest,
   FrontierDemandReply,
   FrontierSnapshotReply,
+  FrontierTraversalCancelledReply,
 } from '../formats/rad/frontier-worker-protocol';
 
 /**
@@ -26,14 +27,22 @@ const traverseSpy = vi.spyOn(radFrontier, 'traverseFrontier');
 const plans: FrontierPlanMessage[] = [];
 const demands: FrontierDemandReply[] = [];
 const snapshots: FrontierSnapshotReply[] = [];
+const cancellations: FrontierTraversalCancelledReply[] = [];
 
 /** A worker global good enough for the module: `onmessage` + `postMessage`. */
 const workerSelf = {
   onmessage: null as ((event: MessageEvent<FrontierRequest>) => void) | null,
-  postMessage: (message: FrontierPlanMessage | FrontierDemandReply | FrontierSnapshotReply) => {
+  postMessage: (
+    message:
+      | FrontierPlanMessage
+      | FrontierDemandReply
+      | FrontierSnapshotReply
+      | FrontierTraversalCancelledReply,
+  ) => {
     if (message.type === 'demand') demands.push(message);
     else if (message.type === 'plan') plans.push(message);
     else if (message.type === 'snapshot') snapshots.push(message);
+    else if (message.type === 'traversalCancelled') cancellations.push(message);
   },
 };
 vi.stubGlobal('self', workerSelf);
@@ -141,7 +150,7 @@ describe('frontier worker delivery', () => {
     expect(frontierWorker.shouldPublishFrontier(8, false, 100, 10, true)).toBe(true);
   });
 
-  it('returns selection globals without gathering selected splat attributes in chunk-page mode', () => {
+  it('returns selection globals without gathering selected splat attributes in chunk-page mode', async () => {
     send({
       type: 'init',
       pagerMode: 'chunk-pages',
@@ -154,6 +163,8 @@ describe('frontier worker delivery', () => {
     sendRootChunk(1, 1);
     reschedule(1);
 
+    await vi.waitFor(() => expect(plans.length).toBeGreaterThan(0));
+
     const plan = plans.at(-1)!;
     expect(plan.selectionGlobals?.length).toBeGreaterThan(0);
     expect(plan.candidateSlots).toBeUndefined();
@@ -163,10 +174,67 @@ describe('frontier worker delivery', () => {
     expect(demands.some((reply) => reply.reason === 'discovery')).toBe(false);
   });
 
+  it('cancels a superseded cooperative walk before it can publish', async () => {
+    vi.useFakeTimers();
+    try {
+      plans.length = 0;
+      demands.length = 0;
+      cancellations.length = 0;
+      send({
+        type: 'init',
+        pagerMode: 'chunk-pages',
+        capacity: CHUNK_SIZE * 8,
+        chunkSize: CHUNK_SIZE,
+        cpuCacheBytes: 8 * 1024 * 1024,
+        maxPlanWrites: PLAN_WRITE_CAP,
+      });
+      send({ type: 'chunkPages', files: Uint32Array.from([0]) });
+      const positions = new Float32Array(CHUNK_SIZE * 3);
+      const size = new Float32Array(CHUNK_SIZE);
+      const childCount = new Uint16Array(CHUNK_SIZE);
+      const childStart = new Uint32Array(CHUNK_SIZE);
+      for (let i = 0; i < 4; i++) {
+        positions[i * 3 + 2] = 10;
+        size[i] = 8 - i;
+        childCount[i] = 1;
+        childStart[i] = (i + 1) * CHUNK_SIZE;
+      }
+      send({
+        type: 'chunk',
+        file: 0,
+        count: CHUNK_SIZE,
+        positions,
+        colors: new Uint8Array(CHUNK_SIZE * 4),
+        covariances: new Float32Array(CHUNK_SIZE * 6),
+        childCount,
+        childStart,
+        size,
+        shBands: 0,
+      });
+      reschedule(10);
+      await vi.advanceTimersToNextTimerAsync();
+      const early = demands.find((reply) => reply.seq === 10 && reply.reason === 'traversal-slice');
+      expect(early?.wants.slice(0, 3).map((want) => want.file)).toEqual([1, 2, 3]);
+      expect(plans.some((plan) => plan.seq === 10)).toBe(false);
+
+      reschedule(11, 2);
+      expect(cancellations.some((reply) => reply.seq === 10)).toBe(true);
+      await vi.runAllTimersAsync();
+      expect(plans.some((plan) => plan.seq === 10)).toBe(false);
+      expect(plans.some((plan) => plan.seq === 11)).toBe(true);
+      expect(
+        demands.filter((reply) => reply.seq === 11 && reply.reason === 'traversal-slice'),
+      ).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   beforeEach(() => {
     plans.length = 0;
     demands.length = 0;
     snapshots.length = 0;
+    cancellations.length = 0;
     traverseSpy.mockClear();
     // A fresh pager and cache generation per test.
     send({

@@ -156,6 +156,12 @@ export interface UnifiedSplatPerformanceTimings {
   sortPasses: number;
   activeListBytes: number;
   activeListRanges: number;
+  sortSerial: number;
+  sortSubmissionFrame: number;
+  sortAction: 'none' | 'submitted' | 'coalesced' | 'suppressed';
+  sortTracking: 'pending' | 'gpu-completion' | 'render-ack-fallback' | null;
+  sortAcknowledgementMs: number | null;
+  sortInputCount: number;
 }
 
 /**
@@ -213,6 +219,12 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     sortPasses: 0,
     activeListBytes: 0,
     activeListRanges: 0,
+    sortSerial: 0,
+    sortSubmissionFrame: -1,
+    sortAction: 'none',
+    sortTracking: null,
+    sortAcknowledgementMs: null,
+    sortInputCount: 0,
   };
   private computeProjectionActive = false;
   private readonly renderer: THREE.WebGPURenderer;
@@ -233,6 +245,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
    * (regather, layout change) force the next sort through the scheduler.
    */
   private readonly sortScheduler: WebGpuSortScheduler;
+  /** Primary refinement frame number used by the non-blocking sort gate. */
+  private refinementFrameNumber = 0;
   /** Pose signature of the last accepted sort; starts unmatchable (zero scale). */
   private readonly lastSortedState = new THREE.Matrix4().makeScale(0, 0, 0);
   private readonly currentSortState = new THREE.Matrix4();
@@ -742,8 +756,10 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     forceSort = false,
   ): void {
     const prepareStartedAt = performance.now();
+    const refinementFrame = forceSort ? this.refinementFrameNumber : ++this.refinementFrameNumber;
+    const holdForRefinementSort =
+      !forceSort && this.sortScheduler.beginSubmissionFrame(refinementFrame, prepareStartedAt);
     let gatherMs = 0;
-    let sortSubmitMs = 0;
     let sortSubmitted = false;
     let gatherDispatches = 0;
     const projectionSubmissionsBefore = this.projectedPipeline?.projectionDispatches ?? 0;
@@ -770,6 +786,11 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     const projectionCamera: THREE.Camera = xrView?.eye ?? camera;
     // One global sort from the head serves both eyes (see `xr-view.ts`).
     const viewCamera: THREE.Camera = xrView?.head ?? camera;
+    const sortState =
+      this.sortMetric === 'radial'
+        ? radialSortState(this.matrixWorld, viewCamera.matrixWorld, this.currentSortState)
+        : this.currentSortState.copy(viewCamera.matrixWorldInverse);
+    const cameraChanged = !sortState.equals(this.lastSortedState);
     const viewport = this.drawingBufferSize;
     if (targetSize) viewport.copy(targetSize);
     else if (xrView) viewport.set(xrView.width, xrView.height);
@@ -781,14 +802,50 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.focal.value.set((focalX * viewport.x) / 2, (focalY * viewport.y) / 2);
     const updated = this.candidateScratch;
     updated.length = 0;
+    let refinementCandidateChanged = this.sortScheduler.hasPendingForce() || cameraChanged;
     for (let i = 0; i < this.sources.length; i++) {
       const record = this.sources[i] as SourceRecord;
       // Children take the application camera: they resolve the XR view for
       // themselves, and a streamed source needs it for LOD scheduling.
       record.source.update(camera, this.renderer, { sort: false });
-      record.view = record.source.getUnifiedSourceView();
+      const view = record.source.getUnifiedSourceView();
+      if (
+        record.view === null ||
+        record.view.activeCount !== view.activeCount ||
+        record.view.contentRevision !== view.contentRevision ||
+        record.view.graphRevision !== view.graphRevision ||
+        !record.view.matrixWorld.equals(view.matrixWorld)
+      ) {
+        refinementCandidateChanged = true;
+      }
+      if (holdForRefinementSort) continue;
+      record.view = view;
       record.registrationOrder = i;
       updated.push(record);
+    }
+    if (holdForRefinementSort) {
+      this.sortScheduler.markSubmissionSuppressed(refinementCandidateChanged);
+      this.performanceTimingsValue.totalMs = performance.now() - prepareStartedAt;
+      this.performanceTimingsValue.gatherMs = 0;
+      this.performanceTimingsValue.sortSubmitMs = 0;
+      this.performanceTimingsValue.sortSubmitted = false;
+      this.performanceTimingsValue.gatherDispatches = 0;
+      this.performanceTimingsValue.gatherSlots = this.previousAdmittedTotal;
+      this.performanceTimingsValue.projectionSubmissions = 0;
+      this.performanceTimingsValue.projectionPasses = 0;
+      this.performanceTimingsValue.sortSubmissions = 0;
+      this.performanceTimingsValue.sortPasses = 0;
+      this.performanceTimingsValue.activeListBytes =
+        this.previousAdmittedTotal * Uint32Array.BYTES_PER_ELEMENT;
+      this.performanceTimingsValue.activeListRanges = this.previousLayout.length;
+      const submission = this.sortScheduler.submissionDiagnostics();
+      this.performanceTimingsValue.sortSerial = submission.serial;
+      this.performanceTimingsValue.sortSubmissionFrame = submission.frame;
+      this.performanceTimingsValue.sortAction = submission.action;
+      this.performanceTimingsValue.sortTracking = submission.tracking;
+      this.performanceTimingsValue.sortAcknowledgementMs = submission.acknowledgementMs;
+      this.performanceTimingsValue.sortInputCount = submission.inputCount;
+      return;
     }
     // Overflow is deterministic and region-safe: preserve whole sources rather
     // than gathering a prefix of a streamed cut. Higher priority wins; matching
@@ -983,7 +1040,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         }
       }
     }
-    sortSubmitMs = performance.now() - sortStartedAt;
+    const sortSubmitMs = performance.now() - sortStartedAt;
+    if (sortSubmitted && !forceSort) this.sortScheduler.markSubmission(refinementFrame, offset);
     const projectionSubmissionsAfter = this.projectedPipeline?.projectionDispatches ?? 0;
     const sortSubmissionsAfter =
       (this.sorter.submissionCount ?? 0) + (this.projectedSorter?.submissionCount ?? 0);
@@ -1016,13 +1074,25 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       0,
       projectionSubmissionsAfter - projectionSubmissionsBefore,
     );
-    this.performanceTimingsValue.projectionPasses = this.performanceTimingsValue.projectionSubmissions > 0 ? 4 : 0;
-    this.performanceTimingsValue.sortSubmissions = Math.max(0, sortSubmissionsAfter - sortSubmissionsBefore);
-    this.performanceTimingsValue.sortPasses = this.performanceTimingsValue.sortSubmissions > 0
-      ? (this.projectedSorter?.passCount ?? this.sorter.passCount ?? 1)
-      : 0;
+    this.performanceTimingsValue.projectionPasses =
+      this.performanceTimingsValue.projectionSubmissions > 0 ? 4 : 0;
+    this.performanceTimingsValue.sortSubmissions = Math.max(
+      0,
+      sortSubmissionsAfter - sortSubmissionsBefore,
+    );
+    this.performanceTimingsValue.sortPasses =
+      this.performanceTimingsValue.sortSubmissions > 0
+        ? (this.projectedSorter?.passCount ?? this.sorter.passCount ?? 1)
+        : 0;
     this.performanceTimingsValue.activeListBytes = offset * Uint32Array.BYTES_PER_ELEMENT;
     this.performanceTimingsValue.activeListRanges = admitted.length;
+    const submission = this.sortScheduler.submissionDiagnostics();
+    this.performanceTimingsValue.sortSerial = submission.serial;
+    this.performanceTimingsValue.sortSubmissionFrame = submission.frame;
+    this.performanceTimingsValue.sortAction = submission.action;
+    this.performanceTimingsValue.sortTracking = submission.tracking;
+    this.performanceTimingsValue.sortAcknowledgementMs = submission.acknowledgementMs;
+    this.performanceTimingsValue.sortInputCount = submission.inputCount;
   }
 
   override onAfterRender(
@@ -1030,6 +1100,26 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     _scene: THREE.Scene,
     _camera: THREE.Camera,
   ): void {
+    if (this.sortScheduler.hasSubmissionAwaitingRender()) {
+      const queue = (
+        this.renderer.backend as unknown as {
+          device?: { queue?: { onSubmittedWorkDone?: () => Promise<void> } };
+        }
+      ).device?.queue;
+      let completion: Promise<void> | undefined;
+      if (typeof queue?.onSubmittedWorkDone === 'function') {
+        try {
+          completion = queue.onSubmittedWorkDone();
+        } catch {
+          completion = undefined;
+        }
+      }
+      this.sortScheduler.acknowledgeSubmission(
+        this.refinementFrameNumber,
+        performance.now(),
+        completion,
+      );
+    }
     const version = this.readyPublicationVersion;
     const publication = this.readyPublication;
     if (

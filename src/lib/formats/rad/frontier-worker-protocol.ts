@@ -193,7 +193,7 @@ export interface FrontierDemandWant {
   readonly priority: number;
 }
 
-export type FrontierDemandReason = 'traversed' | 'draining' | 'discovery';
+export type FrontierDemandReason = 'traversed' | 'draining' | 'discovery' | 'traversal-slice';
 
 export interface FrontierDemandReply {
   readonly type: 'demand';
@@ -205,8 +205,20 @@ export interface FrontierDemandReply {
   readonly revision: number;
   /** Traversal that produced this demand; `0` for incremental chunk discovery. */
   readonly traversalId: number;
+  /** Reschedule sequence that owns this demand. */
+  readonly seq?: number;
   /** Why this demand was posted. Discovery/drain never imply a fresh quality cut. */
   readonly reason?: FrontierDemandReason;
+  readonly traversalStartedAt?: number;
+  readonly firstSliceAt?: number;
+}
+
+/** Diagnostic lifecycle event emitted when a cooperative walk is superseded. */
+export interface FrontierTraversalCancelledReply {
+  readonly type: 'traversalCancelled';
+  readonly seq: number;
+  readonly revision: number;
+  readonly cancelledAt: number;
 }
 
 /**
@@ -278,6 +290,9 @@ export interface FrontierPlanMessage {
   readonly traversalFallbackCount?: number;
   readonly rootCoverInfeasible?: boolean;
   readonly traversalMs?: number;
+  readonly traversalStartedAt?: number;
+  readonly firstSliceAt?: number;
+  readonly traversalCompletedAt?: number;
   /** Survivors relocated by swap-remove: write `moves` splat j at `moveSlots[j]`. */
   readonly moveSlots: Uint32Array;
   readonly moves: PlanSplats;
@@ -383,6 +398,8 @@ export interface FrontierPlanMessage {
    * reschedule promptly, otherwise convergence stalls wherever the cap left it.
    */
   readonly converged: boolean;
+  /** The next best resident subdivision would exceed the draw budget. */
+  readonly budgetClamped?: boolean;
   /**
    * Decoded bytes the worker's chunk cache is holding, and the cap it evicts
    * against.

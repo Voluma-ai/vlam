@@ -256,29 +256,69 @@ export interface FrontierTraversalResult {
   notables: readonly { global: number; pixelScale: number }[];
 }
 
-export function traverseFrontier(
-  chunkMap: ReadonlyMap<number, SplatData>,
-  roots: readonly number[],
-  chunkSize: number,
-  view: FrontierView,
-  limit: number,
-  maxSplats = Number.POSITIVE_INFINITY,
-  options: FrontierTraversalOptions = {},
-): FrontierTraversalResult {
-  const scratch = options.scratch ?? createFrontierScratch();
-  const heap = scratch.heap;
-  const picks = scratch.picks;
-  const touched = scratch.touched;
-  const waiters = scratch.waiters;
-  heap.clear();
-  picks.clear();
-  touched.clear();
-  waiters.length = 0;
+export interface FrontierTraversalStep {
+  readonly done: boolean;
+  readonly newTouchedFiles: number;
+}
 
-  const notables: { global: number; pixelScale: number }[] | null = options.collectDiagnostics
-    ? []
-    : null;
-  const note = (global: number, pixelScale: number): void => {
+/**
+ * Resumable form of {@link traverseFrontier}. Each instance owns all mutable
+ * traversal state so a worker can abandon an obsolete camera walk without
+ * leaking any of its partial selection into the next one.
+ */
+export class FrontierTraversalJob {
+  private readonly scratch: FrontierScratch;
+  private readonly heap: MaxHeap;
+  private readonly picks: Map<number, number[]>;
+  readonly touched: Map<number, number>;
+  private readonly waiterList: FrontierWaiter[];
+  private readonly seeded = new Set<number>();
+  private readonly selection: FrontierSelection = new Map();
+  private readonly notables: { global: number; pixelScale: number }[] | null;
+  private phase: 'seed' | 'expand' | 'drain' | 'materialize' | 'done' = 'seed';
+  private rootCursor = 0;
+  private drainCursor = 0;
+  private materializeEntries: [number, number[]][] | null = null;
+  private materializeCursor = 0;
+  private numSplats = 0;
+  private selectedCount = 0;
+  private budgetClamped = false;
+  private rootCoverInfeasible = false;
+  private refinable = false;
+  private finalResult: FrontierTraversalResult | null = null;
+
+  constructor(
+    private readonly chunkMap: ReadonlyMap<number, SplatData>,
+    private readonly roots: readonly number[],
+    private readonly chunkSize: number,
+    private readonly view: FrontierView,
+    private readonly limit: number,
+    private readonly maxSplats = Number.POSITIVE_INFINITY,
+    options: FrontierTraversalOptions = {},
+  ) {
+    this.scratch = options.scratch ?? createFrontierScratch();
+    this.heap = this.scratch.heap;
+    this.picks = this.scratch.picks;
+    this.touched = this.scratch.touched;
+    this.waiterList = this.scratch.waiters;
+    this.heap.clear();
+    this.picks.clear();
+    this.touched.clear();
+    this.waiterList.length = 0;
+    this.notables = options.collectDiagnostics ? [] : null;
+  }
+
+  get done(): boolean {
+    return this.phase === 'done';
+  }
+
+  get result(): FrontierTraversalResult {
+    if (!this.finalResult) throw new Error('Frontier traversal is not complete.');
+    return this.finalResult;
+  }
+
+  private note(global: number, pixelScale: number): void {
+    const notables = this.notables;
     if (!notables) return;
     if (notables.length < 8) {
       notables.push({ global, pixelScale });
@@ -289,142 +329,191 @@ export function traverseFrontier(
       if ((notables[i] as { pixelScale: number }).pixelScale < notables[min]!.pixelScale) min = i;
     }
     if (pixelScale > notables[min]!.pixelScale) notables[min] = { global, pixelScale };
-  };
-  const output = (file: number, local: number, pixelScale: number, _data: SplatData): void => {
-    let picked = picks.get(file);
+  }
+
+  private output(file: number, local: number, pixelScale: number): void {
+    let picked = this.picks.get(file);
     if (!picked) {
       picked = [];
-      picks.set(file, picked);
+      this.picks.set(file, picked);
     }
     picked.push(local);
-    note(file * chunkSize + local, pixelScale);
-  };
+    this.note(file * this.chunkSize + local, pixelScale);
+  }
 
-  const touchMissing = (
+  private touchMissing(
     parentGlobal: number,
     pixelScale: number,
     firstChunk: number,
     lastChunk: number,
-  ): boolean => {
+  ): boolean {
     const files: number[] = [];
     let allCached = true;
     for (let cc = firstChunk; cc <= lastChunk; cc++) {
-      if (chunkMap.has(cc)) continue;
+      if (this.chunkMap.has(cc)) continue;
       allCached = false;
       files.push(cc);
-      if (pixelScale > (touched.get(cc) ?? 0)) touched.set(cc, pixelScale);
+      if (pixelScale > (this.touched.get(cc) ?? 0)) this.touched.set(cc, pixelScale);
     }
-    if (!allCached) waiters.push({ parentGlobal, pixelScale, files });
+    if (!allCached) this.waiterList.push({ parentGlobal, pixelScale, files });
     return allCached;
-  };
-
-  // Seed the roots. `numSplats` tracks heap + output, exactly as Spark's
-  // `num_splats` does, so the budget can be checked before each descent.
-  let numSplats = 0;
-  const seeded = new Set<number>();
-  for (const r of roots) {
-    if (seeded.has(r)) continue;
-    const file = Math.floor(r / chunkSize);
-    const data = chunkMap.get(file);
-    if (!data?.radTree) continue;
-    seeded.add(r);
-    heap.push(r, pixelScaleOf(data, r - file * chunkSize, view));
-    numSplats++;
   }
 
-  let budgetClamped = false;
-  const rootCoverInfeasible = Number.isFinite(maxSplats) && numSplats > maxSplats;
-  while (heap.size > 0) {
-    const pixelScale = heap.peekPriority();
-    if (pixelScale <= limit) break;
-    const global = heap.peek();
-    const file = Math.floor(global / chunkSize);
-    const data = chunkMap.get(file);
-    const local = global - file * chunkSize;
-    if (!data?.radTree) {
-      heap.pop();
-      numSplats--;
-      continue;
-    }
-    const tree = data.radTree;
-    const childCount = tree.childCount[local] as number;
+  /** Runs until the time budget expires, completion, or enough new demand is found. */
+  step(
+    maxMs = 4,
+    stopAfterNewTouched = Number.POSITIVE_INFINITY,
+    now: () => number = performance.now.bind(performance),
+  ): FrontierTraversalStep {
+    if (this.done) return { done: true, newTouchedFiles: 0 };
+    const startedAt = Number.isFinite(maxMs) ? now() : 0;
+    const touchedAtStart = this.touched.size;
+    let operations = 0;
+    const shouldYield = (): boolean => {
+      if (this.touched.size - touchedAtStart >= stopAfterNewTouched) return true;
+      operations++;
+      return Number.isFinite(maxMs) && (operations & 0xff) === 0 && now() - startedAt >= maxMs;
+    };
 
-    if (childCount === 0) {
-      heap.pop();
-      output(file, local, pixelScale, data);
-      continue;
-    }
-    const nextSplats = numSplats - 1 + childCount;
-    if (nextSplats > maxSplats) {
-      budgetClamped = true;
-      break;
-    }
-
-    heap.pop();
-    const childStart = tree.childStart[local] as number;
-    const firstChunk = Math.floor(childStart / chunkSize);
-    const lastChunk = Math.floor((childStart + childCount - 1) / chunkSize);
-    if (!touchMissing(global, pixelScale, firstChunk, lastChunk)) {
-      output(file, local, pixelScale, data);
-      continue;
-    }
-    for (let c = 0; c < childCount; c++) {
-      const child = childStart + c;
-      const childFile = Math.floor(child / chunkSize);
-      const childData = chunkMap.get(childFile)!;
-      const childLocal = child - childFile * chunkSize;
-      const childScale = pixelScaleOf(childData, childLocal, view);
-      if (childScale <= limit) {
-        output(childFile, childLocal, childScale, childData);
-      } else {
-        heap.push(child, childScale);
+    while (this.phase !== 'done') {
+      if (this.phase === 'seed') {
+        while (this.rootCursor < this.roots.length) {
+          const root = this.roots[this.rootCursor++] as number;
+          if (!this.seeded.has(root)) {
+            const file = Math.floor(root / this.chunkSize);
+            const data = this.chunkMap.get(file);
+            if (data?.radTree) {
+              this.seeded.add(root);
+              this.heap.push(root, pixelScaleOf(data, root - file * this.chunkSize, this.view));
+              this.numSplats++;
+            }
+          }
+          if (shouldYield())
+            return { done: false, newTouchedFiles: this.touched.size - touchedAtStart };
+        }
+        this.rootCoverInfeasible =
+          Number.isFinite(this.maxSplats) && this.numSplats > this.maxSplats;
+        this.phase = 'expand';
+      } else if (this.phase === 'expand') {
+        if (this.heap.size === 0 || this.heap.peekPriority() <= this.limit) {
+          this.phase = 'drain';
+          continue;
+        }
+        const pixelScale = this.heap.peekPriority();
+        const global = this.heap.peek();
+        const file = Math.floor(global / this.chunkSize);
+        const data = this.chunkMap.get(file);
+        const local = global - file * this.chunkSize;
+        if (!data?.radTree) {
+          this.heap.pop();
+          this.numSplats--;
+        } else {
+          const tree = data.radTree;
+          const childCount = tree.childCount[local] as number;
+          if (childCount === 0) {
+            this.heap.pop();
+            this.output(file, local, pixelScale);
+          } else {
+            const nextSplats = this.numSplats - 1 + childCount;
+            if (nextSplats > this.maxSplats) {
+              this.budgetClamped = true;
+              this.phase = 'drain';
+              continue;
+            }
+            this.heap.pop();
+            const childStart = tree.childStart[local] as number;
+            const firstChunk = Math.floor(childStart / this.chunkSize);
+            const lastChunk = Math.floor((childStart + childCount - 1) / this.chunkSize);
+            if (!this.touchMissing(global, pixelScale, firstChunk, lastChunk)) {
+              this.output(file, local, pixelScale);
+            } else {
+              for (let c = 0; c < childCount; c++) {
+                const child = childStart + c;
+                const childFile = Math.floor(child / this.chunkSize);
+                const childData = this.chunkMap.get(childFile)!;
+                const childLocal = child - childFile * this.chunkSize;
+                const childScale = pixelScaleOf(childData, childLocal, this.view);
+                if (childScale <= this.limit) this.output(childFile, childLocal, childScale);
+                else this.heap.push(child, childScale);
+              }
+              this.numSplats = nextSplats;
+            }
+          }
+        }
+        if (shouldYield())
+          return { done: false, newTouchedFiles: this.touched.size - touchedAtStart };
+      } else if (this.phase === 'drain') {
+        if (this.drainCursor >= this.heap.size) {
+          this.heap.clear();
+          this.materializeEntries = [...this.picks];
+          this.phase = 'materialize';
+          continue;
+        }
+        const global = this.heap.itemAt(this.drainCursor);
+        const pixelScale = this.heap.priorityAt(this.drainCursor++);
+        const file = Math.floor(global / this.chunkSize);
+        const data = this.chunkMap.get(file);
+        const local = global - file * this.chunkSize;
+        if (data?.radTree) {
+          this.output(file, local, pixelScale);
+          if (!this.refinable) {
+            const childCount = data.radTree.childCount[local] as number;
+            if (childCount > 0) {
+              const childStart = data.radTree.childStart[local] as number;
+              const firstChunk = Math.floor(childStart / this.chunkSize);
+              const lastChunk = Math.floor((childStart + childCount - 1) / this.chunkSize);
+              let allCached = true;
+              for (let cc = firstChunk; cc <= lastChunk && allCached; cc++) {
+                if (!this.chunkMap.has(cc)) allCached = false;
+              }
+              if (allCached) this.refinable = true;
+            }
+          }
+        }
+        if (shouldYield())
+          return { done: false, newTouchedFiles: this.touched.size - touchedAtStart };
+      } else if (this.phase === 'materialize') {
+        const entries = this.materializeEntries as [number, number[]][];
+        if (this.materializeCursor >= entries.length) {
+          this.notables?.sort((a, b) => b.pixelScale - a.pixelScale);
+          this.finalResult = {
+            selection: this.selection,
+            count: this.selectedCount,
+            touched: this.touched,
+            waiters: this.waiterList.slice(),
+            budgetClamped: this.budgetClamped,
+            refinable: this.refinable,
+            rootCoverInfeasible: this.rootCoverInfeasible,
+            notables: this.notables ?? [],
+          };
+          this.phase = 'done';
+          continue;
+        }
+        const [file, picked] = entries[this.materializeCursor++] as [number, number[]];
+        this.selection.set(file, Uint32Array.from(picked));
+        this.selectedCount += picked.length;
+        if (shouldYield())
+          return { done: false, newTouchedFiles: this.touched.size - touchedAtStart };
       }
     }
-    numSplats = nextSplats;
+    return { done: true, newTouchedFiles: this.touched.size - touchedAtStart };
   }
+}
 
-  // Spark emits remaining heap entries linearly and keeps the scratch buffer.
-  // Membership is the selected set; request ordering is tracked separately.
-  let refinable = false;
-  for (let i = 0; i < heap.size; i++) {
-    const global = heap.itemAt(i);
-    const pixelScale = heap.priorityAt(i);
-    const file = Math.floor(global / chunkSize);
-    const data = chunkMap.get(file);
-    const local = global - file * chunkSize;
-    if (!data?.radTree) continue;
-    output(file, local, pixelScale, data);
-    if (refinable) continue;
-    const childCount = data.radTree.childCount[local] as number;
-    if (childCount <= 0) continue;
-    const childStart = data.radTree.childStart[local] as number;
-    const firstChunk = Math.floor(childStart / chunkSize);
-    const lastChunk = Math.floor((childStart + childCount - 1) / chunkSize);
-    let allCached = true;
-    for (let cc = firstChunk; cc <= lastChunk && allCached; cc++) {
-      if (!chunkMap.has(cc)) allCached = false;
-    }
-    if (allCached) refinable = true;
+export function traverseFrontier(
+  chunkMap: ReadonlyMap<number, SplatData>,
+  roots: readonly number[],
+  chunkSize: number,
+  view: FrontierView,
+  limit: number,
+  maxSplats = Number.POSITIVE_INFINITY,
+  options: FrontierTraversalOptions = {},
+): FrontierTraversalResult {
+  const job = new FrontierTraversalJob(chunkMap, roots, chunkSize, view, limit, maxSplats, options);
+  while (!job.step(Number.POSITIVE_INFINITY).done) {
+    // Infinite slices preserve the synchronous API while sharing one algorithm.
   }
-  heap.clear();
-
-  const selection: FrontierSelection = new Map();
-  let count = 0;
-  for (const [file, picked] of picks) {
-    selection.set(file, Uint32Array.from(picked));
-    count += picked.length;
-  }
-  notables?.sort((a, b) => b.pixelScale - a.pixelScale);
-  return {
-    selection,
-    count,
-    touched,
-    waiters: waiters.slice(),
-    budgetClamped,
-    refinable,
-    rootCoverInfeasible,
-    notables: notables ?? [],
-  };
+  return job.result;
 }
 
 /**

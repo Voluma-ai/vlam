@@ -97,6 +97,58 @@ interface UploadRowSpan {
   readonly count: number;
 }
 
+/** Keep sparse active-list uploads cheap without creating thousands of writes. */
+const MAX_ACTIVE_LIST_UPDATE_RANGES = 64;
+const MAX_ACTIVE_LIST_UPDATE_BYTES = 256 * 1024;
+
+function mergeActiveListRanges(ranges: readonly UploadRowSpan[]): UploadRowSpan[] {
+  const sorted = ranges
+    .filter((range) => range.count > 0)
+    .map((range) => ({ start: range.start, count: range.count }))
+    .sort((a, b) => a.start - b.start);
+  const merged: UploadRowSpan[] = [];
+  for (const range of sorted) {
+    const last = merged.at(-1);
+    if (last && range.start <= last.start + last.count) {
+      merged[merged.length - 1] = {
+        start: last.start,
+        count: Math.max(last.count, range.start + range.count - last.start),
+      };
+    } else {
+      merged.push(range);
+    }
+  }
+  return merged;
+}
+
+function activeListChangedRanges(
+  current: Uint32Array,
+  next: Uint32Array,
+  previousCount: number,
+): UploadRowSpan[] {
+  const ranges: UploadRowSpan[] = [];
+  let changedStart = -1;
+  const flush = (end: number) => {
+    if (changedStart >= 0) {
+      ranges.push({ start: changedStart, count: end - changedStart });
+      changedStart = -1;
+    }
+  };
+  const commonCount = Math.min(previousCount, next.length);
+  for (let slot = 0; slot < commonCount; slot++) {
+    if (current[slot] !== next[slot]) {
+      if (changedStart < 0) changedStart = slot;
+    } else {
+      flush(slot);
+    }
+  }
+  flush(commonCount);
+  if (next.length > previousCount) {
+    ranges.push({ start: previousCount, count: next.length - previousCount });
+  }
+  return mergeActiveListRanges(ranges);
+}
+
 /** A copied pool-row region retained until its matching worker order publishes. */
 interface CapturedCoreRows extends UploadRowSpan {
   readonly centers: Float32Array;
@@ -364,6 +416,12 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     sortPasses: 0,
     projectionSubmissions: 0,
     projectionPasses: 0,
+    sortSerial: 0,
+    sortSubmissionFrame: -1,
+    sortAction: 'none' as 'none' | 'submitted' | 'coalesced' | 'suppressed',
+    sortTracking: null as 'pending' | 'gpu-completion' | 'render-ack-fallback' | null,
+    sortAcknowledgementMs: null as number | null,
+    sortInputCount: 0,
   };
   // Protected so a unified {@link MergedSplatMesh} subclass can substitute a
   // world-space sort bound (see {@link refreshSortBounds}).
@@ -527,6 +585,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   /** Initialized to an impossible matrix so the first frame always sorts. */
   private readonly lastSortedState = new THREE.Matrix4().makeScale(0, 0, 0);
   private readonly sortScheduler: WebGpuSortScheduler;
+  private sortFrameNumber = 0;
+  private sortSubmissionMarkedFrame = -1;
   /** One-frame queue-headroom hint used before a staged atomic commit. */
   private deferSortRequestOnce = false;
   /** Bumped by every active-list mutation; identifies a draw list. */
@@ -1402,17 +1462,36 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       throw new RangeError('SplatMesh.replaceActiveIndices: frontier exceeds pool capacity.');
     }
 
+    const previousCount = this.activeCount;
+    let updateRanges = activeListChangedRanges(source, indices, previousCount);
+    const changedBytes = updateRanges.reduce(
+      (bytes, range) => bytes + range.count * Uint32Array.BYTES_PER_ELEMENT,
+      0,
+    );
+    const useFullRange =
+      updateRanges.length > MAX_ACTIVE_LIST_UPDATE_RANGES ||
+      changedBytes > MAX_ACTIVE_LIST_UPDATE_BYTES;
+    if (useFullRange) {
+      updateRanges =
+        Math.max(previousCount, indices.length) > 0
+          ? [{ start: 0, count: Math.max(previousCount, indices.length) }]
+          : [];
+    }
+
     const trackActivePoolSlots = this.tracksActivePoolSlots();
     if (!trackActivePoolSlots) {
       source.set(indices);
-      const previousCount = this.activeCount;
       this.activeCount = indices.length;
-      this.commitActiveListMutation(0, Math.max(previousCount, this.activeCount));
+      if (useFullRange) {
+        this.sourceIndexAttribute.clearUpdateRanges();
+        this.splatIndexAttribute.clearUpdateRanges();
+      }
+      this.commitActiveListMutationRanges(updateRanges);
       this.queryEpoch++;
       this.contentRevision++;
       return this.activeListVersion;
     }
-    this.activeSlotByPoolIndex.fill(0xffffffff);
+    this.clearActiveSlotMap(source, previousCount);
     for (let slot = 0; slot < indices.length; slot++) {
       const poolIndex = indices[slot] as number;
       if (poolIndex >= source.length) {
@@ -1429,9 +1508,12 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       if (trackActivePoolSlots) this.activeSlotByPoolIndex[poolIndex] = slot;
     }
 
-    const previousCount = this.activeCount;
     this.activeCount = indices.length;
-    this.commitActiveListMutation(0, Math.max(previousCount, this.activeCount));
+    if (useFullRange) {
+      this.sourceIndexAttribute.clearUpdateRanges();
+      this.splatIndexAttribute.clearUpdateRanges();
+    }
+    this.commitActiveListMutationRanges(updateRanges);
     this.queryEpoch++;
     this.contentRevision++;
     return this.activeListVersion;
@@ -1461,12 +1543,12 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   protected replaceActivePrefix(count: number): void {
     const source = this.sourceIndexAttribute.array as Uint32Array;
     const next = Math.max(0, Math.min(source.length, Math.floor(count)));
-    this.activeSlotByPoolIndex.fill(0xffffffff);
+    const previousCount = this.activeCount;
+    this.clearActiveSlotMap(source, previousCount);
     for (let index = 0; index < next; index++) {
       source[index] = index;
       this.activeSlotByPoolIndex[index] = index;
     }
-    const previousCount = this.activeCount;
     this.activeCount = next;
     this.commitActiveListMutation(0, Math.max(previousCount, next));
     this.queryEpoch++;
@@ -1486,7 +1568,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.invalidateSort();
   }
 
-  private appendRangeWithState(data: SplatData, active: boolean, reservedCount = data.count): SplatRange {
+  private appendRangeWithState(
+    data: SplatData,
+    active: boolean,
+    reservedCount = data.count,
+  ): SplatRange {
     if (!Number.isInteger(reservedCount) || reservedCount < data.count) {
       throw new RangeError('SplatMesh.appendRange: reserved capacity must fit the data.');
     }
@@ -1974,6 +2060,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.updateTimings.sortPasses = 0;
     this.updateTimings.projectionSubmissions = 0;
     this.updateTimings.projectionPasses = 0;
+    const sortFrameNumber = ++this.sortFrameNumber;
+    this.sortSubmissionMarkedFrame = -1;
     if (
       this.workerPublicationEnabled &&
       this.activeCount === 0 &&
@@ -2023,12 +2111,25 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     }
     this.adaptFoveationLimit(projectionCamera, viewHeight);
     this.writeViewUniforms(projectionCamera, viewWidth, viewHeight, sortCamera);
+    this.currentModelView.multiplyMatrices(sortCamera.matrixWorldInverse, this.matrixWorld);
+    this.writeSortState(sortCamera);
+    const sortHold =
+      options.sort !== false &&
+      this.sortScheduler.beginSubmissionFrame(sortFrameNumber, performance.now());
+    if (sortHold) {
+      this.sortScheduler.markSubmissionSuppressed(
+        this.sortScheduler.hasPendingForce() ||
+          this.activeListVersion !== this.sortedActiveListVersion ||
+          this.orderIsForeign ||
+          !this.currentSortState.equals(this.lastSortedState),
+      );
+    }
     this.updateTimings.activeListUpdateRanges = this.sourceIndexAttribute.updateRanges.length;
     const projectionSubmissionsBefore = this.projectedPipeline?.projectionDispatches ?? 0;
     const sortSubmissionsBefore =
       (this.sorter?.submissionCount ?? 0) + (this.projectedSorter?.submissionCount ?? 0);
     let sortAccepted = false;
-    if (options.sort !== false) {
+    if (options.sort !== false && !sortHold) {
       const sortStartedAt = performance.now();
       sortAccepted = this.prepareProjectedSort(
         projectionCamera,
@@ -2050,19 +2151,30 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         0,
         projectionSubmissionsAfter - projectionSubmissionsBefore,
       );
-      this.updateTimings.projectionPasses = this.updateTimings.projectionSubmissions > 0
-        ? this.computeProjectionActive ? 4 : 0
-        : 0;
-      this.updateTimings.sortSubmissions = Math.max(0, sortSubmissionsAfter - sortSubmissionsBefore);
-      this.updateTimings.sortPasses = this.updateTimings.sortSubmissions > 0
-        ? (this.projectedSorter?.passCount ?? this.sorter?.passCount ?? 1)
-        : 0;
+      this.updateTimings.projectionPasses =
+        this.updateTimings.projectionSubmissions > 0 ? (this.computeProjectionActive ? 4 : 0) : 0;
+      this.updateTimings.sortSubmissions = Math.max(
+        0,
+        sortSubmissionsAfter - sortSubmissionsBefore,
+      );
+      this.updateTimings.sortPasses =
+        this.updateTimings.sortSubmissions > 0
+          ? (this.projectedSorter?.passCount ?? this.sorter?.passCount ?? 1)
+          : 0;
+      if (sortAccepted) this.markSortSubmission(this.activeCount);
     } else {
       this.setComputeProjectionActive(false);
       if (this.projectionStrategyValue === 'compute') {
         this.projectionStrategyState.reason = 'unified-source';
       }
     }
+    const submission = this.sortScheduler.submissionDiagnostics();
+    this.updateTimings.sortSerial = submission.serial;
+    this.updateTimings.sortSubmissionFrame = submission.frame;
+    this.updateTimings.sortAction = submission.action;
+    this.updateTimings.sortTracking = submission.tracking;
+    this.updateTimings.sortAcknowledgementMs = submission.acknowledgementMs;
+    this.updateTimings.sortInputCount = submission.inputCount;
     // Compute projection sorts every frame for culling; pool-indexed SH does
     // not. Reuse the vertex-path sort cadence so the cache still refreshes on
     // camera motion rather than every projector dispatch.
@@ -2097,8 +2209,20 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     sortPasses: number;
     projectionSubmissions: number;
     projectionPasses: number;
+    sortSerial: number;
+    sortSubmissionFrame: number;
+    sortAction: 'none' | 'submitted' | 'coalesced' | 'suppressed';
+    sortTracking: 'pending' | 'gpu-completion' | 'render-ack-fallback' | null;
+    sortAcknowledgementMs: number | null;
+    sortInputCount: number;
   }> {
     return this.updateTimings;
+  }
+
+  private markSortSubmission(inputCount: number): void {
+    if (this.sortSubmissionMarkedFrame === this.sortFrameNumber) return;
+    this.sortScheduler.markSubmission(this.sortFrameNumber, inputCount);
+    this.sortSubmissionMarkedFrame = this.sortFrameNumber;
   }
 
   /**
@@ -2512,6 +2636,22 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * compilation, and an empty post-release array can poison SwiftShader.
    */
   override onAfterRender(renderer: WebGLRenderer, _scene: THREE.Scene, camera: THREE.Camera): void {
+    if (this.sortScheduler.hasSubmissionAwaitingRender()) {
+      const queue = (
+        renderer as unknown as {
+          backend?: { device?: { queue?: { onSubmittedWorkDone?: () => Promise<void> } } };
+        }
+      ).backend?.device?.queue;
+      let completion: Promise<void> | undefined;
+      if (typeof queue?.onSubmittedWorkDone === 'function') {
+        try {
+          completion = queue.onSubmittedWorkDone();
+        } catch {
+          completion = undefined;
+        }
+      }
+      this.sortScheduler.acknowledgeSubmission(this.sortFrameNumber, performance.now(), completion);
+    }
     const activeListVersion = this.activeListVersion;
     if (
       !this.disposed &&
@@ -3101,8 +3241,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /** Uploads only the changed packed slots and invalidates the current depth order. */
   private commitActiveListMutation(start: number, count: number): void {
-    if (count > 0) {
-      addMergedUpdateRange(this.sourceIndexAttribute, start, count);
+    this.commitActiveListMutationRanges(count > 0 ? [{ start, count }] : []);
+  }
+
+  private commitActiveListMutationRanges(ranges: readonly UploadRowSpan[]): void {
+    for (const range of ranges) {
+      addMergedUpdateRange(this.sourceIndexAttribute, range.start, range.count);
+    }
+    if (ranges.length > 0) {
       this.sourceIndexAttribute.needsUpdate = true;
     }
 
@@ -3128,9 +3274,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         }
         this.splatIndexAttribute.needsUpdate = true;
         this.drawListSorted = false;
-      } else if (count > 0) {
-        draw.set(source.subarray(start, start + count), start);
-        addMergedUpdateRange(this.splatIndexAttribute, start, count);
+      } else if (ranges.length > 0) {
+        for (const range of ranges) {
+          draw.set(source.subarray(range.start, range.start + range.count), range.start);
+          addMergedUpdateRange(this.splatIndexAttribute, range.start, range.count);
+        }
         this.splatIndexAttribute.needsUpdate = true;
       }
     }
@@ -3159,6 +3307,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   protected rebuildActiveList(): void {
     const source = this.sourceIndexAttribute.array as Uint32Array;
     const identity = this.getPoolIndexTemplate();
+    this.clearActiveSlotMap(source, this.activeCount);
     let cursor = 0;
     for (const record of this.ranges.values()) {
       if (!record.active) continue;
@@ -3194,6 +3343,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // sort instead of displaying a stale permutation during a streaming swap.
     this.activeListVersion++;
     this.sortScheduler.invalidateContent();
+  }
+
+  /** Clears only the pool indices that were active, not the whole pool map. */
+  private clearActiveSlotMap(source: Uint32Array, count: number): void {
+    const end = Math.min(count, source.length);
+    for (let slot = 0; slot < end; slot++) {
+      this.activeSlotByPoolIndex[source[slot] as number] = 0xffffffff;
+    }
   }
 
   /** The pool's reusable index ramp; shared by every mesh drawing from it. */
@@ -4066,6 +4223,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       // On WebGL2 `now` is 0 - harmless, cadence timing is WebGPU-only; the
       // call still clears the pending-force flag consumed above.
       this.sortScheduler.markAccepted(now);
+      if (this.sorter.kind !== 'worker') this.markSortSubmission(this.activeCount);
       if (this.sorter.kind !== 'worker') {
         this.sortedActiveListVersion = this.activeListVersion;
         this.onActiveListReady(this.activeListVersion);

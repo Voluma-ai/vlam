@@ -71,7 +71,17 @@ describe('page-table demand reconciliation', () => {
       demandNeedsNewRevision: boolean;
       demandWants: FrontierDemandReply['wants'];
       pageTableCachedFiles: Set<number>;
-      fetching: Map<number, { controller: AbortController; kind: string }>;
+      fetching: Map<
+        number,
+        {
+          controller: AbortController;
+          kind: string;
+          demandGeneration?: number;
+          cameraEpoch?: number;
+          demandKey?: string;
+          requestedCameraPosition?: readonly [number, number, number] | null;
+        }
+      >;
       requestChunk: (file: number, kind: string) => void;
       applyDemand: (reply: FrontierDemandReply) => void;
       reconcileDemand: (complete?: boolean) => void;
@@ -117,6 +127,27 @@ describe('page-table demand reconciliation', () => {
       pageTableDisplayGeneration: number;
       pageTableDrawBudget: number;
       pageTableSeq: number;
+      cameraEpoch: number;
+      demandKey: string;
+      reclaimStalePriorityFetches: () => void;
+      hardRelocationPending: boolean;
+      radChunkDisplayedFiles: Set<number>;
+      radChunkPendingFiles: Set<number> | null;
+      protectedRadChunkFiles: () => Set<number>;
+      radChunkDemandSettledRevision: number;
+      radChunkDemandSettledCamera: readonly [number, number, number] | null;
+      radChunkDemandSettledForward: readonly [number, number, number] | null;
+      radChunkDemandSettledLimit: number;
+      radChunkDemandSettledConfig: string;
+      radChunkDemandConfig: () => string;
+      radChunkDemandSettlementIsCurrent: (
+        camera: readonly [number, number, number],
+        forward: readonly [number, number, number],
+        limit: number,
+      ) => boolean;
+      frontierConverged: boolean;
+      pageTableContinuePending: boolean;
+      scene: { pinnedFiles: Set<number> };
       replaceActiveIndices: (indices: Uint32Array) => number;
       sourceIndexAttribute: { array: Uint32Array };
       activeSlotByPoolIndex: Uint32Array;
@@ -147,7 +178,10 @@ describe('page-table demand reconciliation', () => {
       pageTableDrawBudget: number;
       pageTableSeq: number;
     };
-    const pages = new Map<number, number>([[0, 0], [1, 1]]);
+    const pages = new Map<number, number>([
+      [0, 0],
+      [1, 1],
+    ]);
     inner.radChunkResidency = true;
     inner.radChunkAllocator = {
       chunkSize: 4,
@@ -289,24 +323,250 @@ describe('page-table demand reconciliation', () => {
     expect(old.signal.aborted).toBe(false);
   });
 
+  it('reclaims stale unprotected priority requests after a hard translation', () => {
+    const inner = fixture();
+    inner.radChunkResidency = true;
+    inner.pageTableInFlight = true;
+    inner.pageTableCachedFiles.add(0);
+    inner.lastPostedCamera = [0, 0, 0];
+    inner.cameraEpoch = 1;
+    inner.demandKey = 'old-camera';
+    inner.demandGeneration = 1;
+    inner.scene.pinnedFiles.delete(0);
+    inner.scene.pinnedFiles.add(3);
+    inner.radChunkDisplayedFiles.add(2);
+    inner.radChunkPendingFiles = new Set([4]);
+    // Global selections are deliberately misleading: protection is bounded by
+    // the authoritative file sets, not by scanning millions of selected nodes.
+    inner.radChunkDisplayedGlobals = new Uint32Array([4]);
+    inner.radChunkPendingGlobals = new Uint32Array([4]);
+    const root = new AbortController();
+    const stale = new AbortController();
+    const displayed = new AbortController();
+    const pending = new AbortController();
+    const pinned = new AbortController();
+    const current = new AbortController();
+    const fetch = (controller: AbortController, cameraEpoch: number) => ({
+      controller,
+      kind: 'priority',
+      demandGeneration: 1,
+      cameraEpoch,
+      demandKey: 'old-camera',
+      requestedCameraPosition: [0, 0, 0] as const,
+    });
+    inner.fetching.set(0, fetch(root, 1));
+    inner.fetching.set(1, fetch(stale, 1));
+    inner.fetching.set(2, fetch(displayed, 1));
+    inner.fetching.set(3, fetch(pinned, 1));
+    inner.fetching.set(4, fetch(pending, 1));
+    inner.fetching.set(5, fetch(current, 2));
+    const reclaim = vi.spyOn(inner, 'reclaimStalePriorityFetches');
+
+    inner.reschedulePageTable(
+      new THREE.Vector3(2, 0, 0),
+      new THREE.Vector3(0, 0, -1),
+      new THREE.Frustum(),
+      1000,
+    );
+    inner.reschedulePageTable(
+      new THREE.Vector3(3, 0, 0),
+      new THREE.Vector3(0, 0, -1),
+      new THREE.Frustum(),
+      1010,
+    );
+
+    expect(root.signal.aborted).toBe(false);
+    expect(stale.signal.aborted).toBe(true);
+    expect(displayed.signal.aborted).toBe(false);
+    expect(pinned.signal.aborted).toBe(false);
+    expect(pending.signal.aborted).toBe(false);
+    expect(current.signal.aborted).toBe(false);
+    expect(inner.demandNeedsNewRevision).toBe(true);
+    expect(inner.pendingWork).toBe(true);
+    expect(reclaim).toHaveBeenCalledOnce();
+  });
+
+  it('builds page protection from file sets instead of a large splat selection', () => {
+    const inner = fixture();
+    inner.radChunkDisplayedGlobals = new Uint32Array(7_500_000).fill(4);
+    inner.radChunkDisplayedFiles = new Set([7]);
+    inner.radChunkPendingFiles = new Set([8]);
+    inner.scene.pinnedFiles = new Set([9]);
+
+    expect(inner.protectedRadChunkFiles()).toEqual(new Set([0, 7, 8, 9]));
+  });
+
+  it('settles an unchanged budget-clamped cut without fetching more waiter pages', () => {
+    const { inner } = chunkPagesFixture();
+    inner.demandGeneration = 1;
+    inner.pageTableDrawBudget = 2;
+    inner.applyFrontierPlan(chunkPlan(1, 1, [0, 1]));
+    const version = inner.radChunkPublishActiveListVersion as number;
+    inner.onActiveListReady(version);
+    inner.onActiveListRendered(version);
+
+    const unnecessary = new AbortController();
+    inner.fetching.set(2, { controller: unnecessary, kind: 'priority' });
+    inner.applyFrontierPlan({
+      ...chunkPlan(2, 1, [0, 1]),
+      converged: false,
+      budgetClamped: true,
+    });
+
+    expect(unnecessary.signal.aborted).toBe(true);
+    expect(inner.radChunkDemandSettledRevision).toBe(1);
+    expect(inner.frontierConverged).toBe(true);
+    expect(inner.pageTableContinuePending).toBe(false);
+
+    const request = vi.spyOn(inner, 'requestChunk').mockImplementation(() => {});
+    inner.applyDemand(demand(1, [{ file: 2, tier: 0, priority: 10 }]));
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('settles a replacement budget-clamped cut only after it renders', () => {
+    const { inner } = chunkPagesFixture();
+    inner.demandGeneration = 1;
+    inner.pageTableDrawBudget = 2;
+    inner.applyFrontierPlan(chunkPlan(1, 1, [0, 1]));
+    let version = inner.radChunkPublishActiveListVersion as number;
+    inner.onActiveListReady(version);
+    inner.onActiveListRendered(version);
+
+    const unnecessary = new AbortController();
+    inner.fetching.set(2, { controller: unnecessary, kind: 'priority' });
+    inner.applyFrontierPlan({
+      ...chunkPlan(2, 1, [4, 5]),
+      converged: false,
+      budgetClamped: true,
+    });
+    expect(inner.radChunkDemandSettledRevision).toBe(-1);
+    expect(unnecessary.signal.aborted).toBe(false);
+
+    version = inner.radChunkPublishActiveListVersion as number;
+    inner.onActiveListReady(version);
+    inner.onActiveListRendered(version);
+    expect(inner.radChunkDemandSettledRevision).toBe(1);
+    expect(unnecessary.signal.aborted).toBe(true);
+    expect(inner.frontierConverged).toBe(true);
+  });
+
+  it('keeps idle jitter settled but reopens after cumulative camera movement', () => {
+    const inner = fixture();
+    inner.radChunkDemandSettledCamera = [0, 0, 0];
+    inner.radChunkDemandSettledForward = [0, 0, -1];
+    inner.radChunkDemandSettledLimit = 1;
+    inner.radChunkDemandSettledConfig = inner.radChunkDemandConfig();
+
+    expect(inner.radChunkDemandSettlementIsCurrent([0.5, 0, 0], [0, 0, -1], 1)).toBe(true);
+    expect(inner.radChunkDemandSettlementIsCurrent([1.01, 0, 0], [0, 0, -1], 1)).toBe(false);
+    expect(inner.radChunkDemandSettlementIsCurrent([0, 0, 0], [0.01, 0, -0.99995], 1)).toBe(false);
+  });
+
+  it('does not reclaim requests for rotation-only movement', () => {
+    const inner = fixture();
+    inner.pageTableInFlight = false;
+    inner.pageTableCachedFiles.add(0);
+    vi.spyOn(inner, 'requestChunk').mockImplementation(() => {});
+    inner.reschedulePageTable(
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0, 0, -1),
+      new THREE.Frustum(),
+      1000,
+    );
+    const request = new AbortController();
+    inner.fetching.set(1, {
+      controller: request,
+      kind: 'priority',
+      cameraEpoch: inner.cameraEpoch,
+      demandGeneration: inner.demandGeneration,
+      demandKey: inner.demandKey,
+      requestedCameraPosition: [0, 0, 0],
+    });
+
+    inner.reschedulePageTable(
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(1, 0, 0),
+      new THREE.Frustum(),
+      1010,
+    );
+
+    expect(request.signal.aborted).toBe(false);
+  });
+
+  it('does not reclaim requests for a small translation', () => {
+    const inner = fixture();
+    inner.pageTableInFlight = false;
+    inner.pageTableCachedFiles.add(0);
+    vi.spyOn(inner, 'requestChunk').mockImplementation(() => {});
+    inner.reschedulePageTable(
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0, 0, -1),
+      new THREE.Frustum(),
+      1000,
+    );
+    const request = new AbortController();
+    inner.fetching.set(1, {
+      controller: request,
+      kind: 'priority',
+      cameraEpoch: inner.cameraEpoch,
+      demandGeneration: inner.demandGeneration,
+      demandKey: inner.demandKey,
+      requestedCameraPosition: [0, 0, 0],
+    });
+
+    inner.reschedulePageTable(
+      new THREE.Vector3(0.5, 0, 0),
+      new THREE.Vector3(0, 0, -1),
+      new THREE.Frustum(),
+      1010,
+    );
+
+    expect(request.signal.aborted).toBe(false);
+  });
+
+  it('does not request old chunk-page wants while a newer camera is pending', () => {
+    const inner = fixture();
+    inner.radChunkResidency = true;
+    inner.pageTableCachedFiles.add(0);
+    inner.demandGeneration = 2;
+    inner.demandReadyGeneration = 1;
+    inner.demandNeedsNewRevision = true;
+    inner.demandWants = [{ file: 7, tier: 0, priority: 10 }];
+    const request = vi.spyOn(inner, 'requestChunk').mockImplementation(() => {});
+
+    inner.applyDemand(demand(2, [{ file: 7, tier: 0, priority: 10 }]));
+
+    expect(request).not.toHaveBeenCalled();
+
+    inner.demandNeedsNewRevision = false;
+    inner.demandReadyGeneration = inner.demandGeneration;
+    inner.demandWants = [{ file: 8, tier: 0, priority: 9 }];
+    inner.reconcileDemand(true);
+    expect(request).toHaveBeenCalledWith(8, 'priority');
+  });
+
   it('publishes a complete resident cut while camera demand is newer', () => {
     const { inner } = chunkPagesFixture();
     inner.demandGeneration = 2;
     inner.demandNeedsNewRevision = true;
-    inner.applyFrontierPlan(chunkPlan(1, 1, [0, 1]));
-    expect(inner.radChunkPendingGlobals).toEqual(new Uint32Array([0, 1]));
+    inner.applyFrontierPlan(chunkPlan(1, 1, [0, 4]));
+    expect(inner.radChunkPendingGlobals).toEqual(new Uint32Array([0, 4]));
+    expect(inner.radChunkPendingFiles).toEqual(new Set([0, 1]));
     expect(inner.radChunkSelectionIdValue).toBe(1);
 
     inner.applyFrontierPlan(chunkPlan(2, 2, [4, 5]));
-    expect(inner.radChunkPendingGlobals).toEqual(new Uint32Array([0, 1]));
+    expect(inner.radChunkPendingGlobals).toEqual(new Uint32Array([0, 4]));
+    expect(inner.radChunkPendingFiles).toEqual(new Set([0, 1]));
     expect(inner.radChunkSelectionIdValue).toBe(1);
 
     const version = inner.radChunkPublishActiveListVersion;
     expect(version).not.toBeNull();
     inner.onActiveListReady(version as number);
     inner.onActiveListRendered(version as number);
-    expect(inner.radChunkDisplayedGlobals).toEqual(new Uint32Array([0, 1]));
+    expect(inner.radChunkDisplayedGlobals).toEqual(new Uint32Array([0, 4]));
+    expect(inner.radChunkDisplayedFiles).toEqual(new Set([0, 1]));
     expect(inner.radChunkPendingGlobals).toBeNull();
+    expect(inner.radChunkPendingFiles).toBeNull();
   });
 
   it('bulk-copies chunk-page selections without rebuilding the reverse slot map', () => {
@@ -321,11 +581,14 @@ describe('page-table demand reconciliation', () => {
 
   it('rejects an unsafe chunk-page candidate when its page identity changes', () => {
     const { inner, pages } = chunkPagesFixture();
+    inner.radChunkDisplayedFiles.add(1);
     inner.applyFrontierPlan(chunkPlan(1, 1, [0, 1]));
     pages.set(0, 1);
     const version = inner.radChunkPublishActiveListVersion;
     inner.onActiveListReady(version as number);
     expect(inner.radChunkPendingGlobals).toBeNull();
+    expect(inner.radChunkPendingFiles).toBeNull();
+    expect(inner.radChunkDisplayedFiles).toEqual(new Set([1]));
     expect(inner.radChunkLastInvalidationReasonValue).toBe('page-identity-changed');
   });
 
@@ -337,8 +600,18 @@ describe('page-table demand reconciliation', () => {
     expect(inner.radChunkLastInvalidationReasonValue).toBe('draw-budget');
   });
 
-  it('keeps the newest camera while the worker is busy without dropping live demand', () => {
-    const inner = fixture();
+  it('does not let a stale plan clear the replacement traversal', () => {
+    const { inner } = chunkPagesFixture();
+    const state = inner as typeof inner & { pageTableActiveSeq: number };
+    state.pageTableSeq = 2;
+    state.pageTableActiveSeq = 2;
+    state.pageTableInFlight = true;
+    state.applyFrontierPlan(chunkPlan(1, 1, [0]));
+    expect(state.pageTableInFlight).toBe(true);
+  });
+
+  it('supersedes an old walk immediately and ignores its stale demand', () => {
+    const { inner } = chunkPagesFixture();
     vi.spyOn(inner, 'requestChunk').mockImplementation(() => {});
     inner.pageTableInFlight = false;
     const origin = new THREE.Vector3();
@@ -364,25 +637,47 @@ describe('page-table demand reconciliation', () => {
       1010,
       [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
     );
-    expect(inner.demandGeneration).toBe(revision);
-    expect(inner.demandNeedsNewRevision).toBe(true);
-    expect(inner.demandWants.map((want) => want.file)).toEqual([4]);
-    expect(
-      inner.frontierWorker.posted.filter(
-        (message) => (message as { type?: string }).type === 'reschedule',
-      ),
-    ).toHaveLength(1);
+    expect(inner.demandGeneration).toBe(revision + 1);
+    expect(inner.demandNeedsNewRevision).toBe(false);
+    expect(inner.demandWants).toEqual([]);
+    const replacement = inner.frontierWorker.posted.filter(
+      (message) => (message as { type?: string }).type === 'reschedule',
+    );
+    expect(replacement).toHaveLength(2);
     inner.applyDemand(demand(revision, [{ file: 5, tier: 0, priority: 9 }]));
+    expect(inner.demandWants).toEqual([]);
+    const replacementSeq = (replacement[1] as { seq: number }).seq;
+    inner.applyDemand({
+      ...demand(revision + 1, [{ file: 5, tier: 0, priority: 9 }], false),
+      seq: replacementSeq,
+      reason: 'traversal-slice',
+    });
     expect(inner.demandWants.map((want) => want.file)).toEqual([5]);
-    inner.pageTableInFlight = false;
     inner.reschedulePageTable(
-      new THREE.Vector3(2, 0, 0),
+      new THREE.Vector3(4, 0, 0),
       forward,
       frustum,
       1020,
       [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
     );
-    expect(inner.demandGeneration).toBe(revision + 1);
+    expect(
+      inner.frontierWorker.posted.filter(
+        (message) => (message as { type?: string }).type === 'reschedule',
+      ),
+    ).toHaveLength(2);
+    inner.applyFrontierPlan(chunkPlan(replacementSeq, revision + 1, [0]));
+    inner.reschedulePageTable(
+      new THREE.Vector3(4, 0, 0),
+      forward,
+      frustum,
+      1030,
+      [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+    );
+    expect(
+      inner.frontierWorker.posted.filter(
+        (message) => (message as { type?: string }).type === 'reschedule',
+      ),
+    ).toHaveLength(3);
   });
 
   it('treats a projection-only change as a new configuration after the in-flight walk', () => {
