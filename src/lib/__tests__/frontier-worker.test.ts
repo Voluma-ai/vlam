@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as radFrontier from '../formats/rad/rad-frontier';
-import type { FrontierPlanMessage, FrontierRequest } from '../formats/rad/frontier-worker-protocol';
+import type {
+  FrontierPlanMessage,
+  FrontierRequest,
+  FrontierDemandReply,
+  FrontierSnapshotReply,
+  FrontierTraversalCancelledReply,
+} from '../formats/rad/frontier-worker-protocol';
 
 /**
  * The frontier worker's *delivery* behaviour, which is what decides how fast a
@@ -19,11 +25,25 @@ const traverseSpy = vi.spyOn(radFrontier, 'traverseFrontier');
 
 /** Collects what the worker posts back, and the buffers it transfers. */
 const plans: FrontierPlanMessage[] = [];
+const demands: FrontierDemandReply[] = [];
+const snapshots: FrontierSnapshotReply[] = [];
+const cancellations: FrontierTraversalCancelledReply[] = [];
 
 /** A worker global good enough for the module: `onmessage` + `postMessage`. */
 const workerSelf = {
   onmessage: null as ((event: MessageEvent<FrontierRequest>) => void) | null,
-  postMessage: (message: FrontierPlanMessage) => plans.push(message),
+  postMessage: (
+    message:
+      | FrontierPlanMessage
+      | FrontierDemandReply
+      | FrontierSnapshotReply
+      | FrontierTraversalCancelledReply,
+  ) => {
+    if (message.type === 'demand') demands.push(message);
+    else if (message.type === 'plan') plans.push(message);
+    else if (message.type === 'snapshot') snapshots.push(message);
+    else if (message.type === 'traversalCancelled') cancellations.push(message);
+  },
 };
 vi.stubGlobal('self', workerSelf);
 
@@ -49,21 +69,17 @@ const FAN = 500;
 const FRONTIER_SPLATS = ROOTS * FAN + (CHUNK_SIZE - ROOTS);
 /** A two-level forest: `roots` coarse nodes in chunk 0, each with `fan` leaves
  * spread over the later chunks, all in front of the camera. */
-function sendTree(roots: number, fan: number): void {
-  const leafTotal = roots * fan;
-  const leafChunks = Math.ceil(leafTotal / CHUNK_SIZE);
-
-  // Chunk 0: the roots (plus padding to a full chunk so child links line up).
+function sendRootChunk(roots: number, fan: number): void {
   const c0 = CHUNK_SIZE;
   const positions = new Float32Array(c0 * 3);
   const size = new Float32Array(c0);
   const childCount = new Uint16Array(c0);
   const childStart = new Uint32Array(c0);
   for (let i = 0; i < roots; i++) {
-    positions[i * 3 + 2] = 10; // 10 units straight ahead
+    positions[i * 3 + 2] = 10;
     size[i] = 8;
     childCount[i] = fan;
-    childStart[i] = CHUNK_SIZE + i * fan; // children start in chunk 1
+    childStart[i] = CHUNK_SIZE + i * fan;
   }
   send({
     type: 'chunk',
@@ -77,6 +93,12 @@ function sendTree(roots: number, fan: number): void {
     size,
     shBands: 0,
   });
+}
+
+function sendTree(roots: number, fan: number): void {
+  const leafTotal = roots * fan;
+  const leafChunks = Math.ceil(leafTotal / CHUNK_SIZE);
+  sendRootChunk(roots, fan);
 
   for (let f = 1; f <= leafChunks; f++) {
     const n = CHUNK_SIZE;
@@ -118,18 +140,101 @@ function reschedule(seq: number, camZ = 0, continuePendingPlan = false): void {
 }
 
 describe('frontier worker delivery', () => {
-  it('uses cache saturation only to publish the first usable cut', () => {
-    expect(frontierWorker.shouldPublishFrontier(false, 8, true, false)).toBe(true);
-    expect(frontierWorker.shouldPublishFrontier(false, 8, true, true)).toBe(false);
-    expect(frontierWorker.shouldPublishFrontier(false, 0, true, true)).toBe(true);
-    expect(frontierWorker.shouldPublishFrontier(true, 8, true, true)).toBe(true);
-    expect(frontierWorker.shouldPublishFrontier(false, 8, false, false, 100, 100)).toBe(true);
-    expect(frontierWorker.shouldPublishFrontier(false, 8, false, false, 101, 100)).toBe(false);
-    expect(frontierWorker.shouldPublishFrontier(false, 8, false, true, 100, 100)).toBe(false);
+  it('publishes the first complete cover without a quality gate', () => {
+    expect(frontierWorker.shouldPublishFrontier(8, false, 0, 10)).toBe(true);
+    expect(frontierWorker.shouldPublishFrontier(8, false, 100, 10)).toBe(false);
+    expect(frontierWorker.shouldPublishFrontier(8, false, 100, 100)).toBe(true);
+    expect(frontierWorker.shouldPublishFrontier(0, false, 100, 10)).toBe(false);
+    expect(frontierWorker.shouldPublishFrontier(8, true, 100, 10)).toBe(true);
+    expect(frontierWorker.shouldPublishFrontier(8, false, 100, 0)).toBe(false);
+    expect(frontierWorker.shouldPublishFrontier(8, false, 100, 10, true)).toBe(true);
+  });
+
+  it('returns selection globals without gathering selected splat attributes in chunk-page mode', async () => {
+    send({
+      type: 'init',
+      pagerMode: 'chunk-pages',
+      capacity: CHUNK_SIZE * 4,
+      chunkSize: CHUNK_SIZE,
+      cpuCacheBytes: 8 * 1024 * 1024,
+      maxPlanWrites: PLAN_WRITE_CAP,
+    });
+    send({ type: 'chunkPages', files: Uint32Array.from([0]) });
+    sendRootChunk(1, 1);
+    reschedule(1);
+
+    await vi.waitFor(() => expect(plans.length).toBeGreaterThan(0));
+
+    const plan = plans.at(-1)!;
+    expect(plan.selectionGlobals?.length).toBeGreaterThan(0);
+    expect(plan.candidateSlots).toBeUndefined();
+    expect(plan.appends.count).toBe(0);
+    expect(plan.moves.count).toBe(0);
+    expect(demands.at(-1)?.wants.map((want) => want.file)).toEqual([1]);
+    expect(demands.some((reply) => reply.reason === 'discovery')).toBe(false);
+  });
+
+  it('cancels a superseded cooperative walk before it can publish', async () => {
+    vi.useFakeTimers();
+    try {
+      plans.length = 0;
+      demands.length = 0;
+      cancellations.length = 0;
+      send({
+        type: 'init',
+        pagerMode: 'chunk-pages',
+        capacity: CHUNK_SIZE * 8,
+        chunkSize: CHUNK_SIZE,
+        cpuCacheBytes: 8 * 1024 * 1024,
+        maxPlanWrites: PLAN_WRITE_CAP,
+      });
+      send({ type: 'chunkPages', files: Uint32Array.from([0]) });
+      const positions = new Float32Array(CHUNK_SIZE * 3);
+      const size = new Float32Array(CHUNK_SIZE);
+      const childCount = new Uint16Array(CHUNK_SIZE);
+      const childStart = new Uint32Array(CHUNK_SIZE);
+      for (let i = 0; i < 4; i++) {
+        positions[i * 3 + 2] = 10;
+        size[i] = 8 - i;
+        childCount[i] = 1;
+        childStart[i] = (i + 1) * CHUNK_SIZE;
+      }
+      send({
+        type: 'chunk',
+        file: 0,
+        count: CHUNK_SIZE,
+        positions,
+        colors: new Uint8Array(CHUNK_SIZE * 4),
+        covariances: new Float32Array(CHUNK_SIZE * 6),
+        childCount,
+        childStart,
+        size,
+        shBands: 0,
+      });
+      reschedule(10);
+      await vi.advanceTimersToNextTimerAsync();
+      const early = demands.find((reply) => reply.seq === 10 && reply.reason === 'traversal-slice');
+      expect(early?.wants.slice(0, 3).map((want) => want.file)).toEqual([1, 2, 3]);
+      expect(plans.some((plan) => plan.seq === 10)).toBe(false);
+
+      reschedule(11, 2);
+      expect(cancellations.some((reply) => reply.seq === 10)).toBe(true);
+      await vi.runAllTimersAsync();
+      expect(plans.some((plan) => plan.seq === 10)).toBe(false);
+      expect(plans.some((plan) => plan.seq === 11)).toBe(true);
+      expect(
+        demands.filter((reply) => reply.seq === 11 && reply.reason === 'traversal-slice'),
+      ).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   beforeEach(() => {
     plans.length = 0;
+    demands.length = 0;
+    snapshots.length = 0;
+    cancellations.length = 0;
     traverseSpy.mockClear();
     // A fresh pager and cache generation per test.
     send({
@@ -139,6 +244,191 @@ describe('frontier worker delivery', () => {
       cpuCacheBytes: 8 * 1024 * 1024 * 1024,
       maxPlanWrites: PLAN_WRITE_CAP,
     });
+  });
+
+  it('publishes a coarse complete cover while descendants are still missing', () => {
+    send({
+      type: 'init',
+      pagerMode: 'indexed',
+      capacity: 200_000,
+      chunkSize: CHUNK_SIZE,
+      cpuCacheBytes: 8 * 1024 * 1024 * 1024,
+      maxPlanWrites: PLAN_WRITE_CAP,
+    });
+    sendRootChunk(ROOTS, FAN);
+    reschedule(1);
+    const plan = plans.at(-1)!;
+    expect(plan.candidateSlots?.length).toBeGreaterThan(0);
+    expect(plan.displayCount).toBeGreaterThan(0);
+    expect(plan.touched.length).toBeGreaterThan(0);
+  });
+
+  it('publishes complete bounded refinements after the first cut while discovery is incomplete', () => {
+    send({
+      type: 'init',
+      pagerMode: 'indexed',
+      capacity: 200_000,
+      chunkSize: CHUNK_SIZE,
+      cpuCacheBytes: 8 * 1024 * 1024 * 1024,
+      maxPlanWrites: PLAN_WRITE_CAP,
+    });
+    sendRootChunk(ROOTS, FAN);
+    reschedule(1);
+    const first = plans.at(-1)!;
+    expect(first.candidateSlots?.length).toBeGreaterThan(0);
+    send({ type: 'published', generation: first.candidateGeneration!, activeListVersion: 1 });
+
+    const childPositions = new Float32Array(CHUNK_SIZE * 3);
+    const childSize = new Float32Array(CHUNK_SIZE).fill(0.01);
+    send({
+      type: 'chunk',
+      file: 1,
+      count: CHUNK_SIZE,
+      positions: childPositions,
+      colors: new Uint8Array(CHUNK_SIZE * 4),
+      covariances: new Float32Array(CHUNK_SIZE * 6),
+      childCount: new Uint16Array(CHUNK_SIZE),
+      childStart: new Uint32Array(CHUNK_SIZE),
+      size: childSize,
+      shBands: 0,
+    });
+
+    plans.length = 0;
+    reschedule(2, 1); // camera revision must still use a bounded replacement
+    const refinement = plans.at(-1)!;
+    expect(refinement.candidateComplete).toBe(true);
+    expect(refinement.planReason).toBe('intermediate');
+    expect(refinement.touched.length).toBeGreaterThan(0);
+    expect(refinement.candidateSlots?.length).toBeGreaterThan(first.candidateSlots!.length);
+    expect(refinement.candidateNewSlots).toBeLessThanOrEqual(512_000);
+  });
+
+  it('keeps a same-camera candidate while a chunk refreshes the saved target', () => {
+    const size = CHUNK_SIZE;
+    send({
+      type: 'init',
+      pagerMode: 'indexed',
+      capacity: 32,
+      chunkSize: size,
+      cpuCacheBytes: 8 * 1024 * 1024,
+      maxPlanWrites: 1,
+    });
+    const rootChildCount = new Uint16Array(size);
+    const rootChildStart = new Uint32Array(size);
+    rootChildCount[0] = 4;
+    rootChildStart[0] = size;
+    send({
+      type: 'chunk',
+      file: 0,
+      count: 1,
+      positions: new Float32Array(size * 3),
+      colors: new Uint8Array(size * 4),
+      covariances: new Float32Array(size * 6),
+      childCount: rootChildCount,
+      childStart: rootChildStart,
+      size: new Float32Array(size).fill(8),
+      shBands: 0,
+    });
+    const childCount = new Uint16Array(size);
+    const childStart = new Uint32Array(size);
+    for (let i = 0; i < 4; i++) {
+      childCount[i] = 1;
+      childStart[i] = 2 * size + i;
+    }
+    send({
+      type: 'chunk',
+      file: 1,
+      count: 4,
+      positions: new Float32Array(size * 3),
+      colors: new Uint8Array(size * 4),
+      covariances: new Float32Array(size * 6),
+      childCount,
+      childStart,
+      size: new Float32Array(size).fill(1),
+      shBands: 0,
+    });
+
+    reschedule(1);
+    const first = plans.at(-1)!;
+    expect(first.candidateComplete).toBe(false);
+    const generation = first.candidateGeneration!;
+
+    const leaves = new Uint16Array(size);
+    const leafStarts = new Uint32Array(size);
+    send({
+      type: 'chunk',
+      file: 2,
+      count: 4,
+      positions: new Float32Array(size * 3),
+      colors: new Uint8Array(size * 4),
+      covariances: new Float32Array(size * 6),
+      childCount: leaves,
+      childStart: leafStarts,
+      size: new Float32Array(size).fill(0.01),
+      shBands: 0,
+    });
+    reschedule(2);
+    expect(plans.at(-1)!.candidateGeneration).toBe(generation);
+    expect(plans.at(-1)!.candidateCancellationCount).toBe(0);
+
+    let published: FrontierPlanMessage | undefined;
+    for (let seq = 3; seq < 10; seq++) {
+      reschedule(seq);
+      published = plans.at(-1)!;
+      if (published.candidateSlots) break;
+    }
+    expect(published?.candidateGeneration).toBe(generation);
+    expect(published?.candidateSlots).toBeDefined();
+    send({ type: 'published', generation, activeListVersion: 1 });
+    reschedule(10);
+    const newest = plans.at(-1)!;
+    expect(newest.candidateGeneration).not.toBe(generation);
+    expect(newest.candidateNewSlots).toBeLessThanOrEqual(512_000);
+  });
+
+  it('returns a coherent worker snapshot on demand', () => {
+    send({
+      type: 'init',
+      pagerMode: 'indexed',
+      capacity: 200_000,
+      chunkSize: CHUNK_SIZE,
+      cpuCacheBytes: 8 * 1024 * 1024 * 1024,
+      maxPlanWrites: PLAN_WRITE_CAP,
+      diagnostics: true,
+    });
+    sendRootChunk(ROOTS, FAN);
+    reschedule(1);
+    send({ type: 'snapshot', requestId: 7 });
+
+    const snapshot = snapshots.at(-1)!;
+    const plan = plans.at(-1)!;
+    expect(snapshot.requestId).toBe(7);
+    expect(snapshot.traversalId).toBe(plan.traversalId);
+    expect(snapshot.cameraLocal).toEqual([0, 0, 0]);
+    expect(snapshot.cameraForward).toEqual([0, 0, 1]);
+    expect(snapshot.selectionCount).toBeGreaterThan(0);
+    expect(Array.from(snapshot.cachedFiles)).toEqual([0]);
+    expect(Array.from(snapshot.dependencyFiles)).toContain(1);
+    expect(snapshot.skipSamples.length).toBeGreaterThan(0);
+  });
+
+  it('holds first publication until the allocation-fraction count is staged', () => {
+    send({
+      type: 'init',
+      pagerMode: 'indexed',
+      capacity: 200_000,
+      chunkSize: CHUNK_SIZE,
+      cpuCacheBytes: 8 * 1024 * 1024 * 1024,
+      maxPlanWrites: PLAN_WRITE_CAP,
+      initialPublishMinSplats: 100_000,
+    });
+    sendRootChunk(ROOTS, FAN);
+    reschedule(1);
+    const plan = plans.at(-1)!;
+    expect(plan.candidateSlots).toBeUndefined();
+    expect(plan.displayCount ?? 0).toBe(0);
+    expect(plan.appends.count).toBeGreaterThan(0);
+    expect(plan.touched.length).toBeGreaterThan(0);
   });
 
   it('drains a truncated plan without traversing again', () => {
@@ -167,6 +457,59 @@ describe('frontier worker delivery', () => {
     expect(plans.length).toBeGreaterThanOrEqual(2); // at least one drain ran
     expect(traverseSpy.mock.calls.length).toBe(traversalsAfterFirst);
     expect(last.gatherMissing).toBe(0);
+    expect(first.planReason).toBe('traversed');
+    expect(plans[1]?.planReason).toBe('draining');
+    expect(first.traversalId).toBeGreaterThan(0);
+    expect(plans[1]?.traversalId).toBe(first.traversalId);
+  });
+
+  it('keeps every source chunk resident while a capped candidate drains', () => {
+    const chunkSize = 16;
+    send({
+      type: 'init',
+      pagerMode: 'indexed',
+      capacity: 64,
+      chunkSize,
+      cpuCacheBytes: 900,
+      maxPlanWrites: 4,
+      diagnostics: true,
+    });
+    const rootChildCount = new Uint16Array(chunkSize);
+    const rootChildStart = new Uint32Array(chunkSize);
+    rootChildCount[0] = 8;
+    rootChildStart[0] = chunkSize;
+    send({
+      type: 'chunk',
+      file: 0,
+      count: chunkSize,
+      positions: new Float32Array(chunkSize * 3),
+      colors: new Uint8Array(chunkSize * 4),
+      covariances: new Float32Array(chunkSize * 6),
+      childCount: rootChildCount,
+      childStart: rootChildStart,
+      size: new Float32Array(chunkSize).fill(8),
+      shBands: 0,
+    });
+    send({
+      type: 'chunk',
+      file: 1,
+      count: chunkSize,
+      positions: new Float32Array(chunkSize * 3),
+      colors: new Uint8Array(chunkSize * 4),
+      covariances: new Float32Array(chunkSize * 6),
+      childCount: new Uint16Array(chunkSize),
+      childStart: new Uint32Array(chunkSize),
+      size: new Float32Array(chunkSize).fill(0.01),
+      shBands: 0,
+    });
+
+    plans.length = 0;
+    reschedule(1);
+    for (let seq = 2; seq < 20 && !plans.at(-1)?.candidateSlots; seq++) {
+      reschedule(seq);
+    }
+    expect(plans.length).toBeGreaterThan(1);
+    expect(plans.every((plan) => plan.gatherMissing === 0)).toBe(true);
   });
 
   it('re-traverses when the camera moves', () => {
@@ -191,39 +534,207 @@ describe('frontier worker delivery', () => {
     );
   });
 
-  it('finishes the pending drain before re-traversing for a newly cached chunk', () => {
-    // A late chunk gives the cut somewhere finer to descend, but it cannot make
-    // an already-queued splat wrong. Draining first is what keeps a cold load
-    // moving: that is exactly when chunks arrive continuously, so invalidating
-    // on each one would restart the ramp forever and never deliver it.
-    sendTree(ROOTS, FAN);
-    reschedule(1);
-    expect(plans.at(-1)!.converged).toBe(false); // a drain is pending
-    const afterFirst = traverseSpy.mock.calls.length;
-
-    const n = CHUNK_SIZE;
+  it('discovers grandchild demand while a truncated plan is still draining', () => {
+    send({
+      type: 'init',
+      capacity: 64,
+      chunkSize: CHUNK_SIZE,
+      cpuCacheBytes: 8 * 1024 * 1024 * 1024,
+      maxPlanWrites: 1,
+    });
+    const c0 = CHUNK_SIZE;
+    const rootPos = new Float32Array(c0 * 3);
+    const rootSize = new Float32Array(c0);
+    const rootCount = new Uint16Array(c0);
+    const rootStart = new Uint32Array(c0);
+    rootPos[2] = 10;
+    rootSize[0] = 8;
+    rootCount[0] = 2;
+    rootStart[0] = CHUNK_SIZE;
     send({
       type: 'chunk',
-      file: 400,
+      file: 0,
+      count: c0,
+      positions: rootPos,
+      colors: new Uint8Array(c0 * 4),
+      covariances: new Float32Array(c0 * 6),
+      childCount: rootCount,
+      childStart: rootStart,
+      size: rootSize,
+      shBands: 0,
+    });
+    reschedule(1);
+    expect(plans.at(-1)?.converged).toBe(false);
+    const afterFirst = traverseSpy.mock.calls.length;
+    const touchedBefore = new Set(demands.at(-1)?.wants.map((want) => want.file) ?? []);
+
+    const n = CHUNK_SIZE;
+    const childPos = new Float32Array(n * 3);
+    const childSize = new Float32Array(n);
+    const childCount = new Uint16Array(n);
+    const childStart = new Uint32Array(n);
+    for (let i = 0; i < 2; i++) {
+      childPos[i * 3 + 2] = 10;
+      childSize[i] = 4;
+      childCount[i] = 2;
+      childStart[i] = 2 * CHUNK_SIZE + i * 2;
+    }
+    send({
+      type: 'chunk',
+      file: 1,
       count: n,
-      positions: new Float32Array(n * 3),
+      positions: childPos,
       colors: new Uint8Array(n * 4),
       covariances: new Float32Array(n * 6),
-      childCount: new Uint16Array(n),
-      childStart: new Uint32Array(n),
-      size: new Float32Array(n),
+      childCount,
+      childStart,
+      size: childSize,
       shBands: 0,
     });
 
-    // The queue drains first, on no further traversals...
-    let seq = 2;
-    while (!plans.at(-1)!.converged && seq < 200) reschedule(seq++);
-    expect(plans.at(-1)!.converged).toBe(true);
     expect(traverseSpy.mock.calls.length).toBe(afterFirst);
+    const grandchildDemand = demands.filter((reply) => !reply.complete);
+    expect(grandchildDemand.length).toBeGreaterThan(0);
+    expect(grandchildDemand.some((reply) => reply.wants.some((want) => want.file === 2))).toBe(
+      true,
+    );
+    const grandchildWant = grandchildDemand.at(-1)?.wants.find((want) => want.file === 2);
+    expect(grandchildWant?.priority).toBeCloseTo(0.4, 5);
+    expect(grandchildWant?.tier).toBe(0);
+    expect(touchedBefore.has(1) || grandchildDemand.length > 0).toBe(true);
 
-    // ...and only then does the next reschedule re-solve with the new chunk.
-    reschedule(seq);
-    expect(traverseSpy.mock.calls.length).toBeGreaterThan(afterFirst);
+    reschedule(2, 0, true);
+    expect(traverseSpy.mock.calls.length).toBe(afterFirst);
+  });
+
+  it('continues discovery beyond the old queue cap', async () => {
+    const branchCount = 4_100;
+    const chunkSize = branchCount;
+    send({
+      type: 'init',
+      capacity: branchCount + 1,
+      chunkSize,
+      cpuCacheBytes: 8 * 1024 * 1024 * 1024,
+      maxPlanWrites: 1,
+    });
+
+    const rootPositions = new Float32Array(3);
+    rootPositions[2] = 10;
+    const rootSize = new Float32Array([8]);
+    send({
+      type: 'chunk',
+      file: 0,
+      count: 1,
+      positions: rootPositions,
+      colors: new Uint8Array(4),
+      covariances: new Float32Array(6),
+      childCount: new Uint16Array([branchCount]),
+      childStart: new Uint32Array([chunkSize]),
+      size: rootSize,
+      shBands: 0,
+    });
+    reschedule(1);
+
+    const childPositions = new Float32Array(branchCount * 3);
+    const childSize = new Float32Array(branchCount);
+    const childCount = new Uint16Array(branchCount);
+    const childStart = new Uint32Array(branchCount);
+    for (let i = 0; i < branchCount; i++) {
+      childPositions[i * 3 + 2] = 10;
+      childSize[i] = 4;
+      childCount[i] = 1;
+      childStart[i] = (2 + i) * chunkSize;
+    }
+    send({
+      type: 'chunk',
+      file: 1,
+      count: branchCount,
+      positions: childPositions,
+      colors: new Uint8Array(branchCount * 4),
+      covariances: new Float32Array(branchCount * 6),
+      childCount,
+      childStart,
+      size: childSize,
+      shBands: 0,
+    });
+
+    const lastFile = 1 + branchCount;
+    await expect
+      .poll(() => demands.some((reply) => reply.wants.some((want) => want.file === lastFile)), {
+        timeout: 2_000,
+        interval: 5,
+      })
+      .toBe(true);
+  });
+
+  it('does not inherit an ancestor priority onto deeper branches below the cut', () => {
+    send({
+      type: 'init',
+      capacity: 64,
+      chunkSize: CHUNK_SIZE,
+      cpuCacheBytes: 8 * 1024 * 1024 * 1024,
+      maxPlanWrites: 1,
+    });
+    const c0 = CHUNK_SIZE;
+    const rootPos = new Float32Array(c0 * 3);
+    const rootSize = new Float32Array(c0);
+    const rootCount = new Uint16Array(c0);
+    const rootStart = new Uint32Array(c0);
+    rootPos[2] = 10;
+    rootSize[0] = 8;
+    rootCount[0] = 2;
+    rootStart[0] = CHUNK_SIZE;
+    send({
+      type: 'chunk',
+      file: 0,
+      count: c0,
+      positions: rootPos,
+      colors: new Uint8Array(c0 * 4),
+      covariances: new Float32Array(c0 * 6),
+      childCount: rootCount,
+      childStart: rootStart,
+      size: rootSize,
+      shBands: 0,
+    });
+    send({
+      type: 'reschedule',
+      seq: 1,
+      cameraLocal: [0, 0, 0],
+      cameraForward: [0, 0, 1],
+      coneFov0: 0,
+      coneFov: 0,
+      coneFoveate: 1,
+      behindFoveate: 1,
+      limit: 0.5,
+      budget: 64,
+    });
+
+    const n = CHUNK_SIZE;
+    const childPos = new Float32Array(n * 3);
+    const childSize = new Float32Array(n);
+    const childCount = new Uint16Array(n);
+    const childStart = new Uint32Array(n);
+    for (let i = 0; i < 2; i++) {
+      childPos[i * 3 + 2] = 10;
+      childSize[i] = 4;
+      childCount[i] = 2;
+      childStart[i] = 2 * CHUNK_SIZE + i * 2;
+    }
+    send({
+      type: 'chunk',
+      file: 1,
+      count: n,
+      positions: childPos,
+      colors: new Uint8Array(n * 4),
+      covariances: new Float32Array(n * 6),
+      childCount,
+      childStart,
+      size: childSize,
+      shBands: 0,
+    });
+
+    const grandchildDemand = demands.filter((reply) => reply.wants.some((want) => want.file === 2));
+    expect(grandchildDemand).toEqual([]);
   });
 
   it('never writes a slot twice in one ramp, and lands on the full frontier', () => {
@@ -258,5 +769,172 @@ describe('frontier worker delivery', () => {
     } while (!last.converged && seq < 200);
     expect(last.converged).toBe(true);
     expect(last.residentCount).toBe(FRONTIER_SPLATS);
+  });
+
+  it('builds bounded monotonic hierarchy covers that reach the uncapped cut', () => {
+    // Use a small cap here to exercise the same bounded-cut logic without
+    // allocating a half-million-node fixture in the unit-test process. The
+    // production worker passes 512K to this helper.
+    const chunkSize = 16;
+    const fan = 3;
+    const rootCount = 4;
+    const maxNewSplats = 5;
+    const rootChildCount = new Uint16Array(rootCount);
+    const rootChildStart = new Uint32Array(rootCount);
+    for (let root = 0; root < rootCount; root++) {
+      rootChildCount[root] = fan;
+      rootChildStart[root] = (root + 1) * chunkSize;
+    }
+    const cache = new Map<number, import('../core/splat-data').SplatData>();
+    cache.set(0, {
+      count: rootCount,
+      positions: new Float32Array(0),
+      colors: new Uint8Array(0),
+      covariances: new Float32Array(0),
+      radTree: {
+        childCount: rootChildCount,
+        childStart: rootChildStart,
+        size: new Float32Array(rootCount),
+      },
+    });
+    const desired: number[] = [];
+    for (let file = 1; file <= rootCount; file++) {
+      const childCount = new Uint16Array(fan);
+      const childStart = new Uint32Array(fan);
+      cache.set(file, {
+        count: fan,
+        positions: new Float32Array(0),
+        colors: new Uint8Array(0),
+        covariances: new Float32Array(0),
+        radTree: { childCount, childStart, size: new Float32Array(fan) },
+      });
+      for (let child = 0; child < fan; child++) desired.push(file * chunkSize + child);
+    }
+
+    const roots = Array.from({ length: rootCount }, (_, root) => root);
+    let cut = roots;
+    for (let step = 0; step < rootCount; step++) {
+      const next = radFrontier.hierarchyIntermediateCut(
+        cache,
+        roots,
+        cut,
+        desired,
+        chunkSize,
+        maxNewSplats,
+      );
+      expect(next.reason, `step ${step} cut ${cut.length}`).toBe('bounded');
+      expect(next.cut).not.toBeNull();
+      const old = new Set(cut);
+      const newCount = next.cut!.filter((global) => !old.has(global)).length;
+      expect(newCount).toBeLessThanOrEqual(maxNewSplats);
+      const branchCoverage = new Array(rootCount).fill(0);
+      for (const global of next.cut!) {
+        const branch = global < chunkSize ? global : Math.floor(global / chunkSize) - 1;
+        branchCoverage[branch] += global < chunkSize ? fan : 1;
+      }
+      expect(branchCoverage).toEqual(new Array(rootCount).fill(fan));
+      for (const global of cut) {
+        if (next.cut!.includes(global)) continue;
+        const root = global;
+        expect(root).toBeLessThan(chunkSize);
+        const start = rootChildStart[root] as number;
+        const children = next.cut!.filter(
+          (candidate) => candidate >= start && candidate < start + fan,
+        );
+        expect(children).toHaveLength(fan);
+      }
+      cut = next.cut!;
+      if (cut.length === desired.length) break;
+    }
+    expect(cut).toEqual(desired);
+    expect(
+      radFrontier.hierarchyIntermediateCut(cache, roots, cut, cut, chunkSize, maxNewSplats),
+    ).toMatchObject({ cut: null, reason: 'already-at-target' });
+    expect(
+      radFrontier.hierarchyIntermediateCut(cache, roots, cut, roots, chunkSize, maxNewSplats),
+    ).toMatchObject({ cut: null, reason: 'non-refinement' });
+  });
+
+  it('refines ready descendants within one candidate and counts only its final new slots', () => {
+    const chunkSize = 16;
+    const cache = new Map<number, import('../core/splat-data').SplatData>();
+    cache.set(0, {
+      count: 1,
+      positions: new Float32Array(0),
+      colors: new Uint8Array(0),
+      covariances: new Float32Array(0),
+      radTree: {
+        childCount: new Uint16Array([3]),
+        childStart: new Uint32Array([chunkSize]),
+        size: new Float32Array([1]),
+      },
+    });
+    cache.set(1, {
+      count: 3,
+      positions: new Float32Array(0),
+      colors: new Uint8Array(0),
+      covariances: new Float32Array(0),
+      radTree: {
+        childCount: new Uint16Array([3, 3, 3]),
+        childStart: new Uint32Array([chunkSize * 2, chunkSize * 2 + 3, chunkSize * 2 + 6]),
+        size: new Float32Array([1, 1, 1]),
+      },
+    });
+    cache.set(2, {
+      count: 9,
+      positions: new Float32Array(0),
+      colors: new Uint8Array(0),
+      covariances: new Float32Array(0),
+      radTree: {
+        childCount: new Uint16Array(9),
+        childStart: new Uint32Array(9),
+        size: new Float32Array(9),
+      },
+    });
+    const result = radFrontier.hierarchyIntermediateCut(
+      cache,
+      [0],
+      [0],
+      Array.from({ length: 9 }, (_, index) => chunkSize * 2 + index),
+      chunkSize,
+      5,
+    );
+    expect(result.reason).toBe('bounded');
+    expect(result.cut).toHaveLength(5);
+    expect(result.newCount).toBe(5);
+    expect(radFrontier.validateHierarchyCut(cache, [0], result.cut!, chunkSize).valid).toBe(true);
+  });
+
+  it('rejects an ancestor and descendant published together', () => {
+    const chunkSize = 16;
+    const cache = new Map<number, import('../core/splat-data').SplatData>();
+    cache.set(0, {
+      count: 1,
+      positions: new Float32Array(0),
+      colors: new Uint8Array(0),
+      covariances: new Float32Array(0),
+      radTree: {
+        childCount: new Uint16Array([1]),
+        childStart: new Uint32Array([chunkSize]),
+        size: new Float32Array([1]),
+      },
+    });
+    cache.set(1, {
+      count: 1,
+      positions: new Float32Array(0),
+      colors: new Uint8Array(0),
+      covariances: new Float32Array(0),
+      radTree: {
+        childCount: new Uint16Array([0]),
+        childStart: new Uint32Array([0]),
+        size: new Float32Array([0.5]),
+      },
+    });
+    expect(radFrontier.validateHierarchyCut(cache, [0], [0, chunkSize], chunkSize)).toEqual({
+      valid: false,
+      ancestorOverlap: true,
+      duplicate: false,
+      missing: false,
+    });
   });
 });

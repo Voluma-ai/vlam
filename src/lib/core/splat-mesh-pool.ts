@@ -255,6 +255,7 @@ export class SplatPool {
     );
     this.freeRowSpans = [{ start: 0, count: this.rows }];
     this.activeSlotByPoolIndexValue = new Uint32Array(texelCount);
+    this.activeSlotByPoolIndexValue.fill(0xffffffff);
   }
 
   /** Pool index → packed active-list slot. */

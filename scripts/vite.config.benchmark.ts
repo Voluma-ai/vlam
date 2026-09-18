@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 import { viewerDevPlugin } from '../site/.vitepress/viewer-dev-plugin';
@@ -11,7 +12,11 @@ const permitted = new Set([
   'baseline',
   'skip-empty',
   'bounded-threshold',
-  'rad-focus',
+  'heap',
+  'one-pass',
+  'rad-decode-2',
+  'rad-decode-4',
+  'rad-chunk-pages',
   'exact-stream',
   'approximate-sh-stream',
   'first-vertex',
@@ -42,4 +47,14 @@ export default defineConfig({
     ],
   },
   define: { __VLAM_EXPERIMENT__: JSON.stringify(variant) },
+  ...(process.env.VLAM_DEV_HTTPS === '1'
+    ? {
+        server: {
+          https: {
+            key: readFileSync(resolve(root, 'localhost+5-key.pem')),
+            cert: readFileSync(resolve(root, 'localhost+5.pem')),
+          },
+        },
+      }
+    : {}),
 });

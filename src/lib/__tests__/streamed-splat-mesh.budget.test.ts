@@ -121,20 +121,14 @@ describe('StreamedSplatMesh budget ceiling', () => {
     return mesh;
   }
 
-  it('stops coarse-base requests after the first complete page-table display', () => {
+  it('does not run an independent coarse-base or background sweep on page-table RAD', () => {
     const mesh = track(makeMesh({ foveated: true, options: { foveationMode: 'page-table' } }));
     const inner = mesh as unknown as {
       scene: {
         source: { computeDesiredRuns: () => { file: number }[] };
-        maxResidentSplats: number;
-        chunkSize?: number;
       };
-      cacheLimitBytes: number;
-      pageTableDrawn: number;
-      pageTableFetchPriority: number[];
       pageTableInFlight: boolean;
       requestChunk: (file: number, kind: string) => void;
-      sweepAllowed: () => boolean;
       reschedulePageTable: (
         position: THREE.Vector3,
         forward: THREE.Vector3,
@@ -145,42 +139,18 @@ describe('StreamedSplatMesh budget ceiling', () => {
     const base = vi.fn(() => [{ file: 1 }]);
     const request = vi.fn();
     inner.scene.source.computeDesiredRuns = base;
-    inner.scene.maxResidentSplats = 100_000_000;
-    inner.scene.chunkSize = undefined;
-    inner.cacheLimitBytes = 2 * 1024 * 1024 * 1024;
     inner.requestChunk = request;
-    inner.sweepAllowed = () => false;
-    inner.pageTableFetchPriority = [2];
     inner.pageTableInFlight = true;
-    const schedule = () =>
-      inner.reschedulePageTable(
-        new THREE.Vector3(),
-        new THREE.Vector3(0, 0, -1),
-        new THREE.Frustum(),
-        1000,
-      );
-
-    schedule();
-    expect(request.mock.calls).toEqual([
-      [2, 'priority'],
-      [1, 'base'],
-    ]);
-    expect(base).toHaveBeenCalledOnce();
-
-    inner.pageTableDrawn = 1;
-    request.mockClear();
-    schedule();
-    expect(request.mock.calls).toEqual([[2, 'priority']]);
-    expect(base).toHaveBeenCalledOnce();
-
-    // A smaller capture still benefits from warming its whole decoded set.
-    inner.cacheLimitBytes = 6 * 1024 * 1024 * 1024;
-    request.mockClear();
-    schedule();
-    expect(request.mock.calls).toEqual([
-      [2, 'priority'],
-      [1, 'base'],
-    ]);
+    inner.reschedulePageTable(
+      new THREE.Vector3(),
+      new THREE.Vector3(0, 0, -1),
+      new THREE.Frustum(),
+      1000,
+    );
+    expect(base).not.toHaveBeenCalled();
+    expect(request.mock.calls.every((call) => call[1] !== 'base' && call[1] !== 'sweep')).toBe(
+      true,
+    );
   });
 
   it('lets setBudget climb to maxBudget when pool headroom was reserved', () => {
@@ -245,14 +215,14 @@ describe('StreamedSplatMesh page-table governance', () => {
     return mesh;
   }
 
-  it('defaults page-table plans to 16k without changing the classic 32k cap', () => {
+  it('defaults page-table plans to 32k without changing the classic 32k cap', () => {
     track(
       makeMesh({
         foveated: true,
         options: { foveationMode: 'page-table' },
       }),
     );
-    expect(RecordingWorker.last?.init?.['maxPlanWrites']).toBe(16_000);
+    expect(RecordingWorker.last?.init?.['maxPlanWrites']).toBe(32_000);
 
     const classic = track(makeMesh());
     const internals = classic as unknown as { appendCap: number };
@@ -293,21 +263,50 @@ describe('StreamedSplatMesh page-table governance', () => {
     const mesh = track(
       makeMesh({
         budget: WIDTH,
-        capacity: 8 * WIDTH,
+        capacity: 16 * WIDTH,
         foveated: true,
-        options: { foveationMode: 'page-table', maxBudget: 8 * WIDTH },
+        options: { foveationMode: 'page-table', maxBudget: 16 * WIDTH },
       }),
     );
     expect(mesh.drawBudget).toBe(WIDTH);
 
     // A governor grows the mesh; the drawn frontier target must follow, and the
-    // slab must be able to hold it (otherwise the pager drops frontier splats).
+    // slab must hold two complete selections (otherwise the pager drops frontier splats).
     mesh.setBudget(6 * WIDTH);
     expect(mesh.drawBudget).toBe(6 * WIDTH);
-    expect(mesh.capacity).toBeGreaterThanOrEqual(mesh.drawBudget);
+    expect(mesh.reservedSlots).toBeGreaterThanOrEqual(2 * mesh.drawBudget);
 
     reschedulePageTable(mesh, 1000);
     expect(RecordingWorker.last?.lastReschedule?.['budget']).toBe(6 * WIDTH);
+  });
+
+  it('reduces accepted draw when reserved storage cannot hold two complete cuts', () => {
+    const mesh = track(
+      makeMesh({
+        budget: WIDTH,
+        capacity: 8 * WIDTH,
+        foveated: true,
+        options: { foveationMode: 'page-table', maxBudget: 8 * WIDTH },
+      }),
+    );
+    expect(mesh.setBudget(6 * WIDTH)).toBe(4 * WIDTH);
+    expect(mesh.requestedDrawAllowance).toBe(6 * WIDTH);
+    expect(mesh.acceptedDrawAllowance).toBe(4 * WIDTH);
+    expect(mesh.reservedSlots).toBeGreaterThanOrEqual(2 * mesh.acceptedDrawAllowance);
+  });
+
+  it('defaults the page-table draw target to the 7.5M Spark-matching allowance', () => {
+    const mesh = track(
+      makeMesh({
+        budget: WIDTH,
+        capacity: 8 * WIDTH,
+        foveated: true,
+        options: { foveationMode: 'page-table', maxBudget: 8 * WIDTH },
+      }),
+    );
+    const inner = mesh as unknown as { pageTableDrawTarget: number };
+    expect(inner.pageTableDrawTarget).toBe(7_500_000);
+    expect(mesh.drawBudget).toBe(WIDTH);
   });
 
   it('pages a slab whose capacity is not a whole number of pages', () => {
@@ -401,30 +400,79 @@ describe('StreamedSplatMesh page-table governance', () => {
     expect(RecordingWorker.last?.lastReschedule?.['limit']).toBeCloseTo(unscaled * 2, 12);
   });
 
-  it('defaults page-table RAD to a half-budget first display, with an opt-out', () => {
+  it('defaults page-table RAD to progressive first display', () => {
     track(
       makeMesh({
+        budget: 4 * WIDTH,
+        capacity: 8 * WIDTH,
         foveated: true,
         options: { foveationMode: 'page-table' },
+      }),
+    );
+    expect(RecordingWorker.last?.init?.['initialPublishMinSplats']).toBe(0);
+
+    track(
+      makeMesh({
+        budget: 4 * WIDTH,
+        capacity: 8 * WIDTH,
+        foveated: true,
+        options: { foveationMode: 'page-table', radInitialDisplayFraction: 0 },
+      }),
+    );
+    expect(RecordingWorker.last?.init?.['initialPublishMinSplats']).toBe(Number.MAX_SAFE_INTEGER);
+
+    track(
+      makeMesh({
+        budget: 4 * WIDTH,
+        capacity: 8 * WIDTH,
+        foveated: true,
+        options: { foveationMode: 'page-table', radInitialDisplayFraction: 0.75 },
+      }),
+    );
+    expect(RecordingWorker.last?.init?.['initialPublishMinSplats']).toBe(3 * WIDTH);
+  });
+
+  it('lets an explicit policy override a legacy display fraction', () => {
+    track(
+      makeMesh({
+        budget: 4 * WIDTH,
+        capacity: 8 * WIDTH,
+        foveated: true,
+        options: {
+          foveationMode: 'page-table',
+          radInitialRevealPolicy: 'progressive',
+          radInitialDisplayFraction: 0.5,
+        },
+      }),
+    );
+    expect(RecordingWorker.last?.init?.['initialPublishMinSplats']).toBe(0);
+
+    track(
+      makeMesh({
+        budget: 4 * WIDTH,
+        capacity: 8 * WIDTH,
+        foveated: true,
+        options: {
+          foveationMode: 'page-table',
+          radInitialRevealPolicy: 'allocation-fraction',
+        },
       }),
     );
     expect(RecordingWorker.last?.init?.['initialPublishMinSplats']).toBe(2 * WIDTH);
 
     track(
       makeMesh({
+        budget: 4 * WIDTH,
+        capacity: 8 * WIDTH,
         foveated: true,
-        options: { foveationMode: 'page-table', radInitialDisplayFraction: 0 },
+        options: {
+          foveationMode: 'page-table',
+          radInitialRevealPolicy: 'projected-quality',
+          radInitialDisplayFraction: 0.5,
+        },
       }),
     );
-    expect(RecordingWorker.last?.init?.['initialPublishMinSplats']).toBeUndefined();
-
-    track(
-      makeMesh({
-        foveated: true,
-        options: { foveationMode: 'page-table', radInitialDisplayFraction: 0.75 },
-      }),
-    );
-    expect(RecordingWorker.last?.init?.['initialPublishMinSplats']).toBe(3 * WIDTH);
+    expect(RecordingWorker.last?.init?.['initialPublishMinSplats']).toBe(0);
   });
 
   it('rejects an invalid first-display fraction', () => {
@@ -433,6 +481,24 @@ describe('StreamedSplatMesh page-table governance', () => {
     expect(() => makeMesh({ options: { radInitialDisplayFraction: Number.NaN } })).toThrow(
       RangeError,
     );
+  });
+
+  it('rejects an unsupported reveal policy instead of enabling a silent hold', () => {
+    expect(() =>
+      makeMesh({ options: { radInitialRevealPolicy: 'camera-local-detail' as never } }),
+    ).toThrow(/progressive.*allocation-fraction.*projected-quality/);
+  });
+
+  it('posts the host-owned demand revision with each reschedule', () => {
+    const mesh = track(
+      makeMesh({
+        foveated: true,
+        options: { foveationMode: 'page-table' },
+      }),
+    );
+    reschedulePageTable(mesh, 1000);
+    expect(RecordingWorker.last?.lastReschedule?.['revision']).toBe(1);
+    expect(RecordingWorker.last?.lastReschedule?.['initialPublishMinSplats']).toBe(0);
   });
 
   it('validates lodScale', () => {

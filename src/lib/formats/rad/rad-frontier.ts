@@ -1,14 +1,20 @@
 import type { SplatData } from '../../core/splat-data';
-import { FRONTIER_FOVEATION_DEFAULTS, type FrontierFoveation } from './frontier-worker-protocol';
+import {
+  FRONTIER_FOVEATION_DEFAULTS,
+  type FrontierFoveation,
+  type FrontierSkipReason,
+  type FrontierSkipSample,
+  type FrontierCutDiagnostic,
+} from './frontier-worker-protocol';
 
 /**
  * CPU evaluation of Spark's LOD tree cut, for the page-table renderer.
  *
- * A whole-chunk GPU cull would waste the pool on the ~90% of each chunk that is
- * off-screen or the wrong LOD. Instead {@link traverseFrontier} runs Spark's
- * best-first tree descent here on the CPU and returns just the *selected*
- * splats, so only the frontier is paged to the GPU (Spark's selected-index
- * model). See `docs/formats/rad-notes.md` M14.6.
+ * {@link traverseFrontier} follows Spark's best-first tree descent. Storage is
+ * different: Spark 2.1 keeps complete 65,536-splat GPU pages and changes an index
+ * list; VLAM gathers only selected splats into its slot pool. Matching the
+ * traversal does not make the staging or residency strategies equivalent.
+ * See `docs/formats/rad-notes.md` M14.6.
  *
  * The cut keeps exactly one node per root→leaf ray - full coverage, no
  * double-draw - for any camera and any subset of resident chunks. Detail away
@@ -189,30 +195,56 @@ export function pixelScaleOf(data: SplatData, local: number, view: FrontierView)
  * to fetch next). Visits ~frontier-many nodes regardless of total splats.
  *
  * Two properties matter and are what Spark relies on
- * (`new_traverse_lod_trees`, `lod_tree.rs`):
+ * (`traverse_lod_trees`, `lod_tree.rs` in Spark 2.1.0):
  * - **Complete coverage.** Every root→leaf ray ends with exactly one node in the
  *   output, whatever the camera or the cache state - there is no cull that can
  *   leave a region unrepresented.
  * - **In budget by construction.** The count is checked *before* each descent,
- *   so a single pass is always within `maxSplats`; no outer limit search, and
- *   nothing for the pager to truncate afterwards.
+ *   so a single pass is always within `maxSplats`. Spark accepts
+ *   `lastPixelLimit` but does not use it; the configured pixel threshold is
+ *   the stop condition and leftover draw budget is not spent by a second walk.
  *
  * `chunkMap` resolves a file index to its decoded chunk; `roots` are global
  * indices to seed from (maintained incrementally by the caller).
  */
-export function traverseFrontier(
-  chunkMap: ReadonlyMap<number, SplatData>,
-  roots: readonly number[],
-  chunkSize: number,
-  view: FrontierView,
-  limit: number,
-  maxSplats = Number.POSITIVE_INFINITY,
-): {
+export interface FrontierTraversalOptions {
+  /** Reused heap/output storage. Capacity is retained across walks. */
+  readonly scratch?: FrontierScratch;
+  /** Collect selected-node samples for an explicit diagnostic run. */
+  readonly collectDiagnostics?: boolean;
+}
+
+export interface FrontierWaiter {
+  readonly parentGlobal: number;
+  readonly pixelScale: number;
+  readonly files: readonly number[];
+}
+
+export interface FrontierScratch {
+  readonly heap: MaxHeap;
+  readonly picks: Map<number, number[]>;
+  readonly touched: Map<number, number>;
+  readonly waiters: FrontierWaiter[];
+}
+
+export function createFrontierScratch(): FrontierScratch {
+  return {
+    heap: new MaxHeap(),
+    picks: new Map(),
+    touched: new Map(),
+    waiters: [],
+  };
+}
+
+export interface FrontierTraversalResult {
   selection: FrontierSelection;
   count: number;
   touched: Map<number, number>;
+  waiters: readonly FrontierWaiter[];
   /** The descent stopped because refining further would exceed `maxSplats`. */
   budgetClamped: boolean;
+  /** Even the root set exceeds `maxSplats`; do not publish or re-walk until allocation grows. */
+  rootCoverInfeasible: boolean;
   /**
    * Some frontier node still has cached children, so a finer `limit` would
    * select more splats. This is what tells a caller whether spending leftover
@@ -220,141 +252,327 @@ export function traverseFrontier(
    * capture's leaves (or the edge of what is cached).
    */
   refinable: boolean;
-} {
-  const picks = new Map<number, number[]>();
-  const touched = new Map<number, number>();
-  const heap = new MaxHeap();
+  /** Highest-importance selected nodes, for skip-reason diagnostics. */
+  notables: readonly { global: number; pixelScale: number }[];
+}
 
-  /** Reads a node's world size + center; null if its chunk is not cached. */
-  const nodeAt = (global: number): { data: SplatData; local: number } | null => {
-    const file = Math.floor(global / chunkSize);
-    const data = chunkMap.get(file);
-    if (!data || !data.radTree) return null;
-    return { data, local: global - file * chunkSize };
-  };
+export interface FrontierTraversalStep {
+  readonly done: boolean;
+  readonly newTouchedFiles: number;
+}
 
-  const output = (file: number, local: number): void => {
-    let picked = picks.get(file);
+/**
+ * Resumable form of {@link traverseFrontier}. Each instance owns all mutable
+ * traversal state so a worker can abandon an obsolete camera walk without
+ * leaking any of its partial selection into the next one.
+ */
+export class FrontierTraversalJob {
+  private readonly scratch: FrontierScratch;
+  private readonly heap: MaxHeap;
+  private readonly picks: Map<number, number[]>;
+  readonly touched: Map<number, number>;
+  private readonly waiterList: FrontierWaiter[];
+  private readonly seeded = new Set<number>();
+  private readonly selection: FrontierSelection = new Map();
+  private readonly notables: { global: number; pixelScale: number }[] | null;
+  private phase: 'seed' | 'expand' | 'drain' | 'materialize' | 'done' = 'seed';
+  private rootCursor = 0;
+  private drainCursor = 0;
+  private materializeEntries: [number, number[]][] | null = null;
+  private materializeCursor = 0;
+  private numSplats = 0;
+  private selectedCount = 0;
+  private budgetClamped = false;
+  private rootCoverInfeasible = false;
+  private refinable = false;
+  private finalResult: FrontierTraversalResult | null = null;
+
+  constructor(
+    private readonly chunkMap: ReadonlyMap<number, SplatData>,
+    private readonly roots: readonly number[],
+    private readonly chunkSize: number,
+    private readonly view: FrontierView,
+    private readonly limit: number,
+    private readonly maxSplats = Number.POSITIVE_INFINITY,
+    options: FrontierTraversalOptions = {},
+  ) {
+    this.scratch = options.scratch ?? createFrontierScratch();
+    this.heap = this.scratch.heap;
+    this.picks = this.scratch.picks;
+    this.touched = this.scratch.touched;
+    this.waiterList = this.scratch.waiters;
+    this.heap.clear();
+    this.picks.clear();
+    this.touched.clear();
+    this.waiterList.length = 0;
+    this.notables = options.collectDiagnostics ? [] : null;
+  }
+
+  get done(): boolean {
+    return this.phase === 'done';
+  }
+
+  get result(): FrontierTraversalResult {
+    if (!this.finalResult) throw new Error('Frontier traversal is not complete.');
+    return this.finalResult;
+  }
+
+  private note(global: number, pixelScale: number): void {
+    const notables = this.notables;
+    if (!notables) return;
+    if (notables.length < 8) {
+      notables.push({ global, pixelScale });
+      return;
+    }
+    let min = 0;
+    for (let i = 1; i < notables.length; i++) {
+      if ((notables[i] as { pixelScale: number }).pixelScale < notables[min]!.pixelScale) min = i;
+    }
+    if (pixelScale > notables[min]!.pixelScale) notables[min] = { global, pixelScale };
+  }
+
+  private output(file: number, local: number, pixelScale: number): void {
+    let picked = this.picks.get(file);
     if (!picked) {
       picked = [];
-      picks.set(file, picked);
+      this.picks.set(file, picked);
     }
     picked.push(local);
-  };
-
-  // Seed the roots. `numSplats` tracks heap + output, exactly as Spark's
-  // `num_splats` does, so the budget can be checked before each descent.
-  let numSplats = 0;
-  const seeded = new Set<number>(); // roots only - the tree itself never revisits
-  for (const r of roots) {
-    if (seeded.has(r)) continue;
-    const node = nodeAt(r);
-    if (!node) continue;
-    seeded.add(r);
-    heap.push(r, pixelScaleOf(node.data, node.local, view));
-    numSplats++;
+    this.note(file * this.chunkSize + local, pixelScale);
   }
 
-  let budgetClamped = false;
-  while (heap.size > 0) {
-    const pixelScale = heap.peekPriority();
-    if (pixelScale <= limit) break; // the heap max fits: so does everything below it
-    const global = heap.peek();
-    const node = nodeAt(global);
-    if (!node) {
-      heap.pop(); // chunk evicted between seed and pop
-      numSplats--;
-      continue;
-    }
-    const file = Math.floor(global / chunkSize);
-    const tree = node.data.radTree!;
-    const childCount = tree.childCount[node.local] as number;
-
-    if (childCount === 0) {
-      heap.pop();
-      output(file, node.local); // a leaf has no finer level: it is a frontier node
-      continue;
-    }
-    const nextSplats = numSplats - 1 + childCount;
-    if (nextSplats > maxSplats) {
-      // Descending would blow the draw budget. Report it: a caller solving for
-      // the cut that spends the budget must know the difference between "the
-      // budget stopped me" (coarsen) and "nothing was above the cut" (refine).
-      budgetClamped = true;
-      break;
-    }
-
-    heap.pop();
-    // Descend only if *every* chunk the child range spans is cached. Children are
-    // a contiguous global range and can straddle a chunk boundary (chunks cut at
-    // exactly 65536 splats mid-append); descending with only the first chunk
-    // resident would drop the tail children - an unrepresented region (coverage
-    // hole). Keep the coarse stand-in until the whole range is resident, and
-    // touch every missing chunk.
-    const childStart = tree.childStart[node.local] as number;
-    const firstChunk = Math.floor(childStart / chunkSize);
-    const lastChunk = Math.floor((childStart + childCount - 1) / chunkSize);
+  private touchMissing(
+    parentGlobal: number,
+    pixelScale: number,
+    firstChunk: number,
+    lastChunk: number,
+  ): boolean {
+    const files: number[] = [];
     let allCached = true;
     for (let cc = firstChunk; cc <= lastChunk; cc++) {
-      if (chunkMap.has(cc)) continue;
+      if (this.chunkMap.has(cc)) continue;
       allCached = false;
-      if (pixelScale > (touched.get(cc) ?? 0)) touched.set(cc, pixelScale);
+      files.push(cc);
+      if (pixelScale > (this.touched.get(cc) ?? 0)) this.touched.set(cc, pixelScale);
     }
-    if (!allCached) {
-      output(file, node.local); // coarse stand-in until its children load
-      continue;
-    }
-    for (let c = 0; c < childCount; c++) {
-      const child = childStart + c;
-      const childNode = nodeAt(child)!; // the whole range is cached
-      const childScale = pixelScaleOf(childNode.data, childNode.local, view);
-      // Children already fine enough go straight out; only the ones that may
-      // still refine cost a heap slot.
-      if (childScale <= limit) {
-        output(Math.floor(child / chunkSize), childNode.local);
-      } else {
-        heap.push(child, childScale);
-      }
-    }
-    numSplats = nextSplats;
+    if (!allCached) this.waiterList.push({ parentGlobal, pixelScale, files });
+    return allCached;
   }
 
-  // Whatever is still on the heap is at or below the cut (or was stopped by the
-  // budget): it is part of the frontier. Emitting it is what makes the output a
-  // complete cover rather than a partial one.
-  let refinable = false;
-  while (heap.size > 0) {
-    const global = heap.pop();
-    const file = Math.floor(global / chunkSize);
-    const local = global - file * chunkSize;
-    output(file, local);
-    // A drained node with cached children could still be refined, so a finer
-    // limit would select more splats. Checked here rather than tracked during
-    // the descent because this drain *is* the resulting frontier.
-    if (!refinable) {
-      const data = chunkMap.get(file);
-      const tree = data?.radTree;
-      const childCount = tree ? (tree.childCount[local] as number) : 0;
-      if (childCount > 0) {
-        const childStart = tree!.childStart[local] as number;
-        const firstChunk = Math.floor(childStart / chunkSize);
-        const lastChunk = Math.floor((childStart + childCount - 1) / chunkSize);
-        let allCached = true;
-        for (let cc = firstChunk; cc <= lastChunk && allCached; cc++) {
-          if (!chunkMap.has(cc)) allCached = false;
+  /** Runs until the time budget expires, completion, or enough new demand is found. */
+  step(
+    maxMs = 4,
+    stopAfterNewTouched = Number.POSITIVE_INFINITY,
+    now: () => number = performance.now.bind(performance),
+  ): FrontierTraversalStep {
+    if (this.done) return { done: true, newTouchedFiles: 0 };
+    const startedAt = Number.isFinite(maxMs) ? now() : 0;
+    const touchedAtStart = this.touched.size;
+    let operations = 0;
+    const shouldYield = (): boolean => {
+      if (this.touched.size - touchedAtStart >= stopAfterNewTouched) return true;
+      operations++;
+      return Number.isFinite(maxMs) && (operations & 0xff) === 0 && now() - startedAt >= maxMs;
+    };
+
+    while (this.phase !== 'done') {
+      if (this.phase === 'seed') {
+        while (this.rootCursor < this.roots.length) {
+          const root = this.roots[this.rootCursor++] as number;
+          if (!this.seeded.has(root)) {
+            const file = Math.floor(root / this.chunkSize);
+            const data = this.chunkMap.get(file);
+            if (data?.radTree) {
+              this.seeded.add(root);
+              this.heap.push(root, pixelScaleOf(data, root - file * this.chunkSize, this.view));
+              this.numSplats++;
+            }
+          }
+          if (shouldYield())
+            return { done: false, newTouchedFiles: this.touched.size - touchedAtStart };
         }
-        if (allCached) refinable = true;
+        this.rootCoverInfeasible =
+          Number.isFinite(this.maxSplats) && this.numSplats > this.maxSplats;
+        this.phase = 'expand';
+      } else if (this.phase === 'expand') {
+        if (this.heap.size === 0 || this.heap.peekPriority() <= this.limit) {
+          this.phase = 'drain';
+          continue;
+        }
+        const pixelScale = this.heap.peekPriority();
+        const global = this.heap.peek();
+        const file = Math.floor(global / this.chunkSize);
+        const data = this.chunkMap.get(file);
+        const local = global - file * this.chunkSize;
+        if (!data?.radTree) {
+          this.heap.pop();
+          this.numSplats--;
+        } else {
+          const tree = data.radTree;
+          const childCount = tree.childCount[local] as number;
+          if (childCount === 0) {
+            this.heap.pop();
+            this.output(file, local, pixelScale);
+          } else {
+            const nextSplats = this.numSplats - 1 + childCount;
+            if (nextSplats > this.maxSplats) {
+              this.budgetClamped = true;
+              this.phase = 'drain';
+              continue;
+            }
+            this.heap.pop();
+            const childStart = tree.childStart[local] as number;
+            const firstChunk = Math.floor(childStart / this.chunkSize);
+            const lastChunk = Math.floor((childStart + childCount - 1) / this.chunkSize);
+            if (!this.touchMissing(global, pixelScale, firstChunk, lastChunk)) {
+              this.output(file, local, pixelScale);
+            } else {
+              for (let c = 0; c < childCount; c++) {
+                const child = childStart + c;
+                const childFile = Math.floor(child / this.chunkSize);
+                const childData = this.chunkMap.get(childFile)!;
+                const childLocal = child - childFile * this.chunkSize;
+                const childScale = pixelScaleOf(childData, childLocal, this.view);
+                if (childScale <= this.limit) this.output(childFile, childLocal, childScale);
+                else this.heap.push(child, childScale);
+              }
+              this.numSplats = nextSplats;
+            }
+          }
+        }
+        if (shouldYield())
+          return { done: false, newTouchedFiles: this.touched.size - touchedAtStart };
+      } else if (this.phase === 'drain') {
+        if (this.drainCursor >= this.heap.size) {
+          this.heap.clear();
+          this.materializeEntries = [...this.picks];
+          this.phase = 'materialize';
+          continue;
+        }
+        const global = this.heap.itemAt(this.drainCursor);
+        const pixelScale = this.heap.priorityAt(this.drainCursor++);
+        const file = Math.floor(global / this.chunkSize);
+        const data = this.chunkMap.get(file);
+        const local = global - file * this.chunkSize;
+        if (data?.radTree) {
+          this.output(file, local, pixelScale);
+          if (!this.refinable) {
+            const childCount = data.radTree.childCount[local] as number;
+            if (childCount > 0) {
+              const childStart = data.radTree.childStart[local] as number;
+              const firstChunk = Math.floor(childStart / this.chunkSize);
+              const lastChunk = Math.floor((childStart + childCount - 1) / this.chunkSize);
+              let allCached = true;
+              for (let cc = firstChunk; cc <= lastChunk && allCached; cc++) {
+                if (!this.chunkMap.has(cc)) allCached = false;
+              }
+              if (allCached) this.refinable = true;
+            }
+          }
+        }
+        if (shouldYield())
+          return { done: false, newTouchedFiles: this.touched.size - touchedAtStart };
+      } else if (this.phase === 'materialize') {
+        const entries = this.materializeEntries as [number, number[]][];
+        if (this.materializeCursor >= entries.length) {
+          this.notables?.sort((a, b) => b.pixelScale - a.pixelScale);
+          this.finalResult = {
+            selection: this.selection,
+            count: this.selectedCount,
+            touched: this.touched,
+            waiters: this.waiterList.slice(),
+            budgetClamped: this.budgetClamped,
+            refinable: this.refinable,
+            rootCoverInfeasible: this.rootCoverInfeasible,
+            notables: this.notables ?? [],
+          };
+          this.phase = 'done';
+          continue;
+        }
+        const [file, picked] = entries[this.materializeCursor++] as [number, number[]];
+        this.selection.set(file, Uint32Array.from(picked));
+        this.selectedCount += picked.length;
+        if (shouldYield())
+          return { done: false, newTouchedFiles: this.touched.size - touchedAtStart };
       }
     }
+    return { done: true, newTouchedFiles: this.touched.size - touchedAtStart };
   }
+}
 
-  const selection: FrontierSelection = new Map();
-  let count = 0;
-  for (const [file, picked] of picks) {
-    selection.set(file, Uint32Array.from(picked));
-    count += picked.length;
+export function traverseFrontier(
+  chunkMap: ReadonlyMap<number, SplatData>,
+  roots: readonly number[],
+  chunkSize: number,
+  view: FrontierView,
+  limit: number,
+  maxSplats = Number.POSITIVE_INFINITY,
+  options: FrontierTraversalOptions = {},
+): FrontierTraversalResult {
+  const job = new FrontierTraversalJob(chunkMap, roots, chunkSize, view, limit, maxSplats, options);
+  while (!job.step(Number.POSITIVE_INFINITY).done) {
+    // Infinite slices preserve the synchronous API while sharing one algorithm.
   }
-  return { selection, count, touched, budgetClamped, refinable };
+  return job.result;
+}
+
+/**
+ * Why a selected (or candidate) node was not subdivided, using the same tests
+ * as {@link traverseFrontier}. `would-subdivide` means the walk kept a node that
+ * Spark would have expanded: children resident, above the pixel threshold, and
+ * inside the draw budget.
+ */
+export function explainFrontierNode(
+  chunkMap: ReadonlyMap<number, SplatData>,
+  global: number,
+  chunkSize: number,
+  view: FrontierView,
+  limit: number,
+  maxSplats: number,
+  traversal: { readonly count: number; readonly budgetClamped: boolean },
+): FrontierSkipSample | null {
+  const file = Math.floor(global / chunkSize);
+  const data = chunkMap.get(file);
+  if (!data) return null;
+  const local = global - file * chunkSize;
+  const px = local * 3;
+  const center = [
+    data.positions[px] as number,
+    data.positions[px + 1] as number,
+    data.positions[px + 2] as number,
+  ] as const;
+  if (!data.radTree) {
+    return {
+      global,
+      center,
+      size: 0,
+      childCount: 0,
+      childStart: 0,
+      pixelScale: 0,
+      reason: 'no-tree' satisfies FrontierSkipReason,
+      missingFiles: [],
+    };
+  }
+  const childCount = data.radTree.childCount[local] as number;
+  const childStart = data.radTree.childStart[local] as number;
+  const size = data.radTree.size[local] as number;
+  const pixelScale = pixelScaleOf(data, local, view);
+  const missingFiles: number[] = [];
+  if (childCount > 0) {
+    const firstChunk = Math.floor(childStart / chunkSize);
+    const lastChunk = Math.floor((childStart + childCount - 1) / chunkSize);
+    for (let cc = firstChunk; cc <= lastChunk; cc++) {
+      if (!chunkMap.has(cc)) missingFiles.push(cc);
+    }
+  }
+  let reason: FrontierSkipReason;
+  if (childCount === 0) reason = 'leaf';
+  else if (pixelScale <= limit) reason = 'below-threshold';
+  else if (missingFiles.length > 0) reason = 'missing-children';
+  else if (traversal.budgetClamped || traversal.count - 1 + childCount > maxSplats)
+    reason = 'budget';
+  else reason = 'would-subdivide';
+  return { global, center, size, childCount, childStart, pixelScale, reason, missingFiles };
 }
 
 /** A bounded depth-first cut; falls back to the heap before any over-cap cut escapes. */
@@ -438,10 +656,12 @@ export function traverseFrontierBounded(
     selection,
     count,
     touched,
+    waiters: [],
     budgetClamped: false,
     refinable,
     fallback: false,
     rootCoverInfeasible: false,
+    notables: [],
   };
 }
 
@@ -452,6 +672,22 @@ export class MaxHeap {
 
   get size(): number {
     return this.items.length;
+  }
+
+  /** Drops entries without releasing backing arrays. */
+  clear(): void {
+    this.items.length = 0;
+    this.prio.length = 0;
+  }
+
+  /** Remaining heap entry at `index`, in storage order, not priority order. */
+  itemAt(index: number): number {
+    return this.items[index] as number;
+  }
+
+  /** Priority of {@link itemAt}. */
+  priorityAt(index: number): number {
+    return this.prio[index] as number;
   }
 
   /** Largest-priority item, without removing it. Undefined when empty. */
@@ -514,6 +750,333 @@ export class MaxHeap {
 
 /** Per-file selected local indices making up the frontier. */
 export type FrontierSelection = Map<number, Uint32Array>;
+
+/** Projected-quality measurements for one selected RAD cut. */
+export interface FrontierRevealQuality {
+  readonly revealReady: boolean;
+  readonly maxCentralProjectedRatio: number;
+  readonly maxVisibleProjectedRatio: number;
+}
+
+const REVEAL_CENTRAL_DOT = Math.cos(Math.PI / 6);
+
+function footprintVisibleInFrustum(
+  x: number,
+  y: number,
+  z: number,
+  projection: ArrayLike<number>,
+  covariances: Float32Array,
+  offset: number,
+  stdDev: number,
+): boolean {
+  if (projection.length < 16) return true;
+  // A coarse parent's centre can be outside the view while its ellipse covers
+  // it. Test the fitted ellipsoid against each clip plane, not just its centre.
+  for (let axis = 0; axis < 3; axis++) {
+    for (const sign of [-1, 1]) {
+      const nx = (projection[3] as number) + sign * (projection[axis] as number);
+      const ny = (projection[7] as number) + sign * (projection[4 + axis] as number);
+      const nz = (projection[11] as number) + sign * (projection[8 + axis] as number);
+      const d = (projection[15] as number) + sign * (projection[12 + axis] as number);
+      const variance =
+        nx * nx * (covariances[offset] as number) +
+        2 * nx * ny * (covariances[offset + 1] as number) +
+        2 * nx * nz * (covariances[offset + 2] as number) +
+        ny * ny * (covariances[offset + 3] as number) +
+        2 * ny * nz * (covariances[offset + 4] as number) +
+        nz * nz * (covariances[offset + 5] as number);
+      if (nx * x + ny * y + nz * z + d + stdDev * Math.sqrt(Math.max(0, variance)) < 0)
+        return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Evaluates whether a selected cut is safe to show as the first RAD frame.
+ * Internal nodes use the hierarchy's fitted size and camera distance; leaves
+ * are ignored because they have no finer child cut to wait for.
+ */
+export function assessFrontierRevealQuality(
+  chunkMap: ReadonlyMap<number, SplatData>,
+  globals: readonly number[],
+  chunkSize: number,
+  view: FrontierView,
+  projection: ArrayLike<number>,
+  targetLimit: number,
+): FrontierRevealQuality {
+  let maxCentralProjectedRatio = 0;
+  let maxVisibleProjectedRatio = 0;
+  const forward = view.forward;
+  for (const global of globals) {
+    const file = Math.floor(global / chunkSize);
+    const data = chunkMap.get(file);
+    if (!data?.radTree) continue;
+    const local = global - file * chunkSize;
+    if ((data.radTree.childCount[local] as number) <= 0) continue;
+    const offset = local * 3;
+    const x = data.positions[offset] as number;
+    const y = data.positions[offset + 1] as number;
+    const z = data.positions[offset + 2] as number;
+    const dx = x - view.origin.x;
+    const dy = y - view.origin.y;
+    const dz = z - view.origin.z;
+    const distance = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-6;
+    const ratio = pixelScaleOf(data, local, view) / targetLimit;
+    if (forward) {
+      const dot = (dx * forward.x + dy * forward.y + dz * forward.z) / distance;
+      if (dot >= REVEAL_CENTRAL_DOT) {
+        maxCentralProjectedRatio = Math.max(maxCentralProjectedRatio, ratio);
+        continue;
+      }
+    }
+    const alpha = ((data.colors[local * 4 + 3] as number) / 255) * 2;
+    const stdDev = 3 + 0.7 * Math.max(0, Math.min(5, alpha * 4 - 3) - 1);
+    if (footprintVisibleInFrustum(x, y, z, projection, data.covariances, local * 6, stdDev)) {
+      maxVisibleProjectedRatio = Math.max(maxVisibleProjectedRatio, ratio);
+    }
+  }
+  return {
+    revealReady:
+      Number.isFinite(targetLimit) &&
+      targetLimit > 0 &&
+      maxCentralProjectedRatio <= 4 &&
+      maxVisibleProjectedRatio <= 8,
+    maxCentralProjectedRatio,
+    maxVisibleProjectedRatio,
+  };
+}
+
+export type HierarchyIntermediateCutResult =
+  | { readonly cut: number[]; readonly reason: 'bounded'; readonly newCount: number }
+  | {
+      readonly cut: null;
+      readonly reason:
+        'waiting-for-children' | 'non-refinement' | 'already-at-target' | 'invalid-cut';
+      readonly newCount: 0;
+    };
+
+/**
+ * Validates a selected RAD cut for an explicit diagnostic run. The walk stops
+ * at selected nodes in the normal case, but continues below selected nodes so
+ * an ancestor/descendant overlap is reported rather than hidden by the cut.
+ */
+export function validateHierarchyCut(
+  chunkMap: ReadonlyMap<number, SplatData>,
+  roots: readonly number[],
+  globals: ArrayLike<number>,
+  chunkSize: number,
+): FrontierCutDiagnostic {
+  const selected = new Set<number>();
+  let duplicate = false;
+  for (const global of Array.from(globals)) {
+    if (selected.has(global)) duplicate = true;
+    selected.add(global);
+  }
+  const seenSelected = new Set<number>();
+  const visiting = new Set<number>();
+  let ancestorOverlap = false;
+  const visit = (global: number, selectedAncestor: boolean): void => {
+    if (visiting.has(global)) return;
+    const file = Math.floor(global / chunkSize);
+    const data = chunkMap.get(file);
+    const local = global - file * chunkSize;
+    if (!data?.radTree || local < 0 || local >= data.count) return;
+    visiting.add(global);
+    const isSelected = selected.has(global);
+    if (isSelected) {
+      seenSelected.add(global);
+      if (selectedAncestor) ancestorOverlap = true;
+    }
+    const childCount = data.radTree.childCount[local] as number;
+    const childStart = data.radTree.childStart[local] as number;
+    for (let i = 0; i < childCount; i++) {
+      visit(childStart + i, selectedAncestor || isSelected);
+    }
+    visiting.delete(global);
+  };
+  for (const root of roots) visit(root, false);
+  let missing = false;
+  for (const global of selected) {
+    const file = Math.floor(global / chunkSize);
+    const data = chunkMap.get(file);
+    const local = global - file * chunkSize;
+    if (!data?.radTree || local < 0 || local >= data.count || !seenSelected.has(global)) {
+      missing = true;
+    }
+  }
+  return {
+    valid: !duplicate && !ancestorOverlap && !missing,
+    ancestorOverlap,
+    duplicate,
+    missing,
+  };
+}
+
+/**
+ * Builds one hierarchy-valid refinement step from a published cut toward a
+ * finer cut. A parent is replaced only by its complete immediate child range,
+ * so every returned cut remains a cover even while the final selection is
+ * staged in later plans. Ready descendants may refine further within the same
+ * candidate; hierarchy depth does not impose extra publication barriers.
+ *
+ * This is intentionally a worker-side helper. It never coarsens a cut and it
+ * refuses children whose chunks are not resident, because publishing those
+ * children would turn a valid cover into a hole. The returned cut adds at most
+ * `maxNewSplats` globals relative to the input cut.
+ */
+export function hierarchyIntermediateCut(
+  chunkMap: ReadonlyMap<number, SplatData>,
+  roots: readonly number[],
+  currentGlobals: ArrayLike<number>,
+  desiredGlobals: ArrayLike<number>,
+  chunkSize: number,
+  maxNewSplats = 512_000,
+  view?: FrontierView,
+): HierarchyIntermediateCutResult {
+  if (maxNewSplats <= 0) {
+    return { cut: null, reason: 'waiting-for-children', newCount: 0 };
+  }
+  const desiredValues = Array.from(desiredGlobals);
+  const desired = new Set(desiredValues);
+  const current = currentGlobals.length
+    ? Array.from(currentGlobals)
+    : roots.filter((global) => {
+        const file = Math.floor(global / chunkSize);
+        const data = chunkMap.get(file);
+        return data?.radTree !== undefined && global - file * chunkSize < data.count;
+      });
+  if (current.length === 0 || (currentGlobals.length === 0 && current.length > maxNewSplats)) {
+    return { cut: null, reason: 'waiting-for-children', newCount: 0 };
+  }
+  if (new Set(current).size !== current.length || desired.size !== desiredValues.length) {
+    return { cut: null, reason: 'invalid-cut', newCount: 0 };
+  }
+  if (current.length === desired.size && current.every((global) => desired.has(global))) {
+    return { cut: null, reason: 'already-at-target', newCount: 0 };
+  }
+  const desiredBelow = new Map<number, boolean>();
+  const hasDesiredBelow = (global: number): boolean => {
+    if (desired.has(global)) return true;
+    const remembered = desiredBelow.get(global);
+    if (remembered !== undefined) return remembered;
+    const file = Math.floor(global / chunkSize);
+    const data = chunkMap.get(file);
+    if (!data?.radTree) {
+      desiredBelow.set(global, false);
+      return false;
+    }
+    const local = global - file * chunkSize;
+    const childCount = data.radTree.childCount[local] as number;
+    const childStart = data.radTree.childStart[local] as number;
+    for (let i = 0; i < childCount; i++) {
+      if (hasDesiredBelow(childStart + i)) {
+        desiredBelow.set(global, true);
+        return true;
+      }
+    }
+    desiredBelow.set(global, false);
+    return false;
+  };
+  const importance = (global: number): number => {
+    if (!view) return 0;
+    const file = Math.floor(global / chunkSize);
+    const data = chunkMap.get(file);
+    return data ? pixelScaleOf(data, global - file * chunkSize, view) : 0;
+  };
+  const heap = new MaxHeap();
+  let nonRefinement = false;
+  let waitingForChildren = false;
+  for (const global of current) {
+    if (desired.has(global)) continue;
+    if (hasDesiredBelow(global)) heap.push(global, importance(global));
+    else nonRefinement = true;
+  }
+  const nextSet = new Set(current);
+  const originalSet = new Set(current);
+  const replacements = new Map<number, number[]>();
+  let candidateNewCount = 0;
+  let changed = false;
+  while (heap.size > 0) {
+    const global = heap.pop();
+    if (!nextSet.has(global) || desired.has(global)) continue;
+    const file = Math.floor(global / chunkSize);
+    const data = chunkMap.get(file);
+    if (!data?.radTree) continue;
+    const local = global - file * chunkSize;
+    const childCount = data.radTree.childCount[local] as number;
+    if (childCount <= 0) continue;
+    const childStart = data.radTree.childStart[local] as number;
+    const children: number[] = [];
+    let resident = true;
+    for (let i = 0; i < childCount; i++) {
+      const child = childStart + i;
+      const childFile = Math.floor(child / chunkSize);
+      const childData = chunkMap.get(childFile);
+      const childLocal = child - childFile * chunkSize;
+      if (
+        !childData?.radTree ||
+        childLocal < 0 ||
+        childLocal >= childData.count ||
+        !hasDesiredBelow(child)
+      ) {
+        resident = false;
+        break;
+      }
+      children.push(child);
+    }
+    if (!resident) {
+      waitingForChildren = true;
+      continue;
+    }
+    const added = children.reduce(
+      (count, child) => count + (!nextSet.has(child) && !originalSet.has(child) ? 1 : 0),
+      0,
+    );
+    const resultingNewCount = candidateNewCount - (originalSet.has(global) ? 0 : 1) + added;
+    // Count new slots in the resulting candidate. A temporary intermediate
+    // node that is replaced again does not consume a slot in the final cut.
+    // Update only this replacement's contribution: scanning nextSet for every
+    // split makes large intermediate cuts quadratic and stalls refinement.
+    if (resultingNewCount > maxNewSplats) {
+      waitingForChildren = true;
+      continue;
+    }
+    candidateNewCount = resultingNewCount;
+    nextSet.delete(global);
+    replacements.set(global, children);
+    for (const child of children) {
+      nextSet.add(child);
+      if (!desired.has(child)) heap.push(child, importance(child));
+    }
+    changed = true;
+  }
+  if (!changed) {
+    return {
+      cut: null,
+      reason: nonRefinement && !waitingForChildren ? 'non-refinement' : 'waiting-for-children',
+      newCount: 0,
+    };
+  }
+  const next: number[] = [];
+  const append = (global: number): void => {
+    const children = replacements.get(global);
+    if (!children) {
+      next.push(global);
+      return;
+    }
+    for (const child of children) append(child);
+  };
+  for (const global of current) append(global);
+  if (new Set(next).size !== next.length) {
+    return { cut: null, reason: 'invalid-cut', newCount: 0 };
+  }
+  const newCount = next.reduce(
+    (count, candidate) => count + (originalSet.has(candidate) ? 0 : 1),
+    0,
+  );
+  return { cut: next, reason: 'bounded', newCount };
+}
 
 /**
  * Spark's paging driver: the child chunks the frontier *wants* but does not have.

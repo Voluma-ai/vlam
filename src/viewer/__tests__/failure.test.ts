@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { SplatLoadError } from '../../lib/loaders';
 import { describeLoadError } from '../failure';
 import { filesFromDirectoryInput } from '../drop-zone';
-import { validateSceneUrl, isStreamedScene, isSupportedSplatFile } from '../scene-url';
+import { validateSceneUrl, isRadScene, isStreamedScene, isSupportedSplatFile } from '../scene-url';
 
 /**
  * The welcome panel's URL box can only fail in ways the user can act on, so
@@ -86,6 +86,8 @@ describe('scene extension routing', () => {
 
   it('ignores a query string when reading the extension', () => {
     expect(isSupportedSplatFile('https://cdn.test/scene.ply?token=abc')).toBe(true);
+    expect(isRadScene('https://cdn.test/scene.rad?token=abc')).toBe(true);
+    expect(isRadScene('https://cdn.test/scene.lcc2?token=abc')).toBe(false);
   });
 });
 

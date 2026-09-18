@@ -283,6 +283,8 @@ export interface SplatMaterialBuildInputs {
     localCameraPosition: Vec3Uniform;
     /** Frontier-cut limit on `own_size / distance` (`foveationMode: 'frontier'`). */
     pixelScaleLimit: FloatUniform;
+    /** Internal draw multiplier used to keep a staged stream hidden. */
+    revealMultiplier?: FloatUniform;
     /**
      * Core projected-2D DoF focus plane (world/view units). Live uniform -
      * racking focus does not rebuild the material. See `depth-of-field.ts`.
@@ -543,6 +545,7 @@ export function applySplatMaterialGraph(
   // core projected-2D DoF). Always present so DoF can fade opacity when
   // antialias is off; with both disabled the fade stays 1.
   const opacityCompensation = varying(float(1), 'vOpacityCompensation');
+  const revealMultiplier = uniforms.revealMultiplier ?? float(1);
   // Spark LOD alpha (`.rad`): per-splat σ-cutoff and the recovered `alpha ∈ [0,2]`,
   // computed in the vertex stage and used by both the quad extent and the
   // fragment falloff. Only present with `lodAlpha`, so other formats are byte-
@@ -863,7 +866,7 @@ export function applySplatMaterialGraph(
         // True Gaussian falloff. |quadPosition| = 1 is `maxStdDev` σ from center.
         opacity = gaussianSplatOpacity(squaredDistance, gaussianExponent, splatColor.a);
       }
-      const alpha = opacity.mul(opacityCompensation);
+      const alpha = opacity.mul(opacityCompensation).mul(revealMultiplier);
       const rgb = (
         inputs.displayColorModifier?.(splatColor.rgb, screenUV, uniforms.viewport) ?? splatColor.rgb
       ).toVar();
@@ -901,7 +904,7 @@ export function applySplatMaterialGraph(
       } else {
         gaussian = gaussianSplatOpacity(squaredDistance, gaussianExponent, splatColor.a);
       }
-      const alpha = gaussian.mul(opacityCompensation);
+      const alpha = gaussian.mul(opacityCompensation).mul(revealMultiplier);
       Discard(alpha.lessThan(pick.alphaThreshold));
 
       // 24-bit normalized linear view depth → RGB; alpha marks a hit.

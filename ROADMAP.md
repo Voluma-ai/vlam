@@ -45,11 +45,10 @@ and the verified rendering math.
   image latency with startup memory probes disabled; measure target-detail time
   separately. Verify no holes, parent/child overlap, bright flashes, cache churn
   or starvation during camera motion. A lower active-count test threshold alone
-  is not an implementation of this behavior. **Current status:** the page-table
-  first-image gate now defaults to a complete 50%-budget cut, which the supplied
-  10.1M-leaf RAD looked good at and loaded quickly. The reported brief quality
-  dip at the next published cut and the timing/coverage matrix still need
-  investigation before this item is complete.
+  is not an implementation of this behavior. **Current status:** page-table RAD
+  now defaults to progressive first publication of a complete cover, with the
+  50% allocation gate reserved for incoming crossover captures. Equivalent
+  nearby-detail timing versus Spark 2.1 is still the acceptance metric.
 - **Exact remote PLY streaming efficiency and scale validation** — compare
   1/4/16 MiB windows and spooling only higher-order SH values instead of full
   vertex records. Retain exact global SH quantization. **Acceptance:** real
@@ -112,8 +111,9 @@ selection features until their benefits are measured and visually validated.
   cull-free. `projectionStrategy: 'auto'` now makes a one-time choice for the
   measured >=8M static SH NVIDIA Ampere cohort, with a 1 GiB configurable
   peak-allocation cap; unknown/unsupported cases retain vertex. The
-  default desktop profile is SH-preserving `balanced` (2 px / 3 contribution
-  culls), while `quality` remains full detail. Goose still regresses, and
+  `balanced` remains an explicit SH-preserving performance profile (2 px / 3
+  contribution culls), while desktop defaults to full-detail `quality`. Goose
+  still regresses, and
   `sortIntervalMs=0` still refreshes SH every frame so the overview misses
   vsync. The projector records model/view, projection, viewport, active-list,
   content and DoF state, so an unchanged compute view reuses its indirect list

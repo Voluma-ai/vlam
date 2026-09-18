@@ -19,6 +19,30 @@ describe('WebGpuSortScheduler', () => {
     expect(scheduler.snapshot()).toEqual({ acceptedCount: 2, lastAcceptedAt: 29 });
   });
 
+  it('uses render acknowledgement fallback when GPU completion is unavailable', () => {
+    const scheduler = new WebGpuSortScheduler();
+    const accepted = pose(0);
+    expect(scheduler.shouldSubmit(pose(1), accepted, 5_000_000, 0)).toBe(true);
+    scheduler.markAccepted(0);
+    accepted.copy(pose(1));
+
+    scheduler.markSubmission(1, 5_000_000);
+    expect(scheduler.beginSubmissionFrame(2, 16)).toBe(false);
+    scheduler.acknowledgeSubmission(1, 0);
+    expect(scheduler.beginSubmissionFrame(2, 16)).toBe(true);
+    scheduler.markSubmissionSuppressed(true);
+
+    // Two frames and 32 ms later the fallback releases without awaiting the GPU.
+    expect(scheduler.beginSubmissionFrame(3, 32)).toBe(false);
+    expect(scheduler.hasPendingForce()).toBe(true);
+    expect(scheduler.submissionDiagnostics()).toMatchObject({
+      serial: 1,
+      frame: 1,
+      tracking: 'render-ack-fallback',
+      inputCount: 5_000_000,
+    });
+  });
+
   it('uses the active-count tier boundaries', () => {
     expect(automaticSortIntervalMs(1_999_999)).toBe(0);
     expect(automaticSortIntervalMs(2_000_000)).toBe(50);

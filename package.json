@@ -113,6 +113,7 @@
     "build:lib": "vite build --config scripts/vite.config.lib.ts && tsc -p tsconfig.lib.json",
     "build": "npm run build:site && npm run build:lib",
     "prepack": "npm run build:lib",
+    "start:vlam-src": "vite --config scripts/vite.config.benchmark.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",

@@ -72,8 +72,25 @@ export async function createComparisonVlam(
     ? await StreamedSplatMesh.load(url, {
         ...meshOptions,
         ...(kind === 'lcc2' ? { lodBaseDistance: 10 } : {}),
-        ...(kind === 'rad' && config.radBudget !== undefined
-          ? { budget: config.radBudget, maxBudget: config.radBudget }
+        ...(kind === 'rad'
+          ? {
+              radInitialRevealPolicy: 'allocation-fraction' as const,
+              radInitialDisplayFraction: 0.5,
+              lodScale: 2,
+              frontierFoveation: {
+                coneFov0: 60,
+                coneFov: 120,
+                coneFoveate: 0.4,
+                behindFoveate: 0.2,
+              },
+              ...(config.radBudget !== undefined
+                ? {
+                    budget: config.radBudget,
+                    maxBudget: config.radBudget,
+                    foveationDrawBudget: config.radBudget,
+                  }
+                : { foveationDrawBudget: 7_500_000 }),
+            }
           : {}),
       })
     : new SplatMesh(await loadSplatData(url), meshOptions);
@@ -222,8 +239,8 @@ export async function createComparisonVlam(
     }
     if (kind !== 'rad') return;
     // Page-table `.rad` does not arm the LCC coverage hold. Wait until the
-    // frontier has something to draw and reports a complete first cut.
-    while (mesh.activeSplatCount === 0 || !mesh.frontierState.frontierConverged) {
+    // frontier has crossed its first-reveal policy and then settles.
+    while (!mesh.hasPublishedGeneration || !mesh.frontierState.frontierConverged) {
       if (performance.now() > deadline) timedOut('RAD frontier settle');
       mesh.update(camera, renderer);
       renderer.render(scene, camera);

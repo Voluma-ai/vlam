@@ -12,6 +12,9 @@ export function createStreamedMeshFixture(
   options: unknown,
   worker?: unknown,
   neverRetireCoverageEarly?: boolean,
+  radChunkResidency = false,
+  radResidencyRequested = radChunkResidency,
+  radResidencyFallbackReason: string | null = null,
 ): StreamedSplatMesh {
   const FixtureMesh = StreamedSplatMesh as unknown as new (
     scene: unknown,
@@ -20,6 +23,21 @@ export function createStreamedMeshFixture(
     options: unknown,
     worker?: unknown,
     neverRetireCoverageEarly?: boolean,
+    sourceLabel?: string,
+    radChunkResidency?: boolean,
+    radResidencyRequested?: boolean,
+    radResidencyFallbackReason?: string | null,
   ) => StreamedSplatMesh;
-  return new FixtureMesh(scene, budget, capacity, options, worker, neverRetireCoverageEarly);
+  return new FixtureMesh(
+    scene,
+    budget,
+    capacity,
+    options,
+    worker,
+    neverRetireCoverageEarly,
+    undefined,
+    radChunkResidency,
+    radResidencyRequested,
+    radResidencyFallbackReason,
+  );
 }

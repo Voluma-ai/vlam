@@ -79,7 +79,7 @@ export function resolveSplatPerformanceProfile(
   explicit?: SplatPerformanceProfile,
   profile: SplatDeviceProfile | undefined = detectSplatDeviceProfile(),
 ): SplatPerformanceProfile {
-  return explicit ?? (isFillConstrainedSplatDevice(profile) ? 'smooth' : 'balanced');
+  return explicit ?? (isFillConstrainedSplatDevice(profile) ? 'smooth' : 'quality');
 }
 
 /**
@@ -217,8 +217,8 @@ export interface SplatMeshOptions {
    * `smooth` additionally suppresses default SH for fill-constrained devices.
    *
    * The default is device-aware: `smooth` on mobile and fill-constrained
-   * desktops, `balanced` elsewhere. `quality` is the full-detail escape
-   * hatch. Passing a value opts out of the detection.
+   * desktops, `quality` elsewhere. Passing a value opts out of the detection;
+   * use `balanced` to enable contribution culling while preserving source SH.
    */
   performanceProfile?: SplatPerformanceProfile;
   /**
@@ -517,6 +517,8 @@ export interface UnifiedSourceView {
    * scene may mix `.rad` and non-`.rad` sources.
    */
   readonly lodAlpha: boolean;
+  /** Internal startup-reveal multiplier applied by unified rendering. */
+  readonly revealMultiplier: number;
   /** Increments whenever pool-backed data or active residency changes. */
   readonly contentRevision: number;
 }

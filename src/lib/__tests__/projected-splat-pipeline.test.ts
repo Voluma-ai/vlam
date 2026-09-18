@@ -145,7 +145,7 @@ describe('automatic compute-projection policy', () => {
         paletteHeight: 1,
       },
     };
-    const mesh = new SplatMesh(shData);
+    const mesh = new SplatMesh(shData, { performanceProfile: 'balanced' });
     Object.defineProperty(mesh, 'capacity', { configurable: true, value: 8_724_225 });
     const resolve = (
       mesh as unknown as {
