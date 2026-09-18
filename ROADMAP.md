@@ -111,8 +111,9 @@ selection features until their benefits are measured and visually validated.
   cull-free. `projectionStrategy: 'auto'` now makes a one-time choice for the
   measured >=8M static SH NVIDIA Ampere cohort, with a 1 GiB configurable
   peak-allocation cap; unknown/unsupported cases retain vertex. The
-  default desktop profile is SH-preserving `balanced` (2 px / 3 contribution
-  culls), while `quality` remains full detail. Goose still regresses, and
+  `balanced` remains an explicit SH-preserving performance profile (2 px / 3
+  contribution culls), while desktop defaults to full-detail `quality`. Goose
+  still regresses, and
   `sortIntervalMs=0` still refreshes SH every frame so the overview misses
   vsync. The projector records model/view, projection, viewport, active-list,
   content and DoF state, so an unchanged compute view reuses its indirect list

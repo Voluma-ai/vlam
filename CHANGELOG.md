@@ -21,6 +21,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- Non-fill-constrained desktops now default to the full-detail `quality`
+  profile. The previous `balanced` default could replace a complete coarse
+  streamed cut with fine splats that its 2 px / contribution culls then
+  rejected, leaving visible dark gaps in zoomed-out views. `balanced` remains
+  available as an explicit performance opt-in.
 - Page-table RAD now separates worker demand from render delivery: one
   authoritative Spark 2.1 one-pass selection posts ordered chunk demand before
   gather, discovers deeper dependencies while a previous candidate is still
