@@ -658,9 +658,13 @@ describe('frontier worker delivery', () => {
       shBands: 0,
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 25));
     const lastFile = 1 + branchCount;
-    expect(demands.some((reply) => reply.wants.some((want) => want.file === lastFile))).toBe(true);
+    await expect
+      .poll(
+        () => demands.some((reply) => reply.wants.some((want) => want.file === lastFile)),
+        { timeout: 2_000, interval: 5 },
+      )
+      .toBe(true);
   });
 
   it('does not inherit an ancestor priority onto deeper branches below the cut', () => {

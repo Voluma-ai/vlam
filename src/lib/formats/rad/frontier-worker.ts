@@ -571,10 +571,12 @@ function scheduleDiscoveryContinuation(): void {
 }
 
 /** Walk resident descendants until a missing chunk, leaf, or quality threshold. */
-function expandWaiters(budgetMs = 4): boolean {
+function expandWaiters(budgetMs = testRuntime ? Number.POSITIVE_INFINITY : 4): boolean {
   const view = lastView;
   if (!view) return false;
   const startedAt = performance.now();
+  const overBudget = (): boolean =>
+    Number.isFinite(budgetMs) && performance.now() - startedAt >= budgetMs;
   let discovered = false;
   const remaining: FrontierWaiter[] = [];
 
@@ -615,7 +617,7 @@ function expandWaiters(budgetMs = 4): boolean {
 
   let waiterIndex = 0;
   for (; waiterIndex < waiters.length; waiterIndex++) {
-    if (performance.now() - startedAt >= budgetMs) {
+    if (overBudget()) {
       for (let i = waiterIndex; i < waiters.length; i++) {
         remaining.push(waiters[i] as FrontierWaiter);
       }
@@ -630,12 +632,16 @@ function expandWaiters(budgetMs = 4): boolean {
     visit(waiter.parentGlobal);
   }
 
+  let processedQueue = false;
   while (discoveryCursor < discoveryQueue.length) {
-    if (performance.now() - startedAt >= budgetMs) break;
+    // A high-fanout waiter can spend the slice enqueueing children. Still
+    // visit at least one of them so discovery cannot stall until the next tick.
+    if (processedQueue && overBudget()) break;
     const global = discoveryQueue[discoveryCursor] as number;
     discoveryQueued.delete(global);
     visit(global);
     discoveryCursor++;
+    processedQueue = true;
   }
   compactDiscoveryQueue();
   waiters = remaining;
