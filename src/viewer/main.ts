@@ -9,7 +9,6 @@ import {
   detectSplatDeviceProfile,
   isFillConstrainedSplatDevice,
   probeSplatGpuClass,
-  recommendedMaxPixelRatio,
   recommendedXrFramebufferScale,
   ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES,
   xrSessionInit,
@@ -64,6 +63,7 @@ import { createDropZone, filesFromDirectoryInput } from './drop-zone';
 import {
   SINGLE_FILE_EXTENSIONS,
   SINGLE_FILE_LIST,
+  isRadScene,
   isStreamedScene,
   isSupportedSplatFile,
   validateSceneUrl,
@@ -591,12 +591,9 @@ async function main(): Promise<void> {
   const relightPixelRatioEnabled = (): boolean =>
     relightPixelRatioLimit && adaptiveDprParam !== '0';
   const adaptivePixelRatioEnabled = (): boolean => adaptiveDpr || relightPixelRatioEnabled();
-  // HD uses the library quality ceiling (1.5 on integrated, 2 on discrete), not
-  // min(native, ceiling). Clamping to `devicePixelRatio` made HD identical to
-  // SD whenever the window reported 1, while `?pixelRatio=1.5` could still
-  // supersample. Adaptive DPR may still step down from that ceiling under
-  // frame-time pressure.
-  const pixelRatioCeiling = (): number => recommendedMaxPixelRatio(deviceProfile);
+  // Match Voluma's default: one rendered pixel per CSS pixel on every scene.
+  // Supersampling remains available explicitly through `?pixelRatio=N`.
+  const pixelRatioCeiling = (): number => 1;
   const adaptivePixelRatioMax = (): number =>
     perfMode.enabled || relightPixelRatioEnabled() ? PERF_MODE_PIXEL_RATIO : pixelRatioCeiling();
   const adaptivePixelRatioMin = (): number =>
@@ -1571,9 +1568,9 @@ async function main(): Promise<void> {
   const foveationDrawBudget = params.has('foveationDraw')
     ? Number(params.get('foveationDraw'))
     : undefined;
-  // Single-scene RAD keeps complete early cuts behind the projected-quality
-  // reveal gate. `?radInitialDisplay=0` restores the old target-detail hold for
-  // A/B; `coarse` remains a 50% allocation-fraction alias for crossover runs.
+  // A single RAD scene follows Spark and the Voluma viewer: publish the first
+  // complete sorted cut, then refine progressively. An explicit
+  // `?radInitialDisplay=` keeps the allocation-fraction A/B control.
   const radInitialDisplayParam = params.get('radInitialDisplay');
   const radInitialDisplayFraction =
     radInitialDisplayParam === null
@@ -1647,7 +1644,7 @@ async function main(): Promise<void> {
     lodScale: params.has('lodScale') ? Number(params.get('lodScale')) : 2,
     radInitialRevealPolicy:
       radInitialDisplayFraction === undefined
-        ? ('projected-quality' as const)
+        ? ('progressive' as const)
         : ('allocation-fraction' as const),
     ...(radInitialDisplayFraction === undefined ? {} : { radInitialDisplayFraction }),
     ...(maxSplatAspect === undefined ? {} : { maxSplatAspect }),
@@ -3487,7 +3484,7 @@ async function main(): Promise<void> {
       ...(swapCap === undefined ? {} : { maxSplatsPerSwap: swapCap }),
       ...(shBands === undefined ? {} : { shBands }),
       // Blob cull applies only to .rad (its coarse LOD nodes are the blobs).
-      ...(sceneName.toLowerCase().endsWith('.rad') ? radMeshOptions() : meshOptions(sceneName)),
+      ...(isRadScene(sceneName) ? radMeshOptions() : meshOptions(sceneName)),
       // The HUD subscribes too, not just a benchmark run: these are the only
       // per-update CPU timings a host can see (`getUpdateTimings` is protected),
       // and they are what separates an upload stall from a sort stall when the
