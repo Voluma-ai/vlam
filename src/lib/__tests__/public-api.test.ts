@@ -16,6 +16,8 @@ import * as loaders from '../loaders';
 import * as staticLod from '../static-lod';
 import * as streaming from '../streaming';
 import * as unified from '../unified';
+import * as radixSorting from '../sorting/radix';
+import * as computeProjection from '../projection/compute';
 import * as selection from '../selection';
 import * as effects from '../effects';
 import * as relighting from '../relighting';
@@ -179,7 +181,7 @@ describe('public API surface (vlam)', () => {
 
     expectTypeOf<vlam.SplatOrientation>().toEqualTypeOf<'y-up' | 'source'>();
     expectTypeOf<vlam.SplatSortStrategy>().toEqualTypeOf<
-      'counting' | 'worker' | 'radix' | 'exact'
+      'counting' | 'worker' | vlam.SplatSortStrategyFactory
     >();
     expectTypeOf<vlam.SplatPerformanceProfile>().toEqualTypeOf<'quality' | 'balanced' | 'smooth'>();
     expectTypeOf<vlam.SplatFoveationMode>().toEqualTypeOf<'band' | 'frontier' | 'page-table'>();
@@ -192,6 +194,16 @@ describe('public API surface (vlam)', () => {
     expectTypeOf<vlam.SplatChannelType>().toBeString();
     expectTypeOf<vlam.VlamLogLevel>().toEqualTypeOf<'warn' | 'error'>();
     expectTypeOf<vlam.VlamLogHandler>().toBeFunction();
+  });
+});
+
+describe('public API surface (experimental strategies)', () => {
+  it('keeps radix sorting and compute projection on their opt-in entries', () => {
+    expect(typeof radixSorting.radixSort).toBe('function');
+    expect(typeof radixSorting.exactSort).toBe('function');
+    expect(typeof computeProjection.computeProjection).toBe('function');
+    expect('radixSort' in vlam).toBe(false);
+    expect('computeProjection' in vlam).toBe(false);
   });
 });
 

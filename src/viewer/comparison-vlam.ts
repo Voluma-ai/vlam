@@ -11,6 +11,8 @@ import { createWebGPURenderer, detectSplatDeviceProfile, SplatMesh } from '../li
 import { automaticSortIntervalMs } from '../lib/core/sort-scheduler';
 import { loadSplatData } from '../lib/loaders';
 import { StreamedSplatMesh } from '../lib/streaming';
+import { exactSort, radixSort } from '../lib/sorting/radix';
+import { computeProjection } from '../lib/projection/compute';
 import { experiments } from '../lib/internal/experiments';
 import { version } from '../../package.json';
 import type { ComparisonAdapter } from './comparison-adapter';
@@ -45,9 +47,22 @@ export async function createComparisonVlam(
   const resolvedMaxStdDev =
     config.maxStdDev ?? (controlled || proposed ? Math.sqrt(8) : reference ? 3 : undefined);
   const resolvedSortMetric = config.sortMetric ?? (controlled || proposed ? 'radial' : undefined);
+  const projectionStrategy =
+    config.projectionStrategy === 'compute'
+      ? computeProjection()
+      : config.projectionStrategy === 'auto'
+        ? computeProjection({ mode: 'auto' })
+        : ('vertex' as const);
+  const requestedSortStrategy = useWebGl
+    ? 'worker'
+    : config.sortStrategy === 'radix'
+      ? radixSort()
+      : config.sortStrategy === 'exact'
+        ? exactSort()
+        : (config.sortStrategy ?? 'counting');
   const meshOptions = {
     shEvaluation: config.shEvaluation,
-    projectionStrategy: config.projectionStrategy,
+    projectionStrategy,
     orientation: 'source' as const,
     ...(aligned
       ? ({
@@ -62,7 +77,7 @@ export async function createComparisonVlam(
     ...(config.minPixelSize === undefined ? {} : { minPixelSize: config.minPixelSize }),
     ...(config.minContribution === undefined ? {} : { minContribution: config.minContribution }),
     ...(resolvedSortMetric === undefined ? {} : { sortMetric: resolvedSortMetric }),
-    ...(config.sortStrategy === undefined ? {} : { sortStrategy: config.sortStrategy }),
+    sortStrategy: requestedSortStrategy,
     ...(config.sortIntervalMs === undefined ? {} : { sortIntervalMs: config.sortIntervalMs }),
     ...(config.sh === undefined ? {} : { shBands: config.sh }),
   };

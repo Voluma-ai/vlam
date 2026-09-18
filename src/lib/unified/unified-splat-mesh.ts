@@ -2,7 +2,6 @@ import * as THREE from 'three/webgpu';
 import type { WebGLRenderer } from 'three';
 import { uniform } from 'three/tsl';
 import { ComputeSorter, releaseRendererAttributes } from '../core/compute-sorter';
-import { RadixSorter } from '../core/radix-sorter';
 import { clampDepthOfFieldSettings, type DepthOfFieldSettings } from '../core/depth-of-field';
 import { SplatMesh, getSplatPublicationToken } from '../core/splat-mesh';
 import type { SplatPickOptions, SplatPickResult, UnifiedSourceView } from '../core/splat-mesh';
@@ -22,12 +21,14 @@ import {
   type SplatPerformanceProfile,
   type SplatProjectionStrategy,
   type SplatSortMetric,
+  type SplatSortStrategy,
 } from '../core/splat-mesh-types';
 import { cameraVisibleSortRange, radialSortState } from '../core/splat-sort-bounds';
 import {
-  ProjectedSplatPipeline,
   estimateProjectedSplatPeakBytes,
-} from '../core/projected-splat-pipeline';
+  isComputeProjectionStrategy,
+  type ProjectedSplatPipeline,
+} from '../core/strategy-types';
 
 interface SourceRecord {
   source: SplatMesh;
@@ -104,13 +105,7 @@ export interface UnifiedSplatPickResult extends SplatPickResult {
  * @experimental May change in a minor release.
  */
 export interface UnifiedSplatMeshOptions {
-  /**
-   * Experimental mono WebGPU project-once/cull-before-sort path. `'auto'`
-   * (default) deliberately resolves to vertex projection: source residency,
-   * placement, and SH cache eligibility are only known after the unified
-   * gather. Explicit `'compute'` remains available for measured opt-in runs.
-   * XR presentation always uses the established per-eye vertex projection.
-   */
+  /** Vertex projection by default, or an injected experimental projector. */
   projectionStrategy?: SplatProjectionStrategy;
   /**
    * Contribution-culling profile used by the shared unified draw. Defaults to
@@ -124,15 +119,8 @@ export interface UnifiedSplatMeshOptions {
   minContribution?: number;
   /** Composite source colors in display (sRGB) space. Defaults to `false`. */
   srgbOutput?: boolean;
-  /**
-   * Global depth-sort strategy. `'radix'` provides stable quantized ordering,
-   * while `'exact'` preserves every Float32 depth bit through the same stable
-   * radix pipeline. `'counting'` remains the lower-cost default.
-   *
-   * @experimental Exact sorting trades two additional radix passes for better
-   * ordering in large scenes with dense foliage or overlapping surfaces.
-   */
-  sortStrategy?: 'counting' | 'radix' | 'exact';
+  /** Global depth-sort strategy. Defaults to the lower-cost counting sorter. */
+  sortStrategy?: SplatSortStrategy;
   /**
    * Camera-space key used for global ordering. Defaults to `'depth'` for
    * compatibility; `'radial'` matches Spark's rotation-invariant ordering.
@@ -317,23 +305,19 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       minContribution: validateContributionCull(options.minContribution, 'minContribution'),
       performanceProfile,
     });
-    const projectionStrategy = options.projectionStrategy ?? 'auto';
-    if (
-      projectionStrategy !== 'auto' &&
-      projectionStrategy !== 'vertex' &&
-      projectionStrategy !== 'compute'
-    ) {
+    const projectionStrategy = options.projectionStrategy ?? 'vertex';
+    if (projectionStrategy !== 'vertex' && !isComputeProjectionStrategy(projectionStrategy)) {
       throw new RangeError('UnifiedSplatMesh: invalid projectionStrategy.');
     }
-    if (projectionStrategy === 'compute') {
+    if (isComputeProjectionStrategy(projectionStrategy) && projectionStrategy.mode === 'explicit') {
       assertStorageBufferFitsDevice(renderer, capacity * 16, capacity);
       // Account for the allocation peak up front even though the per-buffer
       // binding limit is enforced independently above.
       estimateProjectedSplatPeakBytes(capacity);
     }
     const projectedPipeline =
-      projectionStrategy === 'compute'
-        ? new ProjectedSplatPipeline({
+      isComputeProjectionStrategy(projectionStrategy) && projectionStrategy.mode === 'explicit'
+        ? projectionStrategy.createUnified({
             renderer,
             capacity,
             centers: workBuffer.centers,
@@ -407,11 +391,14 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.sortMetric = options.sortMetric ?? 'depth';
     this.projectionStrategyValue = projectionStrategy;
     this.projectionStrategyState = {
-      effective: projectionStrategy === 'compute' ? 'compute' : 'vertex',
+      effective:
+        isComputeProjectionStrategy(projectionStrategy) && projectionStrategy.mode === 'explicit'
+          ? 'compute'
+          : 'vertex',
       reason:
-        projectionStrategy === 'auto'
+        isComputeProjectionStrategy(projectionStrategy) && projectionStrategy.mode === 'auto'
           ? 'auto-unified-source'
-          : projectionStrategy === 'compute'
+          : isComputeProjectionStrategy(projectionStrategy)
             ? 'explicit-compute'
             : 'explicit-vertex',
     };
@@ -429,14 +416,11 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       splatIndexAttribute: order,
       sourceIndexAttribute: this.workSourceIndex,
     };
+    const sortStrategy = options.sortStrategy ?? 'counting';
     this.sorter =
-      options.sortStrategy === 'radix' || options.sortStrategy === 'exact'
-        ? new RadixSorter({
-            ...sortInputs,
-            exactDepth: options.sortStrategy === 'exact',
-            sortMetric: this.sortMetric,
-          })
-        : new ComputeSorter({ ...sortInputs, sortMetric: this.sortMetric });
+      typeof sortStrategy === 'string'
+        ? new ComputeSorter({ ...sortInputs, sortMetric: this.sortMetric })
+        : sortStrategy.create({ ...sortInputs, sortMetric: this.sortMetric });
     this.projectedSorter = projectedPipeline
       ? new ComputeSorter({
           ...sortInputs,
@@ -469,7 +453,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   }
 
   /** Strategy currently used by the draw (XR temporarily resolves to vertex). */
-  get effectiveProjectionStrategy(): SplatProjectionStrategy {
+  get effectiveProjectionStrategy(): 'vertex' | 'compute' {
     return this.computeProjectionActive ? 'compute' : 'vertex';
   }
 

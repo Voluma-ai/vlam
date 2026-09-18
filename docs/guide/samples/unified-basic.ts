@@ -5,6 +5,8 @@ import { SplatMesh } from '@voluma/vlam';
 import { loadSplatData } from '@voluma/vlam/loaders';
 import { StreamedSplatMesh } from '@voluma/vlam/streaming';
 import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '@voluma/vlam/unified';
+import { exactSort } from '@voluma/vlam/sorting/radix';
+import { computeProjection } from '@voluma/vlam/projection/compute';
 
 export async function setupUnified(renderer: THREE.WebGPURenderer, scene: THREE.Scene) {
   const main = await StreamedSplatMesh.load('/city/lod-meta.json');
@@ -18,7 +20,10 @@ export async function setupUnified(renderer: THREE.WebGPURenderer, scene: THREE.
     return null;
   }
 
-  const unified = new UnifiedSplatMesh(renderer, main.capacity + statue.capacity);
+  const unified = new UnifiedSplatMesh(renderer, main.capacity + statue.capacity, {
+    sortStrategy: exactSort(),
+    projectionStrategy: computeProjection(),
+  });
   unified.addSource(main);
   unified.addSource(statue, { priority: 1, opacity: 0.8 });
   scene.add(unified); // add the unified mesh INSTEAD of the sources

@@ -133,9 +133,9 @@ justify a lower threshold.
 | `backend` | `webgpu` (VLAM) | VLAM only: `webgl` forces the WebGL2 + worker-sort fallback. Spark is always WebGL2 |
 | `maxStdDev` | preset | Explicit quad extent diagnostic, in Gaussian standard deviations |
 | `sortMetric` | preset | `depth` or `radial` |
-| `sortStrategy` | library default | VLAM-only `counting`, `radix`, `exact`, or `worker` diagnostic |
+| `sortStrategy` | library default | VLAM-only `counting`, `radixSort()`, `exactSort()`, or `worker` diagnostic; the viewer passes the corresponding factory |
 | `sortIntervalMs` | library adaptive default | VLAM-only cadence override; use `0` for the projection A/B's every-changed-frame pass |
-| `projectionStrategy` | `auto` | VLAM `auto`, full-detail `vertex`, or explicit experimental `compute` projection path |
+| `projectionStrategy` | `auto` | VLAM `computeProjection({ mode: 'auto' })`, full-detail `vertex`, or explicit experimental `computeProjection()` |
 | `minPixelSize` | profile | VLAM contribution cull: drop splats whose on-screen diameter is below this many px |
 | `minContribution` | profile | VLAM contribution cull: drop splats whose opacity × major × minor is below this |
 | `visibilityPose` | unset | Cached `interior` or `overview` pose used by the projection A/B |
@@ -486,7 +486,9 @@ Adaptive cadence (`sortIntervalMs` unset; 167 ms at 8.72M):
 
 #### Automatic static projection selection (2026-09-13)
 
-The library and demo now default to `projectionStrategy: 'auto'` and the
+The demo's `projectionStrategy=auto` control now passes
+`computeProjection({ mode: 'auto' })`, while the lightweight library defaults to
+vertex projection and the
 SH-preserving `performanceProfile: 'balanced'` on non-fill-constrained desktop
 devices. This is a one-time policy decision at first prepare, not a startup
 benchmark and never a scene-name rule. It selects compute projection plus the
@@ -498,8 +500,9 @@ includes temporary projection mirrors, the dense projected-sorter's histogram
 and bucket-buffer mirrors, and 2048-wide SH-cache row padding; the budget is a
 conservative application cap, not a claim about available VRAM.
 Hosts can tighten or disable this path with
-`projectionMemoryBudgetBytes` (set `0` to force the automatic decision to
-vertex) while explicit `projectionStrategy: 'compute'` remains an override.
+`projectionMemoryBudgetBytes` (set `0` in `computeProjection` to force the
+automatic decision to vertex) while `computeProjection()` remains an explicit
+override.
 
 Every other case—including unknown adapters, smaller or SH-free files,
 streaming, unified sources, modifiers, foveation, XR, WebGL2, unvalidated

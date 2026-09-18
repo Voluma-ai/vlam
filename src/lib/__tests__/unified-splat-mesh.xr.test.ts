@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { writeCovariance } from '../core/splat-data';
 import { SplatMesh } from '../core/splat-mesh';
 import { UnifiedSplatMesh } from '../unified/unified-splat-mesh';
+import { computeProjection } from '../projection/compute';
 
 /**
  * The unified renderer does not inherit `SplatMesh.update`, so it needs its own
@@ -120,13 +121,13 @@ describe('UnifiedSplatMesh under XR presentation', () => {
   it('switches requested compute projection off for XR presentation', () => {
     const { renderer } = xrRenderer();
     const mesh = source();
-    const unified = new UnifiedSplatMesh(renderer, 4, { projectionStrategy: 'compute' });
+    const unified = new UnifiedSplatMesh(renderer, 4, { projectionStrategy: computeProjection() });
     unified.addSource(mesh);
     (mesh as unknown as { update: () => void }).update = vi.fn();
 
     unified.update(new THREE.PerspectiveCamera());
 
-    expect(unified.projectionStrategy).toBe('compute');
+    expect((unified.projectionStrategy as { kind: string }).kind).toBe('compute');
     expect(unified.effectiveProjectionStrategy).toBe('vertex');
     expect(unified.projectionStrategyStatus).toEqual({ effective: 'vertex', reason: 'xr' });
 

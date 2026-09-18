@@ -5,6 +5,8 @@ import { writeCovariance, type SplatData } from '../core/splat-data';
 import { SplatMesh } from '../core/splat-mesh';
 import { MergedSplatMesh } from '../core/merged-splat-mesh';
 import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '../unified/unified-splat-mesh';
+import { exactSort, radixSort } from '../sorting/radix';
+import { computeProjection } from '../projection/compute';
 
 function source(
   options: {
@@ -72,12 +74,12 @@ describe('supportsUnifiedSplatMesh', () => {
 });
 
 describe('UnifiedSplatMesh', () => {
-  it('accepts the library auto default and keeps unified rendering on vertex projection', () => {
+  it('accepts the lightweight vertex default', () => {
     const unified = new UnifiedSplatMesh(mockRenderer(), 1);
-    expect(unified.projectionStrategy).toBe('auto');
+    expect(unified.projectionStrategy).toBe('vertex');
     expect(unified.projectionStrategyStatus).toEqual({
       effective: 'vertex',
-      reason: 'auto-unified-source',
+      reason: 'explicit-vertex',
     });
     unified.dispose();
   });
@@ -95,15 +97,18 @@ describe('UnifiedSplatMesh', () => {
     mesh.dispose();
   });
 
-  it.each(['radix', 'exact'] as const)(
+  it.each([
+    ['radix', radixSort(), false],
+    ['exact', exactSort(), true],
+  ] as const)(
     'uses the stable %s sorter when requested',
-    (sortStrategy) => {
+    (_label, sortStrategy, exactDepth) => {
       const unified = new UnifiedSplatMesh(mockRenderer(), 1, { sortStrategy });
       const sorterName = (unified as unknown as { sorter: { constructor: { name: string } } })
         .sorter.constructor.name;
       expect(sorterName).toBe('RadixSorter');
       expect((unified as unknown as { sorter: { exactDepth: boolean } }).sorter.exactDepth).toBe(
-        sortStrategy === 'exact',
+        exactDepth,
       );
       unified.dispose();
     },
@@ -128,7 +133,7 @@ describe('UnifiedSplatMesh', () => {
     const vertex = new UnifiedSplatMesh(renderer, 1, { performanceProfile: 'balanced' });
     const compute = new UnifiedSplatMesh(renderer, 1, {
       performanceProfile: 'balanced',
-      projectionStrategy: 'compute',
+      projectionStrategy: computeProjection(),
     });
 
     vertex.addSource(mesh);

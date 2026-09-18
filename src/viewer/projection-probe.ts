@@ -2,11 +2,14 @@ import * as THREE from 'three/webgpu';
 import { createWebGPURenderer, SplatMesh } from '../lib/core';
 import { loadSplatData } from '../lib/loaders';
 import { UnifiedSplatMesh } from '../lib/unified';
+import { computeProjection } from '../lib/projection/compute';
 import { shEvaluationDiagnostics } from './sh-evaluation-diagnostics';
 
 const output = document.querySelector<HTMLOutputElement>('[data-testid="result"]');
 const canvas = document.querySelector<HTMLCanvasElement>('#canvas');
 if (!output || !canvas) throw new Error('Missing projection probe elements.');
+const EXPLICIT_COMPUTE = computeProjection();
+const AUTO_COMPUTE = computeProjection({ mode: 'auto' });
 addEventListener('error', (event) => {
   output.textContent = JSON.stringify({ error: String(event.error ?? event.message) });
 });
@@ -126,7 +129,7 @@ const vertexPixels = await drawPixels(vertex);
 vertex.dispose();
 
 const source = new SplatMesh(data);
-const unified = new UnifiedSplatMesh(renderer, 8, { projectionStrategy: 'compute' });
+const unified = new UnifiedSplatMesh(renderer, 8, { projectionStrategy: EXPLICIT_COMPUTE });
 unified.addSource(source);
 unified.update(camera);
 // A second preparation also verifies stable gathered-buffer reuse.
@@ -139,7 +142,7 @@ const unifiedResult = {
 unified.dispose();
 source.dispose();
 
-const standalone = new SplatMesh(data, { projectionStrategy: 'compute', sortIntervalMs: 0 });
+const standalone = new SplatMesh(data, { projectionStrategy: EXPLICIT_COMPUTE, sortIntervalMs: 0 });
 standalone.update(camera, renderer);
 const standalonePixels = await drawPixels(standalone);
 let differentChannels = 0;
@@ -202,7 +205,10 @@ const renderCulledUnified = async (
     performanceProfile,
     projectionStrategy: 'vertex',
   });
-  const mesh = new UnifiedSplatMesh(renderer, 1, { performanceProfile, projectionStrategy });
+  const mesh = new UnifiedSplatMesh(renderer, 1, {
+    performanceProfile,
+    projectionStrategy: projectionStrategy === 'auto' ? AUTO_COMPUTE : EXPLICIT_COMPUTE,
+  });
   try {
     mesh.addSource(sourceMesh);
     mesh.update(camera);
@@ -224,7 +230,7 @@ const unifiedContributionCulling = {
 let renderOnlyPicking: { released: boolean; backZ: number | null } | null = null;
 if (new URLSearchParams(location.search).get('renderOnly') === '1') {
   const renderOnly = new SplatMesh(data, {
-    projectionStrategy: 'compute',
+    projectionStrategy: EXPLICIT_COMPUTE,
     storageMode: 'render-only',
   });
   renderOnly.update(camera, renderer);
@@ -248,7 +254,7 @@ const renderGoose = async (
 ): Promise<{ pixels: Uint8Array; projectionDispatches: number | null }> => {
   const mesh = new SplatMesh(gooseData, {
     orientation: 'source',
-    projectionStrategy,
+    projectionStrategy: projectionStrategy === 'compute' ? EXPLICIT_COMPUTE : 'vertex',
     sortIntervalMs: 0,
     sortStrategy: 'counting',
     performanceProfile: 'quality',
@@ -333,7 +339,7 @@ const renderSh = async (
   shBands: 0 | 1 = 1,
 ): Promise<{ pixels: number[][]; dispatches: number; packedColor: boolean | null }> => {
   const mesh = new SplatMesh(shData, {
-    projectionStrategy,
+    projectionStrategy: projectionStrategy === 'compute' ? EXPLICIT_COMPUTE : 'vertex',
     shEvaluation,
     shBands,
     sortIntervalMs: 0,

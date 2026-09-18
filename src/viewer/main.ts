@@ -28,6 +28,7 @@ import {
   type CollisionMeshTile,
   type StreamedSplatPerformanceEvent,
 } from '../lib/streaming';
+import { computeProjection } from '../lib/projection/compute';
 import {
   DEFAULT_CLASSIC_SPLATS_PER_SWAP,
   DEFAULT_PAGE_TABLE_WRITES_PER_PLAN,
@@ -1482,7 +1483,14 @@ async function main(): Promise<void> {
   ) {
     throw new Error('Invalid projectionStrategy: expected auto, vertex or compute.');
   }
-  const projectionStrategy = projectionStrategyParam ?? undefined;
+  const projectionStrategy =
+    projectionStrategyParam === undefined || projectionStrategyParam === null
+      ? undefined
+      : projectionStrategyParam === 'compute'
+        ? computeProjection()
+        : projectionStrategyParam === 'auto'
+          ? computeProjection({ mode: 'auto' })
+          : 'vertex';
   const minPixelSizeParam = params.get('minPixelSize');
   const minPixelSize = minPixelSizeParam === null ? undefined : Number(minPixelSizeParam);
   const minContributionParam = params.get('minContribution');

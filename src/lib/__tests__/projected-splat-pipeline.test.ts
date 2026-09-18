@@ -18,6 +18,7 @@ import {
   type AutomaticProjectionPolicyInput,
 } from '../core/projection-strategy-policy';
 import type { SplatShInputs } from '../core/splat-mesh-material';
+import { computeProjection } from '../projection/compute';
 
 const data = {
   count: 1,
@@ -27,12 +28,12 @@ const data = {
 };
 
 describe('compute projection configuration', () => {
-  it('defaults to one-time auto projection and exposes explicit compute memory', () => {
+  it('defaults to vertex projection and exposes explicit compute memory', () => {
     const auto = new SplatMesh(data);
-    const compute = new SplatMesh(data, { projectionStrategy: 'compute' });
-    expect(auto.projectionStrategy).toBe('auto');
+    const compute = new SplatMesh(data, { projectionStrategy: computeProjection() });
+    expect(auto.projectionStrategy).toBe('vertex');
     expect(auto.projectionMemoryBytes).toEqual({ steadyGpu: 0, peakCpuAndGpu: 0 });
-    expect(compute.projectionStrategy).toBe('compute');
+    expect((compute.projectionStrategy as { kind: string }).kind).toBe('compute');
     expect(compute.projectionMemoryBytes.steadyGpu).toBe(
       estimateProjectedSplatSteadyBytes(compute.capacity) +
         estimateComputeSorterSteadyBytes(compute.capacity),
@@ -46,7 +47,7 @@ describe('compute projection configuration', () => {
   });
 
   it('rejects invalid strategies and invalid memory capacities', () => {
-    expect(() => new SplatMesh(data, { projectionStrategy: 'invalid' as 'compute' })).toThrow(
+    expect(() => new SplatMesh(data, { projectionStrategy: 'invalid' as never })).toThrow(
       /invalid projectionStrategy/,
     );
     expect(() => estimateProjectedSplatSteadyBytes(-1)).toThrow(RangeError);

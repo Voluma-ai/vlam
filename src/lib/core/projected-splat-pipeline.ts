@@ -67,6 +67,7 @@ export class ProjectedSplatPipeline {
   static readonly WORKGROUP_SIZE = 256;
 
   readonly buffers: ProjectedSplatBuffers;
+  readonly packedColor = false;
   private readonly renderer: THREE.WebGPURenderer;
   private readonly modelView = uniform(new THREE.Matrix4());
   private readonly projection = uniform(new THREE.Matrix4());

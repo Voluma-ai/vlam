@@ -26,4 +26,4 @@ export {
   estimateProjectedSplatPeakBytes,
   PROJECTED_SPLAT_BYTES_PER_SLOT,
   PROJECTED_SPLAT_FIXED_BYTES,
-} from '../core/projected-splat-pipeline';
+} from '../core/strategy-types';

@@ -21,6 +21,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- Experimental radix sorting and compute projection now live behind the
+  `@voluma/vlam/sorting/radix` and `@voluma/vlam/projection/compute` strategy
+  factories; the root viewer and base unified entry remain lightweight with
+  counting sort and vertex projection by default.
 - Non-fill-constrained desktops now default to the full-detail `quality`
   profile. The previous `balanced` default could replace a complete coarse
   streamed cut with fine splats that its 2 px / contribution culls then

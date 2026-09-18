@@ -63,6 +63,14 @@
       "types": "./dist/unified/index.d.ts",
       "import": "./dist/unified.js"
     },
+    "./sorting/radix": {
+      "types": "./dist/sorting/radix/index.d.ts",
+      "import": "./dist/sorting/radix.js"
+    },
+    "./projection/compute": {
+      "types": "./dist/projection/compute/index.d.ts",
+      "import": "./dist/projection/compute.js"
+    },
     "./selection": {
       "types": "./dist/selection/index.d.ts",
       "import": "./dist/selection.js"

@@ -81,16 +81,15 @@ import { radialSortState } from './splat-sort-bounds';
 import type { ShComputeCache } from './sh-compute-cache';
 import { StorageMirrorReleaser } from './storage-attribute-mirror';
 import { dataTexturesUploaded, releaseDataTextureMirrors } from './data-texture-mirror';
+import { assertStorageBufferFitsDevice } from './webgpu-limits';
+import { resolveAutomaticProjectionStrategy } from './projection-strategy-policy';
 import {
-  StandaloneProjectedSplatPipeline,
   estimateProjectedSplatPeakBytes,
   estimateProjectedSplatSteadyBytes,
-} from './projected-splat-pipeline';
-import { assertStorageBufferFitsDevice } from './webgpu-limits';
-import {
-  DEFAULT_AUTO_PROJECTION_MEMORY_BUDGET_BYTES,
-  resolveAutomaticProjectionStrategy,
-} from './projection-strategy-policy';
+  isAutomaticProjectionStrategy,
+  isComputeProjectionStrategy,
+  type ProjectedSplatPipeline,
+} from './strategy-types';
 
 interface UploadRowSpan {
   readonly start: number;
@@ -447,7 +446,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   /** Created on the first update, when the renderer backend is known. */
   private sorter: SplatSorter | null = null;
   private projectedSorter: ComputeSorter | null = null;
-  private projectedPipeline: StandaloneProjectedSplatPipeline | null = null;
+  private projectedPipeline: ProjectedSplatPipeline | null = null;
   /**
    * State of the most recent projected-list submission. Unlike
    * {@link lastSortedState}, this deliberately includes the projection and
@@ -465,7 +464,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private projectedDofFocusDistance = Number.NaN;
   private projectedDofAperture = Number.NaN;
   private readonly projectionStrategyValue: NonNullable<SplatMeshOptions['projectionStrategy']>;
-  private readonly projectionMemoryBudgetBytes: number;
   /** Auto selection is deliberately made once, never retuned from camera motion. */
   private automaticProjectionStrategy: 'vertex' | 'compute' | null = null;
   private automaticProjectionReason = 'auto-pending';
@@ -600,9 +598,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private sortStrategyValue: SplatSortStrategy;
   private sortStrategyRevision = 0;
   private readonly sortMetric: SplatSortMetric;
-  /** Resolved only when `sortStrategy === 'radix'`; see {@link ensureRadixSorter}. */
-  private RadixSorterCtor: (typeof import('./radix-sorter'))['RadixSorter'] | null = null;
-  private radixSorterLoad: Promise<void> | null = null;
   private performanceProfileValue: SplatPerformanceProfile;
   /** Gaussian cutoff radius in σ; baked into the material graph. */
   private maxStdDevValue: number;
@@ -646,17 +641,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (!['auto', 'vertex', 'compute'].includes(shEvaluation)) {
       throw new RangeError('SplatMesh: invalid shEvaluation.');
     }
-    const projectionStrategy = options.projectionStrategy ?? 'auto';
-    if (
-      projectionStrategy !== 'auto' &&
-      projectionStrategy !== 'vertex' &&
-      projectionStrategy !== 'compute'
-    ) {
+    const projectionStrategy = options.projectionStrategy ?? 'vertex';
+    if (projectionStrategy !== 'vertex' && !isComputeProjectionStrategy(projectionStrategy)) {
       throw new RangeError('SplatMesh: invalid projectionStrategy.');
     }
-    const projectionMemoryBudgetBytes = validateProjectionMemoryBudget(
-      options.projectionMemoryBudgetBytes,
-    );
     // Mobile GPUs are fragment-bound, so several defaults below trade detail
     // no one can see for the fill rate they cost. Every one is overridable.
     // The footprint floor addresses the low-resolution mobile coverage case,
@@ -838,8 +826,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     super(geometry, new THREE.NodeMaterial());
     this.shEvaluation = shEvaluation;
     this.projectionStrategyValue = projectionStrategy;
-    this.projectionMemoryBudgetBytes = projectionMemoryBudgetBytes;
-    if (projectionStrategy === 'auto') this.projectionStrategyState.reason = 'auto-pending';
     this.pool = pool;
     this.ownsPool = ownsPool;
     this.packedShBandsValue = effectivePackedShBands;
@@ -848,7 +834,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.sortScheduler = new WebGpuSortScheduler(sortIntervalMs, isMobile);
     this.sortStrategyValue = options.sortStrategy ?? 'counting';
     this.sortMetric = options.sortMetric ?? 'depth';
-    if (this.sortStrategy === 'radix' || this.sortStrategy === 'exact') this.ensureRadixSorter();
     this.performanceProfileValue = resolveSplatPerformanceProfile(options.performanceProfile);
     this.maxStdDevValue = maxStdDev;
     this.minSplatSizePx = minSplatSizePx;
@@ -1008,7 +993,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   get projectionMemoryBytes(): Readonly<{ steadyGpu: number; peakCpuAndGpu: number }> {
     if (
       this.projectionStrategyValue === 'vertex' ||
-      (this.projectionStrategyValue === 'auto' && this.automaticProjectionStrategy !== 'compute')
+      (isAutomaticProjectionStrategy(this.projectionStrategyValue) &&
+        this.automaticProjectionStrategy !== 'compute')
     ) {
       return { steadyGpu: 0, peakCpuAndGpu: 0 };
     }
@@ -1041,7 +1027,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /**
    * Replaces the sorter without reloading scene data. The previous sorter stays
-   * active while the radix module loads; the latest request wins. Resolves once
+   * active while the strategy changes; the latest request wins. Resolves once
    * selected, with the new sort submitted on the next update, even at rest.
    */
   async setSortStrategy(strategy: SplatSortStrategy): Promise<void> {
@@ -1050,10 +1036,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     }
     const revision = ++this.sortStrategyRevision;
     if (this.disposed || strategy === this.sortStrategyValue) return;
-    if (strategy === 'radix' || strategy === 'exact') {
-      this.ensureRadixSorter();
-      await this.radixSorterLoad;
-    }
     if (this.disposed || revision !== this.sortStrategyRevision) return;
     this.invalidateWorkerPublications();
     const wasCpu = this.usesCpuDrawList();
@@ -2164,7 +2146,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       if (sortAccepted) this.markSortSubmission(this.activeCount);
     } else {
       this.setComputeProjectionActive(false);
-      if (this.projectionStrategyValue === 'compute') {
+      if (
+        isComputeProjectionStrategy(this.projectionStrategyValue) &&
+        this.projectionStrategyValue.mode === 'explicit'
+      ) {
         this.projectionStrategyState.reason = 'unified-source';
       }
     }
@@ -3688,7 +3673,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /** Resolves and locks the auto projection decision from reusable scene and device signals. */
   private resolvedProjectionStrategy(renderer: THREE.WebGPURenderer): 'vertex' | 'compute' {
-    if (this.projectionStrategyValue !== 'auto') return this.projectionStrategyValue;
+    if (this.projectionStrategyValue === 'vertex') return 'vertex';
+    if (this.projectionStrategyValue.mode === 'explicit') return 'compute';
     if (this.automaticProjectionStrategy !== null) return this.automaticProjectionStrategy;
     const backend = this.webGpuBackend(renderer);
     const adapterInfo = backend.device?.adapterInfo;
@@ -3732,7 +3718,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       isValidatedDeviceClass:
         /nvidia/.test(adapterText) && /ampere|ga10[2-9]|rtx\s*30/.test(adapterText),
       isMobile: detectSplatDeviceProfile()?.isMobile === true,
-      memoryBudgetBytes: this.projectionMemoryBudgetBytes,
+      memoryBudgetBytes: this.projectionStrategyValue.memoryBudgetBytes,
     });
     this.automaticProjectionStrategy = result.strategy;
     this.automaticProjectionReason = result.reason;
@@ -3783,7 +3769,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       (adapterText.includes('apple') || adapterText.includes('metal'));
     return (
       (appleMac && this.capacity >= APPLE_MAC_AUTO_SH_MIN_SPLATS) ||
-      (this.projectionStrategyValue === 'auto' && this.automaticProjectionStrategy === 'compute')
+      (isAutomaticProjectionStrategy(this.projectionStrategyValue) &&
+        this.automaticProjectionStrategy === 'compute')
     );
   }
 
@@ -3919,7 +3906,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       phase === 'cache-between-sorts'
         ? 'camera-motion-cached'
         : this.computeProjectionActive
-          ? this.projectionStrategyValue === 'auto'
+          ? isAutomaticProjectionStrategy(this.projectionStrategyValue)
             ? 'auto-projection-cache'
             : 'compute-projection-cache'
           : this.shEvaluation === 'auto'
@@ -3938,7 +3925,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (requestedStrategy !== 'compute') {
       this.projectionStrategyState.effective = 'vertex';
       this.projectionStrategyState.reason =
-        this.projectionStrategyValue === 'auto'
+        isAutomaticProjectionStrategy(this.projectionStrategyValue)
           ? this.automaticProjectionReason
           : 'explicit-vertex';
       this.setComputeProjectionActive(false);
@@ -3988,7 +3975,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       try {
         // clip centers, axes and parameters are the largest added bindings.
         assertStorageBufferFitsDevice(renderer, this.capacity * 16, this.capacity);
-        this.projectedPipeline = new StandaloneProjectedSplatPipeline(renderer, {
+        if (!isComputeProjectionStrategy(this.projectionStrategyValue)) {
+          throw new Error('SplatMesh: compute projection strategy is not configured.');
+        }
+        this.projectedPipeline = this.projectionStrategyValue.createStandalone({
+          renderer,
           capacity: this.capacity,
           sourceIndex: this.sourceIndexAttribute,
           centersTexture: this.materialInputs.textures.centersTexture,
@@ -4045,7 +4036,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (!this.needsProjectedSort(projectionCamera, force)) {
       this.projectionStrategyState.effective = 'compute';
       this.projectionStrategyState.reason =
-        this.projectionStrategyValue === 'auto'
+        isAutomaticProjectionStrategy(this.projectionStrategyValue)
           ? this.automaticProjectionReason
           : 'explicit-compute';
       return false;
@@ -4070,7 +4061,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.orderIsForeign = false;
     this.projectionStrategyState.effective = 'compute';
     this.projectionStrategyState.reason =
-      this.projectionStrategyValue === 'auto' ? this.automaticProjectionReason : 'explicit-compute';
+      isAutomaticProjectionStrategy(this.projectionStrategyValue)
+        ? this.automaticProjectionReason
+        : 'explicit-compute';
     this.onActiveListReady(this.activeListVersion);
     return true;
   }
@@ -4319,28 +4312,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       sourceIndexAttribute: this.sourceIndexAttribute,
       ...(this.perSourceSort ? { perSource: this.perSourceSort } : {}),
     };
-    if (this.sortStrategy === 'radix' || this.sortStrategy === 'exact') {
-      this.ensureRadixSorter();
-      if (!this.RadixSorterCtor) return null; // skip until the module resolves
-      return new this.RadixSorterCtor({
-        ...options,
-        exactDepth: this.sortStrategy === 'exact',
-        sortMetric: this.sortMetric,
-      });
+    if (typeof this.sortStrategy !== 'string') {
+      return this.sortStrategy.create({ ...options, sortMetric: this.sortMetric });
     }
     return new ComputeSorter({ ...options, sortMetric: this.sortMetric });
-  }
-
-  /** Prefetches the experimental radix sorter; safe to call repeatedly. */
-  private ensureRadixSorter(): void {
-    if (this.RadixSorterCtor || this.radixSorterLoad) return;
-    this.radixSorterLoad = import('./radix-sorter')
-      .then((mod) => {
-        this.RadixSorterCtor = mod.RadixSorter;
-      })
-      .finally(() => {
-        this.radixSorterLoad = null;
-      });
   }
 }
 
@@ -4393,14 +4368,6 @@ function validateContributionCull(value: number | undefined, name: string): numb
     throw new RangeError(`SplatMesh ${name} must be a finite number >= 0.`);
   }
   return value;
-}
-
-function validateProjectionMemoryBudget(value: number | undefined): number {
-  const budget = value ?? DEFAULT_AUTO_PROJECTION_MEMORY_BUDGET_BYTES;
-  if (!Number.isFinite(budget) || budget < 0) {
-    throw new RangeError('SplatMesh projectionMemoryBudgetBytes must be a finite number >= 0.');
-  }
-  return budget;
 }
 
 /** Validates a screen-radius cull override; `0`/unset both mean "off". */

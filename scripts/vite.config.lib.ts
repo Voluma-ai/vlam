@@ -85,6 +85,8 @@ export default defineConfig({
         relighting: 'src/lib/relighting/index.ts',
         streaming: 'src/lib/streaming/index.ts',
         unified: 'src/lib/unified/index.ts',
+        'sorting/radix': 'src/lib/sorting/radix/index.ts',
+        'projection/compute': 'src/lib/projection/compute/index.ts',
         selection: 'src/lib/selection/index.ts',
         effects: 'src/lib/effects/index.ts',
         'formats/ply': 'src/lib/formats/ply/index.ts',

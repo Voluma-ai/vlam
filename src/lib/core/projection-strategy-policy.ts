@@ -1,6 +1,6 @@
 /** Conservative one-time policy for the experimental compute projection path. */
-import { PROJECTED_SPLAT_BYTES_PER_SLOT } from './projected-splat-pipeline';
 import { estimateComputeSorterPeakBytes } from './compute-sorter';
+import { PROJECTED_SPLAT_BYTES_PER_SLOT } from './strategy-types';
 
 /** The only measured automatic cohort is the 8.72M-splat Langenthal capture. */
 export const AUTO_PROJECTION_MIN_SPLATS = 8_000_000;

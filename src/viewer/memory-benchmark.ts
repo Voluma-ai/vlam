@@ -16,6 +16,7 @@ import { loadSplatData, loadSplatDataFile } from '../lib/loaders';
 import { remotePlyMetrics } from '../lib/loaders/ply-metrics';
 import { memoryBenchmarkSettings } from './memory-benchmark-settings';
 import { StreamedSplatMesh } from '../lib/streaming';
+import { exactSort, radixSort } from '../lib/sorting/radix';
 import { version as vlamVersion } from '../../package.json';
 import {
   decodedSplatMemory,
@@ -144,7 +145,13 @@ function shBandsParam(): 0 | 1 | 2 | 3 | undefined {
 
 function sortStrategyParam(): SplatSortStrategy {
   const value = params.get('sort');
-  return value === 'worker' || value === 'radix' || value === 'exact' ? value : 'counting';
+  return value === 'worker'
+    ? 'worker'
+    : value === 'radix'
+      ? radixSort()
+      : value === 'exact'
+        ? exactSort()
+        : 'counting';
 }
 
 function sourceExtension(source: { url: string } | { file: File }): string | null {

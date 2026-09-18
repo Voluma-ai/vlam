@@ -5,7 +5,7 @@ import {
   type SplatStorageMode,
   type SplatProjectionStrategy,
 } from '../lib/core';
-import { PROJECTED_SPLAT_FIXED_BYTES } from '../lib/core/projected-splat-pipeline';
+import { PROJECTED_SPLAT_FIXED_BYTES } from '../lib/unified';
 
 /** Byte counts for the arrays owned by one decoded {@link SplatData}. */
 export interface DecodedSplatMemory {
@@ -79,10 +79,12 @@ export function estimateMeshMemory(
   });
   const poolTotalBytes = estimateSplatPoolBytes(capacity, estimateOptions);
   const paletteBytesPerSide = options.paletteBytes ?? 0;
-  const projectionCacheBytes = options.projectionStrategy === 'compute' ? capacity * 48 : 0;
-  const visibleListBytes = options.projectionStrategy === 'compute' ? capacity * 4 : 0;
+  const hasProjection =
+    options.projectionStrategy !== undefined && options.projectionStrategy !== 'vertex';
+  const projectionCacheBytes = hasProjection ? capacity * 48 : 0;
+  const visibleListBytes = hasProjection ? capacity * 4 : 0;
   const indirectArgumentBytes =
-    options.projectionStrategy === 'compute' ? PROJECTED_SPLAT_FIXED_BYTES : 0;
+    hasProjection ? PROJECTED_SPLAT_FIXED_BYTES : 0;
   const projectionGpuBytes = projectionCacheBytes + visibleListBytes + indirectArgumentBytes;
   const projectionPeakCpuMirrorBytes = projectionGpuBytes;
   const gpuBytes = poolGpuBytes + paletteBytesPerSide + projectionGpuBytes;

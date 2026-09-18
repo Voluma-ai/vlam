@@ -13,6 +13,8 @@
       "@voluma/vlam/relighting": ["../../../src/lib/relighting/index.ts"],
       "@voluma/vlam/streaming": ["../../../src/lib/streaming/index.ts"],
       "@voluma/vlam/unified": ["../../../src/lib/unified/index.ts"],
+      "@voluma/vlam/sorting/radix": ["../../../src/lib/sorting/radix/index.ts"],
+      "@voluma/vlam/projection/compute": ["../../../src/lib/projection/compute/index.ts"],
       "@voluma/vlam/selection": ["../../../src/lib/selection/index.ts"],
       "@voluma/vlam/effects": ["../../../src/lib/effects/index.ts"],
       "@voluma/vlam/formats/*": ["../../../src/lib/formats/*/index.ts"]
