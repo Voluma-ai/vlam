@@ -660,10 +660,10 @@ describe('frontier worker delivery', () => {
 
     const lastFile = 1 + branchCount;
     await expect
-      .poll(
-        () => demands.some((reply) => reply.wants.some((want) => want.file === lastFile)),
-        { timeout: 2_000, interval: 5 },
-      )
+      .poll(() => demands.some((reply) => reply.wants.some((want) => want.file === lastFile)), {
+        timeout: 2_000,
+        interval: 5,
+      })
       .toBe(true);
   });
 
