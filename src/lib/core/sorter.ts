@@ -18,6 +18,10 @@ export type SplatSorterKind = 'counting' | 'radix' | 'worker';
 export interface SplatSorter {
   /** Discriminator so hosts can branch without a static class import. */
   readonly kind: SplatSorterKind;
+  /** Accepted sort submissions, when the implementation exposes a counter. */
+  readonly submissionCount?: number;
+  /** Compute/radix stages used by one accepted submission, when known. */
+  readonly passCount?: number;
 
   /**
    * Requests a re-sort for the given model-view matrix.

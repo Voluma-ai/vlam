@@ -12,8 +12,8 @@ import type { OrderMessage, SortWorkerRequest } from '../core/sort-worker';
  * sorter through its documented message protocol.
  */
 
-/** Must match KEY_MAX in sort-worker.ts (24-bit quantized depth key). */
-const KEY_MAX = 0xffffff;
+/** Must match KEY_MAX in sort-worker.ts (32-bit quantized depth key). */
+const KEY_MAX = 0xffffffff;
 
 interface SelfStub {
   onmessage: ((event: { data: SortWorkerRequest }) => void) | null;
@@ -107,8 +107,8 @@ function activePoolIndices(spans: Uint32Array): number[] {
 
 /**
  * Reference sorter replicating the worker's exact key quantization
- * (float32-stored depths, double-precision min/max and scale, ToUint32
- * truncation) and a spec-stable JS sort. If the worker's stable-scatter
+ * (float32-stored depths, double-precision min/max and scale, clamped
+ * uint32 truncation) and a spec-stable JS sort. If the worker's stable-scatter
  * invariant holds, its output must equal this order exactly.
  */
 function referenceSort(
@@ -142,7 +142,9 @@ function referenceSort(
   const keys = pool.map((poolIndex, i) => {
     // The worker stores depths in a Float32Array but tracks min/max in
     // doubles; Math.fround + >>> 0 reproduce that arithmetic bit-for-bit.
-    const key = ((Math.fround(depths[i] as number) - min) * scale) >>> 0;
+    const key = Math.floor(
+      Math.min(Math.max((Math.fround(depths[i] as number) - min) * scale, 0), KEY_MAX),
+    ) >>> 0;
     keyOf.set(poolIndex, key);
     return key;
   });
@@ -162,7 +164,7 @@ function randomCenters(capacity: number, random: () => number, extent = 50): Flo
   return centers;
 }
 
-describe('sort-worker 2-pass 24-bit radix depth sort', () => {
+describe('sort-worker 2-pass stable 32-bit radix depth sort', () => {
   it('emits an exact permutation in non-decreasing quantized depth for random scenes', () => {
     for (const seed of [1, 42, 20260716]) {
       const random = mulberry32(seed);
@@ -246,6 +248,24 @@ describe('sort-worker 2-pass 24-bit radix depth sort', () => {
       max: 0,
     });
     expect(Array.from(order)).toEqual([0, 3, 2, 1, 4]);
+  });
+
+  it('retains 32-bit ordering for close depths inside a broad captured range', () => {
+    const centers = new Float32Array(3 * 4);
+    centers.set([0, 0, 0.00001, 0], 4);
+    centers.set([0, 0, 0, 0], 8);
+    initPool(centers);
+
+    const modelView = new Float32Array(16);
+    modelView[10] = 1;
+    // Reverse the active order: a 24-bit key over this 1000-unit range would
+    // tie these values, while the Spark-compatible 32-bit key keeps them
+    // ordered by depth.
+    const order = sortAndReceive(modelView, new Uint32Array([1, 2]), 'depth', {
+      min: -500,
+      max: 500,
+    });
+    expect(Array.from(order)).toEqual([2, 1]);
   });
 
   it('orders radial distance farthest-first and is invariant under camera rotation', () => {

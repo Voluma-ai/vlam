@@ -27,10 +27,9 @@ import type { OrderMessage, SortWorkerRequest } from './sort-worker-protocol';
 import type { SplatSortRange } from './splat-sort-bounds';
 
 const RADIX = 65536; // 16-bit digit
-/** Key precision: 24 bits sorted across two 16-bit radix passes, matching
- * the GPU sorter - enough that dense near-camera splats don't share a key
- * and pop as the camera moves. */
-const KEY_MAX = 0xffffff;
+/** Spark-compatible unsigned 32-bit depth key. Two stable 16-bit passes keep
+ * the active-list first-touch order for equal keys. */
+const KEY_MAX = 0xffffffff;
 
 let centers: Float32Array = new Float32Array(0);
 let sourceIds: Float32Array = new Float32Array(0);
@@ -139,7 +138,7 @@ function sortByDepth(
     }
   }
 
-  // Two-pass 16-bit LSD radix sort on a 24-bit depth key. Ascending
+  // Two-pass 16-bit LSD radix sort on a 32-bit depth key. Ascending
   // view-space z means most-negative (farthest) splats come first:
   // back-to-front. A single 16-bit pass tied thousands of near splats
   // together, which popped as the camera moved. `keys` and `poolIndexes`
@@ -159,7 +158,7 @@ function sortByDepth(
   }
 
   let dst = dstScratch;
-  for (let shift = 0; shift < 24; shift += 16) {
+  for (let shift = 0; shift < 32; shift += 16) {
     counts.fill(0);
     for (let i = 0; i < activeCount; i++) {
       const digit = ((keys[src[i] as number] as number) >>> shift) & 0xffff;

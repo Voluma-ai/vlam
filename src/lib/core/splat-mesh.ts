@@ -360,6 +360,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     textureCopyCount: 0,
     textureCopyBytes: 0,
     activeListUpdateRanges: 0,
+    sortSubmissions: 0,
+    sortPasses: 0,
+    projectionSubmissions: 0,
+    projectionPasses: 0,
   };
   // Protected so a unified {@link MergedSplatMesh} subclass can substitute a
   // world-space sort bound (see {@link refreshSortBounds}).
@@ -1966,6 +1970,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.updateTimings.textureCopyCount = 0;
     this.updateTimings.textureCopyBytes = 0;
     this.updateTimings.activeListUpdateRanges = 0;
+    this.updateTimings.sortSubmissions = 0;
+    this.updateTimings.sortPasses = 0;
+    this.updateTimings.projectionSubmissions = 0;
+    this.updateTimings.projectionPasses = 0;
     if (
       this.workerPublicationEnabled &&
       this.activeCount === 0 &&
@@ -2016,6 +2024,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.adaptFoveationLimit(projectionCamera, viewHeight);
     this.writeViewUniforms(projectionCamera, viewWidth, viewHeight, sortCamera);
     this.updateTimings.activeListUpdateRanges = this.sourceIndexAttribute.updateRanges.length;
+    const projectionSubmissionsBefore = this.projectedPipeline?.projectionDispatches ?? 0;
+    const sortSubmissionsBefore =
+      (this.sorter?.submissionCount ?? 0) + (this.projectedSorter?.submissionCount ?? 0);
     let sortAccepted = false;
     if (options.sort !== false) {
       const sortStartedAt = performance.now();
@@ -2032,6 +2043,20 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         sortAccepted = this.requestSortIfNeeded(sortCamera, renderer);
       }
       this.updateTimings.sortSubmitMs = performance.now() - sortStartedAt;
+      const projectionSubmissionsAfter = this.projectedPipeline?.projectionDispatches ?? 0;
+      const sortSubmissionsAfter =
+        (this.sorter?.submissionCount ?? 0) + (this.projectedSorter?.submissionCount ?? 0);
+      this.updateTimings.projectionSubmissions = Math.max(
+        0,
+        projectionSubmissionsAfter - projectionSubmissionsBefore,
+      );
+      this.updateTimings.projectionPasses = this.updateTimings.projectionSubmissions > 0
+        ? this.computeProjectionActive ? 4 : 0
+        : 0;
+      this.updateTimings.sortSubmissions = Math.max(0, sortSubmissionsAfter - sortSubmissionsBefore);
+      this.updateTimings.sortPasses = this.updateTimings.sortSubmissions > 0
+        ? (this.projectedSorter?.passCount ?? this.sorter?.passCount ?? 1)
+        : 0;
     } else {
       this.setComputeProjectionActive(false);
       if (this.projectionStrategyValue === 'compute') {
@@ -2068,6 +2093,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     textureCopyCount: number;
     textureCopyBytes: number;
     activeListUpdateRanges: number;
+    sortSubmissions: number;
+    sortPasses: number;
+    projectionSubmissions: number;
+    projectionPasses: number;
   }> {
     return this.updateTimings;
   }

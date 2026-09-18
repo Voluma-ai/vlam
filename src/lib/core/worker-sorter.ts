@@ -36,6 +36,8 @@ export interface WorkerSortSnapshot {
  */
 export class WorkerSorter implements SplatSorter {
   readonly kind = 'worker' as const;
+  readonly passCount = 2;
+  submissionCount = 0;
   private readonly worker: Worker;
   private readonly splatIndexAttribute: THREE.InstancedBufferAttribute;
   private readonly host: WorkerSorterHost;
@@ -45,7 +47,6 @@ export class WorkerSorter implements SplatSorter {
   private disposed = false;
   /** The active spans the in-flight sort was computed against. */
   private sentSpans: Uint32Array | null = null;
-  private submittedCount = 0;
   private completedCount = 0;
   private lastSubmittedAt = -Infinity;
   private lastCompletedAt = -Infinity;
@@ -89,7 +90,7 @@ export class WorkerSorter implements SplatSorter {
     this.inFlight = true;
     const requestId = snapshot?.requestId ?? ++this.nextRequestId;
     this.inFlightRequestId = requestId;
-    this.submittedCount++;
+    this.submissionCount++;
     this.lastSubmittedAt = performance.now();
 
     if (snapshot) this.pushCenterWrites(snapshot.centerWrites);
@@ -122,7 +123,7 @@ export class WorkerSorter implements SplatSorter {
     lastLatencyMs: number;
   } {
     return {
-      submittedCount: this.submittedCount,
+      submittedCount: this.submissionCount,
       completedCount: this.completedCount,
       lastSubmittedAt: this.lastSubmittedAt,
       lastCompletedAt: this.lastCompletedAt,

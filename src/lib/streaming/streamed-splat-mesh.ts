@@ -641,6 +641,12 @@ export interface StreamedSplatPerformanceEvent {
   textureCopyBytes: number;
   /** WebGPU source-index ranges queued for upload before this tick's sort. */
   activeListUpdateRanges: number;
+  /** Accepted sort submissions and implementation stages for this update. */
+  sortSubmissions?: number;
+  sortPasses?: number;
+  /** Projection submissions and stages for this update, when enabled. */
+  projectionSubmissions?: number;
+  projectionPasses?: number;
   appendedCount: number;
   removedCount: number;
   stagedCount: number;
@@ -887,6 +893,8 @@ export class StreamedSplatMesh extends SplatMesh {
     base: 0,
     sweep: 0,
     evicted: 0,
+    pageInstalls: 0,
+    pageInstallMs: 0,
     uncovered: 0,
     retiredEarly: 0,
     cacheFull: false,
@@ -3334,6 +3342,8 @@ export class StreamedSplatMesh extends SplatMesh {
     base: number;
     sweep: number;
     evicted: number;
+    pageInstalls: number;
+    pageInstallMs: number;
     uncovered: number;
     retiredEarly: number;
     cacheFull: boolean;
@@ -3433,6 +3443,10 @@ export class StreamedSplatMesh extends SplatMesh {
         textureCopyCount: 0,
         textureCopyBytes: 0,
         activeListUpdateRanges: 0,
+        sortSubmissions: 0,
+        sortPasses: 0,
+        projectionSubmissions: 0,
+        projectionPasses: 0,
         appendedCount: 0,
         removedCount: 0,
         stagedCount: 0,
@@ -3453,6 +3467,10 @@ export class StreamedSplatMesh extends SplatMesh {
       event.textureCopyCount = timings.textureCopyCount;
       event.textureCopyBytes = timings.textureCopyBytes;
       event.activeListUpdateRanges = timings.activeListUpdateRanges;
+      event.sortSubmissions = timings.sortSubmissions;
+      event.sortPasses = timings.sortPasses;
+      event.projectionSubmissions = timings.projectionSubmissions;
+      event.projectionPasses = timings.projectionPasses;
       event.sortReadyGeneration = this.sortReadyGenerationValue;
       event.renderedGeneration = this.renderedGenerationValue;
       event.workerAcknowledgedGeneration = this.workerAcknowledgedGenerationValue;
@@ -6040,7 +6058,9 @@ export class StreamedSplatMesh extends SplatMesh {
       page = allocator.allocate(file, data.count);
     }
     if (page === undefined) {
-      this.planTimingsValue.installMs = performance.now() - installStartedAt;
+      const installMs = performance.now() - installStartedAt;
+      this.planTimingsValue.installMs = installMs;
+      this.fetchCountsValue.pageInstallMs += installMs;
       warn(
         `StreamedSplatMesh: RAD chunk ${file} could not obtain a stable GPU page; ` +
           'the chunk-page experiment remains on its previous complete selection.',
@@ -6053,11 +6073,16 @@ export class StreamedSplatMesh extends SplatMesh {
       this.pageTableCachedFiles.add(file);
       this.pageTableHostCacheRevision++;
       this.syncRadChunkPages();
-      this.planTimingsValue.installMs = performance.now() - installStartedAt;
+      const installMs = performance.now() - installStartedAt;
+      this.planTimingsValue.installMs = installMs;
+      this.fetchCountsValue.pageInstalls++;
+      this.fetchCountsValue.pageInstallMs += installMs;
       return true;
     } catch (error) {
       allocator.release(file);
-      this.planTimingsValue.installMs = performance.now() - installStartedAt;
+      const installMs = performance.now() - installStartedAt;
+      this.planTimingsValue.installMs = installMs;
+      this.fetchCountsValue.pageInstallMs += installMs;
       warn(`StreamedSplatMesh: failed to upload RAD chunk ${file}; retaining the old cut.`, error);
       return false;
     }

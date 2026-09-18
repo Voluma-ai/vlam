@@ -148,6 +148,14 @@ export interface UnifiedSplatPerformanceTimings {
   sourceCount: number;
   activeCount: number;
   sortSubmitted: boolean;
+  gatherDispatches: number;
+  gatherSlots: number;
+  projectionSubmissions: number;
+  projectionPasses: number;
+  sortSubmissions: number;
+  sortPasses: number;
+  activeListBytes: number;
+  activeListRanges: number;
 }
 
 /**
@@ -197,6 +205,14 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     sourceCount: 0,
     activeCount: 0,
     sortSubmitted: false,
+    gatherDispatches: 0,
+    gatherSlots: 0,
+    projectionSubmissions: 0,
+    projectionPasses: 0,
+    sortSubmissions: 0,
+    sortPasses: 0,
+    activeListBytes: 0,
+    activeListRanges: 0,
   };
   private computeProjectionActive = false;
   private readonly renderer: THREE.WebGPURenderer;
@@ -729,6 +745,10 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     let gatherMs = 0;
     let sortSubmitMs = 0;
     let sortSubmitted = false;
+    let gatherDispatches = 0;
+    const projectionSubmissionsBefore = this.projectedPipeline?.projectionDispatches ?? 0;
+    const sortSubmissionsBefore =
+      (this.sorter.submissionCount ?? 0) + (this.projectedSorter?.submissionCount ?? 0);
     if (!supportsUnifiedSplatMesh(this.renderer)) {
       throw new Error(
         'UnifiedSplatMesh requires a WebGPU backend (renderer.backend.isWebGPUBackend).',
@@ -852,6 +872,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         // `addSource` already rejects these.
         !view.hasSourcePlacement;
       if (!reusable) {
+        gatherDispatches++;
         const gatherStartedAt = performance.now();
         record.gather.gather(
           this.renderer,
@@ -963,6 +984,9 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       }
     }
     sortSubmitMs = performance.now() - sortStartedAt;
+    const projectionSubmissionsAfter = this.projectedPipeline?.projectionDispatches ?? 0;
+    const sortSubmissionsAfter =
+      (this.sorter.submissionCount ?? 0) + (this.projectedSorter?.submissionCount ?? 0);
     if (sortReady && offset > 0) {
       this.readyPublicationVersion = ++this.unifiedPublicationVersion;
       this.readyPublication = admitted.map((record) => ({
@@ -986,6 +1010,19 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.performanceTimingsValue.sourceCount = admitted.length;
     this.performanceTimingsValue.activeCount = offset;
     this.performanceTimingsValue.sortSubmitted = sortSubmitted;
+    this.performanceTimingsValue.gatherDispatches = gatherDispatches;
+    this.performanceTimingsValue.gatherSlots = offset;
+    this.performanceTimingsValue.projectionSubmissions = Math.max(
+      0,
+      projectionSubmissionsAfter - projectionSubmissionsBefore,
+    );
+    this.performanceTimingsValue.projectionPasses = this.performanceTimingsValue.projectionSubmissions > 0 ? 4 : 0;
+    this.performanceTimingsValue.sortSubmissions = Math.max(0, sortSubmissionsAfter - sortSubmissionsBefore);
+    this.performanceTimingsValue.sortPasses = this.performanceTimingsValue.sortSubmissions > 0
+      ? (this.projectedSorter?.passCount ?? this.sorter.passCount ?? 1)
+      : 0;
+    this.performanceTimingsValue.activeListBytes = offset * Uint32Array.BYTES_PER_ELEMENT;
+    this.performanceTimingsValue.activeListRanges = admitted.length;
   }
 
   override onAfterRender(
@@ -1021,7 +1058,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    super.dispose();
+    // THREE.Mesh has no dispose method. Release our owned resources below;
+    // throwing here leaves the host without a rebuilt globally sorted draw.
     for (const record of this.sources) {
       record.gather.dispose();
       record.source.visible = record.originalVisible;

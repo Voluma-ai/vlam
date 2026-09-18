@@ -113,6 +113,8 @@ export interface PerSourceSortTransform {
  */
 export class ComputeSorter implements SplatSorter {
   readonly kind = 'counting' as const;
+  /** Clear, histogram, scan and scatter stages in one accepted sort. */
+  readonly passCount = 8;
   private static readonly BUCKET_COUNT = COMPUTE_SORTER_MAX_BUCKET_COUNT;
   private static readonly BLOCK_SIZE = COMPUTE_SORTER_BLOCK_SIZE;
 
