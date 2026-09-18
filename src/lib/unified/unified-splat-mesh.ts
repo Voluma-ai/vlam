@@ -115,7 +115,10 @@ export interface UnifiedSplatMeshOptions {
   minContribution?: number;
   /** Composite source colors in display (sRGB) space. Defaults to `false`. */
   srgbOutput?: boolean;
-  /** Global depth-sort strategy. Defaults to the lower-cost counting sorter. */
+  /**
+   * Global depth-sort strategy. Defaults to the lower-cost counting sorter.
+   * `'worker'` is unsupported: unified rendering is WebGPU-only.
+   */
   sortStrategy?: 'counting' | SplatSortStrategyFactory;
   /**
    * Camera-space key used for global ordering. Defaults to `'depth'` for
@@ -412,11 +415,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       splatIndexAttribute: order,
       sourceIndexAttribute: this.workSourceIndex,
     };
-    const sortStrategy: 'counting' | 'worker' | SplatSortStrategyFactory =
-      options.sortStrategy ?? 'counting';
-    if (sortStrategy === 'worker') {
-      throw new RangeError('UnifiedSplatMesh: worker sorting is unsupported.');
-    }
+    const sortStrategy = options.sortStrategy ?? 'counting';
     this.sorter =
       typeof sortStrategy === 'string'
         ? new ComputeSorter({ ...sortInputs, sortMetric: this.sortMetric })
