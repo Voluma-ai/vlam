@@ -113,6 +113,38 @@ export interface UnifiedProjectionOptions {
   sortMetric: SplatSortMetric;
 }
 
+/** Runtime signals supplied to an automatic projection strategy. */
+export interface AutomaticProjectionPolicyInput {
+  readonly capacity: number;
+  readonly hasSh: boolean;
+  readonly hasBalancedContributionCulls: boolean;
+  readonly isStatic: boolean;
+  readonly ownsPool: boolean;
+  readonly isWebGpu: boolean;
+  readonly isXr: boolean;
+  readonly isUnifiedSource: boolean;
+  readonly hasSourcePlacement: boolean;
+  readonly hasModifiers: boolean;
+  readonly usesCountingSort: boolean;
+  readonly usesFoveation: boolean;
+  readonly gpuClass: 'discrete' | 'integrated' | 'fallback' | undefined;
+  readonly isValidatedDeviceClass: boolean;
+  readonly isMobile: boolean;
+}
+
+/** Result returned by an automatic projection strategy. */
+export interface AutomaticProjectionPolicyResult {
+  readonly strategy: 'vertex' | 'compute';
+  readonly reason: string;
+  readonly requiredMemoryBytes: number;
+}
+
+/** Additional memory retained or temporarily allocated by a projector. */
+export interface ProjectionMemoryEstimate {
+  readonly steadyGpu: number;
+  readonly peakCpuAndGpu: number;
+}
+
 /** Compute-projection modes exposed by the optional projection entry. */
 export type ComputeProjectionMode = 'explicit' | 'auto';
 
@@ -120,31 +152,14 @@ export type ComputeProjectionMode = 'explicit' | 'auto';
 export interface ComputeProjectionStrategy {
   readonly kind: 'compute';
   readonly mode: ComputeProjectionMode;
-  readonly memoryBudgetBytes: number;
+  estimateMemoryBytes(capacity: number): ProjectionMemoryEstimate;
+  resolveAutomatic(input: AutomaticProjectionPolicyInput): AutomaticProjectionPolicyResult;
   createStandalone(options: StandaloneProjectionOptions): ProjectedSplatPipeline;
   createUnified(options: UnifiedProjectionOptions): ProjectedSplatPipeline;
 }
 
 /** Projection strategies built into the lightweight viewer or injected as add-ons. */
 export type SplatProjectionStrategy = 'vertex' | ComputeProjectionStrategy;
-
-/** Capacity-sized memory added by the experimental projection cache. */
-export const PROJECTED_SPLAT_BYTES_PER_SLOT = 52;
-/** Counter and indirect-argument buffers retained by the projector. */
-export const PROJECTED_SPLAT_FIXED_BYTES = 4 + 3 * 4 + 5 * 4;
-
-/** Estimates the steady projection allocation for a mesh capacity. */
-export function estimateProjectedSplatSteadyBytes(capacity: number): number {
-  if (!Number.isFinite(capacity) || capacity < 0) {
-    throw new RangeError('Splat capacity must be a non-negative finite number.');
-  }
-  return Math.floor(capacity) * PROJECTED_SPLAT_BYTES_PER_SLOT + PROJECTED_SPLAT_FIXED_BYTES;
-}
-
-/** Estimates the first-use projection allocation while CPU mirrors coexist. */
-export function estimateProjectedSplatPeakBytes(capacity: number): number {
-  return estimateProjectedSplatSteadyBytes(capacity) * 2;
-}
 
 /** Returns true for an injected compute projection strategy. */
 export function isComputeProjectionStrategy(
@@ -159,7 +174,9 @@ export function isAutomaticProjectionStrategy(strategy: SplatProjectionStrategy)
 }
 
 /** Returns the public label used by diagnostics and memory accounting. */
-export function sortStrategyLabel(strategy: SplatSortStrategy): 'counting' | 'worker' | 'radix' | 'exact' {
+export function sortStrategyLabel(
+  strategy: SplatSortStrategy,
+): 'counting' | 'worker' | 'radix' | 'exact' {
   if (strategy === 'counting' || strategy === 'worker') return strategy;
   return strategy.exactDepth ? 'exact' : 'radix';
 }

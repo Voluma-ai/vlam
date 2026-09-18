@@ -66,9 +66,7 @@ describe('MergedSplatMesh', () => {
       try {
         // Regression: source placements used to silently force counting sort.
         expect(sorter).toBeInstanceOf(RadixSorter);
-        expect((sorter as unknown as { exactDepth: boolean }).exactDepth).toBe(
-          exactDepth,
-        );
+        expect((sorter as unknown as { exactDepth: boolean }).exactDepth).toBe(exactDepth);
       } finally {
         sorter.dispose();
       }

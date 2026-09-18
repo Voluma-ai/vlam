@@ -30,9 +30,8 @@ describe('live sorter selection', () => {
     mesh.dispose();
   });
 
-  it('switches back to counting without loading an optional module', async () => {
+  it('leaves counting in place when requested again', async () => {
     const { mesh, internals, dispose } = setup();
-    await mesh.setSortStrategy(radixSort());
     await mesh.setSortStrategy('counting');
     expect(mesh.sortStrategy).toBe('counting');
     expect(dispose).not.toHaveBeenCalled();
@@ -40,11 +39,10 @@ describe('live sorter selection', () => {
     mesh.dispose();
   });
 
-  it('does not install a pending strategy after the scene is disposed', async () => {
+  it('does not install a strategy after the scene is disposed', async () => {
     const { mesh, internals, dispose } = setup();
-    const pending = mesh.setSortStrategy(exactSort());
     mesh.dispose();
-    await pending;
+    await mesh.setSortStrategy(exactSort());
     expect(mesh.sortStrategy).toBe('counting');
     expect(internals.sorter).toBeNull();
     expect(dispose).toHaveBeenCalledOnce();

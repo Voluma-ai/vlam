@@ -9,18 +9,23 @@
 import {
   ProjectedSplatPipeline,
   StandaloneProjectedSplatPipeline,
+  estimateProjectedSplatPeakBytes,
+  estimateProjectedSplatSteadyBytes,
 } from '../../core/projected-splat-pipeline';
 import {
   DEFAULT_AUTO_PROJECTION_MEMORY_BUDGET_BYTES,
+  resolveAutomaticProjectionStrategy,
 } from '../../core/projection-strategy-policy';
 import {
-  estimateProjectedSplatPeakBytes,
-  estimateProjectedSplatSteadyBytes,
   type ComputeProjectionMode,
   type ComputeProjectionStrategy,
   type StandaloneProjectionOptions,
   type UnifiedProjectionOptions,
 } from '../../core/strategy-types';
+import {
+  estimateComputeSorterPeakBytes,
+  estimateComputeSorterSteadyBytes,
+} from '../../core/compute-sorter';
 
 /** Options for {@link computeProjection}. */
 export interface ComputeProjectionOptions {
@@ -46,7 +51,15 @@ export function computeProjection(
   return {
     kind: 'compute',
     mode,
-    memoryBudgetBytes,
+    estimateMemoryBytes: (capacity) => ({
+      steadyGpu:
+        estimateProjectedSplatSteadyBytes(capacity) +
+        estimateComputeSorterSteadyBytes(capacity),
+      peakCpuAndGpu:
+        estimateProjectedSplatPeakBytes(capacity) + estimateComputeSorterPeakBytes(capacity),
+    }),
+    resolveAutomatic: (input) =>
+      resolveAutomaticProjectionStrategy({ ...input, memoryBudgetBytes }),
     createStandalone: (projectionOptions: StandaloneProjectionOptions) => {
       try {
         return new StandaloneProjectedSplatPipeline(projectionOptions.renderer, projectionOptions);
@@ -67,4 +80,6 @@ export function computeProjection(
 export {
   estimateProjectedSplatPeakBytes,
   estimateProjectedSplatSteadyBytes,
-};
+  PROJECTED_SPLAT_BYTES_PER_SLOT,
+  PROJECTED_SPLAT_FIXED_BYTES,
+} from '../../core/projected-splat-pipeline';

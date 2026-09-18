@@ -100,19 +100,16 @@ describe('UnifiedSplatMesh', () => {
   it.each([
     ['radix', radixSort(), false],
     ['exact', exactSort(), true],
-  ] as const)(
-    'uses the stable %s sorter when requested',
-    (_label, sortStrategy, exactDepth) => {
-      const unified = new UnifiedSplatMesh(mockRenderer(), 1, { sortStrategy });
-      const sorterName = (unified as unknown as { sorter: { constructor: { name: string } } })
-        .sorter.constructor.name;
-      expect(sorterName).toBe('RadixSorter');
-      expect((unified as unknown as { sorter: { exactDepth: boolean } }).sorter.exactDepth).toBe(
-        exactDepth,
-      );
-      unified.dispose();
-    },
-  );
+  ] as const)('uses the stable %s sorter when requested', (_label, sortStrategy, exactDepth) => {
+    const unified = new UnifiedSplatMesh(mockRenderer(), 1, { sortStrategy });
+    const sorterName = (unified as unknown as { sorter: { constructor: { name: string } } }).sorter
+      .constructor.name;
+    expect(sorterName).toBe('RadixSorter');
+    expect((unified as unknown as { sorter: { exactDepth: boolean } }).sorter.exactDepth).toBe(
+      exactDepth,
+    );
+    unified.dispose();
+  });
 
   it('copies the source projected-footprint floor into the unified draw path', () => {
     const renderer = mockRenderer();

@@ -201,8 +201,17 @@ mustNotContain(
 mustNotContain('.', 'createSelectionVolume', 'selection volumes belong in /selection');
 mustNotContain('.', 'RadixSorter', 'radix sorting belongs in /sorting/radix');
 mustNotContain('.', 'ProjectedSplatPipeline', 'compute projection belongs in /projection/compute');
+mustNotContain(
+  '.',
+  'auto-large-static-discrete-sh',
+  'automatic compute projection policy belongs in /projection/compute',
+);
 mustNotContain('./unified', 'RadixSorter', 'radix sorting belongs in /sorting/radix');
-mustNotContain('./unified', 'ProjectedSplatPipeline', 'compute projection belongs in /projection/compute');
+mustNotContain(
+  './unified',
+  'ProjectedSplatPipeline',
+  'compute projection belongs in /projection/compute',
+);
 mustNotContain(
   './sorting/radix',
   'ProjectedSplatPipeline',
@@ -259,6 +268,11 @@ mustContain(
   './projection/compute',
   'ProjectedSplatPipeline',
   'compute entry owns the experimental projector',
+);
+mustContain(
+  './projection/compute',
+  'auto-large-static-discrete-sh',
+  'compute entry owns the automatic projection policy',
 );
 if (!composed['./+unified+sorting/radix+projection/compute'].code.includes('RadixSorter')) {
   failures.push('composed application graph missing RadixSorter');

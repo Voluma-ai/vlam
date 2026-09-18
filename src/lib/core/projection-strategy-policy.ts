@@ -1,6 +1,10 @@
 /** Conservative one-time policy for the experimental compute projection path. */
 import { estimateComputeSorterPeakBytes } from './compute-sorter';
-import { PROJECTED_SPLAT_BYTES_PER_SLOT } from './strategy-types';
+import { PROJECTED_SPLAT_BYTES_PER_SLOT } from './projected-splat-pipeline';
+import type {
+  AutomaticProjectionPolicyInput as ProjectionPolicySignals,
+  AutomaticProjectionPolicyResult,
+} from './strategy-types';
 
 /** The only measured automatic cohort is the 8.72M-splat Langenthal capture. */
 export const AUTO_PROJECTION_MIN_SPLATS = 8_000_000;
@@ -10,33 +14,10 @@ export const AUTO_PROJECTION_MIN_SPLATS = 8_000_000;
  */
 export const DEFAULT_AUTO_PROJECTION_MEMORY_BUDGET_BYTES = 1024 * 1024 * 1024;
 
-export interface AutomaticProjectionPolicyInput {
-  readonly capacity: number;
-  readonly hasSh: boolean;
-  readonly hasBalancedContributionCulls: boolean;
-  readonly isStatic: boolean;
-  readonly ownsPool: boolean;
-  readonly isWebGpu: boolean;
-  readonly isXr: boolean;
-  readonly isUnifiedSource: boolean;
-  readonly hasSourcePlacement: boolean;
-  readonly hasModifiers: boolean;
-  readonly usesCountingSort: boolean;
-  readonly usesFoveation: boolean;
-  /** `undefined` deliberately remains conservative: adapter identity was hidden. */
-  readonly gpuClass: 'discrete' | 'integrated' | 'fallback' | undefined;
-  /** The adapter class has a qualifying device measurement, not merely a GPU class. */
-  readonly isValidatedDeviceClass: boolean;
-  readonly isMobile: boolean;
+export type AutomaticProjectionPolicyInput = ProjectionPolicySignals & {
   readonly memoryBudgetBytes: number;
-}
-
-export interface AutomaticProjectionPolicyResult {
-  readonly strategy: 'vertex' | 'compute';
-  readonly reason: string;
-  /** Projection, projected-sorter, and padded RGBA8 SH-cache peak. */
-  readonly requiredMemoryBytes: number;
-}
+};
+export type { AutomaticProjectionPolicyResult };
 
 /** Prices every allocation the automatic compute-and-cache path adds to a mesh. */
 export function estimateAutomaticProjectionMemoryBytes(capacity: number): number {

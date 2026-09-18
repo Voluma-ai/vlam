@@ -53,6 +53,35 @@ describe('compute projection configuration', () => {
     expect(() => estimateProjectedSplatSteadyBytes(-1)).toThrow(RangeError);
   });
 
+  it('keeps the WebGL fallback reason while a sort submission is in flight', () => {
+    const mesh = new SplatMesh(data, { projectionStrategy: computeProjection() });
+    const sort = () => true;
+    (
+      mesh as unknown as { sorter: { kind: string; sort: typeof sort; dispose: () => void } }
+    ).sorter = { kind: 'counting', sort, dispose: () => {} };
+    const renderer = {
+      backend: { isWebGPUBackend: false },
+      getDrawingBufferSize: (size: THREE.Vector2) => size.set(4, 4),
+    } as unknown as THREE.WebGPURenderer;
+    const camera = new THREE.PerspectiveCamera();
+    mesh.update(camera, renderer);
+    expect(mesh.projectionStrategyStatus).toEqual({ effective: 'vertex', reason: 'webgl' });
+
+    const scheduler = (
+      mesh as unknown as {
+        sortScheduler: {
+          markSubmission: (frame: number, inputCount: number) => void;
+          acknowledgeSubmission: (frame: number, now: number) => void;
+        };
+      }
+    ).sortScheduler;
+    scheduler.markSubmission(1, 1);
+    scheduler.acknowledgeSubmission(1, 0);
+    mesh.update(camera, renderer);
+    expect(mesh.projectionStrategyStatus).toEqual({ effective: 'vertex', reason: 'webgl' });
+    mesh.dispose();
+  });
+
   it('exposes contribution culls independently of the performance profile', () => {
     const quality = new SplatMesh(data, { performanceProfile: 'quality' });
     expect(quality.minPixelSize).toBe(0);
@@ -146,7 +175,10 @@ describe('automatic compute-projection policy', () => {
         paletteHeight: 1,
       },
     };
-    const mesh = new SplatMesh(shData, { performanceProfile: 'balanced' });
+    const mesh = new SplatMesh(shData, {
+      performanceProfile: 'balanced',
+      projectionStrategy: computeProjection({ mode: 'auto' }),
+    });
     Object.defineProperty(mesh, 'capacity', { configurable: true, value: 8_724_225 });
     const resolve = (
       mesh as unknown as {

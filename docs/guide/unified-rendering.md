@@ -10,8 +10,6 @@ transparent mesh. **WebGPU only.**
 
 ```ts
 import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '@voluma/vlam/unified';
-import { exactSort } from '@voluma/vlam/sorting/radix';
-import { computeProjection } from '@voluma/vlam/projection/compute';
 
 // Check after renderer init: answers false on WebGL2 (and before the
 // backend exists). Fall back to standalone draws there.
@@ -30,11 +28,7 @@ const main = await StreamedSplatMesh.load('/city/lod-meta.json');
 const statue = new SplatMesh(await loadSplatData('/statue.sog'));
 statue.position.set(4, 0, -2); // pose the SOURCE meshes, not the unified mesh
 
-const unified = new UnifiedSplatMesh(renderer, main.capacity + statue.capacity, {
-  // Optional expert paths are explicit imports and stay out of the base graph.
-  sortStrategy: exactSort(),
-  projectionStrategy: computeProjection(),
-});
+const unified = new UnifiedSplatMesh(renderer, main.capacity + statue.capacity);
 unified.addSource(main);
 unified.addSource(statue, { priority: 1, opacity: 0.8 });
 scene.add(unified); // add the unified mesh INSTEAD of the sources
@@ -43,6 +37,19 @@ scene.add(unified); // add the unified mesh INSTEAD of the sources
 ```
 
 <!-- full file: docs/guide/samples/unified-basic.ts -->
+
+The default uses counting sort and vertex projection. Experimental GPU paths
+stay on their opt-in entries:
+
+```ts
+import { exactSort } from '@voluma/vlam/sorting/radix';
+import { computeProjection } from '@voluma/vlam/projection/compute';
+
+const experimental = new UnifiedSplatMesh(renderer, capacity, {
+  sortStrategy: exactSort(),
+  projectionStrategy: computeProjection(),
+});
+```
 
 Rules of the road:
 

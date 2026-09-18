@@ -28,13 +28,15 @@ describe('demo sorting defaults', () => {
     (override) => {
       expect(label(demoSortStrategy('castle.lcc2', { ...hd, override }))).toBe(override);
       expect(
-        label(demoSortStrategy('goose.sog', {
-          ...hd,
-          override,
-          sd: true,
-          constrainedDevice: true,
-          profile: 'smooth',
-        })),
+        label(
+          demoSortStrategy('goose.sog', {
+            ...hd,
+            override,
+            sd: true,
+            constrainedDevice: true,
+            profile: 'smooth',
+          }),
+        ),
       ).toBe(override);
     },
   );

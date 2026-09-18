@@ -21,14 +21,10 @@ import {
   type SplatPerformanceProfile,
   type SplatProjectionStrategy,
   type SplatSortMetric,
-  type SplatSortStrategy,
+  type SplatSortStrategyFactory,
 } from '../core/splat-mesh-types';
 import { cameraVisibleSortRange, radialSortState } from '../core/splat-sort-bounds';
-import {
-  estimateProjectedSplatPeakBytes,
-  isComputeProjectionStrategy,
-  type ProjectedSplatPipeline,
-} from '../core/strategy-types';
+import { isComputeProjectionStrategy, type ProjectedSplatPipeline } from '../core/strategy-types';
 
 interface SourceRecord {
   source: SplatMesh;
@@ -120,7 +116,7 @@ export interface UnifiedSplatMeshOptions {
   /** Composite source colors in display (sRGB) space. Defaults to `false`. */
   srgbOutput?: boolean;
   /** Global depth-sort strategy. Defaults to the lower-cost counting sorter. */
-  sortStrategy?: SplatSortStrategy;
+  sortStrategy?: 'counting' | SplatSortStrategyFactory;
   /**
    * Camera-space key used for global ordering. Defaults to `'depth'` for
    * compatibility; `'radial'` matches Spark's rotation-invariant ordering.
@@ -313,7 +309,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       assertStorageBufferFitsDevice(renderer, capacity * 16, capacity);
       // Account for the allocation peak up front even though the per-buffer
       // binding limit is enforced independently above.
-      estimateProjectedSplatPeakBytes(capacity);
+      projectionStrategy.estimateMemoryBytes(capacity);
     }
     const projectedPipeline =
       isComputeProjectionStrategy(projectionStrategy) && projectionStrategy.mode === 'explicit'
@@ -416,7 +412,11 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       splatIndexAttribute: order,
       sourceIndexAttribute: this.workSourceIndex,
     };
-    const sortStrategy = options.sortStrategy ?? 'counting';
+    const sortStrategy: 'counting' | 'worker' | SplatSortStrategyFactory =
+      options.sortStrategy ?? 'counting';
+    if (sortStrategy === 'worker') {
+      throw new RangeError('UnifiedSplatMesh: worker sorting is unsupported.');
+    }
     this.sorter =
       typeof sortStrategy === 'string'
         ? new ComputeSorter({ ...sortInputs, sortMetric: this.sortMetric })

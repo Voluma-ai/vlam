@@ -10,15 +10,15 @@ import {
 } from './splat-budget';
 import type { SplatPool } from './splat-mesh-pool';
 import type { SplatShInputs, Vec3Uniform } from './splat-mesh-material';
-import type {
-  SplatProjectionStrategy,
-  SplatSortStrategy,
-} from './strategy-types';
+import type { SplatProjectionStrategy, SplatSortStrategy } from './strategy-types';
 export type {
+  AutomaticProjectionPolicyInput,
+  AutomaticProjectionPolicyResult,
   ComputeProjectionMode,
   ComputeProjectionStrategy,
   ProjectedSplatBuffers,
   ProjectedSplatPipeline,
+  ProjectionMemoryEstimate,
   SplatProjectionStrategy,
   SplatSortStrategy,
   SplatSortStrategyFactory,

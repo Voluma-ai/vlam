@@ -33,8 +33,6 @@ import type { SplatModifier } from './splat-modifier';
 import type { SplatSorter } from './sorter';
 import {
   ComputeSorter,
-  estimateComputeSorterPeakBytes,
-  estimateComputeSorterSteadyBytes,
   releaseRendererAttributes,
   type PerSourceSortTransform,
 } from './compute-sorter';
@@ -82,10 +80,7 @@ import type { ShComputeCache } from './sh-compute-cache';
 import { StorageMirrorReleaser } from './storage-attribute-mirror';
 import { dataTexturesUploaded, releaseDataTextureMirrors } from './data-texture-mirror';
 import { assertStorageBufferFitsDevice } from './webgpu-limits';
-import { resolveAutomaticProjectionStrategy } from './projection-strategy-policy';
 import {
-  estimateProjectedSplatPeakBytes,
-  estimateProjectedSplatSteadyBytes,
   isAutomaticProjectionStrategy,
   isComputeProjectionStrategy,
   type ProjectedSplatPipeline,
@@ -998,14 +993,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     ) {
       return { steadyGpu: 0, peakCpuAndGpu: 0 };
     }
-    return {
-      steadyGpu:
-        estimateProjectedSplatSteadyBytes(this.capacity) +
-        estimateComputeSorterSteadyBytes(this.capacity),
-      peakCpuAndGpu:
-        estimateProjectedSplatPeakBytes(this.capacity) +
-        estimateComputeSorterPeakBytes(this.capacity),
-    };
+    return this.projectionStrategyValue.estimateMemoryBytes(this.capacity);
   }
 
   /** Asynchronously reads the last GPU-visible count for benchmark diagnostics. */
@@ -1026,9 +1014,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   }
 
   /**
-   * Replaces the sorter without reloading scene data. The previous sorter stays
-   * active while the strategy changes; the latest request wins. Resolves once
-   * selected, with the new sort submitted on the next update, even at rest.
+   * Replaces the sorter without reloading scene data. The latest request wins.
+   * Resolves once selected, with the new sort submitted on the next update,
+   * even at rest.
    */
   async setSortStrategy(strategy: SplatSortStrategy): Promise<void> {
     if (this.storageModeValue === 'render-only' && strategy === 'worker') {
@@ -2144,7 +2132,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           ? (this.projectedSorter?.passCount ?? this.sorter?.passCount ?? 1)
           : 0;
       if (sortAccepted) this.markSortSubmission(this.activeCount);
-    } else {
+    } else if (options.sort === false) {
+      // Unified sources skip standalone sorting. A sort-hold keeps the
+      // already-prepared projection status instead of claiming unified-source.
       this.setComputeProjectionActive(false);
       if (
         isComputeProjectionStrategy(this.projectionStrategyValue) &&
@@ -3696,7 +3686,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       .join(' ')
       .toLowerCase();
     const culls = this.resolvedContributionCulls();
-    const result = resolveAutomaticProjectionStrategy({
+    const result = this.projectionStrategyValue.resolveAutomatic({
       capacity: this.capacity,
       hasSh: this.materialInputs.sh !== null,
       hasBalancedContributionCulls: culls.minPixelSize >= 2 && culls.minContribution >= 3,
@@ -3718,7 +3708,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       isValidatedDeviceClass:
         /nvidia/.test(adapterText) && /ampere|ga10[2-9]|rtx\s*30/.test(adapterText),
       isMobile: detectSplatDeviceProfile()?.isMobile === true,
-      memoryBudgetBytes: this.projectionStrategyValue.memoryBudgetBytes,
     });
     this.automaticProjectionStrategy = result.strategy;
     this.automaticProjectionReason = result.reason;
@@ -3924,10 +3913,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     const requestedStrategy = this.resolvedProjectionStrategy(renderer);
     if (requestedStrategy !== 'compute') {
       this.projectionStrategyState.effective = 'vertex';
-      this.projectionStrategyState.reason =
-        isAutomaticProjectionStrategy(this.projectionStrategyValue)
-          ? this.automaticProjectionReason
-          : 'explicit-vertex';
+      this.projectionStrategyState.reason = isAutomaticProjectionStrategy(
+        this.projectionStrategyValue,
+      )
+        ? this.automaticProjectionReason
+        : 'explicit-vertex';
       this.setComputeProjectionActive(false);
       return false;
     }
@@ -4035,10 +4025,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.currentModelView.multiplyMatrices(sortCamera.matrixWorldInverse, this.matrixWorld);
     if (!this.needsProjectedSort(projectionCamera, force)) {
       this.projectionStrategyState.effective = 'compute';
-      this.projectionStrategyState.reason =
-        isAutomaticProjectionStrategy(this.projectionStrategyValue)
-          ? this.automaticProjectionReason
-          : 'explicit-compute';
+      this.projectionStrategyState.reason = isAutomaticProjectionStrategy(
+        this.projectionStrategyValue,
+      )
+        ? this.automaticProjectionReason
+        : 'explicit-compute';
       return false;
     }
     this.refreshSortBounds();
@@ -4060,10 +4051,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.sortedActiveListVersion = this.activeListVersion;
     this.orderIsForeign = false;
     this.projectionStrategyState.effective = 'compute';
-    this.projectionStrategyState.reason =
-      isAutomaticProjectionStrategy(this.projectionStrategyValue)
-        ? this.automaticProjectionReason
-        : 'explicit-compute';
+    this.projectionStrategyState.reason = isAutomaticProjectionStrategy(
+      this.projectionStrategyValue,
+    )
+      ? this.automaticProjectionReason
+      : 'explicit-compute';
     this.onActiveListReady(this.activeListVersion);
     return true;
   }
