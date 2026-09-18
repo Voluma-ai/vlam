@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ShComputeCache } from '../core/sh-compute-cache';
 import { SplatMesh } from '../core/splat-mesh';
 import type { SplatData } from '../core/splat-data';
+import { computeProjection } from '../projection/compute';
 
 function data(): SplatData {
   return {
@@ -411,7 +412,7 @@ describe('SH path selection and mesh lifecycle', () => {
     const gpu = renderer();
     const mesh = new SplatMesh(data(), {
       shEvaluation: 'compute',
-      projectionStrategy: 'compute',
+      projectionStrategy: computeProjection(),
     });
     internals(mesh).ShCacheCtor = ShComputeCache;
     mesh.update(new THREE.PerspectiveCamera(), gpu as unknown as THREE.WebGPURenderer, {
@@ -433,7 +434,7 @@ describe('SH path selection and mesh lifecycle', () => {
     const gpu = renderer();
     const mesh = new SplatMesh(data(), {
       shEvaluation: 'compute',
-      projectionStrategy: 'compute',
+      projectionStrategy: computeProjection(),
     });
     mesh.update(new THREE.PerspectiveCamera(), gpu as unknown as THREE.WebGPURenderer);
     expect(mesh.projectionStrategyStatus).toEqual({
@@ -454,7 +455,7 @@ describe('SH path selection and mesh lifecycle', () => {
     const gpu = renderer();
     const mesh = new SplatMesh(data(), {
       shEvaluation: 'compute',
-      projectionStrategy: 'compute',
+      projectionStrategy: computeProjection(),
     });
     internals(mesh).ShCacheCtor = ShComputeCache;
     const camera = new THREE.PerspectiveCamera();
@@ -472,7 +473,7 @@ describe('SH path selection and mesh lifecycle', () => {
     const gpu = renderer();
     const mesh = new SplatMesh(data(), {
       shEvaluation: 'vertex',
-      projectionStrategy: 'compute',
+      projectionStrategy: computeProjection(),
     });
     internals(mesh).ShCacheCtor = ShComputeCache;
     mesh.update(new THREE.PerspectiveCamera(), gpu as unknown as THREE.WebGPURenderer);
@@ -489,7 +490,7 @@ describe('SH path selection and mesh lifecycle', () => {
     const gpu = renderer();
     const mesh = new SplatMesh(data(), {
       shEvaluation: 'compute',
-      projectionStrategy: 'compute',
+      projectionStrategy: computeProjection(),
       sortIntervalMs: 1000,
     });
     internals(mesh).ShCacheCtor = ShComputeCache;

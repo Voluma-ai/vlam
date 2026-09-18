@@ -29,7 +29,8 @@ import { fileURLToPath } from 'node:url';
  * into the one-shot decode path.
  */
 const BUDGET_GZIP_BYTES = {
-  '.': 80_000,
+  // 70,990 B measured after the strategy split × 1.15, rounded to 1 kB.
+  '.': 82_000,
   './loaders': 40_000,
   // Rebasing from 80 kB: the opt-in projection cache is shared by every
   // SplatMesh subclass, including StaticLodSplatMesh. Measured at 81.7 kB
@@ -37,8 +38,18 @@ const BUDGET_GZIP_BYTES = {
   './static-lod': 94_000,
   './relighting': 50_000,
   './streaming': 160_000,
+  // Keep the existing unified ceiling: its post-split graph is 78,994 B and
+  // must not be enlarged to hide a reintroduced optional implementation.
   './unified': 80_000,
+  // 17,944 B and 18,814 B measured respectively × 1.15, rounded to 1 kB.
+  './sorting/radix': 21_000,
+  './projection/compute': 22_000,
   './selection': 20_000,
+};
+
+const COMPOSED_BUDGET_GZIP_BYTES = {
+  // 90,421 B measured for the composed graph × 1.15, rounded to 1 kB.
+  './+unified+sorting/radix+projection/compute': 104_000,
 };
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -148,6 +159,35 @@ function mustContain(name, needle, why) {
   }
 }
 
+function composedGraph(names) {
+  const chunks = new Set();
+  const external = new Set();
+  for (const name of names) {
+    const graph = graphOf(name);
+    for (const chunk of graph.chunks) chunks.add(chunk);
+    for (const specifier of graph.external) external.add(specifier);
+  }
+  let raw = 0;
+  let gzip = 0;
+  const code = [];
+  for (const chunk of chunks) {
+    const bytes = readFileSync(chunk);
+    raw += bytes.length;
+    gzip += gzipSync(bytes, { level: 9 }).length;
+    code.push(bytes.toString('utf8'));
+  }
+  return { chunks: [...chunks], external: [...external], raw, gzip, code: code.join('\n') };
+}
+
+const composed = {
+  './+unified+sorting/radix+projection/compute': composedGraph([
+    '.',
+    './unified',
+    './sorting/radix',
+    './projection/compute',
+  ]),
+};
+
 mustNotContain('.', 'parseSogDirectory', 'decode-worker/parser payload belongs in /loaders');
 mustNotContain('.', 'rad-chunk', 'chunk decode formats belong in /loaders');
 mustNotContain('.', 'Static LOD build aborted.', 'static LOD belongs in /static-lod');
@@ -159,6 +199,29 @@ mustNotContain(
   'unified work buffers belong in /unified',
 );
 mustNotContain('.', 'createSelectionVolume', 'selection volumes belong in /selection');
+mustNotContain('.', 'RadixSorter', 'radix sorting belongs in /sorting/radix');
+mustNotContain('.', 'ProjectedSplatPipeline', 'compute projection belongs in /projection/compute');
+mustNotContain(
+  '.',
+  'auto-large-static-discrete-sh',
+  'automatic compute projection policy belongs in /projection/compute',
+);
+mustNotContain('./unified', 'RadixSorter', 'radix sorting belongs in /sorting/radix');
+mustNotContain(
+  './unified',
+  'ProjectedSplatPipeline',
+  'compute projection belongs in /projection/compute',
+);
+mustNotContain(
+  './sorting/radix',
+  'ProjectedSplatPipeline',
+  'radix sorting must not pull in compute projection',
+);
+mustNotContain(
+  './projection/compute',
+  'RadixSorter',
+  'compute projection must not pull in radix sorting',
+);
 
 mustNotContain('./loaders', 'Static LOD build aborted.', 'static LOD must not leak into /loaders');
 mustNotContain(
@@ -200,6 +263,25 @@ mustContain(
   'unified entry owns the compositor',
 );
 mustContain('./selection', 'createSelectionVolume', 'selection entry owns volume tests');
+mustContain('./sorting/radix', 'RadixSorter', 'radix entry owns the experimental sorter');
+mustContain(
+  './projection/compute',
+  'ProjectedSplatPipeline',
+  'compute entry owns the experimental projector',
+);
+mustContain(
+  './projection/compute',
+  'auto-large-static-discrete-sh',
+  'compute entry owns the automatic projection policy',
+);
+if (!composed['./+unified+sorting/radix+projection/compute'].code.includes('RadixSorter')) {
+  failures.push('composed application graph missing RadixSorter');
+}
+if (
+  !composed['./+unified+sorting/radix+projection/compute'].code.includes('ProjectedSplatPipeline')
+) {
+  failures.push('composed application graph missing ProjectedSplatPipeline');
+}
 
 const distJs = [];
 function walkDist(dir) {
@@ -232,6 +314,18 @@ for (const chunk of graphOf('./loaders').chunks) {
 
 for (const [name, budget] of Object.entries(BUDGET_GZIP_BYTES)) {
   const { gzip } = graphOf(name);
+  const pct = ((gzip / budget) * 100).toFixed(1);
+  console.log(`\n${name} budget: ${budget.toLocaleString()} B gzip (${pct}% used)`);
+  if (gzip > budget) {
+    failures.push(
+      `${name}: gzip size exceeds budget by ${(gzip - budget).toLocaleString()} B ` +
+        `(${gzip.toLocaleString()} > ${budget.toLocaleString()})`,
+    );
+  }
+}
+
+for (const [name, budget] of Object.entries(COMPOSED_BUDGET_GZIP_BYTES)) {
+  const { gzip } = composed[name];
   const pct = ((gzip / budget) * 100).toFixed(1);
   console.log(`\n${name} budget: ${budget.toLocaleString()} B gzip (${pct}% used)`);
   if (gzip > budget) {

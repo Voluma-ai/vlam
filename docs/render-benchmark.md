@@ -10,22 +10,36 @@ described below remains available with its existing defaults.
 
 A historical Spark 2.1.0 package was recovered from the local npm cache and
 aliased into one isolated benchmark server (`VLAM_SPARK_VERSION=2.1.0`,
-`VITE_SPARK_VERSION=2.1.0`). The normal installed development dependency and
-lockfile remain Spark 2.2.0. In that archived report, `renderer.version` is the
-actual aliased 2.1.0 package; `environment.spark` describes the installed
-2.2.0 package tree and must not be read as the active renderer.
+`VITE_SPARK_VERSION=2.1.0`). Recreate the alias with:
+
+```bash
+mkdir -p .tmp/spark-2.1
+npm pack @sparkjsdev/spark@2.1.0 --pack-destination .tmp/spark-2.1
+tar -xzf .tmp/spark-2.1/sparkjsdev-spark-2.1.0.tgz -C .tmp/spark-2.1
+VLAM_SPARK_VERSION=2.1.0 npm run benchmark:dev
+```
+
+The Vite alias resolves `.tmp/spark-2.1/package/dist/spark.module.js`. The
+normal installed development dependency and lockfile remain Spark 2.2.0. In
+archived 2.1.0 reports, `renderer.version` is the actual aliased 2.1.0 package;
+`environment.spark` describes the installed 2.2.0 package tree and must not be
+read as the active renderer.
 
 For build-time experiments, start a separate server for each variant with
 `VLAM_EXPERIMENT=baseline npm run benchmark:dev` or
 `VLAM_EXPERIMENT=skip-empty npm run benchmark:dev`. The effective settings are
 saved in comparison and memory reports. Empty-pool `skip-empty` is the
 published default; `baseline` restores the prior initial upload for A/B.
-Other selectable names (`bounded-threshold`, `exact-stream`,
-`approximate-sh-stream`, `first-vertex`) remain independent benchmark-only
-configurations. The bounded-threshold traversal has been evaluated and is not
-recommended for promotion. Remote PLY streaming is implemented as an isolated
-benchmark experiment. The WebGL candidate is also isolated and cannot be
-evaluated on the tested Chrome GPU path because its extension is unavailable.
+Other selectable names (`one-pass`, `heap`, `bounded-threshold`, `rad-decode-2`,
+`rad-decode-4`, `exact-stream`, `approximate-sh-stream`, `first-vertex`) remain
+independent benchmark-only configurations. `one-pass` is the page-table
+production default (Spark 2.1's single best-first walk). `heap` restores main's
+extra budget-filling walks for A/B. Decode stays on one worker unless a
+`rad-decode-*` server is started. The bounded-threshold traversal has been
+evaluated and is not recommended for promotion. Remote PLY streaming is
+implemented as an isolated benchmark experiment. The WebGL candidate is also
+isolated and cannot be evaluated on the tested Chrome GPU path because its
+extension is unavailable.
 
 ```bash
 npm install
@@ -119,9 +133,9 @@ justify a lower threshold.
 | `backend` | `webgpu` (VLAM) | VLAM only: `webgl` forces the WebGL2 + worker-sort fallback. Spark is always WebGL2 |
 | `maxStdDev` | preset | Explicit quad extent diagnostic, in Gaussian standard deviations |
 | `sortMetric` | preset | `depth` or `radial` |
-| `sortStrategy` | library default | VLAM-only `counting`, `radix`, `exact`, or `worker` diagnostic |
+| `sortStrategy` | library default | VLAM-only `counting`, `radixSort()`, `exactSort()`, or `worker` diagnostic; the viewer passes the corresponding factory |
 | `sortIntervalMs` | library adaptive default | VLAM-only cadence override; use `0` for the projection A/B's every-changed-frame pass |
-| `projectionStrategy` | `auto` | VLAM `auto`, full-detail `vertex`, or explicit experimental `compute` projection path |
+| `projectionStrategy` | `auto` | VLAM `computeProjection({ mode: 'auto' })`, full-detail `vertex`, or explicit experimental `computeProjection()` |
 | `minPixelSize` | profile | VLAM contribution cull: drop splats whose on-screen diameter is below this many px |
 | `minContribution` | profile | VLAM contribution cull: drop splats whose opacity × major × minor is below this |
 | `visibilityPose` | unset | Cached `interior` or `overview` pose used by the projection A/B |
@@ -472,7 +486,9 @@ Adaptive cadence (`sortIntervalMs` unset; 167 ms at 8.72M):
 
 #### Automatic static projection selection (2026-09-13)
 
-The library and demo now default to `projectionStrategy: 'auto'` and the
+The demo's `projectionStrategy=auto` control now passes
+`computeProjection({ mode: 'auto' })`, while the lightweight library defaults to
+vertex projection and the
 SH-preserving `performanceProfile: 'balanced'` on non-fill-constrained desktop
 devices. This is a one-time policy decision at first prepare, not a startup
 benchmark and never a scene-name rule. It selects compute projection plus the
@@ -484,8 +500,9 @@ includes temporary projection mirrors, the dense projected-sorter's histogram
 and bucket-buffer mirrors, and 2048-wide SH-cache row padding; the budget is a
 conservative application cap, not a claim about available VRAM.
 Hosts can tighten or disable this path with
-`projectionMemoryBudgetBytes` (set `0` to force the automatic decision to
-vertex) while explicit `projectionStrategy: 'compute'` remains an override.
+`projectionMemoryBudgetBytes` (set `0` in `computeProjection` to force the
+automatic decision to vertex) while `computeProjection()` remains an explicit
+override.
 
 Every other case—including unknown adapters, smaller or SH-free files,
 streaming, unified sources, modifiers, foveation, XR, WebGL2, unvalidated

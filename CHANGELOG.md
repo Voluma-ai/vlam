@@ -19,7 +19,41 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Changed
+
+- Experimental radix sorting and compute projection now live behind the
+  `@voluma/vlam/sorting/radix` and `@voluma/vlam/projection/compute` strategy
+  factories; the root viewer and base unified entry remain lightweight with
+  counting sort and vertex projection by default.
+- Non-fill-constrained desktops now default to the full-detail `quality`
+  profile. The previous `balanced` default could replace a complete coarse
+  streamed cut with fine splats that its 2 px / contribution culls then
+  rejected, leaving visible dark gaps in zoomed-out views. `balanced` remains
+  available as an explicit performance opt-in.
+- Page-table RAD now separates worker demand from render delivery: one
+  authoritative Spark 2.1 one-pass selection posts ordered chunk demand before
+  gather, discovers deeper dependencies while a previous candidate is still
+  staging, and publishes only complete indexed replacements after the matching
+  sort is actually visible. Single-scene loading defaults to `progressive`
+  first reveal (the first complete cover, including early coarse coverage).
+  Incoming crossover captures opt into `allocation-fraction` at 50% of the
+  granted draw allocation. The unreleased camera-local 50% nearby-detail gate
+  is gone. Decode stays on one shared worker until measurements justify more.
+  Desktop huge-RAD draw allowance is 7.5M (device limits and explicit caps
+  still apply); report that budget increase separately from pipeline timing.
+  Unsupported `radInitialRevealPolicy` strings throw instead of silently
+  enabling an allocation hold. Indexed page-table construction reserves 2×
+  the accepted draw grant; other formats keep the 1.5× staged-swap pool.
+  Worker plans name why they were posted (`traversed` / `draining` /
+  `awaiting-publication` / `capacity-blocked` / `unchanged-selection`) and
+  standalone publication acks only after a matching sort is actually visible.
+
 ### Added
+
+- Spark 2.1 WASM now decodes the same synthetic RAD fixture and JG chunk 0 as
+  VLAM. Child links match; hierarchy sizes match within packed f16/scale
+  quantization. Page-table plans carry `skipSamples` for the nodes that were
+  not subdivided. `?log=1` exposes that list on `vlamFetch.meshes[].stall`.
 
 - The internal frame benchmarks now report `medianFrameMs`, independent
   `observedCallbackCadenceMs` and `displayRefreshMs`, the display-rate source,
@@ -46,10 +80,6 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   copies and live destination bytes on every update frame, including frames
   without a LOD reschedule, to separate fragmented copy submission pressure
   from upload volume during large RAD investigation.
-- Page-table RAD now publishes its first fully staged, complete cover at 50% of
-  the initial draw budget, then refines through the existing atomic replacement
-  path. `radInitialDisplayFraction` tunes the threshold; the viewer's
-  `?radInitialDisplay=0` restores the prior target-detail hold for comparison.
 - `ShComputeCache` stays active under `projectionStrategy: 'compute'`. The
   projector skips SH when the cache will supply color, and the vertex stage
   samples the 4 B/splat RGBA8 texture. On Langenthal-Manola4A (8.72M SH3,

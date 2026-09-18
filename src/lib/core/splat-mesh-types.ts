@@ -10,6 +10,23 @@ import {
 } from './splat-budget';
 import type { SplatPool } from './splat-mesh-pool';
 import type { SplatShInputs, Vec3Uniform } from './splat-mesh-material';
+import type { SplatProjectionStrategy, SplatSortStrategy } from './strategy-types';
+export type {
+  AutomaticProjectionPolicyInput,
+  AutomaticProjectionPolicyResult,
+  ComputeProjectionMode,
+  ComputeProjectionStrategy,
+  ProjectedSplatBuffers,
+  ProjectedSplatPipeline,
+  ProjectionMemoryEstimate,
+  SplatProjectionStrategy,
+  SplatSortStrategy,
+  SplatSortStrategyFactory,
+  SplatSorter,
+  SplatSorterOptions,
+  StandaloneProjectionOptions,
+  UnifiedProjectionOptions,
+} from './strategy-types';
 
 /** @internal Construction-only source label used by streamed diagnostics. */
 export const splatMeshSourceLabel = Symbol('vlam.splatMeshSourceLabel');
@@ -19,9 +36,6 @@ export type ProjectedFilterProfile = 'default' | 'lcc';
 
 /** Canonical `.rad` foveation modes. */
 export type SplatFoveationMode = 'band' | 'frontier' | 'page-table';
-
-/** Where visible-splat projection is evaluated. */
-export type SplatProjectionStrategy = 'auto' | 'vertex' | 'compute';
 
 /** Resolve a caller-supplied foveation mode, defaulting when unset. */
 export function resolveSplatFoveationMode(
@@ -79,7 +93,7 @@ export function resolveSplatPerformanceProfile(
   explicit?: SplatPerformanceProfile,
   profile: SplatDeviceProfile | undefined = detectSplatDeviceProfile(),
 ): SplatPerformanceProfile {
-  return explicit ?? (isFillConstrainedSplatDevice(profile) ? 'smooth' : 'balanced');
+  return explicit ?? (isFillConstrainedSplatDevice(profile) ? 'smooth' : 'quality');
 }
 
 /**
@@ -102,29 +116,8 @@ export function resolveProjectedContributionCulls(options: {
 
 /** Construction options for {@link SplatMesh}. */
 export interface SplatMeshOptions {
-  /**
-   * Projection/culling path. `'auto'` (default) makes one conservative
-   * construction-lifetime decision: it selects the measured high-count static
-   * SH path on the validated NVIDIA Ampere desktop class, within the configured
-   * allocation budget, and otherwise retains portable vertex projection.
-   * `'compute'` explicitly opts a supported mono WebGPU view into an
-   * experimental project-once, compact-before-sort pipeline; WebGL2, XR and
-   * unsupported material graphs resolve safely to vertex projection. When the
-   * SH compute cache is also eligible, the projector skips SH and the vertex
-   * stage samples the cached color.
-   *
-   * @experimental Validate memory and GPU timings on the target workload.
-   */
+  /** Vertex projection by default, or an injected experimental projector. */
   projectionStrategy?: SplatProjectionStrategy;
-  /**
-   * Maximum additional bytes the `'auto'` projection path may allocate for its
-   * projected-list/cache peak, projected-sorter scratch and padded RGBA8 SH
-   * cache. Defaults to 1 GiB on its measured NVIDIA Ampere cohort. This is an
-   * application policy cap, not a report of available GPU memory; set `0` to
-   * force auto to retain vertex projection. Explicit `'compute'` remains an
-   * override and is not constrained by it.
-   */
-  projectionMemoryBudgetBytes?: number;
   /**
    * CPU storage retained after the initial GPU upload.
    *
@@ -158,7 +151,7 @@ export interface SplatMeshOptions {
    * bindings. Moving views refresh the same conservative frustum as the draw
    * shader whenever the GPU sorter accepts a new order and reuse it between
    * sorts; the initial full pass keeps pure rotation exact at a fixed eye.
-   * The cache stays active under `projectionStrategy: 'compute'`: the projector
+   * The cache stays active under an injected compute projection strategy: the projector
    * skips SH and the vertex stage samples the cached color. Unsupported paths,
    * modifiers, XR and insufficient device limits retain vertex SH.
    * Does not change SH bands, visual quality or sorting cadence.
@@ -191,9 +184,9 @@ export interface SplatMeshOptions {
    * Spark comparison is load speed and LOD quality, not Spark's async
    * sort cadence. Worker-sorted views publish data, count, and order together
    * after the worker reply, so streaming changes become visible asynchronously
-   * but never expose a mismatched intermediate scene. `'radix'` is the 24-bit GPU key path; `'exact'`
-   * lazy-loads a 32-bit Float32-depth GPU radix path. The first frames
-   * may skip GPU radix sorting until the module resolves.
+   * but never expose a mismatched intermediate scene. Experimental radix
+   * strategies are supplied by `radixSort()` and `exactSort()` from
+   * `@voluma/vlam/sorting/radix`.
    * Merged pools honor the same strategy, applying each source's live
    * placement before computing its key for the global sort.
    *
@@ -207,8 +200,8 @@ export interface SplatMeshOptions {
    * accurate alpha order for a fixed view. `'radial'` sorts by distance from
    * the camera, matching Spark's stable default: camera rotation alone leaves
    * the order unchanged, which greatly reduces whole-scene shimmer while
-   * orbiting dense captures. Pair it with `sortStrategy: 'exact'` when extreme
-   * position outliers would make quantized buckets too coarse.
+   * orbiting dense captures. Pair it with `exactSort()` when extreme position
+   * outliers would make quantized buckets too coarse.
    */
   sortMetric?: SplatSortMetric;
   /**
@@ -217,8 +210,8 @@ export interface SplatMeshOptions {
    * `smooth` additionally suppresses default SH for fill-constrained devices.
    *
    * The default is device-aware: `smooth` on mobile and fill-constrained
-   * desktops, `balanced` elsewhere. `quality` is the full-detail escape
-   * hatch. Passing a value opts out of the detection.
+   * desktops, `quality` elsewhere. Passing a value opts out of the detection;
+   * use `balanced` to enable contribution culling while preserving source SH.
    */
   performanceProfile?: SplatPerformanceProfile;
   /**
@@ -439,9 +432,6 @@ export interface SplatMeshOptions {
   maxTextureSize?: number;
 }
 
-/** Available WebGPU depth-sort implementations. */
-export type SplatSortStrategy = 'counting' | 'worker' | 'radix' | 'exact';
-
 /** Lifetime policy for the pool's CPU-side scene mirrors. */
 export type SplatStorageMode = 'editable' | 'render-only';
 
@@ -517,6 +507,8 @@ export interface UnifiedSourceView {
    * scene may mix `.rad` and non-`.rad` sources.
    */
   readonly lodAlpha: boolean;
+  /** Internal startup-reveal multiplier applied by unified rendering. */
+  readonly revealMultiplier: number;
   /** Increments whenever pool-backed data or active residency changes. */
   readonly contentRevision: number;
 }

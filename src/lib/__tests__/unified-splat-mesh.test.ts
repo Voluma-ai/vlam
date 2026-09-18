@@ -5,6 +5,8 @@ import { writeCovariance, type SplatData } from '../core/splat-data';
 import { SplatMesh } from '../core/splat-mesh';
 import { MergedSplatMesh } from '../core/merged-splat-mesh';
 import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '../unified/unified-splat-mesh';
+import { exactSort, radixSort } from '../sorting/radix';
+import { computeProjection } from '../projection/compute';
 
 function source(
   options: {
@@ -72,12 +74,12 @@ describe('supportsUnifiedSplatMesh', () => {
 });
 
 describe('UnifiedSplatMesh', () => {
-  it('accepts the library auto default and keeps unified rendering on vertex projection', () => {
+  it('accepts the lightweight vertex default', () => {
     const unified = new UnifiedSplatMesh(mockRenderer(), 1);
-    expect(unified.projectionStrategy).toBe('auto');
+    expect(unified.projectionStrategy).toBe('vertex');
     expect(unified.projectionStrategyStatus).toEqual({
       effective: 'vertex',
-      reason: 'auto-unified-source',
+      reason: 'explicit-vertex',
     });
     unified.dispose();
   });
@@ -95,19 +97,19 @@ describe('UnifiedSplatMesh', () => {
     mesh.dispose();
   });
 
-  it.each(['radix', 'exact'] as const)(
-    'uses the stable %s sorter when requested',
-    (sortStrategy) => {
-      const unified = new UnifiedSplatMesh(mockRenderer(), 1, { sortStrategy });
-      const sorterName = (unified as unknown as { sorter: { constructor: { name: string } } })
-        .sorter.constructor.name;
-      expect(sorterName).toBe('RadixSorter');
-      expect((unified as unknown as { sorter: { exactDepth: boolean } }).sorter.exactDepth).toBe(
-        sortStrategy === 'exact',
-      );
-      unified.dispose();
-    },
-  );
+  it.each([
+    ['radix', radixSort(), false],
+    ['exact', exactSort(), true],
+  ] as const)('uses the stable %s sorter when requested', (_label, sortStrategy, exactDepth) => {
+    const unified = new UnifiedSplatMesh(mockRenderer(), 1, { sortStrategy });
+    const sorterName = (unified as unknown as { sorter: { constructor: { name: string } } }).sorter
+      .constructor.name;
+    expect(sorterName).toBe('RadixSorter');
+    expect((unified as unknown as { sorter: { exactDepth: boolean } }).sorter.exactDepth).toBe(
+      exactDepth,
+    );
+    unified.dispose();
+  });
 
   it('copies the source projected-footprint floor into the unified draw path', () => {
     const renderer = mockRenderer();
@@ -128,7 +130,7 @@ describe('UnifiedSplatMesh', () => {
     const vertex = new UnifiedSplatMesh(renderer, 1, { performanceProfile: 'balanced' });
     const compute = new UnifiedSplatMesh(renderer, 1, {
       performanceProfile: 'balanced',
-      projectionStrategy: 'compute',
+      projectionStrategy: computeProjection(),
     });
 
     vertex.addSource(mesh);
@@ -577,6 +579,29 @@ describe('UnifiedSplatMesh', () => {
       return vi.spyOn(sorter, 'sort');
     }
 
+    it('acknowledges sources only after the unified draw callback', async () => {
+      const renderer = mockRenderer();
+      const mesh = source();
+      const unified = new UnifiedSplatMesh(renderer, 1);
+      unified.addSource(mesh);
+      const notify = vi.spyOn(mesh, 'notifyUnifiedPublication');
+      const camera = new THREE.PerspectiveCamera();
+
+      unified.update(camera);
+      expect(notify).not.toHaveBeenCalled();
+
+      unified.onAfterRender({} as never, new THREE.Scene(), camera);
+      expect(notify).not.toHaveBeenCalled();
+      await Promise.resolve();
+      expect(notify).toHaveBeenCalledOnce();
+
+      unified.onAfterRender({} as never, new THREE.Scene(), camera);
+      await Promise.resolve();
+      expect(notify).toHaveBeenCalledOnce();
+      unified.dispose();
+      mesh.dispose();
+    });
+
     it('skips the sorter dispatch for a stationary camera with unchanged content', () => {
       const renderer = mockRenderer();
       const mesh = source();
@@ -645,6 +670,25 @@ describe('UnifiedSplatMesh', () => {
       // Settled again: the regathered content is now sorted, nothing changed.
       unified.update(camera);
       expect(sort).toHaveBeenCalledTimes(2);
+      unified.dispose();
+      mesh.dispose();
+    });
+
+    it('propagates a source reveal multiplier into the unified gather opacity', () => {
+      const renderer = mockRenderer();
+      const mesh = source();
+      const unified = new UnifiedSplatMesh(renderer, 1);
+      unified.addSource(mesh);
+      const gather = gatherSpies(unified)[0]!.gather;
+      const camera = new THREE.PerspectiveCamera();
+
+      unified.update(camera);
+      expect(gather.mock.calls[0]?.[5]).toBe(1);
+
+      (mesh as unknown as { setRevealMultiplier: (value: number) => void }).setRevealMultiplier(0);
+      unified.update(camera);
+      expect(gather.mock.calls[1]?.[5]).toBe(0);
+
       unified.dispose();
       mesh.dispose();
     });

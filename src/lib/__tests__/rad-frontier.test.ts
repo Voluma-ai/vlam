@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeTouchedChunks,
+  assessFrontierRevealQuality,
+  explainFrontierNode,
   frontierView,
   searchLimitWithinBudget,
+  FrontierTraversalJob,
   traverseFrontier,
   traverseFrontierBounded,
 } from '../formats/rad/rad-frontier';
@@ -105,6 +108,25 @@ describe('traverseFrontier', () => {
     expect(touched.has(1)).toBe(true); // chunk 1 is the detail to fetch next
   });
 
+  it('produces the synchronous cut when resumed after early demand', () => {
+    const full = buildChunkMap(sampleTree(), 4);
+    const partial = new Map([[0, full.get(0)!]]);
+    const expected = traverseFrontier(partial, [0], 4, cam, 2, 3);
+    const job = new FrontierTraversalJob(partial, [0], 4, cam, 2, 3);
+    expect(job.step(Number.POSITIVE_INFINITY, 1).done).toBe(false);
+    while (!job.step(Number.POSITIVE_INFINITY).done) {
+      // Resume the same owned scratch state until materialization completes.
+    }
+    const actual = job.result;
+    expect(actual.count).toBe(expected.count);
+    expect([...actual.touched]).toEqual([...expected.touched]);
+    expect(actual.waiters).toEqual(expected.waiters);
+    expect(actual.budgetClamped).toBe(expected.budgetClamped);
+    expect([...actual.selection].map(([file, locals]) => [file, Array.from(locals)])).toEqual(
+      [...expected.selection].map(([file, locals]) => [file, Array.from(locals)]),
+    );
+  });
+
   it('stops descending once the budget is reached, and still covers the scene', () => {
     const map = buildChunkMap(sampleTree(), 4);
     // A leaf-level cut wants 4 splats. Under a budget of 3 the traversal spends
@@ -124,6 +146,55 @@ describe('traverseFrontier', () => {
         expect(traverseFrontier(map, [0], 4, cam, limit, budget).count).toBeLessThanOrEqual(budget);
       }
     }
+  });
+
+  it('keeps waiters for child ranges that span two files', () => {
+    const full = buildChunkMap(sampleTree(), 4);
+    const partial = new Map([[0, full.get(0)!]]);
+    const { waiters, touched } = traverseFrontier(partial, [0], 4, cam, 2);
+    expect(touched.has(1)).toBe(true);
+    expect(waiters.some((waiter) => waiter.files.includes(1))).toBe(true);
+  });
+});
+
+describe('projected-quality RAD reveal', () => {
+  const projection = new Float32Array(16);
+  projection[0] = 1;
+  projection[5] = 1;
+  projection[10] = 1;
+  projection[15] = 1;
+  const view = frontierView(
+    { x: 0, y: 0, z: 0 },
+    { x: 0, y: 0, z: 1 },
+    { coneFov0: 60, coneFov: 120, coneFoveate: 1, behindFoveate: 1 },
+  );
+
+  it('rejects oversized internal nodes, ignores leaves, and accepts the thresholds', () => {
+    const map = buildChunkMap(
+      [
+        { size: 4, pos: [0, 0, 1], childCount: 1, childStart: 4 },
+        { size: 8, pos: [0.6, 0, 0.8], childCount: 1, childStart: 5 },
+        { size: 100, pos: [2, 0, 1], childCount: 1, childStart: 6 },
+        { size: 100, pos: [0, 0, 1], childCount: 0, childStart: 0 },
+      ],
+      8,
+    );
+    const accepted = assessFrontierRevealQuality(map, [0, 1, 2, 3], 8, view, projection, 1);
+    expect(accepted).toMatchObject({
+      revealReady: true,
+      maxCentralProjectedRatio: 4,
+    });
+    expect(accepted.maxVisibleProjectedRatio).toBeCloseTo(8, 5);
+
+    map.get(0)!.radTree!.size[0] = 5;
+    expect(assessFrontierRevealQuality(map, [0, 1, 2, 3], 8, view, projection, 1).revealReady).toBe(
+      false,
+    );
+    map.get(0)!.radTree!.size[0] = 4;
+    map.get(0)!.radTree!.size[1] = 9;
+    expect(assessFrontierRevealQuality(map, [0, 1, 2, 3], 8, view, projection, 1).revealReady).toBe(
+      false,
+    );
   });
 });
 
@@ -400,6 +471,12 @@ describe('bounded threshold frontier', () => {
     expect(cut.rootCoverInfeasible).toBe(true);
   });
 
+  it('reports one-pass root cover infeasible when roots exceed the budget', () => {
+    const map = buildChunkMap(sampleTree(), 4);
+    const cut = traverseFrontier(map, [0, 3], 4, view, 10, 1);
+    expect(cut.rootCoverInfeasible).toBe(true);
+  });
+
   it('walks an extreme depth iteratively with bounded pending storage', () => {
     const p: [number, number, number] = [0, 0, 1];
     const nodes: TreeNode[] = [{ size: 8, pos: p, childCount: 0, childStart: 0 }];
@@ -498,5 +575,26 @@ describe('searchLimitWithinBudget - draw-budget feedback (E7)', () => {
     const high = searchLimitWithinBudget(evalFn, limit, 0.001, 300, 6);
     expect(high.result.count).toBeGreaterThan(low.result.count);
     expect(high.result.count).toBeLessThanOrEqual(300);
+  });
+});
+
+describe('explainFrontierNode', () => {
+  const cam = frontierView({ x: 0, y: 0, z: 0 }, undefined);
+
+  it('names missing children, leaves, threshold, and a node that should subdivide', () => {
+    const map = buildChunkMap(sampleTree(), 4);
+    const partial = new Map([[0, map.get(0)!]]);
+    expect(
+      explainFrontierNode(map, 4, 4, cam, 2, 100, { count: 4, budgetClamped: false })?.reason,
+    ).toBe('leaf');
+    expect(
+      explainFrontierNode(map, 0, 4, cam, 10, 100, { count: 1, budgetClamped: false })?.reason,
+    ).toBe('below-threshold');
+    expect(
+      explainFrontierNode(partial, 1, 4, cam, 2, 100, { count: 2, budgetClamped: false })?.reason,
+    ).toBe('missing-children');
+    expect(
+      explainFrontierNode(map, 0, 4, cam, 2, 100, { count: 1, budgetClamped: false })?.reason,
+    ).toBe('would-subdivide');
   });
 });

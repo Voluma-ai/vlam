@@ -69,6 +69,8 @@ function asUintNode(node: unknown): THREE.Node<'uint'> {
  */
 export class RadixSorter implements SplatSorter {
   readonly kind = 'radix' as const;
+  readonly passCount: number;
+  submissionCount = 0;
   private readonly renderer: THREE.WebGPURenderer;
   private readonly stages: THREE.ComputeNode[] = [];
   private readonly workingAttributes: THREE.StorageBufferAttribute[];
@@ -118,6 +120,7 @@ export class RadixSorter implements SplatSorter {
     const exactDepth = options.exactDepth === true;
     this.exactDepth = exactDepth;
     const passCount = radixPassCount(exactDepth ? RADIX_EXACT_KEY_BITS : RADIX_KEY_BITS);
+    this.passCount = passCount;
     const groupCount = Math.ceil(capacity / ELEMENTS_PER_WORKGROUP);
     const histogramLength = DIGIT_COUNT * groupCount;
     const scanBlockCount = Math.ceil(histogramLength / SCAN_BLOCK_SIZE);
@@ -373,6 +376,7 @@ export class RadixSorter implements SplatSorter {
     visibleRange?: SplatSortRange | null,
   ): boolean {
     if (activeCount === 0) return true;
+    this.submissionCount++;
     const m = modelView.elements;
     this.viewRow0.value.set(m[0], m[4], m[8], m[12]);
     this.viewRow1.value.set(m[1], m[5], m[9], m[13]);

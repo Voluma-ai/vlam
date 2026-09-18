@@ -43,6 +43,12 @@ function sourceIndexAttribute(mesh: SplatMesh): THREE.StorageBufferAttribute {
   return mesh.getUnifiedSourceView().sourceIndex;
 }
 
+class ReplaceActiveMesh extends SplatMesh {
+  replace(indices: readonly number[]): void {
+    this.replaceActiveIndices(Uint32Array.from(indices));
+  }
+}
+
 /** The pool's CPU centers backing (x at stride 4), for relocation checks. */
 function centersBacking(mesh: SplatMesh): Float32Array {
   return (mesh as unknown as { backing: { centers: Float32Array } }).backing.centers;
@@ -81,6 +87,12 @@ describe('SplatMesh pool row allocator', () => {
 
   function dynamicMesh(capacity = 4 * WIDTH): SplatMesh {
     const mesh = new SplatMesh({ capacity });
+    meshes.push(mesh);
+    return mesh;
+  }
+
+  function replaceMesh(capacity = 512): ReplaceActiveMesh {
+    const mesh = new ReplaceActiveMesh({ capacity });
     meshes.push(mesh);
     return mesh;
   }
@@ -244,6 +256,56 @@ describe('SplatMesh pool row allocator', () => {
     mesh.appendRange(makeSplatData(30));
 
     expect(source.updateRanges).toEqual([{ start: 0, count: 150 }]);
+  });
+
+  it('uploads only the appended tail when a stable selection grows', () => {
+    const mesh = replaceMesh();
+    const source = sourceIndexAttribute(mesh);
+    mesh.replace([0, 1, 2, 3]);
+    source.clearUpdateRanges();
+
+    mesh.replace([0, 1, 2, 3, 4, 5]);
+
+    expect(source.updateRanges).toEqual([{ start: 4, count: 2 }]);
+    expect(activeIndices(mesh, 6)).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+
+  it('uploads sparse active-list replacement spans without widening them', () => {
+    const mesh = replaceMesh();
+    const source = sourceIndexAttribute(mesh);
+    mesh.replace(Array.from({ length: 8 }, (_, index) => index));
+    source.clearUpdateRanges();
+
+    mesh.replace([0, 20, 2, 30, 4, 5, 6, 7]);
+
+    expect(source.updateRanges).toEqual([
+      { start: 1, count: 1 },
+      { start: 3, count: 1 },
+    ]);
+    expect(activeIndices(mesh, 8)).toEqual([0, 20, 2, 30, 4, 5, 6, 7]);
+  });
+
+  it('falls back to one full-range upload for too many sparse spans', () => {
+    const mesh = replaceMesh(300);
+    const source = sourceIndexAttribute(mesh);
+    const initial = Array.from({ length: 130 }, (_, index) => index);
+    mesh.replace(initial);
+    source.clearUpdateRanges();
+
+    const sparse = initial.map((value, index) => (index % 2 === 0 ? 200 + index / 2 : value));
+    mesh.replace(sparse);
+
+    expect(source.updateRanges).toEqual([{ start: 0, count: 130 }]);
+    expect(activeIndices(mesh, 130)).toEqual(sparse);
+  });
+
+  it('retains exact active coverage and rejects duplicate or foreign pool indices', () => {
+    const mesh = replaceMesh(32);
+    mesh.replace([2, 7, 11]);
+
+    expect(activeIndices(mesh, 3)).toEqual([2, 7, 11]);
+    expect(() => mesh.replace([2, 7, 7])).toThrow(/duplicate pool indices/);
+    expect(() => mesh.replace([2, 7, 2048])).toThrow(/invalid pool index/);
   });
 
   it('reuses power-of-two height buckets across nearby upload heights', () => {

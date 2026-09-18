@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SplatData } from '../../lib/core';
 import { decodedSplatMemory, estimateMeshMemory } from '../memory-accounting';
+import { computeProjection } from '../../lib/projection/compute';
 
 describe('memory accounting', () => {
   it('separates core, SH, and LOD decoded arrays', () => {
@@ -94,7 +95,7 @@ describe('memory accounting', () => {
       floatTextures: 'float32',
       packedShBands: 0,
       sortStrategy: 'counting',
-      projectionStrategy: 'compute',
+      projectionStrategy: computeProjection(),
     });
 
     expect(compute.projectionCacheBytes).toBe(4_800);

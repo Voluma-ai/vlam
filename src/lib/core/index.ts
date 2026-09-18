@@ -10,6 +10,8 @@
  *  - `@voluma/vlam/static-lod` - {@link StaticLodSplatMesh}
  *  - `@voluma/vlam/streaming` - {@link StreamedSplatMesh}, budget governors
  *  - `@voluma/vlam/unified` - {@link UnifiedSplatMesh}
+ *  - `@voluma/vlam/sorting/radix` - experimental radixSort/exactSort strategies
+ *  - `@voluma/vlam/projection/compute` - experimental computeProjection strategy
  *  - `@voluma/vlam/selection` - volume select and partition
  *  - `@voluma/vlam/effects` - tree-shakeable modifier presets
  *  - `@voluma/vlam/relighting` - optional proxy-mesh relighting
@@ -36,6 +38,9 @@ export {
   type SplatMeshOptions,
   type SplatUpdateOptions,
   type SplatSortStrategy,
+  type SplatSortStrategyFactory,
+  type ComputeProjectionStrategy,
+  type ComputeProjectionMode,
   type SplatSortMetric,
   type SplatStorageMode,
   type SplatPerformanceProfile,

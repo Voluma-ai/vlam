@@ -261,11 +261,9 @@ describe('parseRad', () => {
   });
 
   it('computes per-splat LOD node size (streamed chunk)', async () => {
-    // Spark's `encode_lod_tree` traversal size: `2 · (max(α,1)·4 − 3) · avg(scale)`.
+    // Spark 2.1 tagged decoder: `2 · radExpansion(α) · avg(scale)`.
     // Splat 0 leaf (alpha 1, scale 2) → factor 1, size 2·1·2 = 4.
-    // Splat 1 merged (alpha 1.5, scale 1) → factor 1.5·4−3 = 3, size 2·3·1 = 6.
-    // (NOT the rendered-covariance expansion 1+0.7·(4α−4)=2.4 - the cut uses the
-    // steeper authored size; using the render curve stopped the descent early.)
+    // Splat 1 merged (alpha 1.5, scale 1) → 1+0.7·(6−4)=2.4, size 2·2.4·1 = 4.8.
     const properties: Property[] = [
       {
         name: 'center',
@@ -308,7 +306,66 @@ describe('parseRad', () => {
 
     // Leaves sort first, so the leaf is slot 0 and the merged node slot 1.
     expect(data.radTree?.size[0]).toBeCloseTo(4, 5);
-    expect(data.radTree?.size[1]).toBeCloseTo(6, 5);
+    expect(data.radTree?.size[1]).toBeCloseTo(4.8, 5);
+    const renderExpansion = 1 + 0.7 * (1.5 * 4 - 4);
+    expect(renderExpansion).toBeCloseTo(2.4, 5);
+    expect(data.radTree?.size[1]).toBeCloseTo(2 * renderExpansion, 5);
+  });
+
+  it('keeps centers, child refs, and covariance independent of the 3.8 render expansion', async () => {
+    const properties: Property[] = [
+      {
+        name: 'center',
+        encoding: 'f32',
+        bytes: planarF32(3, [
+          [1, 2, 3],
+          [4, 5, 6],
+        ]),
+      },
+      { name: 'alpha', encoding: 'f32', bytes: planarF32(1, [[1], [2]]) },
+      {
+        name: 'rgb',
+        encoding: 'f32',
+        bytes: planarF32(3, [
+          [1, 1, 1],
+          [1, 1, 1],
+        ]),
+      },
+      {
+        name: 'scales',
+        encoding: 'f32',
+        bytes: planarF32(3, [
+          [1, 1, 1],
+          [1, 1, 1],
+        ]),
+      },
+      {
+        name: 'orientation',
+        encoding: 'f32',
+        bytes: planarF32(3, [
+          [0, 0, 0],
+          [0, 0, 0],
+        ]),
+      },
+      { name: 'child_count', encoding: 'u16', bytes: u16Bytes(0, 2) },
+      { name: 'child_start', encoding: 'u32', bytes: u32Bytes(0, 7) },
+    ];
+    const chunk = buildChunk(2, true, properties);
+    const data = await parseRadChunkStreaming(new Uint8Array(chunk).buffer);
+    const leaf = data.radTree!.childCount[0] === 0 ? 0 : 1;
+    const merged = 1 - leaf;
+    expect(data.positions[merged * 3]).toBeCloseTo(4, 5);
+    expect(data.positions[merged * 3 + 1]).toBeCloseTo(5, 5);
+    expect(data.positions[merged * 3 + 2]).toBeCloseTo(6, 5);
+    expect(data.radTree?.childCount[merged]).toBe(2);
+    expect(data.radTree?.childStart[merged]).toBe(7);
+    // Traversal metadata matches Spark 2.1's tagged decoder (3.8 at α=2).
+    expect(data.radTree?.size[merged]).toBeCloseTo(7.6, 5);
+    expect(data.radTree?.size[merged]).not.toBeCloseTo(10, 5);
+    // Spark stores α/2 in the opacity byte; α=2 encodes as 255.
+    expect(data.colors[merged * 4 + 3]).toBe(255);
+    // Rendered covariance stays the raw fitted 1², not 3.8².
+    expect(data.covariances[merged * 6]).toBeCloseTo(1, 4);
   });
 
   it('stores raw covariance and alpha/2 opacity for merged nodes (streamed chunk)', async () => {

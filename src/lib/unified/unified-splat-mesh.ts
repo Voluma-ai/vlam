@@ -1,9 +1,9 @@
 import * as THREE from 'three/webgpu';
+import type { WebGLRenderer } from 'three';
 import { uniform } from 'three/tsl';
 import { ComputeSorter, releaseRendererAttributes } from '../core/compute-sorter';
-import { RadixSorter } from '../core/radix-sorter';
 import { clampDepthOfFieldSettings, type DepthOfFieldSettings } from '../core/depth-of-field';
-import { SplatMesh } from '../core/splat-mesh';
+import { SplatMesh, getSplatPublicationToken } from '../core/splat-mesh';
 import type { SplatPickOptions, SplatPickResult, UnifiedSourceView } from '../core/splat-mesh';
 import { isFillConstrainedSplatDevice } from '../core/splat-budget';
 import { WebGpuSortScheduler } from '../core/sort-scheduler';
@@ -21,12 +21,10 @@ import {
   type SplatPerformanceProfile,
   type SplatProjectionStrategy,
   type SplatSortMetric,
+  type SplatSortStrategyFactory,
 } from '../core/splat-mesh-types';
 import { cameraVisibleSortRange, radialSortState } from '../core/splat-sort-bounds';
-import {
-  ProjectedSplatPipeline,
-  estimateProjectedSplatPeakBytes,
-} from '../core/projected-splat-pipeline';
+import { isComputeProjectionStrategy, type ProjectedSplatPipeline } from '../core/strategy-types';
 
 interface SourceRecord {
   source: SplatMesh;
@@ -60,6 +58,11 @@ interface LayoutEntry {
   source: SplatMesh;
   offset: number;
   activeCount: number;
+}
+
+interface UnifiedPublication {
+  readonly source: SplatMesh;
+  readonly token: number;
 }
 
 /** Registration settings for one source in a {@link UnifiedSplatMesh}. */
@@ -98,13 +101,7 @@ export interface UnifiedSplatPickResult extends SplatPickResult {
  * @experimental May change in a minor release.
  */
 export interface UnifiedSplatMeshOptions {
-  /**
-   * Experimental mono WebGPU project-once/cull-before-sort path. `'auto'`
-   * (default) deliberately resolves to vertex projection: source residency,
-   * placement, and SH cache eligibility are only known after the unified
-   * gather. Explicit `'compute'` remains available for measured opt-in runs.
-   * XR presentation always uses the established per-eye vertex projection.
-   */
+  /** Vertex projection by default, or an injected experimental projector. */
   projectionStrategy?: SplatProjectionStrategy;
   /**
    * Contribution-culling profile used by the shared unified draw. Defaults to
@@ -119,19 +116,39 @@ export interface UnifiedSplatMeshOptions {
   /** Composite source colors in display (sRGB) space. Defaults to `false`. */
   srgbOutput?: boolean;
   /**
-   * Global depth-sort strategy. `'radix'` provides stable quantized ordering,
-   * while `'exact'` preserves every Float32 depth bit through the same stable
-   * radix pipeline. `'counting'` remains the lower-cost default.
-   *
-   * @experimental Exact sorting trades two additional radix passes for better
-   * ordering in large scenes with dense foliage or overlapping surfaces.
+   * Global depth-sort strategy. Defaults to the lower-cost counting sorter.
+   * `'worker'` is unsupported: unified rendering is WebGPU-only.
    */
-  sortStrategy?: 'counting' | 'radix' | 'exact';
+  sortStrategy?: 'counting' | SplatSortStrategyFactory;
   /**
    * Camera-space key used for global ordering. Defaults to `'depth'` for
    * compatibility; `'radial'` matches Spark's rotation-invariant ordering.
    */
   sortMetric?: SplatSortMetric;
+}
+
+/** CPU submission timings for the last unified gather/sort preparation. */
+export interface UnifiedSplatPerformanceTimings {
+  totalMs: number;
+  gatherMs: number;
+  sortSubmitMs: number;
+  sourceCount: number;
+  activeCount: number;
+  sortSubmitted: boolean;
+  gatherDispatches: number;
+  gatherSlots: number;
+  projectionSubmissions: number;
+  projectionPasses: number;
+  sortSubmissions: number;
+  sortPasses: number;
+  activeListBytes: number;
+  activeListRanges: number;
+  sortSerial: number;
+  sortSubmissionFrame: number;
+  sortAction: 'none' | 'submitted' | 'coalesced' | 'suppressed';
+  sortTracking: 'pending' | 'gpu-completion' | 'render-ack-fallback' | null;
+  sortAcknowledgementMs: number | null;
+  sortInputCount: number;
 }
 
 /**
@@ -174,6 +191,28 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   private readonly sorter: SplatSorter;
   private readonly projectedSorter: SplatSorter | null;
   private readonly projectedPipeline: ProjectedSplatPipeline | null;
+  private readonly performanceTimingsValue: UnifiedSplatPerformanceTimings = {
+    totalMs: 0,
+    gatherMs: 0,
+    sortSubmitMs: 0,
+    sourceCount: 0,
+    activeCount: 0,
+    sortSubmitted: false,
+    gatherDispatches: 0,
+    gatherSlots: 0,
+    projectionSubmissions: 0,
+    projectionPasses: 0,
+    sortSubmissions: 0,
+    sortPasses: 0,
+    activeListBytes: 0,
+    activeListRanges: 0,
+    sortSerial: 0,
+    sortSubmissionFrame: -1,
+    sortAction: 'none',
+    sortTracking: null,
+    sortAcknowledgementMs: null,
+    sortInputCount: 0,
+  };
   private computeProjectionActive = false;
   private readonly renderer: THREE.WebGPURenderer;
   private readonly sources: SourceRecord[] = [];
@@ -193,6 +232,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
    * (regather, layout change) force the next sort through the scheduler.
    */
   private readonly sortScheduler: WebGpuSortScheduler;
+  /** Primary refinement frame number used by the non-blocking sort gate. */
+  private refinementFrameNumber = 0;
   /** Pose signature of the last accepted sort; starts unmatchable (zero scale). */
   private readonly lastSortedState = new THREE.Matrix4().makeScale(0, 0, 0);
   private readonly currentSortState = new THREE.Matrix4();
@@ -226,6 +267,11 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   private sourceProjectedFilterProfile: 'default' | 'lcc' | null = null;
   private overflowedSourceCount = 0;
   private overflowedSplatCount = 0;
+  private unifiedPublicationVersion = 0;
+  private readyPublicationVersion = -1;
+  private readyPublication: readonly UnifiedPublication[] | null = null;
+  private queuedPublicationVersion = -1;
+  private renderedPublicationVersion = -1;
   private disposed = false;
 
   constructor(
@@ -258,23 +304,19 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       minContribution: validateContributionCull(options.minContribution, 'minContribution'),
       performanceProfile,
     });
-    const projectionStrategy = options.projectionStrategy ?? 'auto';
-    if (
-      projectionStrategy !== 'auto' &&
-      projectionStrategy !== 'vertex' &&
-      projectionStrategy !== 'compute'
-    ) {
+    const projectionStrategy = options.projectionStrategy ?? 'vertex';
+    if (projectionStrategy !== 'vertex' && !isComputeProjectionStrategy(projectionStrategy)) {
       throw new RangeError('UnifiedSplatMesh: invalid projectionStrategy.');
     }
-    if (projectionStrategy === 'compute') {
+    if (isComputeProjectionStrategy(projectionStrategy) && projectionStrategy.mode === 'explicit') {
       assertStorageBufferFitsDevice(renderer, capacity * 16, capacity);
       // Account for the allocation peak up front even though the per-buffer
       // binding limit is enforced independently above.
-      estimateProjectedSplatPeakBytes(capacity);
+      projectionStrategy.estimateMemoryBytes(capacity);
     }
     const projectedPipeline =
-      projectionStrategy === 'compute'
-        ? new ProjectedSplatPipeline({
+      isComputeProjectionStrategy(projectionStrategy) && projectionStrategy.mode === 'explicit'
+        ? projectionStrategy.createUnified({
             renderer,
             capacity,
             centers: workBuffer.centers,
@@ -348,11 +390,14 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.sortMetric = options.sortMetric ?? 'depth';
     this.projectionStrategyValue = projectionStrategy;
     this.projectionStrategyState = {
-      effective: projectionStrategy === 'compute' ? 'compute' : 'vertex',
+      effective:
+        isComputeProjectionStrategy(projectionStrategy) && projectionStrategy.mode === 'explicit'
+          ? 'compute'
+          : 'vertex',
       reason:
-        projectionStrategy === 'auto'
+        isComputeProjectionStrategy(projectionStrategy) && projectionStrategy.mode === 'auto'
           ? 'auto-unified-source'
-          : projectionStrategy === 'compute'
+          : isComputeProjectionStrategy(projectionStrategy)
             ? 'explicit-compute'
             : 'explicit-vertex',
     };
@@ -370,14 +415,11 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       splatIndexAttribute: order,
       sourceIndexAttribute: this.workSourceIndex,
     };
+    const sortStrategy = options.sortStrategy ?? 'counting';
     this.sorter =
-      options.sortStrategy === 'radix' || options.sortStrategy === 'exact'
-        ? new RadixSorter({
-            ...sortInputs,
-            exactDepth: options.sortStrategy === 'exact',
-            sortMetric: this.sortMetric,
-          })
-        : new ComputeSorter({ ...sortInputs, sortMetric: this.sortMetric });
+      typeof sortStrategy === 'string'
+        ? new ComputeSorter({ ...sortInputs, sortMetric: this.sortMetric })
+        : sortStrategy.create({ ...sortInputs, sortMetric: this.sortMetric });
     this.projectedSorter = projectedPipeline
       ? new ComputeSorter({
           ...sortInputs,
@@ -410,7 +452,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   }
 
   /** Strategy currently used by the draw (XR temporarily resolves to vertex). */
-  get effectiveProjectionStrategy(): SplatProjectionStrategy {
+  get effectiveProjectionStrategy(): 'vertex' | 'compute' {
     return this.computeProjectionActive ? 'compute' : 'vertex';
   }
 
@@ -622,6 +664,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.assertNotDisposed('removeSource');
     const index = this.sources.findIndex((entry) => entry.source === source);
     if (index < 0) return false;
+    this.readyPublicationVersion = -1;
+    this.readyPublication = null;
     const [record] = this.sources.splice(index, 1);
     if (record) {
       record.gather.dispose();
@@ -645,6 +689,11 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   update(camera: THREE.PerspectiveCamera): void {
     if (this.disposed) return;
     this.prepare(camera);
+  }
+
+  /** Returns the last unified gather/sort CPU submission timings. */
+  get performanceTimings(): Readonly<UnifiedSplatPerformanceTimings> {
+    return this.performanceTimingsValue;
   }
 
   /**
@@ -689,6 +738,16 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     targetSize?: THREE.Vector2,
     forceSort = false,
   ): void {
+    const prepareStartedAt = performance.now();
+    const refinementFrame = forceSort ? this.refinementFrameNumber : ++this.refinementFrameNumber;
+    const holdForRefinementSort =
+      !forceSort && this.sortScheduler.beginSubmissionFrame(refinementFrame, prepareStartedAt);
+    let gatherMs = 0;
+    let sortSubmitted = false;
+    let gatherDispatches = 0;
+    const projectionSubmissionsBefore = this.projectedPipeline?.projectionDispatches ?? 0;
+    const sortSubmissionsBefore =
+      (this.sorter.submissionCount ?? 0) + (this.projectedSorter?.submissionCount ?? 0);
     if (!supportsUnifiedSplatMesh(this.renderer)) {
       throw new Error(
         'UnifiedSplatMesh requires a WebGPU backend (renderer.backend.isWebGPUBackend).',
@@ -710,6 +769,11 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     const projectionCamera: THREE.Camera = xrView?.eye ?? camera;
     // One global sort from the head serves both eyes (see `xr-view.ts`).
     const viewCamera: THREE.Camera = xrView?.head ?? camera;
+    const sortState =
+      this.sortMetric === 'radial'
+        ? radialSortState(this.matrixWorld, viewCamera.matrixWorld, this.currentSortState)
+        : this.currentSortState.copy(viewCamera.matrixWorldInverse);
+    const cameraChanged = !sortState.equals(this.lastSortedState);
     const viewport = this.drawingBufferSize;
     if (targetSize) viewport.copy(targetSize);
     else if (xrView) viewport.set(xrView.width, xrView.height);
@@ -721,14 +785,50 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.focal.value.set((focalX * viewport.x) / 2, (focalY * viewport.y) / 2);
     const updated = this.candidateScratch;
     updated.length = 0;
+    let refinementCandidateChanged = this.sortScheduler.hasPendingForce() || cameraChanged;
     for (let i = 0; i < this.sources.length; i++) {
       const record = this.sources[i] as SourceRecord;
       // Children take the application camera: they resolve the XR view for
       // themselves, and a streamed source needs it for LOD scheduling.
       record.source.update(camera, this.renderer, { sort: false });
-      record.view = record.source.getUnifiedSourceView();
+      const view = record.source.getUnifiedSourceView();
+      if (
+        record.view === null ||
+        record.view.activeCount !== view.activeCount ||
+        record.view.contentRevision !== view.contentRevision ||
+        record.view.graphRevision !== view.graphRevision ||
+        !record.view.matrixWorld.equals(view.matrixWorld)
+      ) {
+        refinementCandidateChanged = true;
+      }
+      if (holdForRefinementSort) continue;
+      record.view = view;
       record.registrationOrder = i;
       updated.push(record);
+    }
+    if (holdForRefinementSort) {
+      this.sortScheduler.markSubmissionSuppressed(refinementCandidateChanged);
+      this.performanceTimingsValue.totalMs = performance.now() - prepareStartedAt;
+      this.performanceTimingsValue.gatherMs = 0;
+      this.performanceTimingsValue.sortSubmitMs = 0;
+      this.performanceTimingsValue.sortSubmitted = false;
+      this.performanceTimingsValue.gatherDispatches = 0;
+      this.performanceTimingsValue.gatherSlots = this.previousAdmittedTotal;
+      this.performanceTimingsValue.projectionSubmissions = 0;
+      this.performanceTimingsValue.projectionPasses = 0;
+      this.performanceTimingsValue.sortSubmissions = 0;
+      this.performanceTimingsValue.sortPasses = 0;
+      this.performanceTimingsValue.activeListBytes =
+        this.previousAdmittedTotal * Uint32Array.BYTES_PER_ELEMENT;
+      this.performanceTimingsValue.activeListRanges = this.previousLayout.length;
+      const submission = this.sortScheduler.submissionDiagnostics();
+      this.performanceTimingsValue.sortSerial = submission.serial;
+      this.performanceTimingsValue.sortSubmissionFrame = submission.frame;
+      this.performanceTimingsValue.sortAction = submission.action;
+      this.performanceTimingsValue.sortTracking = submission.tracking;
+      this.performanceTimingsValue.sortAcknowledgementMs = submission.acknowledgementMs;
+      this.performanceTimingsValue.sortInputCount = submission.inputCount;
+      return;
     }
     // Overflow is deterministic and region-safe: preserve whole sources rather
     // than gathering a prefix of a streamed cut. Higher priority wins; matching
@@ -791,13 +891,14 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         previous.offset === sliceOffset &&
         previous.activeCount === view.activeCount;
       const last = record.lastGather;
+      const effectiveOpacity = record.opacity * view.revealMultiplier;
       const geometryMatches =
         last !== null &&
         ownedSameSlice &&
         last.activeCount === view.activeCount &&
         last.contentRevision === view.contentRevision &&
         last.offset === sliceOffset &&
-        last.opacity === record.opacity &&
+        last.opacity === effectiveOpacity &&
         last.matrixWorld.equals(view.matrixWorld);
       const reusable =
         geometryMatches &&
@@ -811,21 +912,24 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         // `addSource` already rejects these.
         !view.hasSourcePlacement;
       if (!reusable) {
+        gatherDispatches++;
+        const gatherStartedAt = performance.now();
         record.gather.gather(
           this.renderer,
           view.activeCount,
           sliceOffset,
           view.matrixWorld,
           viewCamera.matrixWorldInverse,
-          record.opacity,
+          effectiveOpacity,
         );
+        gatherMs += performance.now() - gatherStartedAt;
         if (!geometryMatches) geometryInvalidated = true;
         if (record.lastGather === null) {
           record.lastGather = {
             activeCount: view.activeCount,
             contentRevision: view.contentRevision,
             offset: sliceOffset,
-            opacity: record.opacity,
+            opacity: effectiveOpacity,
             matrixWorld: view.matrixWorld.clone(),
             localCameraPosition: view.localCameraPosition.value.clone(),
           };
@@ -833,7 +937,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
           record.lastGather.activeCount = view.activeCount;
           record.lastGather.contentRevision = view.contentRevision;
           record.lastGather.offset = sliceOffset;
-          record.lastGather.opacity = record.opacity;
+          record.lastGather.opacity = effectiveOpacity;
           record.lastGather.matrixWorld.copy(view.matrixWorld);
           record.lastGather.localCameraPosition.copy(view.localCameraPosition.value);
         }
@@ -874,6 +978,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     // this. DoF is a live draw uniform and reaches neither branch.
     if (geometryInvalidated || layoutChanged) this.sortScheduler.invalidateContent();
 
+    let sortReady = offset === 0;
+    const sortStartedAt = performance.now();
     if (this.computeProjectionActive && this.projectedPipeline && this.projectedSorter) {
       this.projectedPipeline.prepare(
         viewCamera.matrixWorldInverse,
@@ -887,6 +993,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
           this.bounds,
           cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
         );
+        sortSubmitted = true;
+        sortReady = true;
       }
     } else if (offset > 0) {
       const now = performance.now();
@@ -907,10 +1015,28 @@ export class UnifiedSplatMesh extends THREE.Mesh {
             cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
           )
         ) {
+          sortSubmitted = true;
           this.lastSortedState.copy(sortState);
           this.sortScheduler.markAccepted(now);
+          // Worker replies publish later; gathering a source view is not enough.
+          sortReady = this.sorter.kind !== 'worker';
         }
       }
+    }
+    const sortSubmitMs = performance.now() - sortStartedAt;
+    if (sortSubmitted && !forceSort) this.sortScheduler.markSubmission(refinementFrame, offset);
+    const projectionSubmissionsAfter = this.projectedPipeline?.projectionDispatches ?? 0;
+    const sortSubmissionsAfter =
+      (this.sorter.submissionCount ?? 0) + (this.projectedSorter?.submissionCount ?? 0);
+    if (sortReady && offset > 0) {
+      this.readyPublicationVersion = ++this.unifiedPublicationVersion;
+      this.readyPublication = admitted.map((record) => ({
+        source: record.source,
+        token: getSplatPublicationToken(record.source),
+      }));
+    } else if (geometryInvalidated || layoutChanged || offset === 0) {
+      this.readyPublicationVersion = -1;
+      this.readyPublication = null;
     }
     (this.geometry as THREE.InstancedBufferGeometry).instanceCount = this.computeProjectionActive
       ? this.workBuffer.capacity
@@ -919,12 +1045,94 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     // is ever read back - see the field comment. The work buffer's own mirrors
     // are released by `WorkBufferGather.gather`.
     if (!this.mirrors.settled) this.mirrors.release(this.renderer);
+    this.performanceTimingsValue.totalMs = performance.now() - prepareStartedAt;
+    this.performanceTimingsValue.gatherMs = gatherMs;
+    this.performanceTimingsValue.sortSubmitMs = sortSubmitMs;
+    this.performanceTimingsValue.sourceCount = admitted.length;
+    this.performanceTimingsValue.activeCount = offset;
+    this.performanceTimingsValue.sortSubmitted = sortSubmitted;
+    this.performanceTimingsValue.gatherDispatches = gatherDispatches;
+    this.performanceTimingsValue.gatherSlots = offset;
+    this.performanceTimingsValue.projectionSubmissions = Math.max(
+      0,
+      projectionSubmissionsAfter - projectionSubmissionsBefore,
+    );
+    this.performanceTimingsValue.projectionPasses =
+      this.performanceTimingsValue.projectionSubmissions > 0 ? 4 : 0;
+    this.performanceTimingsValue.sortSubmissions = Math.max(
+      0,
+      sortSubmissionsAfter - sortSubmissionsBefore,
+    );
+    this.performanceTimingsValue.sortPasses =
+      this.performanceTimingsValue.sortSubmissions > 0
+        ? (this.projectedSorter?.passCount ?? this.sorter.passCount ?? 1)
+        : 0;
+    this.performanceTimingsValue.activeListBytes = offset * Uint32Array.BYTES_PER_ELEMENT;
+    this.performanceTimingsValue.activeListRanges = admitted.length;
+    const submission = this.sortScheduler.submissionDiagnostics();
+    this.performanceTimingsValue.sortSerial = submission.serial;
+    this.performanceTimingsValue.sortSubmissionFrame = submission.frame;
+    this.performanceTimingsValue.sortAction = submission.action;
+    this.performanceTimingsValue.sortTracking = submission.tracking;
+    this.performanceTimingsValue.sortAcknowledgementMs = submission.acknowledgementMs;
+    this.performanceTimingsValue.sortInputCount = submission.inputCount;
+  }
+
+  override onAfterRender(
+    _renderer: WebGLRenderer,
+    _scene: THREE.Scene,
+    _camera: THREE.Camera,
+  ): void {
+    if (this.sortScheduler.hasSubmissionAwaitingRender()) {
+      const queue = (
+        this.renderer.backend as unknown as {
+          device?: { queue?: { onSubmittedWorkDone?: () => Promise<void> } };
+        }
+      ).device?.queue;
+      let completion: Promise<void> | undefined;
+      if (typeof queue?.onSubmittedWorkDone === 'function') {
+        try {
+          completion = queue.onSubmittedWorkDone();
+        } catch {
+          completion = undefined;
+        }
+      }
+      this.sortScheduler.acknowledgeSubmission(
+        this.refinementFrameNumber,
+        performance.now(),
+        completion,
+      );
+    }
+    const version = this.readyPublicationVersion;
+    const publication = this.readyPublication;
+    if (
+      this.disposed ||
+      version < 0 ||
+      publication === null ||
+      this.renderedPublicationVersion === version ||
+      this.queuedPublicationVersion === version
+    )
+      return;
+    this.queuedPublicationVersion = version;
+    queueMicrotask(() => {
+      if (this.queuedPublicationVersion === version) this.queuedPublicationVersion = -1;
+      if (
+        this.disposed ||
+        this.readyPublicationVersion !== version ||
+        this.readyPublication !== publication ||
+        this.renderedPublicationVersion === version
+      )
+        return;
+      this.renderedPublicationVersion = version;
+      for (const { source, token } of publication) source.notifyUnifiedPublication(token);
+    });
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    super.dispose();
+    // THREE.Mesh has no dispose method. Release our owned resources below;
+    // throwing here leaves the host without a rebuilt globally sorted draw.
     for (const record of this.sources) {
       record.gather.dispose();
       record.source.visible = record.originalVisible;

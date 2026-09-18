@@ -28,6 +28,8 @@
     "src/lib/relighting/index.ts",
     "src/lib/streaming/index.ts",
     "src/lib/unified/index.ts",
+    "src/lib/sorting/radix/index.ts",
+    "src/lib/projection/compute/index.ts",
     "src/lib/selection/index.ts",
     "src/lib/effects/index.ts",
     "src/lib/formats/ply/index.ts",

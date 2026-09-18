@@ -18,6 +18,7 @@ import {
   type AutomaticProjectionPolicyInput,
 } from '../core/projection-strategy-policy';
 import type { SplatShInputs } from '../core/splat-mesh-material';
+import { computeProjection } from '../projection/compute';
 
 const data = {
   count: 1,
@@ -27,12 +28,12 @@ const data = {
 };
 
 describe('compute projection configuration', () => {
-  it('defaults to one-time auto projection and exposes explicit compute memory', () => {
+  it('defaults to vertex projection and exposes explicit compute memory', () => {
     const auto = new SplatMesh(data);
-    const compute = new SplatMesh(data, { projectionStrategy: 'compute' });
-    expect(auto.projectionStrategy).toBe('auto');
+    const compute = new SplatMesh(data, { projectionStrategy: computeProjection() });
+    expect(auto.projectionStrategy).toBe('vertex');
     expect(auto.projectionMemoryBytes).toEqual({ steadyGpu: 0, peakCpuAndGpu: 0 });
-    expect(compute.projectionStrategy).toBe('compute');
+    expect((compute.projectionStrategy as { kind: string }).kind).toBe('compute');
     expect(compute.projectionMemoryBytes.steadyGpu).toBe(
       estimateProjectedSplatSteadyBytes(compute.capacity) +
         estimateComputeSorterSteadyBytes(compute.capacity),
@@ -46,10 +47,39 @@ describe('compute projection configuration', () => {
   });
 
   it('rejects invalid strategies and invalid memory capacities', () => {
-    expect(() => new SplatMesh(data, { projectionStrategy: 'invalid' as 'compute' })).toThrow(
+    expect(() => new SplatMesh(data, { projectionStrategy: 'invalid' as never })).toThrow(
       /invalid projectionStrategy/,
     );
     expect(() => estimateProjectedSplatSteadyBytes(-1)).toThrow(RangeError);
+  });
+
+  it('keeps the WebGL fallback reason while a sort submission is in flight', () => {
+    const mesh = new SplatMesh(data, { projectionStrategy: computeProjection() });
+    const sort = () => true;
+    (
+      mesh as unknown as { sorter: { kind: string; sort: typeof sort; dispose: () => void } }
+    ).sorter = { kind: 'counting', sort, dispose: () => {} };
+    const renderer = {
+      backend: { isWebGPUBackend: false },
+      getDrawingBufferSize: (size: THREE.Vector2) => size.set(4, 4),
+    } as unknown as THREE.WebGPURenderer;
+    const camera = new THREE.PerspectiveCamera();
+    mesh.update(camera, renderer);
+    expect(mesh.projectionStrategyStatus).toEqual({ effective: 'vertex', reason: 'webgl' });
+
+    const scheduler = (
+      mesh as unknown as {
+        sortScheduler: {
+          markSubmission: (frame: number, inputCount: number) => void;
+          acknowledgeSubmission: (frame: number, now: number) => void;
+        };
+      }
+    ).sortScheduler;
+    scheduler.markSubmission(1, 1);
+    scheduler.acknowledgeSubmission(1, 0);
+    mesh.update(camera, renderer);
+    expect(mesh.projectionStrategyStatus).toEqual({ effective: 'vertex', reason: 'webgl' });
+    mesh.dispose();
   });
 
   it('exposes contribution culls independently of the performance profile', () => {
@@ -145,7 +175,10 @@ describe('automatic compute-projection policy', () => {
         paletteHeight: 1,
       },
     };
-    const mesh = new SplatMesh(shData);
+    const mesh = new SplatMesh(shData, {
+      performanceProfile: 'balanced',
+      projectionStrategy: computeProjection({ mode: 'auto' }),
+    });
     Object.defineProperty(mesh, 'capacity', { configurable: true, value: 8_724_225 });
     const resolve = (
       mesh as unknown as {

@@ -38,6 +38,19 @@ scene.add(unified); // add the unified mesh INSTEAD of the sources
 
 <!-- full file: docs/guide/samples/unified-basic.ts -->
 
+The default uses counting sort and vertex projection. Experimental GPU paths
+stay on their opt-in entries:
+
+```ts
+import { exactSort } from '@voluma/vlam/sorting/radix';
+import { computeProjection } from '@voluma/vlam/projection/compute';
+
+const experimental = new UnifiedSplatMesh(renderer, capacity, {
+  sortStrategy: exactSort(),
+  projectionStrategy: computeProjection(),
+});
+```
+
 Rules of the road:
 
 - **Sources keep their own pools, modifiers, and transforms.** Pose and

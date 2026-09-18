@@ -19,6 +19,7 @@ import {
   type SplatGpuProbeEntry,
 } from '../core/splat-budget';
 import { resolveSplatPerformanceProfile } from '../core/splat-mesh';
+import { radixSort } from '../sorting/radix';
 
 const ANDROID_UA =
   'Mozilla/5.0 (Linux; Android 16; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36';
@@ -974,7 +975,7 @@ describe('estimateSplatPoolBytes', () => {
 
   it('accounts for each sorter allocation strategy', () => {
     const counting = estimateSplatPoolBytes(200_000, { sortStrategy: 'counting' });
-    const radix = estimateSplatPoolBytes(200_000, { sortStrategy: 'radix' });
+    const radix = estimateSplatPoolBytes(200_000, { sortStrategy: radixSort() });
     const worker = estimateSplatPoolBytes(200_000, { sortStrategy: 'worker' });
     expect(radix).toBeGreaterThan(counting);
     expect(worker).toBeGreaterThan(counting);

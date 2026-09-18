@@ -3,6 +3,7 @@ import { bool, uniform, vec4 } from 'three/tsl';
 import { SplatMesh, createWebGPURenderer, type SplatData } from '../lib/core';
 import { StreamedSplatMesh } from '../lib/streaming';
 import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '../lib/unified';
+import { exactSort, radixSort } from '../lib/sorting/radix';
 
 const SIZE = 256;
 const status = document.querySelector<HTMLDivElement>('#status');
@@ -145,7 +146,9 @@ function monotonicallyDecreasing(values: number[]): boolean {
 async function run(): Promise<void> {
   const params = new URLSearchParams(location.search);
   const sortParam = params.get('sort');
-  const sortStrategy = sortParam === 'exact' || sortParam === 'radix' ? sortParam : 'counting';
+  const sortMode = sortParam === 'exact' || sortParam === 'radix' ? sortParam : 'counting';
+  const sortStrategy =
+    sortMode === 'exact' ? exactSort() : sortMode === 'radix' ? radixSort() : 'counting';
   const effectsCheck = params.get('effects-check') === '1';
   // requireWebGpu: the harness's pixel gates are meaningless on WebGL2, and an
   // owned device keeps the backend in core mode (three requests none of the
@@ -173,7 +176,7 @@ async function run(): Promise<void> {
   }
 
   const exactMerged =
-    sortStrategy === 'exact'
+    sortMode === 'exact'
       ? await (await import('./exact-sort-check')).verifyExactMergedSort(renderer)
       : undefined;
 
@@ -499,7 +502,7 @@ async function run(): Promise<void> {
   overlapLeaf.dispose();
 
   const result = {
-    sortStrategy,
+    sortStrategy: sortMode,
     exactMerged,
     fromPositiveZ: [...fromPositiveZ],
     fromNegativeZ: [...fromNegativeZ],

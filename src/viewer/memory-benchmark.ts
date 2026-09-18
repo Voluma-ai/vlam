@@ -16,6 +16,7 @@ import { loadSplatData, loadSplatDataFile } from '../lib/loaders';
 import { remotePlyMetrics } from '../lib/loaders/ply-metrics';
 import { memoryBenchmarkSettings } from './memory-benchmark-settings';
 import { StreamedSplatMesh } from '../lib/streaming';
+import { exactSort, radixSort } from '../lib/sorting/radix';
 import { version as vlamVersion } from '../../package.json';
 import {
   decodedSplatMemory,
@@ -67,6 +68,8 @@ interface StartupMilestones {
   firstNonblankMs: number | null;
   /** A nonblank frame was available after the requested active-count threshold. */
   firstUsableMs: number | null;
+  /** The first frame after the stream's internal reveal gate passed. */
+  firstRevealReadyMs: number | null;
 }
 
 interface TransferTotals {
@@ -142,7 +145,13 @@ function shBandsParam(): 0 | 1 | 2 | 3 | undefined {
 
 function sortStrategyParam(): SplatSortStrategy {
   const value = params.get('sort');
-  return value === 'worker' || value === 'radix' || value === 'exact' ? value : 'counting';
+  return value === 'worker'
+    ? 'worker'
+    : value === 'radix'
+      ? radixSort()
+      : value === 'exact'
+        ? exactSort()
+        : 'counting';
 }
 
 function sourceExtension(source: { url: string } | { file: File }): string | null {
@@ -385,6 +394,9 @@ async function renderUntilSettled(
       milestones.firstRenderMs ??= performance.now() - benchmarkStartedAt;
       renderer.render(scene, camera);
       frames++;
+      if (!streamed || mesh.hasPublishedGeneration) {
+        milestones.firstRevealReadyMs ??= performance.now() - benchmarkStartedAt;
+      }
       const active = mesh.activeSplatCount;
       if (measureStartupPixels && active > 0 && milestones.firstNonblankMs === null)
         await inspectPixels(false);
@@ -467,6 +479,7 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
     firstRenderMs: null,
     firstNonblankMs: null,
     firstUsableMs: null,
+    firstRevealReadyMs: null,
   };
 
   try {
@@ -654,7 +667,7 @@ async function runBenchmark(source: { url: string } | { file: File }): Promise<v
         streamedCacheBytes: finalCacheBytes,
       },
       limitations: [
-        'Startup pixel probes disable browser-wide memory measurements; firstUsableMs means the requested active-count threshold, not settled detail or complete coverage.',
+        'Startup pixel probes disable browser-wide memory measurements; firstRevealReadyMs is the first reveal-ready frame, while firstUsableMs remains the requested active-count threshold.',
         'usedJsHeapBytes is a main-isolate browser metric, not total process memory.',
         'userAgentBytes is reported only when the browser exposes and permits its memory API.',
         'GPU bytes count explicit VLAM allocations; driver padding and renderer-owned resources are excluded.',

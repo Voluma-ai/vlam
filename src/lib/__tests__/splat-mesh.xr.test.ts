@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SplatMesh } from '../core/splat-mesh';
 import { writeCovariance, type SplatData } from '../core/splat-data';
 import type { SplatSorter } from '../core/sorter';
+import { computeProjection } from '../projection/compute';
 
 /**
  * XR presentation path of `SplatMesh.update`: while a session presents, the
@@ -191,7 +192,7 @@ describe('SplatMesh.update under XR presentation', () => {
   });
 
   it('resolves requested compute projection to the vertex path while presenting', () => {
-    const mesh = new SplatMesh(makeSplatData(4), { projectionStrategy: 'compute' });
+    const mesh = new SplatMesh(makeSplatData(4), { projectionStrategy: computeProjection() });
     meshes.push(mesh);
     const sort = vi.fn(() => true);
     internals(mesh).sorter = { kind: 'counting', sort, dispose: vi.fn() };

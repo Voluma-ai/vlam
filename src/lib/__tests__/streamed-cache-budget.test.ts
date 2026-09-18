@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { StreamedSplatMesh, type StreamedSplatMeshOptions } from '../streaming/streamed-splat-mesh';
 import { ChunkCacheBudget } from '../streaming/chunk-cache-budget';
@@ -132,6 +132,8 @@ function makeClassicMesh(
 /** The private surface these tests drive. */
 interface Internals {
   applyFrontierPlan: (plan: Record<string, unknown>) => void;
+  onActiveListRendered: (activeListVersion: number) => void;
+  activeListVersion: number;
   invalidateSort: () => void;
   pagerSlots: number;
   boundingSphereLocal: THREE.Sphere;
@@ -353,25 +355,28 @@ describe('StreamedSplatMesh chunk cache budget', () => {
     expect(inner(mesh).sweepAllowed()).toBe(true);
   });
 
-  it('invalidates sort when a published mapping changes at the same count', () => {
+  it('invalidates sort when a staged indexed mapping changes at the same count', () => {
     const mesh = track(makeMesh());
     const state = inner(mesh);
-    const invalidate = vi.spyOn(state, 'invalidateSort');
     const base = {
       ...plan(0, state.cacheLimitBytes),
       capacity: state.pagerSlots,
       displayCount: 0,
       residentCount: 0,
       displayGeneration: 1,
+      candidateGeneration: 1,
+      candidateSlots: Uint32Array.from([0]),
+      candidateComplete: true,
     };
 
     state.applyFrontierPlan(base);
-    invalidate.mockClear();
+    const firstVersion = state.activeListVersion;
     state.applyFrontierPlan(base);
-    expect(invalidate).not.toHaveBeenCalled();
+    expect(state.activeListVersion).toBe(firstVersion);
 
-    state.applyFrontierPlan({ ...base, displayGeneration: 2 });
-    expect(invalidate).toHaveBeenCalledOnce();
+    state.onActiveListRendered(state.activeListVersion);
+    state.applyFrontierPlan({ ...base, displayGeneration: 2, candidateGeneration: 2 });
+    expect(state.activeListVersion).toBe(firstVersion + 1);
   });
 
   it('re-arms the sweep as soon as a raised allowance arrives, not at the next plan', () => {

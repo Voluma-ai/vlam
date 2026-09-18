@@ -13,10 +13,16 @@
     import * as THREE from 'three/webgpu';
     import { createWebGPURenderer, SplatMesh } from '../lib/core';
     import { packShCoefficients, shCoefficientCount } from '../lib/core/sh-pack';
+    import { computeProjection } from '../lib/projection/compute';
 
     const params = new URLSearchParams(location.search);
     const requested = params.get('backend');
-    const projection = params.get('projection') ?? 'vertex';
+    const projectionParam = params.get('projection') ?? 'vertex';
+    if (projectionParam !== 'vertex' && projectionParam !== 'compute') {
+      throw new Error(`Unknown projection: ${projectionParam}`);
+    }
+    const projectionStrategy =
+      projectionParam === 'compute' ? computeProjection() : 'vertex';
     const dynamic = params.get('dynamic');
     const capacity = Number(params.get('capacity') ?? '2048');
     const bands = Number(params.get('bands') ?? '0');
@@ -63,7 +69,7 @@
     const poolStart = performance.now();
     const splats = new SplatMesh(
       dynamic ? { capacity } : splatData,
-      { projectionStrategy: projection, shBands: bands, poolFloatTextures: floatTextures },
+      { projectionStrategy, shBands: bands, poolFloatTextures: floatTextures },
     );
     let destinationUploads = 0;
     if (dynamic) {

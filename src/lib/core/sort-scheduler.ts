@@ -4,6 +4,20 @@ const TWO_MILLION = 2_000_000;
 const FIVE_MILLION = 5_000_000;
 const EIGHT_MILLION = 8_000_000;
 const MODEL_VIEW_EPSILON = 1e-6;
+const FALLBACK_HOLD_FRAMES = 2;
+const FALLBACK_HOLD_MS = 32;
+
+export type SortSubmissionAction = 'none' | 'submitted' | 'coalesced' | 'suppressed';
+export type SortSubmissionTracking = 'pending' | 'gpu-completion' | 'render-ack-fallback';
+
+export type SortSubmissionDiagnostics = {
+  serial: number;
+  frame: number;
+  action: SortSubmissionAction;
+  tracking: SortSubmissionTracking | null;
+  acknowledgementMs: number | null;
+  inputCount: number;
+};
 /** Validates the public fixed sort-interval override. */
 export function validateSortIntervalMs(value: number | undefined): number | undefined {
   if (value !== undefined && (!Number.isFinite(value) || value < 0)) {
@@ -46,6 +60,18 @@ export class WebGpuSortScheduler {
   private forcePending = true;
   private lastAcceptedAt = -Infinity;
   private acceptedCount = 0;
+  private submissionSerialValue = 0;
+  private submissionFrameValue = -1;
+  private submissionInputCountValue = 0;
+  private submissionActionValue: SortSubmissionAction = 'none';
+  private submissionTrackingValue: SortSubmissionTracking | null = null;
+  private submissionAcknowledgementMsValue: number | null = null;
+  private submissionInFlight = false;
+  private submissionAwaitingRender = false;
+  private submissionAcknowledgedFrame = -1;
+  private submissionFallbackReleaseFrame = -1;
+  private submissionFallbackReleaseAt = -Infinity;
+  private deferredSubmission = false;
 
   constructor(sortIntervalMs?: number, isMobile = false) {
     this.sortIntervalMs = validateSortIntervalMs(sortIntervalMs);
@@ -99,9 +125,96 @@ export class WebGpuSortScheduler {
     this.forcePending = false;
   }
 
+  /** Starts a render frame and reports whether a previous sort still holds the gate. */
+  beginSubmissionFrame(frame: number, now: number): boolean {
+    this.submissionActionValue = 'none';
+    if (!this.submissionInFlight) return false;
+    if (this.submissionAwaitingRender) return false;
+    if (
+      this.submissionTrackingValue === 'render-ack-fallback' &&
+      this.submissionAcknowledgedFrame >= 0 &&
+      frame >= this.submissionFallbackReleaseFrame &&
+      now >= this.submissionFallbackReleaseAt
+    ) {
+      this.completeSubmission();
+      return false;
+    }
+    return true;
+  }
+
+  /** Records that the current sort candidate was merged behind the outstanding submission. */
+  markSubmissionSuppressed(needsResubmission: boolean): void {
+    this.submissionActionValue = needsResubmission ? 'coalesced' : 'suppressed';
+    if (needsResubmission) this.deferredSubmission = true;
+  }
+
+  /** Assigns a serial to an accepted sort; GPU work is acknowledged later, never awaited here. */
+  markSubmission(frame: number, inputCount: number): void {
+    this.submissionSerialValue++;
+    this.submissionFrameValue = frame;
+    this.submissionInputCountValue = inputCount;
+    this.submissionActionValue = 'submitted';
+    this.submissionTrackingValue = 'pending';
+    this.submissionAcknowledgementMsValue = null;
+    this.submissionInFlight = true;
+    this.submissionAwaitingRender = true;
+    this.submissionAcknowledgedFrame = -1;
+    this.submissionFallbackReleaseFrame = -1;
+    this.submissionFallbackReleaseAt = -Infinity;
+  }
+
+  /** Whether the matching draw callback still needs to acknowledge the submission. */
+  hasSubmissionAwaitingRender(): boolean {
+    return this.submissionAwaitingRender;
+  }
+
+  /** Acknowledges the rendered submission and arms either the GPU or Chromium fallback release. */
+  acknowledgeSubmission(frame: number, now: number, completion?: Promise<void>): void {
+    if (!this.submissionInFlight || !this.submissionAwaitingRender) return;
+    this.submissionAwaitingRender = false;
+    this.submissionAcknowledgedFrame = frame;
+    this.submissionAcknowledgementMsValue = Math.max(0, now - this.lastAcceptedAt);
+    if (completion) {
+      this.submissionTrackingValue = 'gpu-completion';
+      void completion.then(
+        () => this.completeSubmission(),
+        () => this.armFallback(frame, now),
+      );
+    } else {
+      this.armFallback(frame, now);
+    }
+  }
+
+  /** Development-only state for the frame diagnostics. */
+  submissionDiagnostics(): SortSubmissionDiagnostics {
+    return {
+      serial: this.submissionSerialValue,
+      frame: this.submissionFrameValue,
+      action: this.submissionActionValue,
+      tracking: this.submissionTrackingValue,
+      acknowledgementMs: this.submissionAcknowledgementMsValue,
+      inputCount: this.submissionInputCountValue,
+    };
+  }
+
   /** Internal diagnostics for the demo HUD; it does not alter scheduling. */
   snapshot(): { acceptedCount: number; lastAcceptedAt: number } {
     return { acceptedCount: this.acceptedCount, lastAcceptedAt: this.lastAcceptedAt };
+  }
+
+  private armFallback(frame: number, now: number): void {
+    this.submissionTrackingValue = 'render-ack-fallback';
+    this.submissionFallbackReleaseFrame = frame + FALLBACK_HOLD_FRAMES;
+    this.submissionFallbackReleaseAt = now + FALLBACK_HOLD_MS;
+  }
+
+  private completeSubmission(): void {
+    this.submissionInFlight = false;
+    this.submissionAwaitingRender = false;
+    if (this.deferredSubmission) {
+      this.deferredSubmission = false;
+      this.forcePending = true;
+    }
   }
 
   private shouldSubmitLegacy(

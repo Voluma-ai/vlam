@@ -8,6 +8,7 @@ export const COMPARISON_SCENES = [
   'lcc',
   'Langenthal-Manola4A',
   'Kauz-sh2',
+  'poland',
 ] as const;
 export type ComparisonScene = (typeof COMPARISON_SCENES)[number];
 

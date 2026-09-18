@@ -53,6 +53,7 @@ import {
 } from '../loaders/loading';
 import {
   liftBudgetToFinestLevel,
+  estimateSplatPoolBytes,
   recommendedRadMaxStdDev,
   resolveSplatBudget,
   type SplatDeviceProfile,
@@ -67,8 +68,16 @@ import {
   type FrontierDemandReply,
   type FrontierDemandWant,
   type FrontierRequest,
+  type FrontierResizeSafeMessage,
+  type FrontierPlanReason,
+  type FrontierCutDiagnostic,
+  type FrontierSkipSample,
+  type FrontierSnapshotReply,
+  type FrontierTraversalCancelledReply,
   type PlanSplats,
 } from '../formats/rad/frontier-worker-protocol';
+import { RadChunkPageAllocator } from '../formats/rad/rad-chunk-page-allocator';
+import { compareDemand } from '../formats/rad/frontier-demand';
 import { experiments } from '../internal/experiments';
 import { shCoefficientCount } from '../core/sh-pack';
 import { warn } from '../core/logging';
@@ -84,6 +93,67 @@ import {
   type BrushStroke,
   type BrushStrokeSelectionOptions,
 } from '../selection/brush-stroke';
+
+type FrontierGenerationTraceEvent = {
+  at: number;
+  event:
+    | 'next-reschedule'
+    | 'traversal-complete'
+    | 'staging-start'
+    | 'staging-complete'
+    | 'active-list-replacement'
+    | 'sort-ready'
+    | 'rendered'
+    | 'gather-sort-publication'
+    | 'worker-ack';
+  generation: number | null;
+  candidateSize?: number;
+  candidateNewSlots?: number;
+  candidateReusedSlots?: number;
+  writes?: number;
+  activeCount?: number;
+  planReason?: FrontierPlanReason | null;
+  traversalId?: number;
+  revealReady?: boolean;
+  maxCentralProjectedRatio?: number;
+  maxVisibleProjectedRatio?: number;
+};
+
+type RadPublicationDiagnostic = {
+  frameApplied: number;
+  candidateCreatedFrame: number;
+  stagingCompleteFrame: number | null;
+  frameSortReady: number | null;
+  frameRendered: number | null;
+  frameRejected: number | null;
+  candidateCreatedAt: number;
+  stagingCompleteAt: number | null;
+  renderedAt: number | null;
+  rejectedAt: number | null;
+  generation: number;
+  revision: number | null;
+  cameraKey: string | null;
+  candidateSize: number;
+  candidateGlobals: number[];
+  slotToNode: Array<{ slot: number; global: number }>;
+  activeListVersion: number | null;
+  sortedIndices: number[];
+  sortedIndicesSource: 'gpu-readback' | 'cpu-mirror' | 'unavailable';
+  drawCount: number | null;
+  phase: 'pending' | 'rendered' | 'rejected';
+  rejection?: string;
+  currentRevision?: number;
+  currentRevisionPending?: boolean;
+  cut?: FrontierCutDiagnostic;
+  slotChecks: {
+    duplicate: boolean;
+    outOfRange: boolean;
+    displayedMutation: boolean;
+  };
+};
+
+const RAD_DIAGNOSTIC_RING_SIZE = 32;
+const RAD_DIAGNOSTIC_SAMPLE_SIZE = 4096;
 
 /** Vite's `?worker&inline` default export - a Worker subclass constructor. */
 type InlineWorkerCtor = new () => Worker;
@@ -135,24 +205,15 @@ const IDLE_RESCHEDULE_MS = 250;
 const MAX_CHUNK_ATTEMPTS = 4;
 /** First retry delay; doubles each attempt (500, 1000, 2000 ms). */
 const RETRY_BASE_MS = 500;
-/** Fetch slots the page-table sweep keeps free for frontier-requested chunks, so
- * the detail the camera is pointed at never queues behind a file-order sweep.
- * Matches Spark's `numLodFetchers`. */
-const PAGETABLE_PRIORITY_SLOTS = 3;
 /** Default drawn-splat target for the page-table frontier (Spark's `maxSplats`)
- * when the caller gives no `foveationDrawBudget`. Sized to Spark's own default
- * for this class of scene - 800K is far too coarse for a 16M-leaf interior, so
- * the frontier coarsens and evicts near-camera detail to fit. Overridable via
- * `foveationDrawBudget` (`?foveationDraw=`), and always ≤ the pool budget. */
-const PAGETABLE_DRAW_BUDGET = 4_000_000;
+ * when the caller gives no `foveationDrawBudget`. Sized to the approved desktop
+ * huge-RAD allowance (7.5M). Device budgets and explicit caps still win via
+ * `min(budget, target)`. Overridable via `foveationDrawBudget` (`?foveationDraw=`). */
+const PAGETABLE_DRAW_BUDGET = 7_500_000;
 /**
- * The first page-table RAD image waits for a frontier at least this full
- * relative to its initial draw budget. The raw chunk-0 cover appears quickly
- * but looks too coarse up close; waiting for every chunk touched by the target
- * cut keeps large captures blank for too long. Half the budget gave a useful,
- * complete first image on the 10.1M-leaf bridge capture while leaving the
- * target cut and near-camera fetch priority unchanged. Adjust this only after
- * comparing first-image quality, time to target detail, and swap artifacts.
+ * Timeline/crossover incoming captures wait for a frontier at least this full
+ * relative to the granted draw allocation before replacing the outgoing scene.
+ * Single-scene loading is progressive and does not use this gate.
  */
 const DEFAULT_RAD_INITIAL_DISPLAY_FRACTION = 0.5;
 
@@ -167,6 +228,8 @@ const DEFAULT_RAD_INITIAL_DISPLAY_FRACTION = 0.5;
  * page writes stay row-aligned.
  */
 const SLAB_PAGE_SPLATS = 65_536;
+/** Spark's desktop RAD residency target, bounded by the capture and device. */
+const RAD_CHUNK_PAGE_TARGET = 256;
 
 /**
  * Ceiling on the page-table cache floor. A `.rad` frontier refines only into
@@ -220,6 +283,40 @@ export function estimateSceneDecodedBytes(scene: StreamedScene): number {
     scene.chunkSize === undefined ? undefined : scene.chunkSize * scene.chunkUrls.length;
   const splats = chunkSplats ?? scene.contentSplatCount ?? scene.maxResidentSplats;
   return Math.max(1, splats) * perSplat;
+}
+
+function radChunkResidencyPages(
+  scene: StreamedScene,
+  profile: SplatDeviceProfile | undefined,
+  options: StreamedSplatMeshOptions,
+  budget: number,
+): { pages: number; chunkSize: number } | { fallback: string } {
+  const chunkSize = scene.chunkSize ?? SLAB_PAGE_SPLATS;
+  const chunkCount = scene.chunkUrls.length;
+  if (chunkSize !== SLAB_PAGE_SPLATS) return { fallback: 'non-authored-page-size' };
+  if (profile?.isMobile) return { fallback: 'mobile-device' };
+  const drawTarget = Math.min(budget, options.foveationDrawBudget ?? PAGETABLE_DRAW_BUDGET);
+  const minimumPages = Math.ceil(drawTarget / chunkSize);
+  let pages = Math.min(RAD_CHUNK_PAGE_TARGET, chunkCount);
+  if (pages < minimumPages) return { fallback: 'residency-below-draw-budget' };
+
+  const memoryBudget =
+    profile?.deviceMemoryGb !== undefined ? profile.deviceMemoryGb * 1024 ** 3 * 0.45 : Infinity;
+  const poolOptions = {
+    capacityFactor: 1,
+    floatTextures: options.poolFloatTextures,
+    shBands: scene.shBands ?? options.shBands ?? 0,
+    sortStrategy: options.sortStrategy,
+  } as const;
+  while (pages > minimumPages) {
+    const bytes = estimateSplatPoolBytes(pages * chunkSize, poolOptions);
+    if (bytes <= memoryBudget) break;
+    pages--;
+  }
+  if (estimateSplatPoolBytes(pages * chunkSize, poolOptions) > memoryBudget) {
+    return { fallback: 'device-memory' };
+  }
+  return { pages, chunkSize };
 }
 
 /**
@@ -410,18 +507,31 @@ export interface StreamedSplatMeshOptions extends SplatMeshOptions {
    */
   initialReveal?: 'progressive' | 'hold-near-l0' | 'hold-coverage';
   /**
-   * First-image threshold for page-table `.rad`, as a fraction of the initial
-   * draw budget. The first complete, fully staged frontier at or above this
-   * count may appear while child chunks are still loading. Subsequent cuts use
-   * the normal atomic publication rule; the final draw budget and LOD target
-   * are unchanged. This is a splat-count threshold, not a fraction of image
-   * resolution or of downloaded bytes.
+   * First-reveal policy for page-table `.rad`. Display correctness is independent
+   * of this gate: every published cover is a complete hierarchy selection with a
+   * matching sort.
    *
-   * Default `0.5`: the raw chunk-0 cover was too coarse up close, while
-   * waiting for all target-detail chunks delayed first paint on large scenes.
-   * Set `0` to use the former target-detail first-paint policy, or a finite
-   * fraction in `(0, 1]` to tune the first image. Other formats and RAD prefix
-   * mode ignore this option.
+   * - `progressive` (default): publish the first complete staged cover as soon as
+   *   it exists, including early coarse coverage while descendants are still
+   *   loading. The main single-scene loader selects this explicitly.
+   * - `allocation-fraction`: hold the first publication until the complete cover
+   *   reaches {@link radInitialDisplayFraction} of the granted draw allocation.
+   *   Incoming captures in a multi-splat crossover select this with `0.5`. RAD
+   *   storage chunks and hierarchy nodes are not separate captures.
+   * - `projected-quality`: keep complete rendered generations hidden until
+   *   selected internal nodes are within the projected-pixel reveal thresholds.
+   *
+   * An explicit policy takes precedence. If no policy is supplied, a numeric
+   * {@link radInitialDisplayFraction} still selects `allocation-fraction` so
+   * existing callers keep their hold. Unsupported strings throw rather than
+   * silently enabling an allocation hold.
+   */
+  radInitialRevealPolicy?: 'progressive' | 'allocation-fraction' | 'projected-quality';
+  /**
+   * Crossover first-image target, as a fraction of the granted draw allocation.
+   * Used with `radInitialRevealPolicy: 'allocation-fraction'`. Default `0.5`.
+   * This is a splat-count threshold, not a fraction of downloaded bytes or of
+   * nearby projected quality. `0` restores the older target-detail hold.
    */
   radInitialDisplayFraction?: number;
   /** Receives lightweight LOD mutation events for performance attribution. */
@@ -532,6 +642,12 @@ export interface StreamedSplatPerformanceEvent {
   textureCopyBytes: number;
   /** WebGPU source-index ranges queued for upload before this tick's sort. */
   activeListUpdateRanges: number;
+  /** Accepted sort submissions and implementation stages for this update. */
+  sortSubmissions?: number;
+  sortPasses?: number;
+  /** Projection submissions and stages for this update, when enabled. */
+  projectionSubmissions?: number;
+  projectionPasses?: number;
   appendedCount: number;
   removedCount: number;
   stagedCount: number;
@@ -539,6 +655,9 @@ export interface StreamedSplatPerformanceEvent {
   activeCount: number;
   forcedSort: boolean;
   compacted: boolean;
+  sortReadyGeneration?: number | null;
+  renderedGeneration?: number | null;
+  workerAcknowledgedGeneration?: number | null;
 }
 
 interface CachedChunk {
@@ -631,7 +750,15 @@ export class StreamedSplatMesh extends SplatMesh {
    * speculative ones without touching the detail that is actually on screen. */
   private readonly fetching = new Map<
     number,
-    { controller: AbortController; kind: ChunkFetchKind; classicWant?: ClassicFetchWant }
+    {
+      controller: AbortController;
+      kind: ChunkFetchKind;
+      classicWant?: ClassicFetchWant;
+      demandGeneration: number;
+      cameraEpoch: number;
+      demandKey: string;
+      requestedCameraPosition: readonly [number, number, number] | null;
+    }
   >();
   /** This mesh's camera-projected share of the scene's fetch bandwidth. */
   private fetchWeight: (() => number) | undefined;
@@ -697,6 +824,46 @@ export class StreamedSplatMesh extends SplatMesh {
    * `(source, chunk)` pairs.)
    */
   private readonly slabPages: SplatRange[] = [];
+  /** Whole RAD chunks backed by stable inactive pool ranges in chunk-page mode. */
+  private readonly radChunkPages = new Map<
+    number,
+    { readonly range: SplatRange; readonly count: number; lastUsed: number }
+  >();
+  private readonly radChunkAllocator: RadChunkPageAllocator | null;
+  private readonly radChunkPageLookup = new Map<number, number>();
+  private radChunkPageLookupRevision = -1;
+  private readonly radChunkResidency: boolean;
+  private readonly radResidencyRequestedValue: 'indexed' | 'chunk-pages';
+  private readonly radResidencyFallbackReasonValue: string | null;
+  private radChunkDisplayedGlobals: Uint32Array<ArrayBufferLike> = new Uint32Array(0);
+  private readonly radChunkDisplayedFiles = new Set<number>();
+  private radChunkDisplayedSelectionHashA: number | null = null;
+  private radChunkDisplayedSelectionHashB: number | null = null;
+  private radChunkPendingGlobals: Uint32Array | null = null;
+  private radChunkPendingFiles: Set<number> | null = null;
+  private radChunkPendingSelectionHashA: number | null = null;
+  private radChunkPendingSelectionHashB: number | null = null;
+  private radChunkPendingBudgetSettled = false;
+  private radChunkMappedSlots = new Uint32Array(0);
+  private radChunkPublishGeneration: number | null = null;
+  private radChunkPublishRevision: number | null = null;
+  private radChunkPublishActiveListVersion: number | null = null;
+  private radChunkSelectionIdValue = 0;
+  private radChunkCommittedSelectionIdValue = 0;
+  private radChunkPendingSelectionIdValue: number | null = null;
+  private radChunkHardValidityRevisionValue = 0;
+  private radChunkPendingHardValidityRevisionValue = 0;
+  private radChunkPendingPageIdentity: Map<number, number> | null = null;
+  private radChunkSelectionCompletedAtValue: number | null = null;
+  private radChunkSortSubmittedAtValue: number | null = null;
+  private radChunkRenderedAtValue: number | null = null;
+  private radChunkCameraObsoleteValue = false;
+  private radChunkLastInvalidationReasonValue: string | null = null;
+  private radChunkPendingRevealQuality: {
+    revealReady: boolean;
+    maxCentralProjectedRatio: number;
+    maxVisibleProjectedRatio: number;
+  } | null = null;
   /** Most slots the slab may ever hold - the construction capacity. */
   private slabCeiling = 0;
   /** Slot count the worker's pager was last told about. */
@@ -713,9 +880,17 @@ export class StreamedSplatMesh extends SplatMesh {
   /** Backing store for {@link planTimings}. */
   private readonly planTimingsValue = {
     applyMs: 0,
+    handlerMs: 0,
     worstApplyMs: 0,
     writeMs: 0,
     residentMs: 0,
+    mappingMs: 0,
+    pageIdentityMs: 0,
+    activeListMs: 0,
+    installMs: 0,
+    protectionMs: 0,
+    unifiedGatherMs: 0,
+    sortMs: 0,
     moves: 0,
     appends: 0,
     worstSplats: 0,
@@ -730,11 +905,14 @@ export class StreamedSplatMesh extends SplatMesh {
     base: 0,
     sweep: 0,
     evicted: 0,
+    pageInstalls: 0,
+    pageInstallMs: 0,
     uncovered: 0,
     retiredEarly: 0,
     cacheFull: false,
     cacheBytes: 0,
     cacheLimitBytes: 0,
+    activePageTableFetches: 0,
   };
   /**
    * The screen-radius band the scene asked for, kept so the band can be scaled
@@ -752,13 +930,20 @@ export class StreamedSplatMesh extends SplatMesh {
   /** Target drawn-splat count for the page-table frontier; see the constructor. */
   private pageTableDrawBudget = 0;
   /**
-   * Slab slots to reserve: the draw budget plus 50% staging tail, capped at
-   * the pool ceiling. Refinement appends replacements into that undrawn tail
-   * so the previous complete prefix can keep drawing until the commit.
+   * Slab slots to reserve for the current draw grant. Indexed page-table
+   * staging may use up to 2× that grant (capped at the pool ceiling) so
+   * newcomers land in unused slots until the matching sort is published.
    */
   private get pageTableStagingSlots(): number {
     const draw = this.pageTableDrawBudget;
     if (draw <= 0) return 0;
+    if (this.indexedPageTable) {
+      const doubled = Math.max(this.slabPageSplats, 2 * draw);
+      return Math.min(
+        this.slabCeiling,
+        Math.ceil(doubled / this.slabPageSplats) * this.slabPageSplats,
+      );
+    }
     return Math.min(this.slabCeiling, draw + Math.ceil(draw / 2));
   }
   /** The unclamped draw target (`foveationDrawBudget` or the default), kept so
@@ -777,6 +962,23 @@ export class StreamedSplatMesh extends SplatMesh {
   /** Page-table slot → stable `.rad` global splat ID. */
   private pageTableGlobals = new Uint32Array(0);
   private pageTableDisplayGeneration = -1;
+  private indexedPageTable = false;
+  private indexedPublishGeneration: number | null = null;
+  private indexedPublishActiveListVersion: number | null = null;
+  private indexedPublishRevision: number | null = null;
+  private indexedPublishedGeneration = -1;
+  private sortReadyGenerationValue: number | null = null;
+  private renderedGenerationValue: number | null = null;
+  private workerAcknowledgedGenerationValue: number | null = null;
+  private indexedDisplayedSlots = new Uint32Array(0);
+  private indexedPendingDisplaySlots: Uint32Array | null = null;
+  private indexedStagingGeneration: number | null = null;
+  private indexedResizeAwaiting: number | null = null;
+  private radRevealPolicy: 'progressive' | 'allocation-fraction' | 'projected-quality' =
+    'progressive';
+  private radDisplayFraction: number | undefined;
+  /** Draw grant the host asked for, before storage reservation clamps it. */
+  private pageTableRequestedDraw = 0;
   private frontierConverged = true;
   private pendingFrontierSplats = 0;
   private staleResidentSplats = 0;
@@ -787,19 +989,66 @@ export class StreamedSplatMesh extends SplatMesh {
   private lastPlanCamera: readonly [number, number, number] | null = null;
   private firstFrontierCamera: readonly [number, number, number] | null = null;
   private frontierTraversal = {
-    strategy: 'heap' as 'heap' | 'bounded-threshold',
+    strategy: 'one-pass' as 'one-pass' | 'heap' | 'bounded-threshold',
     fallback: false,
     fallbackCount: 0,
     rootCoverInfeasible: false,
     traversalMs: 0,
+    traversalId: 0,
   };
+  private lastPlanReason: FrontierPlanReason | null = null;
+  private candidateCancellationCount = 0;
+  private boundedCutRefusalReason: FrontierPlanMessage['boundedCutRefusalReason'] = undefined;
+  private protectedCacheBytesValue = 0;
+  private lastSkipSamples: readonly FrontierSkipSample[] = [];
+  private readonly frontierGenerationTrace: FrontierGenerationTraceEvent[] = [];
+  private readonly radPublicationDiagnostics: RadPublicationDiagnostic[] = [];
+  private indexedPendingDiagnostic: RadPublicationDiagnostic | null = null;
+  private radDiagnosticRenderer: THREE.WebGPURenderer | null = null;
+  private revealReadyValue = false;
+  private maxCentralProjectedRatioValue = 0;
+  private maxVisibleProjectedRatioValue = 0;
+  private firstRevealCentralProjectedRatioValue: number | null = null;
+  private firstRevealVisibleProjectedRatioValue: number | null = null;
+  private firstRevealGenerationValue: number | null = null;
+  private indexedPendingRevealQuality: {
+    revealReady: boolean;
+    maxCentralProjectedRatio: number;
+    maxVisibleProjectedRatio: number;
+  } | null = null;
+  private frontierTraceStagingGeneration: number | null = null;
+  private lastWorkerSnapshot: FrontierSnapshotReply | null = null;
+  private nextSnapshotRequestId = 0;
+  private pageTableHostCacheRevision = 0;
+  private readonly snapshotWaiters = new Map<
+    number,
+    (snapshot: FrontierSnapshotReply | null) => void
+  >();
+  private lastPostedCamera: readonly [number, number, number] | null = null;
+  private lastPostedForward: readonly [number, number, number] | null = null;
+  private lastPostedProjection: readonly number[] = [];
+  private lastPostedLimit = 0;
+  private lastCountedTraversalId = 0;
   /** Monotonic reschedule id; a stale plan (superseded by a newer request) is
    * dropped. `pageTableInFlight` coalesces to one outstanding traversal. */
   private pageTableSeq = 0;
   private pageTableInFlight = false;
+  /** Sequence currently allowed to clear the in-flight traversal state. */
+  private pageTableActiveSeq = 0;
+  /** Replacement walk waiting for its first partial or complete demand. */
+  private replacementAwaitingFirstDemandSeq: number | null = null;
+  /** Replacement allowed to finish while subsequent movement coalesces. */
+  private pageTableReplacementSeq: number | null = null;
   /** Finish the worker's current bounded cut before solving the latest camera. */
   private pageTableContinuePending = false;
   private pageTableDisposed = false;
+  private startupMainRadLodHold:
+    | {
+        camera: THREE.Camera;
+        settledPosition?: THREE.Vector3;
+      }
+    | undefined;
+  private lastLiveCamera: THREE.Camera | null = null;
   /** Terminal page-table worker fault; retained for hosts to present recovery UI. */
   private streamingErrorValue: SplatLoadError | null = null;
   /** Files whose data has been forwarded to the worker (so we don't refetch). */
@@ -808,24 +1057,53 @@ export class StreamedSplatMesh extends SplatMesh {
    * These outrank the background sweep - they are the detail actually on screen. */
   private pageTableFetchPriority: readonly number[] = [];
   private demandGeneration = 0;
+  /** Current camera revision whose unchanged, budget-full cut needs no more pages. */
+  private radChunkDemandSettledRevision = -1;
+  private radChunkDemandSettledCamera: readonly [number, number, number] | null = null;
+  private radChunkDemandSettledForward: readonly [number, number, number] | null = null;
+  private radChunkDemandSettledLimit = 0;
+  private radChunkDemandSettledConfig = '';
+  /** Changes with each queued camera/configuration identity, before posting. */
+  private cameraEpoch = 0;
   private demandKey = '';
-  private demandOutstanding = false;
-  private demandSentAt = -Infinity;
+  private latestDemandCamera: readonly [number, number, number] | null = null;
+  /** True when the latest camera/config has not yet been posted to the worker. */
+  private demandNeedsNewRevision = false;
+  private radFrame = 0;
   private demandWants: readonly FrontierDemandWant[] = [];
   private readonly demandFirstSeen = new Map<number, number>();
   private demandReadyGeneration = -1;
-  private demandSolvedLimit = Number.POSITIVE_INFINITY;
+  /** Prevents repeated reclamation while one hard relocation is still queued. */
+  private hardRelocationPending = false;
   /** Internal benchmark counters; never part of the exported mesh interface. */
   private readonly demandDiagnostics = {
     generation: 0,
+    cameraEpoch: 0,
+    demandKey: '',
+    requestedCameraPosition: null as readonly [number, number, number] | null,
     replies: 0,
     staleReplies: 0,
     cancellations: 0,
+    staleRequestsCancelled: 0,
+    protectedFilesRetained: [] as number[],
+    staleCancellationReason: null as string | null,
+    activeRequestsBeforeReclamation: 0,
+    activeRequestsAfterReclamation: 0,
+    hardRelocations: 0,
     requests: 0,
     completed: 0,
     knownRequestedBytes: 0,
     knownCompletedBytes: 0,
     requestToDecodeMs: 0,
+    hardRelocationDetectedAt: null as number | null,
+    replacementTraversalPostedAt: null as number | null,
+    oldTraversalCancelledAt: null as number | null,
+    firstReplacementSliceAt: null as number | null,
+    firstCurrentRevisionDemandAt: null as number | null,
+    firstCurrentRevisionFetchAt: null as number | null,
+    completedTraversalAt: null as number | null,
+    firstPublicationAt: null as number | null,
+    cameraToFirstFetchMs: null as number | null,
   };
   /** Frontier-cut target node size (px) and foveation ramp; see `frontierView`. */
   private pageTableTargetPx = DEFAULT_FOVEATION_TARGET_PX;
@@ -847,7 +1125,8 @@ export class StreamedSplatMesh extends SplatMesh {
    * and is trimmed - and latching would kill its sweep for the session, so a
    * mesh that went cold could never re-warm when the camera returned.
    */
-  private pageTableCacheAtLimit = false;
+  /** @internal */
+  pageTableCacheAtLimit = false;
 
   /** Per-splat channels whose edits survive chunk eviction/reload. */
   private readonly persistentChannels = new Map<string, PersistentChannel>();
@@ -1012,9 +1291,10 @@ export class StreamedSplatMesh extends SplatMesh {
     }
     // `.rad` now defaults to the `page-table` selected-index pager, which pages only
     // the *selected* frontier (Spark's model) and wants the full device budget -
-    // Spark runs this scene at ~4M. (The old 2.5M `RAD_PREFIX_DEFAULT_BUDGET` cap
-    // was a fallback for the whole-scene prefix reader before the pager landed;
-    // capping the frontier at 2.5M starves it and it stays coarse near the camera.)
+    // Spark runs this scene at ~7.5M drawn splats on desktop. (The old 2.5M
+    // `RAD_PREFIX_DEFAULT_BUDGET` cap was a fallback for the whole-scene prefix
+    // reader before the pager landed; capping the frontier at 2.5M starves it
+    // and it stays coarse near the camera.)
     //
     // The scene is built against the *ceiling*: a foveated `.rad` reports
     // `maxResidentSplats: options.budget`, and that number caps the pool below -
@@ -1171,15 +1451,6 @@ export class StreamedSplatMesh extends SplatMesh {
     // too little slack makes small-budget swaps converge slowly under
     // capacity pre-check pressure. ~64 B/splat of GPU memory.
     const residentCeiling = Math.min(ceiling, scene.maxResidentSplats);
-    // Inactive staging must temporarily hold both sides of a large atomic
-    // replacement. Ten extra percentage points avoid full-pool compaction on
-    // the measured 1.6M-splat restaurant swap (~22 MB at a 3.5M budget).
-    const capacityFactor = options.experimentalStagedSwaps !== false ? 1.5 : 1.4;
-    const capacityRows = Math.max(
-      1,
-      Math.ceil((residentCeiling * capacityFactor) / DATA_TEXTURE_WIDTH),
-    );
-
     // Resolve page-table worker before construction (constructors cannot await).
     // SOG/LCC hosts never pay for the frontier worker blob.
     const resolvedFoveationMode = scene.foveation
@@ -1190,6 +1461,38 @@ export class StreamedSplatMesh extends SplatMesh {
       : options.foveationMode === undefined
         ? undefined
         : resolveSplatFoveationMode(options.foveationMode);
+    // Indexed page-table needs two complete selections in reserved storage.
+    // Other formats keep the 1.5× staged-swap slack (1.4× when swaps are off).
+    const capacityFactor = isPageTableFoveation(resolvedFoveationMode)
+      ? 2
+      : options.experimentalStagedSwaps !== false
+        ? 1.5
+        : 1.4;
+    const requestedRadChunkResidency =
+      format === 'rad' && experiments.radResidency === 'chunk-pages';
+    const radResidencyDecision = requestedRadChunkResidency
+      ? isPageTableFoveation(resolvedFoveationMode)
+        ? radChunkResidencyPages(scene, deviceProfile, options, budget)
+        : { fallback: 'requires-page-table' }
+      : null;
+    const radChunkCapacitySplats =
+      radResidencyDecision !== null && 'pages' in radResidencyDecision
+        ? radResidencyDecision.pages * radResidencyDecision.chunkSize
+        : 0;
+    const useRadChunkResidency = radChunkCapacitySplats > 0;
+    if (requestedRadChunkResidency && !useRadChunkResidency) {
+      warn(
+        `StreamedSplatMesh: RAD chunk residency fallback (${(radResidencyDecision as { fallback: string }).fallback}); ` +
+          'retaining the indexed selected-splat path.',
+      );
+    }
+    const capacityRows = Math.max(
+      1,
+      useRadChunkResidency
+        ? Math.ceil(radChunkCapacitySplats / DATA_TEXTURE_WIDTH)
+        : Math.ceil((residentCeiling * capacityFactor) / DATA_TEXTURE_WIDTH),
+    );
+
     let FrontierWorkerCtor: InlineWorkerCtor | undefined;
     if (isPageTableFoveation(resolvedFoveationMode)) {
       const mod = await import('../formats/rad/frontier-worker?worker&inline');
@@ -1268,6 +1571,14 @@ export class StreamedSplatMesh extends SplatMesh {
         FrontierWorkerCtor,
         format === 'lcc',
         sourceLabel,
+        useRadChunkResidency,
+        requestedRadChunkResidency,
+        requestedRadChunkResidency &&
+          !useRadChunkResidency &&
+          radResidencyDecision &&
+          'fallback' in radResidencyDecision
+          ? radResidencyDecision.fallback
+          : null,
       );
     } catch (error) {
       if (isAbortError(error)) throw error;
@@ -1300,6 +1611,9 @@ export class StreamedSplatMesh extends SplatMesh {
     FrontierWorkerCtor?: InlineWorkerCtor,
     neverRetireCoverageEarly = false,
     sourceLabel?: string,
+    radChunkResidency = false,
+    radResidencyRequested = false,
+    radResidencyFallbackReason: string | null = null,
   ) {
     const meshOptions: SplatMeshOptions =
       sourceLabel === undefined
@@ -1307,6 +1621,15 @@ export class StreamedSplatMesh extends SplatMesh {
         : ({ ...options, [splatMeshSourceLabel]: sourceLabel } as SplatMeshOptions);
     super({ capacity }, meshOptions);
     this.scene = scene;
+    this.radChunkResidency = radChunkResidency;
+    this.radResidencyRequestedValue = radResidencyRequested ? 'chunk-pages' : 'indexed';
+    this.radResidencyFallbackReasonValue = radResidencyFallbackReason;
+    this.radChunkAllocator = radChunkResidency
+      ? new RadChunkPageAllocator(
+          Math.floor(capacity / (scene.chunkSize ?? SLAB_PAGE_SPLATS)),
+          scene.chunkSize ?? SLAB_PAGE_SPLATS,
+        )
+      : null;
     this.usesRadWave = scene.chunkOptions?.some((chunk) => chunk?.format === 'rad-chunk') ?? false;
     this.budgetValue = budget;
     // The pool was allocated for the ceiling, so `setBudget` may climb to it.
@@ -1322,9 +1645,13 @@ export class StreamedSplatMesh extends SplatMesh {
     this.appendCap = validateAppendCap(options.maxSplatsPerSwap);
     this.pageTableWriteCap =
       options.maxSplatsPerSwap === undefined ? DEFAULT_PAGE_TABLE_WRITES_PER_PLAN : this.appendCap;
-    const initialRadDisplayFraction = validateRadInitialDisplayFraction(
-      options.radInitialDisplayFraction,
-    );
+    if (options.radInitialDisplayFraction !== undefined) {
+      validateRadInitialDisplayFraction(options.radInitialDisplayFraction);
+    }
+    const initialRadRevealPolicy = resolveRadInitialRevealPolicy(options);
+    this.radRevealPolicy = initialRadRevealPolicy;
+    this.radDisplayFraction = options.radInitialDisplayFraction;
+    this.revealReadyValue = initialRadRevealPolicy !== 'projected-quality';
     const holdCoverage =
       options.initialReveal === 'hold-coverage' && this.scene.source.coverageRunsFor !== undefined;
     const holdNearL0 = options.initialReveal === 'hold-near-l0' && neverRetireCoverageEarly;
@@ -1420,11 +1747,13 @@ export class StreamedSplatMesh extends SplatMesh {
       if (!FrontierWorkerCtor) {
         throw new Error('StreamedSplatMesh: page-table foveation requires the frontier worker.');
       }
+      if (initialRadRevealPolicy === 'projected-quality') this.setRevealMultiplier(0);
       // Frontier draw target: an explicit `foveationDrawBudget` (`?foveationDraw=`)
       // wins for A/B; otherwise Spark's default. Never above the pool budget.
       this.pageTableDrawTarget = options.foveationDrawBudget ?? PAGETABLE_DRAW_BUDGET;
       this.pageTableDrawTargetExplicit = options.foveationDrawBudget !== undefined;
-      this.pageTableDrawBudget = Math.min(budget, this.pageTableDrawTarget);
+      this.pageTableRequestedDraw = Math.min(budget, this.pageTableDrawTarget);
+      this.pageTableDrawBudget = this.pageTableRequestedDraw;
       this.pageTableTargetPx = options.foveationTargetPx ?? DEFAULT_FOVEATION_TARGET_PX;
       this.pageTableFoveation = { ...FRONTIER_FOVEATION_DEFAULTS, ...options.frontierFoveation };
       if (
@@ -1445,46 +1774,39 @@ export class StreamedSplatMesh extends SplatMesh {
       // the storage behind them need not be contiguous, and page-sized
       // reservations are what let this mesh later grow and release storage with
       // its budget instead of holding its ceiling for the whole session.
-      this.slabPageSplats = Math.min(SLAB_PAGE_SPLATS, capacity);
-      // Draw budget plus a staging tail so refinement can append replacements
-      // without overwriting the drawn prefix. The ceiling stays a permission
-      // to grow, not an up-front claim, so distant meshes still share the pool.
-      this.slabCeiling = capacity;
-      this.syncSlabPages(this.pageTableStagingSlots);
+      this.indexedPageTable = true;
+      if (!this.radChunkResidency) {
+        this.slabPageSplats = Math.min(SLAB_PAGE_SPLATS, capacity);
+        this.slabCeiling = capacity;
+        this.syncSlabPages(this.pageTableStagingSlots);
+        this.acceptDrawReservation();
+      }
       this.frontierWorker = new FrontierWorkerCtor();
       this.frontierWorker.onmessage = (
-        e: MessageEvent<FrontierPlanMessage | FrontierDemandReply>,
+        e: MessageEvent<
+          | FrontierPlanMessage
+          | FrontierDemandReply
+          | FrontierTraversalCancelledReply
+          | FrontierResizeSafeMessage
+          | FrontierSnapshotReply
+        >,
       ) => this.handleFrontierMessage(e.data);
       this.frontierWorker.onerror = (event: ErrorEvent) => this.failFrontierWorker(event);
       this.frontierWorker.onmessageerror = (event: MessageEvent) => this.failFrontierWorker(event);
       this.pagerSlots = this.slabSlots;
-      // The frontier can only refine into chunks that are resident *together*.
-      // A whole `.rad` view spans many chunks (cest_ca: ~249 × ~6.5 MB decoded ≈
-      // 1.6 GB); a 512 MB cache holds only ~80, so the near frontier thrashes
-      // and the scene "stays coarse forever". Hence a floor above the host's
-      // per-mesh share - but bounded by what this capture could even hold, and
-      // never below what the host asked for.
-      //
-      // The floor used to be a flat 2 GiB, which is right for one big scene and
-      // wrong for a wall of additional meshes: 13 of them were each *allowed* 2 GiB
-      // against a 4 GiB tab heap, so the one number that was supposed to stop
-      // thrashing became the largest single memory risk in the viewer. Bounding
-      // it by the capture helped and did not fix it - thirteen 500 MB captures
-      // still allow 6.5 GB, because nothing relates the meshes to each other.
-      //
-      // So with a scene-wide `cacheBudget` this figure stops being the cap and
-      // becomes this mesh's *ceiling*: the most it could put to use, which the
-      // budget hands out from a scene total by camera weight.
       this.postToWorker({
         type: 'init',
-        capacity: this.pagerSlots,
+        pagerMode: this.radChunkResidency ? 'chunk-pages' : 'indexed',
+        capacity: this.radChunkResidency ? capacity : this.pagerSlots,
         chunkSize: scene.chunkSize ?? 65536,
         cpuCacheBytes: this.cacheLimitBytes,
         maxPlanWrites: this.pageTableWriteCap,
-        initialPublishMinSplats:
-          initialRadDisplayFraction === 0
-            ? undefined
-            : Math.ceil(this.pageTableDrawBudget * initialRadDisplayFraction),
+        diagnostics: this.onPerformanceEvent !== undefined,
+        initialPublishMinSplats: initialPublishMinSplats(
+          initialRadRevealPolicy,
+          options.radInitialDisplayFraction,
+          this.pageTableDrawBudget,
+        ),
       });
       // Seed the worker with the chunk the scene builder already decoded. The
       // tree roots are derived from chunk 0, so without this every traversal up
@@ -1532,6 +1854,19 @@ export class StreamedSplatMesh extends SplatMesh {
       slots += size;
     }
 
+    if (this.indexedPageTable && slots > target) {
+      // Keep physical pages until the worker proves the tail is unused.
+      if (this.indexedResizeAwaiting !== target) {
+        this.indexedResizeAwaiting = target;
+        this.postToWorker({ type: 'resize', capacity: target });
+        this.pendingWork = true;
+        this.lastScheduleTime = -Infinity;
+      }
+      return;
+    }
+
+    if (this.indexedPageTable) this.indexedResizeAwaiting = null;
+
     while (this.slabPages.length > 1) {
       const last = this.slabPages[this.slabPages.length - 1] as SplatRange;
       if (slots - last.count < target) break;
@@ -1574,6 +1909,631 @@ export class StreamedSplatMesh extends SplatMesh {
       this.pageTableGlobals.set(slice.globals, at);
       this.applyPersistentSlabRun(page, offset, slice);
       written += run;
+    }
+  }
+
+  /** Indexed candidates write stable, possibly sparse slots without relocation. */
+  private writeIndexedSlabSlots(data: PlanSplats, slots: Uint32Array): void {
+    let i = 0;
+    while (i < slots.length) {
+      const start = slots[i] as number;
+      let run = 1;
+      while (i + run < slots.length && (slots[i + run] as number) === start + run) run++;
+      this.writeSlabSlots(slicePlanRun(data, i, run), start, run);
+      i += run;
+    }
+  }
+
+  /** Converts worker-local slab slots to the actual indices of shared pool pages. */
+  private poolIndicesForSlabSlots(slots: Uint32Array): Uint32Array {
+    const indices = new Uint32Array(slots.length);
+    const pageStarts = new Uint32Array(this.slabPages.length);
+    for (let page = 0; page < this.slabPages.length; page++) {
+      pageStarts[page] = this.poolRangeBacking(this.slabPages[page] as SplatRange).start;
+    }
+    if (this.slabPageSplats === 65_536) {
+      for (let i = 0; i < slots.length; i++) {
+        const slot = slots[i] as number;
+        const page = slot >>> 16;
+        if (page >= pageStarts.length) {
+          throw new RangeError('Indexed RAD publication references unavailable storage.');
+        }
+        indices[i] = (pageStarts[page] as number) + (slot & 0xffff);
+      }
+      return indices;
+    }
+    for (let i = 0; i < slots.length; i++) {
+      const slot = slots[i] as number;
+      const page = Math.floor(slot / this.slabPageSplats);
+      if (page >= pageStarts.length) {
+        throw new RangeError('Indexed RAD publication references unavailable storage.');
+      }
+      indices[i] = (pageStarts[page] as number) + slot - page * this.slabPageSplats;
+    }
+    return indices;
+  }
+
+  private filesForIndexedSlots(slots: Uint32Array): number[] {
+    const chunkSize = this.scene.chunkSize ?? 65536;
+    const files: number[] = [];
+    for (const slot of slots) {
+      const global = this.pageTableGlobals[slot];
+      if (global === undefined || global === 0xffffffff) continue;
+      files.push(Math.floor(global / chunkSize));
+    }
+    return files;
+  }
+
+  private resumeIndexedRefinementAfterPublication(): void {
+    if (this.radChunkResidency && this.lastLiveCamera && !this.pageTableInFlight) {
+      const now = performance.now();
+      this.pendingWork = false;
+      this.lastScheduleTime = now;
+      this.reschedule(this.lastLiveCamera, now);
+      return;
+    }
+    const camera = this.lastPostedCamera;
+    const forward = this.lastPostedForward;
+    if (!camera || !forward || this.pageTableInFlight) return;
+    this.pendingWork = false;
+    this.lastScheduleTime = performance.now();
+    this.reschedulePageTable(
+      new THREE.Vector3(...camera),
+      new THREE.Vector3(...forward),
+      new THREE.Frustum(),
+      this.lastScheduleTime,
+      this.lastPostedProjection ?? [],
+    );
+  }
+
+  /** Chunk pages own stable slots and do not use the reverse active-slot map. */
+  protected override tracksActivePoolSlots(): boolean {
+    return !this.radChunkResidency;
+  }
+
+  private sampleRadDiagnosticValues(values: ArrayLike<number>, count = values.length): number[] {
+    const size = Math.min(count, RAD_DIAGNOSTIC_SAMPLE_SIZE);
+    if (size === 0) return [];
+    const sample = new Array<number>(size);
+    if (count <= size) {
+      for (let i = 0; i < size; i++) sample[i] = values[i] as number;
+      return sample;
+    }
+    const head = Math.floor(size / 2);
+    for (let i = 0; i < head; i++) sample[i] = values[i] as number;
+    for (let i = head; i < size; i++) sample[i] = values[count - size + i] as number;
+    return sample;
+  }
+
+  private sortedRadDiagnosticIndices(count: number): number[] {
+    const mesh = this as unknown as {
+      splatIndexAttribute?: { array?: ArrayLike<number> };
+    };
+    const array = mesh.splatIndexAttribute?.array;
+    return array ? this.sampleRadDiagnosticValues(array, count) : [];
+  }
+
+  private finishRadPublicationDiagnostic(
+    diagnostic: RadPublicationDiagnostic,
+    count: number,
+  ): void {
+    const renderer = this.radDiagnosticRenderer;
+    const mesh = this as unknown as {
+      splatIndexAttribute?: THREE.StorageInstancedBufferAttribute;
+    };
+    const attribute = mesh.splatIndexAttribute;
+    const isWebGpu =
+      (renderer?.backend as { isWebGPUBackend?: boolean } | undefined)?.isWebGPUBackend === true;
+    if (!renderer || !attribute || !isWebGpu || count === 0) {
+      diagnostic.sortedIndices = this.sortedRadDiagnosticIndices(count);
+      diagnostic.sortedIndicesSource = attribute ? 'cpu-mirror' : 'unavailable';
+      this.recordRadPublicationDiagnostic(diagnostic);
+      return;
+    }
+
+    const sampleCount = Math.min(count, RAD_DIAGNOSTIC_SAMPLE_SIZE);
+    const headCount = Math.ceil(sampleCount / 2);
+    const tailCount = sampleCount - headCount;
+    const read = (offset: number, length: number): Promise<number[]> =>
+      renderer
+        .getArrayBufferAsync(
+          attribute,
+          null,
+          offset * Float32Array.BYTES_PER_ELEMENT,
+          length * Float32Array.BYTES_PER_ELEMENT,
+        )
+        .then((buffer) => Array.from(new Float32Array(buffer)));
+    void Promise.all([
+      read(0, headCount),
+      tailCount > 0 ? read(count - tailCount, tailCount) : Promise.resolve([]),
+    ])
+      .then(([head, tail]) => {
+        diagnostic.sortedIndices = head.concat(tail);
+        diagnostic.sortedIndicesSource = 'gpu-readback';
+        this.recordRadPublicationDiagnostic(diagnostic);
+      })
+      .catch(() => {
+        diagnostic.sortedIndices = this.sortedRadDiagnosticIndices(count);
+        diagnostic.sortedIndicesSource = 'unavailable';
+        this.recordRadPublicationDiagnostic(diagnostic);
+      });
+  }
+
+  private beginRadPublicationDiagnostic(
+    plan: FrontierPlanMessage,
+  ): RadPublicationDiagnostic | null {
+    if (
+      !this.indexedPageTable ||
+      this.onPerformanceEvent === undefined ||
+      plan.candidateGeneration === undefined
+    ) {
+      return null;
+    }
+    const generation = plan.candidateGeneration;
+    if (
+      this.indexedPendingDiagnostic &&
+      this.indexedPendingDiagnostic.generation !== generation &&
+      this.indexedPublishGeneration !== this.indexedPendingDiagnostic.generation
+    ) {
+      const superseded = this.indexedPendingDiagnostic;
+      superseded.phase = 'rejected';
+      superseded.rejection = 'superseded-candidate';
+      superseded.frameRejected = this.radFrame;
+      superseded.rejectedAt = performance.now();
+      this.recordRadPublicationDiagnostic(superseded);
+      this.indexedPendingDiagnostic = null;
+    }
+    const now = performance.now();
+    const candidateGlobals = Array.from(plan.diagnosticCandidateGlobals ?? []);
+    let diagnostic = this.indexedPendingDiagnostic;
+    if (!diagnostic || diagnostic.generation !== generation) {
+      diagnostic = {
+        frameApplied: this.radFrame,
+        candidateCreatedFrame: this.radFrame,
+        stagingCompleteFrame: null,
+        frameSortReady: null,
+        frameRendered: null,
+        frameRejected: null,
+        candidateCreatedAt: now,
+        stagingCompleteAt: null,
+        renderedAt: null,
+        rejectedAt: null,
+        generation,
+        revision: plan.candidateRevision ?? null,
+        cameraKey: plan.candidateCameraKey ?? null,
+        candidateSize: plan.candidateSize ?? candidateGlobals.length,
+        candidateGlobals,
+        slotToNode: [],
+        activeListVersion: null,
+        sortedIndices: [],
+        sortedIndicesSource: 'unavailable',
+        drawCount: null,
+        phase: 'pending',
+        cut: plan.diagnosticCut,
+        slotChecks: { duplicate: false, outOfRange: false, displayedMutation: false },
+      };
+      this.indexedPendingDiagnostic = diagnostic;
+    } else {
+      diagnostic.candidateSize = plan.candidateSize ?? diagnostic.candidateSize;
+      if (candidateGlobals.length > 0) diagnostic.candidateGlobals = candidateGlobals;
+      diagnostic.revision = plan.candidateRevision ?? diagnostic.revision;
+      diagnostic.cameraKey = plan.candidateCameraKey ?? diagnostic.cameraKey;
+      diagnostic.cut = plan.diagnosticCut ?? diagnostic.cut;
+    }
+    if (plan.candidateComplete && diagnostic.stagingCompleteFrame === null) {
+      diagnostic.stagingCompleteFrame = this.radFrame;
+      diagnostic.stagingCompleteAt = now;
+    }
+    return diagnostic;
+  }
+
+  private rejectRadPublicationDiagnostic(
+    diagnostic: RadPublicationDiagnostic,
+    reason: string,
+    currentRevision?: number,
+    currentRevisionPending?: boolean,
+  ): void {
+    diagnostic.phase = 'rejected';
+    diagnostic.rejection = reason;
+    diagnostic.frameRejected = this.radFrame;
+    diagnostic.rejectedAt = performance.now();
+    if (currentRevision !== undefined) diagnostic.currentRevision = currentRevision;
+    if (currentRevisionPending !== undefined) {
+      diagnostic.currentRevisionPending = currentRevisionPending;
+    }
+    this.recordRadPublicationDiagnostic(diagnostic);
+    if (this.indexedPendingDiagnostic === diagnostic) this.indexedPendingDiagnostic = null;
+  }
+
+  private recordRadPublicationDiagnostic(diagnostic: RadPublicationDiagnostic): void {
+    if (this.onPerformanceEvent === undefined) return;
+    this.radPublicationDiagnostics.push(diagnostic);
+    if (this.radPublicationDiagnostics.length > RAD_DIAGNOSTIC_RING_SIZE) {
+      this.radPublicationDiagnostics.shift();
+    }
+    console.debug('[vlam:rad-publication]', JSON.stringify(diagnostic));
+  }
+
+  private indexedPublicationIsCurrent(): boolean {
+    return (
+      (this.indexedPublishRevision === null ||
+        this.indexedPublishRevision === this.demandGeneration) &&
+      !this.demandNeedsNewRevision
+    );
+  }
+
+  /** Maps a complete selection once while retaining the page summary used by protection. */
+  private mapRadChunkSelection(globals: ArrayLike<number>): {
+    slots: Uint32Array;
+    pageIdentity: Map<number, number>;
+    mappingMs: number;
+    selectionHashA: number;
+    selectionHashB: number;
+  } | null {
+    const allocator = this.radChunkAllocator;
+    if (!allocator) return null;
+    const startedAt = performance.now();
+    if (this.radChunkMappedSlots.length < globals.length) {
+      this.radChunkMappedSlots = new Uint32Array(globals.length);
+    }
+    const slots = this.radChunkMappedSlots.subarray(0, globals.length);
+    const pageIdentity = new Map<number, number>();
+    const chunkSize = allocator.chunkSize;
+    if (this.radChunkPageLookupRevision !== allocator.revision) {
+      this.radChunkPageLookup.clear();
+      this.radChunkPageLookupRevision = allocator.revision;
+    }
+    let previousFile = -1;
+    let previousPage = -1;
+    let selectionHashA = 2166136261;
+    let selectionHashB = 3735928559;
+    const now = performance.now();
+    for (let i = 0; i < globals.length; i++) {
+      const global = globals[i] as number;
+      const file = Math.floor(global / chunkSize);
+      if (file !== previousFile) {
+        const cachedPage = this.radChunkPageLookup.get(file);
+        const page = cachedPage === undefined ? allocator.pageOf(file) : cachedPage;
+        if (page === undefined) return null;
+        if (cachedPage === undefined) this.radChunkPageLookup.set(file, page);
+        previousFile = file;
+        previousPage = page;
+        pageIdentity.set(file, page);
+        const resident = this.radChunkPages.get(file);
+        if (resident) resident.lastUsed = now;
+      }
+      slots[i] = previousPage * chunkSize + (global - file * chunkSize);
+      selectionHashA = Math.imul(selectionHashA ^ global, 16777619) >>> 0;
+      selectionHashB = Math.imul(selectionHashB ^ (global + i), 2246822519) >>> 0;
+    }
+    return {
+      slots,
+      pageIdentity,
+      mappingMs: performance.now() - startedAt,
+      selectionHashA,
+      selectionHashB,
+    };
+  }
+
+  /** A page may not be reused while its selection is being sorted or rendered. */
+  private radChunkPendingPageIdentityIsCurrent(): boolean {
+    if (!this.radChunkPendingPageIdentity || !this.radChunkAllocator) return false;
+    for (const [file, page] of this.radChunkPendingPageIdentity) {
+      if (this.radChunkAllocator.pageOf(file) !== page) return false;
+    }
+    return true;
+  }
+
+  private discardIndexedPublication(reason: string): void {
+    if (this.radChunkResidency) {
+      if (this.radChunkPendingGlobals === null && this.radChunkPublishGeneration === null) return;
+      this.radChunkHardValidityRevisionValue++;
+      this.radChunkLastInvalidationReasonValue = reason;
+      const indices = this.poolIndicesForRadGlobals(this.radChunkDisplayedGlobals);
+      if (indices) {
+        this.replaceActiveIndices(indices);
+        this.retainVisibleInstanceCount(this.radChunkDisplayedGlobals.length);
+      }
+      this.radChunkPendingGlobals = null;
+      this.radChunkPublishGeneration = null;
+      this.radChunkPublishRevision = null;
+      this.radChunkPublishActiveListVersion = null;
+      this.radChunkPendingSelectionIdValue = null;
+      this.radChunkPendingHardValidityRevisionValue = this.radChunkHardValidityRevisionValue;
+      this.radChunkPendingPageIdentity = null;
+      this.radChunkPendingFiles = null;
+      this.radChunkPendingSelectionHashA = null;
+      this.radChunkPendingSelectionHashB = null;
+      this.radChunkPendingBudgetSettled = false;
+      this.radChunkPendingRevealQuality = null;
+      if (this.indexedPendingDiagnostic) {
+        this.rejectRadPublicationDiagnostic(this.indexedPendingDiagnostic, reason);
+      }
+      return;
+    }
+    const pending = this.indexedPendingDisplaySlots;
+    const previous = this.indexedDisplayedSlots;
+    if (!pending && this.indexedPublishGeneration === null) return;
+    const previousSet = new Set(previous);
+    if (pending) {
+      for (const slot of pending) {
+        if (!previousSet.has(slot) && slot < this.pageTableGlobals.length) {
+          this.degenerateSlabSlots(slot, 1);
+        }
+      }
+    }
+    this.replaceActiveIndices(this.poolIndicesForSlabSlots(previous));
+    this.retainVisibleInstanceCount(previous.length);
+    this.indexedPendingDisplaySlots = null;
+    this.indexedPublishGeneration = null;
+    this.indexedPublishActiveListVersion = null;
+    this.indexedPublishRevision = null;
+    this.indexedPendingRevealQuality = null;
+    if (this.indexedPendingDiagnostic) {
+      this.rejectRadPublicationDiagnostic(this.indexedPendingDiagnostic, reason);
+    }
+  }
+
+  protected override onActiveListReady(activeListVersion: number): void {
+    if (this.radChunkResidency) {
+      const generation = this.radChunkPublishGeneration;
+      if (generation === null || this.pageTableDisposed) return;
+      if (
+        this.radChunkPendingHardValidityRevisionValue !== this.radChunkHardValidityRevisionValue
+      ) {
+        this.discardIndexedPublication('hard-validity-revision');
+        this.pendingWork = true;
+        this.lastScheduleTime = -Infinity;
+        return;
+      }
+      if (!this.radChunkPendingPageIdentityIsCurrent()) {
+        this.discardIndexedPublication('page-identity-changed');
+        this.pendingWork = true;
+        this.lastScheduleTime = -Infinity;
+        return;
+      }
+      if ((this.radChunkPendingGlobals?.length ?? 0) > this.pageTableDrawBudget) {
+        this.discardIndexedPublication('draw-budget-reduced');
+        this.pendingWork = true;
+        this.lastScheduleTime = -Infinity;
+        return;
+      }
+      if (activeListVersion !== this.radChunkPublishActiveListVersion) return;
+      this.sortReadyGenerationValue = generation;
+      if (this.onPerformanceEvent !== undefined) {
+        console.debug(
+          '[vlam:rad-chunk-sort]',
+          JSON.stringify({
+            generation,
+            selectionId: this.radChunkPendingSelectionIdValue,
+            activeListVersion,
+            count: this.radChunkPendingGlobals?.length ?? 0,
+            cameraObsolete: this.radChunkCameraObsoleteValue,
+            state: 'ready',
+          }),
+        );
+      }
+      this.retainVisibleInstanceCount(this.radChunkPendingGlobals?.length ?? 0);
+      return;
+    }
+    const generation = this.indexedPublishGeneration;
+    if (generation === null || this.pageTableDisposed) return;
+    if (!this.indexedPublicationIsCurrent()) {
+      this.discardIndexedPublication('stale-camera-or-configuration-revision');
+      return;
+    }
+    if (activeListVersion !== this.indexedPublishActiveListVersion) return;
+    const next = this.indexedPendingDisplaySlots;
+    if (!next) return;
+    this.sortReadyGenerationValue = generation;
+    // The candidate order is now installed, so draw its exact visible count.
+    // The old slot ownership remains protected until onActiveListRendered.
+    this.retainVisibleInstanceCount(next.length);
+    if (this.indexedPendingDiagnostic) {
+      this.indexedPendingDiagnostic.frameSortReady = this.radFrame;
+      this.indexedPendingDiagnostic.activeListVersion = activeListVersion;
+      this.indexedPendingDiagnostic.drawCount = next.length;
+    }
+    this.recordFrontierTrace('sort-ready', {
+      generation,
+      activeCount: next.length,
+    });
+  }
+
+  protected override onActiveListRendered(activeListVersion: number): void {
+    if (this.radChunkResidency) {
+      const generation = this.radChunkPublishGeneration;
+      if (generation === null || this.pageTableDisposed) return;
+      if (
+        this.radChunkPendingHardValidityRevisionValue !== this.radChunkHardValidityRevisionValue
+      ) {
+        this.discardIndexedPublication('hard-validity-revision');
+        this.pendingWork = true;
+        this.lastScheduleTime = -Infinity;
+        return;
+      }
+      if (!this.radChunkPendingPageIdentityIsCurrent()) {
+        this.discardIndexedPublication('page-identity-changed');
+        this.pendingWork = true;
+        this.lastScheduleTime = -Infinity;
+        return;
+      }
+      if ((this.radChunkPendingGlobals?.length ?? 0) > this.pageTableDrawBudget) {
+        this.discardIndexedPublication('draw-budget-reduced');
+        this.pendingWork = true;
+        this.lastScheduleTime = -Infinity;
+        return;
+      }
+      if (activeListVersion !== this.radChunkPublishActiveListVersion) return;
+      const next = this.radChunkPendingGlobals;
+      if (!next) return;
+      const pendingSelectionId = this.radChunkPendingSelectionIdValue;
+      const pendingDemandRevision = this.radChunkPublishRevision;
+      this.renderedGenerationValue = generation;
+      this.radChunkDisplayedGlobals = next;
+      this.radChunkDisplayedSelectionHashA = this.radChunkPendingSelectionHashA;
+      this.radChunkDisplayedSelectionHashB = this.radChunkPendingSelectionHashB;
+      this.radChunkDisplayedFiles.clear();
+      if (this.radChunkPendingFiles) {
+        for (const file of this.radChunkPendingFiles) this.radChunkDisplayedFiles.add(file);
+      }
+      this.pageTableDrawn = next.length;
+      this.pageTableDisplayGeneration = generation;
+      this.retainVisibleInstanceCount(next.length);
+      this.radChunkCommittedSelectionIdValue =
+        pendingSelectionId ?? this.radChunkCommittedSelectionIdValue;
+      this.radChunkRenderedAtValue = performance.now();
+      if (
+        this.demandDiagnostics.hardRelocationDetectedAt !== null &&
+        pendingDemandRevision === this.demandGeneration &&
+        this.demandDiagnostics.firstPublicationAt === null
+      ) {
+        this.demandDiagnostics.firstPublicationAt = this.radChunkRenderedAtValue;
+      }
+      this.radChunkCameraObsoleteValue =
+        pendingDemandRevision !== null &&
+        (pendingDemandRevision !== this.demandGeneration || this.demandNeedsNewRevision);
+      this.radChunkPendingGlobals = null;
+      this.radChunkPublishGeneration = null;
+      this.radChunkPublishRevision = null;
+      this.radChunkPublishActiveListVersion = null;
+      this.radChunkPendingSelectionIdValue = null;
+      this.radChunkPendingPageIdentity = null;
+      this.radChunkPendingFiles = null;
+      this.radChunkPendingSelectionHashA = null;
+      this.radChunkPendingSelectionHashB = null;
+      const budgetSettled = this.radChunkPendingBudgetSettled;
+      this.radChunkPendingBudgetSettled = false;
+      if (budgetSettled) this.settleRadChunkDemand();
+      if (this.onPerformanceEvent !== undefined) {
+        console.debug(
+          '[vlam:rad-chunk-sort]',
+          JSON.stringify({
+            generation,
+            selectionId: pendingSelectionId,
+            activeListVersion,
+            count: next.length,
+            state: 'rendered',
+          }),
+        );
+      }
+      const revealQuality = this.radChunkPendingRevealQuality;
+      this.radChunkPendingRevealQuality = null;
+      if (
+        this.radRevealPolicy === 'projected-quality' &&
+        !this.revealReadyValue &&
+        revealQuality?.revealReady
+      ) {
+        this.revealReadyValue = true;
+        this.firstRevealGenerationValue = generation;
+        this.firstRevealCentralProjectedRatioValue = revealQuality.maxCentralProjectedRatio;
+        this.firstRevealVisibleProjectedRatioValue = revealQuality.maxVisibleProjectedRatio;
+        this.setRevealMultiplier(1);
+      }
+      this.postToWorker({ type: 'published', generation, activeListVersion });
+      this.workerAcknowledgedGenerationValue = generation;
+      this.pendingWork = true;
+      this.lastScheduleTime = -Infinity;
+      this.resumeIndexedRefinementAfterPublication();
+      return;
+    }
+    const generation = this.indexedPublishGeneration;
+    if (generation === null || this.pageTableDisposed) return;
+    if (!this.indexedPublicationIsCurrent()) {
+      this.discardIndexedPublication('stale-camera-or-configuration-revision');
+      return;
+    }
+    // Unified gather+sort and GPU/worker publication must describe the live
+    // indices. A superseded snapshot (older `activeListVersion`) releases nothing.
+    if (activeListVersion !== this.indexedPublishActiveListVersion) return;
+    const next = this.indexedPendingDisplaySlots;
+    if (!next) return;
+    const revealQuality = this.indexedPendingRevealQuality;
+    this.indexedPendingRevealQuality = null;
+    this.renderedGenerationValue = generation;
+    const retained = new Set(next);
+    for (const slot of this.indexedDisplayedSlots) {
+      if (!retained.has(slot)) this.pageTableGlobals[slot] = 0xffffffff;
+    }
+    this.indexedDisplayedSlots = Uint32Array.from(next);
+    this.pageTableDrawn = next.length;
+    this.pageTableDisplayGeneration = generation;
+    this.retainVisibleInstanceCount(next.length);
+    this.indexedPendingDisplaySlots = null;
+    this.indexedPublishGeneration = null;
+    this.indexedPublishActiveListVersion = null;
+    this.indexedPublishRevision = null;
+    this.indexedPublishedGeneration = generation;
+    if (
+      this.radRevealPolicy === 'projected-quality' &&
+      !this.revealReadyValue &&
+      revealQuality?.revealReady
+    ) {
+      this.revealReadyValue = true;
+      this.firstRevealGenerationValue = generation;
+      this.firstRevealCentralProjectedRatioValue = revealQuality.maxCentralProjectedRatio;
+      this.firstRevealVisibleProjectedRatioValue = revealQuality.maxVisibleProjectedRatio;
+      this.setRevealMultiplier(1);
+    }
+    this.recordFrontierTrace('rendered', {
+      generation,
+      activeCount: this.pageTableDrawn,
+      ...(revealQuality
+        ? {
+            revealReady: revealQuality.revealReady,
+            maxCentralProjectedRatio: revealQuality.maxCentralProjectedRatio,
+            maxVisibleProjectedRatio: revealQuality.maxVisibleProjectedRatio,
+          }
+        : {}),
+    });
+    this.recordFrontierTrace('gather-sort-publication', {
+      generation,
+      activeCount: this.pageTableDrawn,
+    });
+    if (this.indexedPendingDiagnostic) {
+      const diagnostic = this.indexedPendingDiagnostic;
+      this.indexedPendingDiagnostic = null;
+      diagnostic.frameRendered = this.radFrame;
+      diagnostic.renderedAt = performance.now();
+      diagnostic.drawCount = this.pageTableDrawn;
+      diagnostic.phase = 'rendered';
+      this.finishRadPublicationDiagnostic(diagnostic, this.pageTableDrawn);
+    }
+    this.postToWorker({ type: 'published', generation, activeListVersion });
+    this.workerAcknowledgedGenerationValue = generation;
+    this.indexedStagingGeneration = null;
+    this.recordFrontierTrace('worker-ack', { generation, activeCount: this.pageTableDrawn });
+    // Acknowledgement is the ownership boundary: the next bounded cut may
+    // reuse the retired slots now, so do not wait for the idle reschedule
+    // interval before asking the worker to continue toward its saved target.
+    this.pendingWork = true;
+    this.lastScheduleTime = -Infinity;
+    this.resumeIndexedRefinementAfterPublication();
+  }
+
+  protected override rebuildActiveList(): void {
+    if (this.radChunkResidency) {
+      const globals = this.radChunkPendingGlobals ?? this.radChunkDisplayedGlobals;
+      const indices = this.poolIndicesForRadGlobals(globals);
+      if (!indices) return;
+      const previousVisibleCount = this.pageTableDrawn;
+      const version = this.replaceActiveIndices(indices);
+      if (this.radChunkPendingGlobals) {
+        this.radChunkPublishActiveListVersion = version;
+        this.retainVisibleInstanceCount(previousVisibleCount);
+      }
+      return;
+    }
+    if (!this.indexedPageTable) {
+      super.rebuildActiveList();
+      return;
+    }
+    const slots = this.indexedPendingDisplaySlots ?? this.indexedDisplayedSlots;
+    const previousVisibleCount = this.pageTableDrawn;
+    const version = this.replaceActiveIndices(this.poolIndicesForSlabSlots(slots));
+    if (this.indexedPendingDisplaySlots) {
+      this.indexedPublishActiveListVersion = version;
+      this.retainVisibleInstanceCount(previousVisibleCount);
     }
   }
 
@@ -1620,44 +2580,136 @@ export class StreamedSplatMesh extends SplatMesh {
     }
   }
 
+  private recordFrontierTrace(
+    event: FrontierGenerationTraceEvent['event'],
+    details: Omit<FrontierGenerationTraceEvent, 'at' | 'event'>,
+  ): void {
+    if (this.onPerformanceEvent === undefined) return;
+    this.frontierGenerationTrace.push({ at: performance.now(), event, ...details });
+    if (this.frontierGenerationTrace.length > 256) this.frontierGenerationTrace.shift();
+  }
+
   /** Most recent terminal page-table worker failure, or `null` while healthy. */
   get streamingError(): SplatLoadError | null {
     return this.streamingErrorValue;
   }
 
   /** Applies a worker reply, turning malformed messages into a terminal fault. */
-  private handleFrontierMessage(plan: FrontierPlanMessage | FrontierDemandReply): void {
+  private handleFrontierMessage(
+    plan:
+      | FrontierPlanMessage
+      | FrontierDemandReply
+      | FrontierTraversalCancelledReply
+      | FrontierResizeSafeMessage
+      | FrontierSnapshotReply,
+  ): void {
     try {
       if (plan.type === 'demand') this.applyDemand(plan);
+      else if (plan.type === 'traversalCancelled') {
+        if (plan.seq < this.pageTableActiveSeq) {
+          this.demandDiagnostics.oldTraversalCancelledAt = performance.now();
+        }
+      } else if (plan.type === 'resizeSafe') this.applyIndexedResizeSafe(plan.capacity);
+      else if (plan.type === 'snapshot') this.applyFrontierSnapshot(plan);
       else this.applyFrontierPlan(plan);
     } catch (error) {
       this.failFrontierWorker(error);
     }
   }
 
-  private get focusedDemand(): boolean {
-    return (
-      !!this.frontierWorker &&
-      experiments.radDemand === 'focus' &&
-      estimateSceneDecodedBytes(this.scene) > this.cacheLimitBytes
-    );
+  private applyFrontierSnapshot(snapshot: FrontierSnapshotReply): void {
+    this.lastWorkerSnapshot = snapshot;
+    this.snapshotWaiters.get(snapshot.requestId)?.(snapshot);
+    this.snapshotWaiters.delete(snapshot.requestId);
+  }
+
+  private applyIndexedResizeSafe(capacity: number): void {
+    if (!this.indexedPageTable || this.indexedResizeAwaiting !== capacity) return;
+    let slots = this.slabSlots;
+    while (this.slabPages.length > 1) {
+      const last = this.slabPages[this.slabPages.length - 1] as SplatRange;
+      if (slots - last.count < capacity) break;
+      this.slabPages.pop();
+      slots -= last.count;
+      this.removeRange(last);
+    }
+    this.indexedResizeAwaiting = null;
+    if (slots !== this.pagerSlots) {
+      const globals = new Uint32Array(slots);
+      globals.fill(0xffffffff);
+      globals.set(this.pageTableGlobals.subarray(0, Math.min(slots, this.pageTableGlobals.length)));
+      this.pageTableGlobals = globals;
+      this.pagerSlots = slots;
+      this.pageTableResident = Math.min(this.pageTableResident, slots);
+      if (this.pageTableDrawn > slots) this.setSlabResident(slots);
+    }
+  }
+
+  /** Clamps the accepted draw grant to what reserved storage can hold twice. */
+  private acceptDrawReservation(): void {
+    if (!this.indexedPageTable) return;
+    const reserved = this.slabSlots;
+    const accepted = Math.min(this.pageTableRequestedDraw, Math.floor(reserved / 2));
+    if (accepted !== this.pageTableDrawBudget) this.pageTableDrawBudget = Math.max(0, accepted);
+  }
+
+  /** Page-table demand comes from the worker's authoritative walk, not a second scanner. */
+  private get pageTableDemand(): boolean {
+    return !!this.frontierWorker;
   }
 
   private applyDemand(reply: FrontierDemandReply): void {
-    this.demandOutstanding = false;
     if (
       this.pageTableDisposed ||
-      reply.generation !== this.demandGeneration ||
-      !this.focusedDemand
+      reply.revision < this.demandGeneration ||
+      (reply.seq !== undefined && reply.seq < this.pageTableActiveSeq)
     ) {
       this.demandDiagnostics.staleReplies++;
       this.pendingWork = true;
       return;
     }
+    if (this.radChunkResidency && reply.revision === this.radChunkDemandSettledRevision) {
+      this.demandReadyGeneration = reply.revision;
+      this.demandWants = [];
+      this.demandFirstSeen.clear();
+      return;
+    }
+    const currentSequence = reply.seq === undefined || reply.seq === this.pageTableActiveSeq;
+    if (currentSequence && reply.revision === this.demandGeneration) {
+      this.demandDiagnostics.firstCurrentRevisionDemandAt ??= performance.now();
+      if (reply.firstSliceAt !== undefined) {
+        this.demandDiagnostics.firstReplacementSliceAt ??= performance.now();
+      }
+    }
+    if (this.onPerformanceEvent !== undefined) {
+      console.debug(
+        '[vlam:rad-demand-main]',
+        JSON.stringify({
+          revision: reply.revision,
+          complete: reply.complete,
+          reason: reply.reason ?? null,
+          wants: reply.wants.length,
+          wantFiles: reply.wants.slice(0, 16).map((want) => want.file),
+        }),
+      );
+    }
     this.demandDiagnostics.replies++;
-    this.demandReadyGeneration = reply.generation;
-    this.demandWants = reply.wants;
-    const missing = new Set(reply.wants.map((want) => want.file));
+    this.demandReadyGeneration = reply.revision;
+    if (reply.complete) {
+      this.demandWants = this.radChunkResidency
+        ? [...reply.wants]
+        : [...reply.wants].sort(compareDemand);
+    } else {
+      const merged = new Map(this.demandWants.map((want) => [want.file, want]));
+      for (const want of reply.wants) {
+        const old = merged.get(want.file);
+        if (!old || want.priority > old.priority) merged.set(want.file, want);
+      }
+      this.demandWants = this.radChunkResidency
+        ? [...merged.values()]
+        : [...merged.values()].sort(compareDemand);
+    }
+    const missing = new Set(this.demandWants.map((want) => want.file));
     for (const file of this.demandFirstSeen.keys()) {
       if (!missing.has(file) || this.pageTableCachedFiles.has(file))
         this.demandFirstSeen.delete(file);
@@ -1667,50 +2719,82 @@ export class StreamedSplatMesh extends SplatMesh {
         this.demandFirstSeen.set(file, performance.now());
       }
     }
-    this.reconcileDemand();
+    this.reconcileDemand(reply.complete);
+    if (currentSequence && this.replacementAwaitingFirstDemandSeq === this.pageTableActiveSeq) {
+      this.replacementAwaitingFirstDemandSeq = null;
+      if (this.demandNeedsNewRevision) {
+        // Do not replace this walk again on every motion frame: that would
+        // starve complete-cut publication until the camera stops. The latest
+        // pose stays queued and runs immediately after this complete cut.
+        this.pendingWork = true;
+        this.lastScheduleTime = -Infinity;
+      }
+    }
     this.pendingWork = true;
   }
 
-  /** Only a complete, latest-generation scan proves an unpinned request obsolete. */
-  private reconcileDemand(): void {
-    if (this.demandReadyGeneration !== this.demandGeneration || !this.focusedDemand) return;
-    const wanted = new Set(this.demandWants.map((want) => want.file));
-    for (const [file, entry] of this.fetching) {
-      if (
-        !wanted.has(file) &&
-        !this.scene.pinnedFiles.has(file) &&
-        !entry.controller.signal.aborted
-      ) {
-        this.demandDiagnostics.cancellations++;
-        entry.controller.abort();
+  /**
+   * Incomplete replies may fill free slots. Only a complete reply for the
+   * current camera/configuration may cancel unpinned downloads.
+   */
+  private reconcileDemand(complete = true): void {
+    if (!this.pageTableDemand) return;
+    if (
+      !this.radChunkResidency &&
+      complete &&
+      this.demandReadyGeneration === this.demandGeneration &&
+      !this.demandNeedsNewRevision
+    ) {
+      const wanted = new Set(this.demandWants.map((want) => want.file));
+      wanted.add(0);
+      for (const file of this.filesForIndexedSlots(this.indexedDisplayedSlots)) wanted.add(file);
+      if (this.indexedPendingDisplaySlots) {
+        for (const file of this.filesForIndexedSlots(this.indexedPendingDisplaySlots)) {
+          wanted.add(file);
+        }
+      }
+      for (const [file, entry] of this.fetching) {
+        if (
+          !wanted.has(file) &&
+          !this.scene.pinnedFiles.has(file) &&
+          !entry.controller.signal.aborted
+        ) {
+          this.demandDiagnostics.cancellations++;
+          entry.controller.abort();
+        }
       }
     }
-    const visible = this.demandWants.filter((w) => w.tier === 0);
-    const now = performance.now();
-    const other = this.demandWants
-      .filter((w) => w.tier !== 0)
-      .sort((a, b) => {
-        const ageA = now - (this.demandFirstSeen.get(a.file) ?? now);
-        const ageB = now - (this.demandFirstSeen.get(b.file) ?? now);
-        const agingA = ageA >= 5000;
-        const agingB = ageB >= 5000;
-        return agingA === agingB
-          ? agingA
-            ? ageB - ageA || a.file - b.file
-            : a.tier - b.tier || b.priority - a.priority || a.file - b.file
-          : agingA
-            ? -1
-            : 1;
-      });
-    // An eighth visible request started before this reply is still legitimate.
-    // Let it finish; its released slot goes to the oldest lower-tier want.
-    // Preempting it would violate shared-request preservation and waste bytes.
-    for (const want of visible.slice(0, other.length ? 7 : 8))
-      this.requestChunk(want.file, 'priority');
-    for (const want of other.slice(0, 1)) this.requestChunk(want.file, 'priority');
-    for (const want of visible.slice(other.length ? 7 : 8))
-      this.requestChunk(want.file, 'priority');
-    for (const want of other.slice(1)) this.requestChunk(want.file, 'priority');
+    if (!this.pageTableCachedFiles.has(0)) this.requestChunk(0, 'priority');
+    // A queued camera has superseded the worker's last demand. Its wants and
+    // touched files describe the old view; re-requesting them here would refill
+    // the slots that a hard relocation just reclaimed before the new walk can
+    // answer.
+    if (
+      this.radChunkResidency &&
+      (this.demandNeedsNewRevision || this.demandReadyGeneration !== this.demandGeneration)
+    ) {
+      return;
+    }
+    for (const want of this.demandWants) this.requestChunk(want.file, 'priority');
+    if (this.radChunkResidency) return;
+    if (this.demandReadyGeneration !== this.demandGeneration || this.demandNeedsNewRevision) {
+      for (const file of this.pageTableFetchPriority) this.requestChunk(file, 'priority');
+    }
+  }
+
+  /** Keeps the previous same-camera demand useful while the next cooperative
+   * walk runs, without letting an obsolete full list churn a saturated pool. */
+  private boundChunkPageCarryoverDemand(): void {
+    const allocator = this.radChunkAllocator;
+    if (!allocator) return;
+    const freePages = Math.max(
+      0,
+      allocator.capacityPages - allocator.residentCount - this.pageTableActiveFetches(),
+    );
+    const limit = Math.max(3, freePages);
+    this.demandWants = this.demandWants
+      .filter((want) => !this.pageTableCachedFiles.has(want.file) && !this.fetching.has(want.file))
+      .slice(0, limit);
   }
 
   /**
@@ -1752,9 +2836,6 @@ export class StreamedSplatMesh extends SplatMesh {
    * path in `evictChunks` on the next tick. Dropping chunks synchronously would
    * pull them out from under resident splats.
    *
-   * `pageTableCacheAtLimit` is recomputed here rather than waiting for the next
-   * plan, so a *raised* allowance re-arms the background sweep on this tick
-   * instead of one idle interval later.
    */
   private applyCacheAllowance(bytes: number): void {
     if (this.disposed) return;
@@ -1940,6 +3021,29 @@ export class StreamedSplatMesh extends SplatMesh {
     return this.frontierWorker ? 'page-table' : 'prefix';
   }
 
+  /** Internal RAD residency decision surfaced to host diagnostics. */
+  get radResidency(): Readonly<{
+    requestedMode: 'indexed' | 'chunk-pages';
+    effectiveMode: 'indexed' | 'chunk-pages';
+    fallbackReason: string | null;
+    residentPages: number;
+    capacityPages: number;
+  }> | null {
+    if (this.scene.chunkOptions?.[0]?.format !== 'rad-chunk') return null;
+    return {
+      requestedMode: this.radResidencyRequestedValue,
+      effectiveMode: this.radChunkResidency ? 'chunk-pages' : 'indexed',
+      fallbackReason: this.radResidencyFallbackReasonValue,
+      residentPages: this.radChunkAllocator?.residentCount ?? 0,
+      capacityPages: this.radChunkAllocator?.capacityPages ?? 0,
+    };
+  }
+
+  /** First-reveal policy selected for this streamed RAD mesh. */
+  get radInitialRevealPolicy(): 'progressive' | 'allocation-fraction' | 'projected-quality' {
+    return this.radRevealPolicy;
+  }
+
   /**
    * The drawn-splat target currently driving the `.rad` page-table frontier -
    * the governed budget, capped by
@@ -1952,6 +3056,38 @@ export class StreamedSplatMesh extends SplatMesh {
    */
   get drawBudget(): number {
     return this.frontierWorker ? this.pageTableDrawBudget : 0;
+  }
+
+  /** Draw allowance the host requested before storage reservation. */
+  get requestedDrawAllowance(): number {
+    return this.frontierWorker ? this.pageTableRequestedDraw : 0;
+  }
+
+  /** Draw allowance actually granted after reserved storage and device caps. */
+  get acceptedDrawAllowance(): number {
+    return this.frontierWorker ? this.pageTableDrawBudget : 0;
+  }
+
+  /** Slots currently reserved for this mesh, including the unpublished staging copy. */
+  get reservedSlots(): number {
+    return this.frontierWorker
+      ? this.radChunkResidency
+        ? (this.radChunkAllocator?.capacityPages ?? 0) * SLAB_PAGE_SPLATS
+        : this.slabSlots
+      : 0;
+  }
+
+  /**
+   * True once a complete generation has crossed the active rendering path.
+   * Staging occupancy and nearby percentage are not publication.
+   */
+  get hasPublishedGeneration(): boolean {
+    if (this.frontierWorker) {
+      return this.radRevealPolicy === 'projected-quality'
+        ? this.revealReadyValue
+        : this.pageTableDisplayGeneration >= 0;
+    }
+    return this.activeSplatCount > 0;
   }
 
   /**
@@ -1968,12 +3104,56 @@ export class StreamedSplatMesh extends SplatMesh {
     planBudget: number;
     lastPlanCamera: readonly [number, number, number] | null;
     firstFrontierCamera: readonly [number, number, number] | null;
+    awaitingIndexedPublication: boolean;
+    sortReadyGeneration: number | null;
+    renderedGeneration: number | null;
+    workerAcknowledgedGeneration: number | null;
+    revealReady: boolean;
+    maxCentralProjectedRatio: number;
+    maxVisibleProjectedRatio: number;
+    firstRevealGeneration: number | null;
+    firstRevealCentralProjectedRatio: number | null;
+    firstRevealVisibleProjectedRatio: number | null;
+    planReason: FrontierPlanReason | null;
+    candidateCancellationCount: number;
+    boundedCutRefusalReason: FrontierPlanMessage['boundedCutRefusalReason'];
+    protectedCacheBytes: number;
+    activePageTableFetches: number;
+    selectionId: number;
+    committedSelectionId: number;
+    demandRevision: number;
+    cameraEpoch: number;
+    demandKey: string;
+    requestedCameraPosition: readonly [number, number, number] | null;
+    staleCancellationReason: string | null;
+    staleRequestsCancelled: number;
+    protectedFilesRetained: readonly number[];
+    activeRequestsBeforeReclamation: number;
+    activeRequestsAfterReclamation: number;
+    hardRelocationDetectedAt: number | null;
+    replacementTraversalPostedAt: number | null;
+    oldTraversalCancelledAt: number | null;
+    firstReplacementSliceAt: number | null;
+    firstCurrentRevisionDemandAt: number | null;
+    firstCurrentRevisionFetchAt: number | null;
+    completedTraversalAt: number | null;
+    firstPublicationAt: number | null;
+    cameraToFirstFetchMs: number | null;
+    hardValidityRevision: number;
+    selectionCompletedAt: number | null;
+    sortSubmittedAt: number | null;
+    renderedAt: number | null;
+    cameraObsolete: boolean;
+    lastInvalidationReason: string | null;
+    skipSamples: readonly FrontierSkipSample[];
+    generationTrace: readonly FrontierGenerationTraceEvent[];
     traversal: Readonly<{
-      strategy: 'heap' | 'bounded-threshold';
+      strategy: 'one-pass' | 'heap' | 'bounded-threshold';
       fallback: boolean;
       fallbackCount: number;
       rootCoverInfeasible: boolean;
       traversalMs: number;
+      traversalId: number;
     }>;
   }> {
     return {
@@ -1986,8 +3166,171 @@ export class StreamedSplatMesh extends SplatMesh {
       planBudget: this.lastPlanBudget,
       lastPlanCamera: this.lastPlanCamera,
       firstFrontierCamera: this.firstFrontierCamera,
+      awaitingIndexedPublication: this.indexedPublishGeneration !== null,
+      sortReadyGeneration: this.sortReadyGenerationValue,
+      renderedGeneration: this.renderedGenerationValue,
+      workerAcknowledgedGeneration: this.workerAcknowledgedGenerationValue,
+      revealReady: this.revealReadyValue,
+      maxCentralProjectedRatio: this.maxCentralProjectedRatioValue,
+      maxVisibleProjectedRatio: this.maxVisibleProjectedRatioValue,
+      firstRevealGeneration: this.firstRevealGenerationValue,
+      firstRevealCentralProjectedRatio: this.firstRevealCentralProjectedRatioValue,
+      firstRevealVisibleProjectedRatio: this.firstRevealVisibleProjectedRatioValue,
+      planReason: this.lastPlanReason,
+      candidateCancellationCount: this.candidateCancellationCount,
+      boundedCutRefusalReason: this.boundedCutRefusalReason,
+      protectedCacheBytes: this.protectedCacheBytesValue,
+      activePageTableFetches: this.pageTableActiveFetches(),
+      selectionId: this.radChunkSelectionIdValue,
+      committedSelectionId: this.radChunkCommittedSelectionIdValue,
+      demandRevision: this.demandGeneration,
+      cameraEpoch: this.cameraEpoch,
+      demandKey: this.demandKey,
+      requestedCameraPosition: this.latestDemandCamera,
+      staleCancellationReason: this.demandDiagnostics.staleCancellationReason,
+      staleRequestsCancelled: this.demandDiagnostics.staleRequestsCancelled,
+      protectedFilesRetained: this.demandDiagnostics.protectedFilesRetained,
+      activeRequestsBeforeReclamation: this.demandDiagnostics.activeRequestsBeforeReclamation,
+      activeRequestsAfterReclamation: this.demandDiagnostics.activeRequestsAfterReclamation,
+      hardRelocationDetectedAt: this.demandDiagnostics.hardRelocationDetectedAt,
+      replacementTraversalPostedAt: this.demandDiagnostics.replacementTraversalPostedAt,
+      oldTraversalCancelledAt: this.demandDiagnostics.oldTraversalCancelledAt,
+      firstReplacementSliceAt: this.demandDiagnostics.firstReplacementSliceAt,
+      firstCurrentRevisionDemandAt: this.demandDiagnostics.firstCurrentRevisionDemandAt,
+      firstCurrentRevisionFetchAt: this.demandDiagnostics.firstCurrentRevisionFetchAt,
+      completedTraversalAt: this.demandDiagnostics.completedTraversalAt,
+      firstPublicationAt: this.demandDiagnostics.firstPublicationAt,
+      cameraToFirstFetchMs: this.demandDiagnostics.cameraToFirstFetchMs,
+      hardValidityRevision: this.radChunkHardValidityRevisionValue,
+      selectionCompletedAt: this.radChunkSelectionCompletedAtValue,
+      sortSubmittedAt: this.radChunkSortSubmittedAtValue,
+      renderedAt: this.radChunkRenderedAtValue,
+      cameraObsolete: this.radChunkCameraObsoleteValue,
+      lastInvalidationReason: this.radChunkLastInvalidationReasonValue,
+      skipSamples: this.lastSkipSamples,
+      generationTrace: this.frontierGenerationTrace.slice(),
       traversal: this.frontierTraversal,
     };
+  }
+
+  /** Holds RAD traversal on the authored startup pose while the viewer camera settles. */
+  beginStartupMainRadLodHold(camera?: THREE.Camera): void {
+    if (!this.frontierWorker || !this.usesRadWave) return;
+    const source = camera ?? this.lastLiveCamera;
+    if (!source) return;
+    const held = source.clone();
+    held.updateMatrixWorld(true);
+    this.startupMainRadLodHold = { camera: held };
+    this.pendingWork = true;
+    this.lastScheduleTime = -Infinity;
+  }
+
+  /** Records the settled pose; live RAD traversal resumes after real translation. */
+  completeStartupMainRadLodHold(camera?: THREE.Camera): void {
+    const hold = this.startupMainRadLodHold;
+    if (!hold) return;
+    const source = camera ?? this.lastLiveCamera;
+    if (!source) return;
+    source.getWorldPosition(_startupSettledPosition);
+    hold.settledPosition = _startupSettledPosition.clone();
+    this.pendingWork = true;
+    this.lastScheduleTime = -Infinity;
+  }
+
+  /** Refreshes the startup hold using Spark's translation-only release rule. */
+  refreshStartupMainRadLodHold(camera?: THREE.Camera): void {
+    const hold = this.startupMainRadLodHold;
+    const source = camera ?? this.lastLiveCamera;
+    if (!hold || !source || !hold.settledPosition) return;
+    source.getWorldPosition(_startupSettledPosition);
+    const moved = _startupSettledPosition.distanceToSquared(hold.settledPosition) > 1;
+    if (moved) {
+      this.startupMainRadLodHold = undefined;
+      this.pendingWork = true;
+      this.lastScheduleTime = -Infinity;
+    }
+  }
+
+  /**
+   * Exact page-table stall inputs: camera, projection, model, threshold, cached
+   * chunks, and the generations at the last plan. Use with `skipSamples` to
+   * re-run selection against the same state.
+   */
+  get pageTableStallSnapshot(): Readonly<{
+    cameraLocal: readonly [number, number, number] | null;
+    cameraForward: readonly [number, number, number] | null;
+    projection: readonly number[];
+    modelWorld: readonly number[];
+    limit: number;
+    lodScale: number;
+    targetPx: number;
+    drawBudget: number;
+    cachedFiles: readonly number[];
+    displayGeneration: number;
+    publishedGeneration: number;
+    publishedCount: number;
+    candidateGeneration: number | null;
+    publishGeneration: number | null;
+    displayedCount: number;
+    reservedSlots: number;
+    planReason: FrontierPlanReason | null;
+    skipSamples: readonly FrontierSkipSample[];
+    traversalId: number;
+    awaitingIndexedPublication: boolean;
+    worker: FrontierSnapshotReply | null;
+    hostNow: Readonly<{
+      cameraLocal: readonly [number, number, number] | null;
+      revision: number;
+      cacheRevision: number;
+      cachedFiles: readonly number[];
+      pendingFetches: number;
+    }>;
+  }> {
+    return {
+      cameraLocal: this.lastPostedCamera ?? this.lastPlanCamera,
+      cameraForward: this.lastPostedForward,
+      projection: this.lastPostedProjection,
+      modelWorld: Array.from(this.matrixWorld.elements),
+      limit: this.lastPostedLimit,
+      lodScale: this.lodScaleValue,
+      targetPx: this.pageTableTargetPx,
+      drawBudget: this.pageTableDrawBudget,
+      cachedFiles: [...this.pageTableCachedFiles].sort((a, b) => a - b),
+      displayGeneration: this.pageTableDisplayGeneration,
+      publishedGeneration: this.indexedPageTable
+        ? this.indexedPublishedGeneration
+        : this.pageTableDisplayGeneration,
+      publishedCount: this.indexedPageTable
+        ? this.indexedDisplayedSlots.length
+        : this.pageTableDrawn,
+      candidateGeneration: this.indexedStagingGeneration,
+      publishGeneration: this.indexedPublishGeneration,
+      displayedCount: this.pageTableDrawn,
+      reservedSlots: this.slabSlots,
+      planReason: this.lastPlanReason,
+      skipSamples: this.lastSkipSamples,
+      traversalId: this.frontierTraversal.traversalId,
+      awaitingIndexedPublication: this.indexedPublishGeneration !== null,
+      worker: this.lastWorkerSnapshot,
+      hostNow: {
+        cameraLocal: this.lastPostedCamera,
+        revision: this.demandGeneration,
+        cacheRevision: this.pageTableHostCacheRevision,
+        cachedFiles: [...this.pageTableCachedFiles].sort((a, b) => a - b),
+        pendingFetches: this.fetching.size,
+      },
+    };
+  }
+
+  /** Requests one worker-owned page-table snapshot for an explicit diagnostic. */
+  async requestPageTableSnapshot(): Promise<FrontierSnapshotReply | null> {
+    if (!this.frontierWorker || this.pageTableDisposed) return null;
+    const requestId = ++this.nextSnapshotRequestId;
+    const snapshot = new Promise<FrontierSnapshotReply | null>((resolve) => {
+      this.snapshotWaiters.set(requestId, resolve);
+    });
+    this.postToWorker({ type: 'snapshot', requestId });
+    return snapshot;
   }
 
   /**
@@ -2029,11 +3372,25 @@ export class StreamedSplatMesh extends SplatMesh {
     this.budgetValue = next;
     this.scene.source.budget = next;
     if (this.frontierWorker) {
+      const previousDrawBudget = this.pageTableDrawBudget;
       // Page-table mode draws the frontier, not the LOD schedule - keep its
       // draw target under the (possibly shared/governed) pool budget too.
-      this.pageTableDrawBudget = Math.min(next, this.pageTableDrawTarget);
-      // Storage follows the draw budget plus staging tail.
-      this.syncSlabPages(this.pageTableStagingSlots);
+      this.pageTableRequestedDraw = Math.min(next, this.pageTableDrawTarget);
+      this.pageTableDrawBudget = this.pageTableRequestedDraw;
+      if (this.radChunkResidency && this.pageTableDrawBudget !== previousDrawBudget) {
+        this.radChunkHardValidityRevisionValue++;
+      }
+      if (!this.radChunkResidency) {
+        this.syncSlabPages(this.pageTableStagingSlots);
+        this.acceptDrawReservation();
+        if (this.pageTableDrawBudget < this.pageTableRequestedDraw) {
+          this.syncSlabPages(this.pageTableStagingSlots);
+          warn(
+            `StreamedSplatMesh: accepted draw allowance ${this.pageTableDrawBudget} ` +
+              `(requested ${this.pageTableRequestedDraw}); reserved slots ${this.slabSlots} cannot hold two complete cuts.`,
+          );
+        }
+      }
       // A caller-pinned `foveationDrawBudget` outranks the budget, so a governor
       // that grows this mesh past it buys nothing and the mesh stays coarse for
       // a reason nothing on screen explains. Say so once.
@@ -2052,7 +3409,7 @@ export class StreamedSplatMesh extends SplatMesh {
     }
     this.pendingWork = true;
     this.lastScheduleTime = -Infinity;
-    return next;
+    return this.frontierWorker && this.pageTableDrawBudget < next ? this.pageTableDrawBudget : next;
   }
 
   /**
@@ -2093,9 +3450,17 @@ export class StreamedSplatMesh extends SplatMesh {
    */
   get planTimings(): Readonly<{
     applyMs: number;
+    handlerMs: number;
     worstApplyMs: number;
     writeMs: number;
     residentMs: number;
+    mappingMs: number;
+    pageIdentityMs: number;
+    activeListMs: number;
+    installMs: number;
+    protectionMs: number;
+    unifiedGatherMs: number;
+    sortMs: number;
     moves: number;
     appends: number;
     worstSplats: number;
@@ -2111,7 +3476,7 @@ export class StreamedSplatMesh extends SplatMesh {
    * other reading distinguishes:
    *
    * - **`sweep` climbing** - speculative file-order pre-warming of the whole
-   *   capture. Declined by the `smooth` profile; see `sweepAllowed`.
+   *   capture. Declined by the `smooth` profile.
    * - **`priority` / `base` climbing while `evicted` climbs too** - the
    *   frontier's touched set does not fit the worker cache, so chunks are
    *   evicted and immediately refetched. Streaming never ends because it cannot.
@@ -2139,12 +3504,16 @@ export class StreamedSplatMesh extends SplatMesh {
     base: number;
     sweep: number;
     evicted: number;
+    pageInstalls: number;
+    pageInstallMs: number;
     uncovered: number;
     retiredEarly: number;
     cacheFull: boolean;
     cacheBytes: number;
     cacheLimitBytes: number;
+    activePageTableFetches: number;
   }> {
+    this.fetchCountsValue.activePageTableFetches = this.pageTableActiveFetches();
     return this.fetchCountsValue;
   }
 
@@ -2188,6 +3557,8 @@ export class StreamedSplatMesh extends SplatMesh {
     renderer: THREE.WebGPURenderer,
     options: SplatUpdateOptions = {},
   ): void {
+    this.radFrame++;
+    this.radDiagnosticRenderer = this.onPerformanceEvent ? renderer : null;
     const now = performance.now();
     camera.updateMatrixWorld();
     this.updateWorldMatrix(true, false);
@@ -2215,6 +3586,7 @@ export class StreamedSplatMesh extends SplatMesh {
       }
     }
     const lodCamera = xrView?.head ?? camera;
+    this.lastLiveCamera = lodCamera.clone();
     this.noteRenderer(renderer);
     const performanceEvent = this.shouldReschedule(lodCamera, now)
       ? this.reschedule(lodCamera, now)
@@ -2233,6 +3605,10 @@ export class StreamedSplatMesh extends SplatMesh {
         textureCopyCount: 0,
         textureCopyBytes: 0,
         activeListUpdateRanges: 0,
+        sortSubmissions: 0,
+        sortPasses: 0,
+        projectionSubmissions: 0,
+        projectionPasses: 0,
         appendedCount: 0,
         removedCount: 0,
         stagedCount: 0,
@@ -2240,6 +3616,9 @@ export class StreamedSplatMesh extends SplatMesh {
         activeCount: this.activeSplatCount,
         forcedSort: false,
         compacted: false,
+        sortReadyGeneration: this.sortReadyGenerationValue,
+        renderedGeneration: this.renderedGenerationValue,
+        workerAcknowledgedGeneration: this.workerAcknowledgedGenerationValue,
       };
       if (performanceEvent) event.cpuMs += timestamp - performanceEvent.timestamp;
       event.timestamp = timestamp;
@@ -2250,6 +3629,13 @@ export class StreamedSplatMesh extends SplatMesh {
       event.textureCopyCount = timings.textureCopyCount;
       event.textureCopyBytes = timings.textureCopyBytes;
       event.activeListUpdateRanges = timings.activeListUpdateRanges;
+      event.sortSubmissions = timings.sortSubmissions;
+      event.sortPasses = timings.sortPasses;
+      event.projectionSubmissions = timings.projectionSubmissions;
+      event.projectionPasses = timings.projectionPasses;
+      event.sortReadyGeneration = this.sortReadyGenerationValue;
+      event.renderedGeneration = this.renderedGenerationValue;
+      event.workerAcknowledgedGeneration = this.workerAcknowledgedGenerationValue;
       this.onPerformanceEvent(event);
     }
   }
@@ -2495,6 +3881,8 @@ export class StreamedSplatMesh extends SplatMesh {
 
   override dispose(): void {
     if (this.disposed) return;
+    for (const resolve of this.snapshotWaiters.values()) resolve(null);
+    this.snapshotWaiters.clear();
     this.loader.dispose();
     // Terminating drops any in-flight traversal; clearing the handler also
     // frees the closure over this mesh for a message already dispatched.
@@ -2568,6 +3956,8 @@ export class StreamedSplatMesh extends SplatMesh {
     this.lastScheduleTime = now;
     camera.getWorldPosition(this.lastCameraPos);
     camera.getWorldQuaternion(this.lastCameraQuat);
+    this.lastLiveCamera = camera.clone();
+    this.refreshStartupMainRadLodHold(camera);
 
     // Camera position and frustum in this mesh's local space.
     _cameraLocal.copy(this.lastCameraPos);
@@ -2581,14 +3971,29 @@ export class StreamedSplatMesh extends SplatMesh {
       // Camera forward as a mesh-local direction: transform a point one unit
       // ahead and subtract the local eye, so any affine mesh transform is
       // handled without a separate normal matrix.
-      camera.getWorldDirection(_cameraForward).add(this.lastCameraPos);
-      this.worldToLocal(_cameraForward);
-      _cameraForward.sub(_cameraLocal).normalize();
+      let traversalCamera = camera;
+      if (this.startupMainRadLodHold) traversalCamera = this.startupMainRadLodHold.camera;
+      traversalCamera.updateMatrixWorld(true);
+      traversalCamera.getWorldPosition(_streamCameraWorld);
+      _streamCameraLocal.copy(_streamCameraWorld);
+      this.worldToLocal(_streamCameraLocal);
+      traversalCamera.getWorldDirection(_streamCameraForward).add(_streamCameraWorld);
+      this.worldToLocal(_streamCameraForward);
+      _streamCameraForward.sub(_streamCameraLocal).normalize();
+      _streamProjection
+        .multiplyMatrices(traversalCamera.projectionMatrix, traversalCamera.matrixWorldInverse)
+        .multiply(this.matrixWorld);
       // Cut limit, exactly as the material derives it: a node is fine enough
       // when `size / distance ≤ targetPx / focalY`.
-      const focalY = (camera.projectionMatrix.elements[5] * this.pageTableViewportY) / 2;
+      const focalY = (traversalCamera.projectionMatrix.elements[5] * this.pageTableViewportY) / 2;
       if (focalY > 0) this.pageTableLimit = this.pageTableTargetPx / focalY;
-      this.reschedulePageTable(_cameraLocal, _cameraForward, _frustum, now, _projScreen.elements);
+      this.reschedulePageTable(
+        _streamCameraLocal,
+        _streamCameraForward,
+        _frustum,
+        now,
+        _streamProjection.elements,
+      );
       // The page-table path still reports its per-update CPU cost. Returning
       // null here made `onPerformanceEvent` silent on the one path a `.rad`
       // actually takes, so a host watching `cpuMs` / `uploadMs` / `sortSubmitMs`
@@ -2621,6 +4026,9 @@ export class StreamedSplatMesh extends SplatMesh {
         activeCount: this.pageTableDrawn,
         forcedSort: false,
         compacted: false,
+        sortReadyGeneration: this.sortReadyGenerationValue,
+        renderedGeneration: this.renderedGenerationValue,
+        workerAcknowledgedGeneration: this.workerAcknowledgedGenerationValue,
       };
     }
 
@@ -3319,6 +4727,9 @@ export class StreamedSplatMesh extends SplatMesh {
       forcedSort:
         activeCount === 0 || appendedCount + removedCount >= activeCount * CONTENT_FORCE_FRACTION,
       compacted,
+      sortReadyGeneration: this.sortReadyGenerationValue,
+      renderedGeneration: this.renderedGenerationValue,
+      workerAcknowledgedGeneration: this.workerAcknowledgedGenerationValue,
     };
   }
 
@@ -4137,112 +5548,158 @@ export class StreamedSplatMesh extends SplatMesh {
     projection: readonly number[] = [],
   ): void {
     if (this.pageTableDisposed) return;
-    if (this.focusedDemand) {
-      const camera: [number, number, number] = [cameraLocal.x, cameraLocal.y, cameraLocal.z];
-      const forward: [number, number, number] = [forwardLocal.x, forwardLocal.y, forwardLocal.z];
-      const limit = Math.min(this.pageTableLimit / this.lodScaleValue, this.demandSolvedLimit);
-      const key = [...camera, ...forward, ...projection, limit, this.pageTableDrawBudget].join(',');
-      if (key !== this.demandKey) {
+    const camera: [number, number, number] = [cameraLocal.x, cameraLocal.y, cameraLocal.z];
+    const forward: [number, number, number] = [forwardLocal.x, forwardLocal.y, forwardLocal.z];
+    this.latestDemandCamera = camera;
+    const limit = this.pageTableLimit / this.lodScaleValue;
+    const fov = this.pageTableFoveation;
+    const key = pageTableDemandKey(
+      camera,
+      forward,
+      projection,
+      limit,
+      this.pageTableDrawBudget,
+      fov,
+    );
+    const demandChanged = key !== this.demandKey;
+    if (this.radChunkDemandSettledRevision >= 0) {
+      if (this.radChunkDemandSettlementIsCurrent(camera, forward, limit)) {
         this.demandKey = key;
-        this.demandGeneration++;
-        this.demandDiagnostics.generation = this.demandGeneration;
+        this.pendingWork = false;
+        return;
       }
-      if (
-        !this.demandOutstanding &&
-        now - this.demandSentAt >= 100 &&
-        this.demandReadyGeneration !== this.demandGeneration
-      ) {
-        this.demandOutstanding = true;
-        this.demandSentAt = now;
-        this.postToWorker({
-          type: 'demand',
-          generation: this.demandGeneration,
-          cameraLocal: camera,
-          cameraForward: forward,
-          projection: Array.from(projection),
-          ...this.pageTableFoveation,
-          limit,
-          budget: this.pageTableDrawBudget,
-        });
-      }
-      if (this.demandReadyGeneration === this.demandGeneration) this.reconcileDemand();
-      // Root coverage is a prerequisite for either traversal. An incomplete
-      // scan never authorizes canceling or replacing any other request.
-      if (!this.pageTableCachedFiles.has(0)) this.requestChunk(0, 'priority');
-    } else {
+      this.radChunkDemandSettledRevision = -1;
+      this.radChunkDemandSettledCamera = null;
+      this.radChunkDemandSettledForward = null;
+    }
+    const hardRelocation =
+      this.lastPostedCamera !== null && squaredDistance3(camera, this.lastPostedCamera) > 1;
+    const firstHardRelocation =
+      hardRelocation && !this.hardRelocationPending && this.pageTableReplacementSeq === null;
+    if (demandChanged) {
+      this.demandKey = key;
+      this.cameraEpoch++;
+      this.demandNeedsNewRevision = true;
+    }
+    if (hardRelocation && !demandChanged && firstHardRelocation) {
+      this.cameraEpoch++;
+      this.demandNeedsNewRevision = true;
+    }
+    if (firstHardRelocation) {
+      this.hardRelocationPending = true;
+      this.demandDiagnostics.hardRelocationDetectedAt = performance.now();
+      this.demandDiagnostics.replacementTraversalPostedAt = null;
+      this.demandDiagnostics.oldTraversalCancelledAt = null;
+      this.demandDiagnostics.firstReplacementSliceAt = null;
+      this.demandDiagnostics.firstCurrentRevisionDemandAt = null;
+      this.demandDiagnostics.firstCurrentRevisionFetchAt = null;
+      this.demandDiagnostics.completedTraversalAt = null;
+      this.demandDiagnostics.firstPublicationAt = null;
+      this.demandDiagnostics.cameraToFirstFetchMs = null;
+    }
+    this.demandDiagnostics.cameraEpoch = this.cameraEpoch;
+    this.demandDiagnostics.demandKey = key;
+    this.demandDiagnostics.requestedCameraPosition = camera;
+    if (firstHardRelocation) this.reclaimStalePriorityFetches();
+    const supersedeInFlight = this.pageTableInFlight && firstHardRelocation;
+    if (this.radChunkResidency && (this.demandNeedsNewRevision || supersedeInFlight)) {
+      // A new walk owns queued priority from this point. Let requests already
+      // on the wire finish, but do not let the previous cut refill their slots
+      // while JavaScript computes the replacement demand.
       this.demandWants = [];
+      this.demandFirstSeen.clear();
       this.demandReadyGeneration = -1;
-      this.demandKey = '';
-      // 1. What the last frontier wanted and did not have, biggest-on-screen
-      //    first. This is the detail the camera is pointed at, so it takes the
-      //    fetch slots before anything else - issued *after* the sweep below it
-      //    was silently dropped by the in-flight cap on every tick, and the whole
-      //    capture downloaded in file order while the view stayed coarse.
-      for (const file of this.pageTableFetchPriority) this.requestChunk(file, 'priority');
-      // 2. Keep the source's coarse base through the first complete page-table
-      //    cut. On captures that fit in cache it can keep pre-warming turns;
-      //    otherwise the frontier worker names current-view dependencies itself.
-      //    Continuing an independent base prefix on an over-cache capture
-      //    repeatedly evicts those dependencies and stalls visible refinement.
-      const desiredFiles = new Set(this.pageTableFetchPriority);
-      if (
-        this.pageTableDrawn === 0 ||
-        estimateSceneDecodedBytes(this.scene) <= this.cacheLimitBytes
-      ) {
-        for (const run of this.scene.source.computeDesiredRuns(cameraLocal, frustum, now)) {
-          desiredFiles.add(run.file);
-          this.requestChunk(run.file, 'base');
-        }
+    } else if (this.radChunkResidency && !this.pageTableInFlight) {
+      this.boundChunkPageCarryoverDemand();
+    }
+    this.reconcileDemand(
+      this.demandReadyGeneration === this.demandGeneration && !this.demandNeedsNewRevision,
+    );
+    if (!this.pageTableCachedFiles.has(0)) this.requestChunk(0, 'priority');
+    void frustum;
+    void now;
+    if (this.pageTableInFlight && !supersedeInFlight) {
+      if (this.demandNeedsNewRevision) {
+        // The worker is finishing an older bounded walk. Keep the newest pose
+        // queued so its reply immediately posts the latest revision.
+        this.pendingWork = true;
+        this.lastScheduleTime = -Infinity;
       }
-      // Cancel detail this mesh no longer wants, so its slots go back to the
-      // scene now rather than when a superseded request happens to finish. The
-      // classic path has always done this; the page-table path never did, which
-      // on a shared pipe means a camera cut kept paying for the old view.
-      // Sweep fetches are exempt: they are file-order pre-warming that no
-      // frontier plan ever names, so matching them against `desiredFiles` would
-      // abort every one of them on the very next reschedule.
-      for (const [file, entry] of this.fetching) {
-        if (entry.kind === 'sweep') continue;
-        if (!desiredFiles.has(file) && !this.scene.pinnedFiles.has(file)) entry.controller.abort();
+      if (this.onPerformanceEvent !== undefined) {
+        console.debug(
+          '[vlam:rad-reschedule]',
+          JSON.stringify({
+            state: 'blocked-in-flight',
+            demandGeneration: this.demandGeneration,
+            cameraEpoch: this.cameraEpoch,
+            cameraKey: this.demandKey,
+            cameraPosition: camera,
+            queuedRevision: this.demandNeedsNewRevision,
+          }),
+        );
       }
-      // 3. Background sweep over the slots that remain: pull the lowest uncached
-      //    chunk (file order is coarse → fine). Once the cache holds the scene,
-      //    turning the camera is served from RAM in one traversal instead of a
-      //    level-by-level network ladder. It keeps a reserve free so (1) is never
-      //    starved, and pauses whenever the worker cache is at its cap - past that
-      //    point sweeping only evicts what the frontier is using. It resumes on
-      //    its own when the cap rises, which under a scene-wide `ChunkCacheBudget`
-      //    is what happens as the camera approaches this mesh.
-      //
-      //    Only a mesh with weight sweeps. This is speculation about a camera
-      //    move that has not happened, and it is unbounded - it wants the entire
-      //    capture. On a scene of streamed additional meshes, every hidden and distant one
-      //    speculating at once is the traffic that delays the mesh the viewer
-      //    is looking at. The cost of gating it is that re-focusing a mesh that
-      //    went cold refetches instead of hitting a warm cache.
-      if (!this.pageTableCacheAtLimit && this.sweepAllowed()) {
-        const sweepCap = Math.max(1, this.maxInflight - PAGETABLE_PRIORITY_SLOTS);
-        const files = this.scene.chunkUrls.length;
-        for (let f = 0; f < files && this.fetching.size < sweepCap; f++) {
-          if (!this.pageTableCachedFiles.has(f)) this.requestChunk(f, 'sweep');
-        }
+      return;
+    }
+    this.pendingWork = false;
+    this.lastScheduleTime = now;
+
+    if (this.demandNeedsNewRevision) {
+      this.demandGeneration++;
+      this.demandDiagnostics.generation = this.demandGeneration;
+      this.demandReadyGeneration = -1;
+      this.demandNeedsNewRevision = false;
+      if (this.radChunkResidency) {
+        this.demandWants = [];
+        this.demandFirstSeen.clear();
       }
     }
-    if (this.pageTableInFlight) return; // one traversal outstanding - coalesce
-
     this.pageTableInFlight = true;
+    this.lastPostedCamera = camera;
+    this.hardRelocationPending = false;
+    this.lastPostedForward = forward;
+    this.lastPostedProjection = projection.length ? Array.from(projection) : [];
+    this.lastPostedLimit = limit;
+    const seq = ++this.pageTableSeq;
+    this.pageTableActiveSeq = seq;
+    if (firstHardRelocation) {
+      this.replacementAwaitingFirstDemandSeq = seq;
+      this.pageTableReplacementSeq = seq;
+      this.demandDiagnostics.replacementTraversalPostedAt = performance.now();
+    }
     this.postToWorker({
       type: 'reschedule',
-      seq: ++this.pageTableSeq,
+      seq,
       ...(this.pageTableContinuePending ? { continuePendingPlan: true } : {}),
-      cameraLocal: [cameraLocal.x, cameraLocal.y, cameraLocal.z],
-      cameraForward: [forwardLocal.x, forwardLocal.y, forwardLocal.z],
+      cameraLocal: camera,
+      cameraForward: forward,
+      projection: Array.from(projection),
       ...this.pageTableFoveation,
-      // Spark's cut is `pixel_scale × lodScale ≤ limit`, and the traversal only
-      // ever sees one side of that - so scaling the limit down by `lodScale` is
-      // the same comparison, with no protocol change.
-      limit: this.pageTableLimit / this.lodScaleValue,
+      limit,
       budget: this.pageTableDrawBudget,
+      revision: this.demandGeneration,
+      diagnostics: this.onPerformanceEvent !== undefined,
+      initialPublishMinSplats: initialPublishMinSplats(
+        this.radRevealPolicy,
+        this.radDisplayFraction,
+        this.pageTableDrawBudget,
+      ),
+    });
+    if (this.onPerformanceEvent !== undefined) {
+      console.debug(
+        '[vlam:rad-reschedule]',
+        JSON.stringify({
+          state: 'posted',
+          seq: this.pageTableSeq,
+          revision: this.demandGeneration,
+          cameraEpoch: this.cameraEpoch,
+          cameraKey: this.demandKey,
+          cameraPosition: camera,
+        }),
+      );
+    }
+    this.recordFrontierTrace('next-reschedule', {
+      generation: this.indexedStagingGeneration ?? this.pageTableDisplayGeneration,
+      planReason: this.lastPlanReason,
     });
   }
 
@@ -4252,8 +5709,18 @@ export class StreamedSplatMesh extends SplatMesh {
    * frontier wants next, and reschedules again if chunks are still streaming.
    */
   private applyFrontierPlan(plan: FrontierPlanMessage): void {
-    this.pageTableInFlight = false;
-    if (this.pageTableDisposed || this.slabPages.length === 0) return;
+    if (this.pageTableDisposed || (!this.radChunkResidency && this.slabPages.length === 0)) {
+      return;
+    }
+    if (plan.seq < this.pageTableSeq) {
+      this.pendingWork = true;
+      return;
+    }
+    if (plan.seq === this.pageTableActiveSeq) {
+      this.pageTableInFlight = false;
+      if (this.pageTableReplacementSeq === plan.seq) this.pageTableReplacementSeq = null;
+      this.demandDiagnostics.completedTraversalAt = performance.now();
+    }
     // Storage may have moved since this plan was built (a reschedule answered
     // from the old capacity, then a resize landed). Such a plan must still be
     // applied, clamped to the slots that exist: the worker's pager has already
@@ -4265,7 +5732,7 @@ export class StreamedSplatMesh extends SplatMesh {
     // the slots below the boundary: `syncSlabPages` only pushes or pops tail
     // pages, and `FrontierPager.resize` keeps `[0, keep)` untouched. So "the
     // plan, truncated at the new capacity" is precisely the pager's own state.
-    const limit = this.pagerSlots;
+    const limit = this.radChunkResidency ? this.capacity : this.pagerSlots;
     if (plan.capacity !== limit) {
       // The worker will re-traverse at the new capacity; make sure it does.
       this.pendingWork = true;
@@ -4277,51 +5744,297 @@ export class StreamedSplatMesh extends SplatMesh {
     // bounds union and a row-range mark for every one of them, which stalled the
     // main thread for seconds whenever a camera move churned the frontier.
     const applyStartedAt = performance.now();
-    const slots = plan.moveSlots;
-    for (let i = 0; i < slots.length;) {
-      let run = 1;
-      while (i + run < slots.length && (slots[i + run] as number) === (slots[i] as number) + run) {
-        run++;
+    if (this.indexedPageTable && !this.radChunkResidency) {
+      const writeSlots = plan.writeSlots ?? new Uint32Array(0);
+      if (writeSlots.length !== plan.appends.count) {
+        throw new Error('StreamedSplatMesh: indexed plan write slots do not match appends.');
       }
-      const start = slots[i] as number;
-      const clamped = Math.min(run, limit - start);
-      if (clamped > 0) this.writeSlabSlots(slicePlanRun(plan.moves, i, clamped), start, clamped);
-      i += run;
-    }
-    if (plan.appends.count > 0) {
-      const clamped = Math.min(plan.appends.count, limit - plan.appendStart);
-      if (clamped > 0) this.writeSlabSlots(plan.appends, plan.appendStart, clamped);
+      const displayed = new Set(this.indexedDisplayedSlots);
+      const seen = new Set<number>();
+      let duplicate = false;
+      let outOfRange = false;
+      let displayedMutation = false;
+      for (const slot of writeSlots) {
+        if (seen.has(slot)) duplicate = true;
+        seen.add(slot);
+        if (slot >= limit) outOfRange = true;
+        if (displayed.has(slot)) displayedMutation = true;
+      }
+      if (duplicate || outOfRange || displayedMutation) {
+        this.discardIndexedPublication('invalid-indexed-slot-write');
+        this.pendingWork = true;
+        return;
+      }
+      this.writeIndexedSlabSlots(plan.appends, writeSlots);
+    } else {
+      const slots = plan.moveSlots;
+      for (let i = 0; i < slots.length;) {
+        let run = 1;
+        while (
+          i + run < slots.length &&
+          (slots[i + run] as number) === (slots[i] as number) + run
+        ) {
+          run++;
+        }
+        const start = slots[i] as number;
+        const clamped = Math.min(run, limit - start);
+        if (clamped > 0) this.writeSlabSlots(slicePlanRun(plan.moves, i, clamped), start, clamped);
+        i += run;
+      }
+      if (plan.appends.count > 0) {
+        const clamped = Math.min(plan.appends.count, limit - plan.appendStart);
+        if (clamped > 0) this.writeSlabSlots(plan.appends, plan.appendStart, clamped);
+      }
     }
     const writeFinishedAt = performance.now();
     const drawn = Math.min(plan.displayCount ?? plan.residentCount, limit);
-    this.pageTableResident = Math.min(plan.residentCount, limit);
-    // Freed tail slots leave the active list, so their data is not drawn - but
-    // zero it anyway. It costs a fill over the freed range only, and it means a
-    // slot that somehow ends up drawn without being written renders nothing
-    // instead of whichever coarse node used to own it (one enormous splat).
+    this.pageTableResident = this.indexedPageTable
+      ? this.radChunkResidency
+        ? (this.radChunkAllocator?.residentCount ?? 0) * SLAB_PAGE_SPLATS
+        : this.pagerSlots
+      : Math.min(plan.residentCount, limit);
     const degenerateStart = Math.min(plan.degenerateStart, limit);
     const degenerateCount = Math.min(plan.degenerateCount, limit - degenerateStart);
-    if (degenerateCount > 0) this.degenerateSlabSlots(degenerateStart, degenerateCount);
-    const residentFinishedAt = performance.now();
-    // Spark holds `display` until the new mapping is fully paged. The pager
-    // freezes `displayCount` at the last published cut while replacements
-    // stage onto the tail, and only advances it when the worker publishes
-    // (wanted chunks cached, cache full, or camera moved).
-    const presented =
-      plan.displayGeneration !== undefined
-        ? plan.displayGeneration !== this.pageTableDisplayGeneration
-        : drawn !== this.pageTableDrawn;
-    if (presented) {
-      this.setSlabResident(drawn);
-      this.pageTableDrawn = drawn;
-      this.pageTableDisplayGeneration =
-        plan.displayGeneration ?? this.pageTableDisplayGeneration + 1;
-      this.invalidateSort();
+    if (!this.indexedPageTable && degenerateCount > 0) {
+      this.degenerateSlabSlots(degenerateStart, degenerateCount);
     }
+    const residentFinishedAt = performance.now();
+    const candidateRevisionCurrent =
+      (plan.candidateRevision === undefined || plan.candidateRevision === this.demandGeneration) &&
+      !this.demandNeedsNewRevision;
+    if (
+      this.indexedPageTable &&
+      plan.cancelledCandidateGeneration !== undefined &&
+      plan.cancelledCandidateGeneration === this.indexedPublishGeneration
+    ) {
+      this.discardIndexedPublication('worker-cancelled-candidate');
+    }
+    if (
+      this.indexedPageTable &&
+      plan.cancelledCandidateGeneration !== undefined &&
+      this.indexedPendingDiagnostic?.generation === plan.cancelledCandidateGeneration &&
+      this.indexedPublishGeneration !== plan.cancelledCandidateGeneration
+    ) {
+      this.rejectRadPublicationDiagnostic(
+        this.indexedPendingDiagnostic,
+        'worker-cancelled-candidate',
+      );
+    }
+    if (this.onPerformanceEvent !== undefined) {
+      console.debug(
+        '[vlam:rad-plan-main]',
+        JSON.stringify({
+          seq: plan.seq,
+          candidateGeneration: plan.candidateGeneration ?? null,
+          candidateComplete: plan.candidateComplete === true,
+          candidateSize: plan.candidateSize ?? null,
+          candidateNewSlots: plan.candidateNewSlots ?? null,
+          planReason: plan.planReason ?? null,
+          converged: plan.converged,
+          pending: plan.pendingFrontierSplats ?? 0,
+          touched: plan.touched.length,
+          revision: plan.candidateRevision ?? null,
+          cancelled: plan.cancelledCandidateGeneration ?? null,
+        }),
+      );
+    }
+    const cancelledCandidate =
+      plan.cancelledCandidateGeneration !== undefined &&
+      plan.cancelledCandidateGeneration === plan.candidateGeneration;
+    const publicationDiagnostic =
+      cancelledCandidate || this.radChunkResidency
+        ? null
+        : this.beginRadPublicationDiagnostic(plan);
+    const indexedPublication =
+      this.indexedPageTable &&
+      !this.radChunkResidency &&
+      plan.candidateComplete === true &&
+      candidateRevisionCurrent
+        ? plan.candidateSlots
+        : undefined;
+    const chunkCandidateGeneration = plan.candidateGeneration;
+    const chunkPublicationBusy =
+      this.radChunkPublishGeneration !== null || this.radChunkPendingGlobals !== null;
+    const chunkCandidateOverBudget =
+      this.radChunkResidency &&
+      plan.candidateComplete === true &&
+      plan.selectionGlobals !== undefined &&
+      plan.selectionGlobals.length > this.pageTableDrawBudget;
+    const chunkPublicationGlobals =
+      this.radChunkResidency &&
+      plan.candidateComplete === true &&
+      !chunkPublicationBusy &&
+      chunkCandidateGeneration !== undefined &&
+      chunkCandidateGeneration > this.pageTableDisplayGeneration &&
+      !chunkCandidateOverBudget &&
+      plan.selectionGlobals
+        ? plan.selectionGlobals
+        : undefined;
+    const chunkPublicationMapping = chunkPublicationGlobals
+      ? this.mapRadChunkSelection(chunkPublicationGlobals)
+      : undefined;
+    const chunkPublicationSlots = chunkPublicationMapping?.slots;
+    const chunkPublicationPageIdentity = chunkPublicationMapping?.pageIdentity;
+    let activeListMs = 0;
+    if (chunkCandidateOverBudget) {
+      this.radChunkLastInvalidationReasonValue = 'draw-budget';
+      this.pendingWork = true;
+      this.lastScheduleTime = -Infinity;
+    }
+    if (chunkPublicationGlobals && (!chunkPublicationSlots || !chunkPublicationPageIdentity)) {
+      if (this.onPerformanceEvent !== undefined) {
+        console.debug(
+          '[vlam:rad-chunk-publication]',
+          JSON.stringify({
+            seq: plan.seq,
+            candidateGeneration: plan.candidateGeneration ?? null,
+            candidateSize: chunkPublicationGlobals.length,
+            residentPages: this.radChunkAllocator?.residentCount ?? 0,
+            state: 'missing-page',
+          }),
+        );
+      }
+      this.pendingWork = true;
+      this.lastScheduleTime = -Infinity;
+      return;
+    }
+    if (this.indexedPageTable && plan.candidateGeneration !== undefined) {
+      this.indexedStagingGeneration = plan.candidateGeneration;
+    }
+    // An indexed plan's candidate generation is staging state until the worker
+    // supplies the complete candidate slot list. `displayGeneration` mirrors
+    // that candidate on staging replies for diagnostics, but must not advance
+    // the displayed generation: otherwise the later publication with the same
+    // generation is mistaken for an unchanged display and never acknowledged.
+    const presented = this.radChunkResidency
+      ? chunkPublicationGlobals !== undefined &&
+        chunkPublicationSlots !== null &&
+        (chunkPublicationGlobals.length !== this.radChunkDisplayedGlobals.length ||
+          this.radChunkDisplayedSelectionHashA === null ||
+          chunkPublicationMapping?.selectionHashA !== this.radChunkDisplayedSelectionHashA ||
+          chunkPublicationMapping?.selectionHashB !== this.radChunkDisplayedSelectionHashB)
+      : this.indexedPageTable
+        ? indexedPublication !== undefined &&
+          plan.candidateGeneration !== this.pageTableDisplayGeneration &&
+          plan.candidateGeneration !== this.indexedPublishGeneration
+        : plan.displayGeneration !== undefined
+          ? plan.displayGeneration !== this.pageTableDisplayGeneration
+          : drawn !== this.pageTableDrawn;
+    if (this.radChunkResidency && this.onPerformanceEvent !== undefined && presented) {
+      console.debug(
+        '[vlam:rad-chunk-publication]',
+        JSON.stringify({
+          seq: plan.seq,
+          candidateGeneration: plan.candidateGeneration ?? null,
+          candidateSize: chunkPublicationGlobals?.length ?? null,
+          candidateRevision: plan.candidateRevision ?? null,
+          demandGeneration: this.demandGeneration,
+          demandNeedsNewRevision: this.demandNeedsNewRevision,
+          selectionId: this.radChunkSelectionIdValue + 1,
+          cameraObsolete:
+            plan.candidateRevision !== undefined &&
+            (plan.candidateRevision !== this.demandGeneration || this.demandNeedsNewRevision),
+          selectionPresent: plan.selectionGlobals !== undefined,
+          residentPages: this.radChunkAllocator?.residentCount ?? 0,
+          displayed: this.radChunkDisplayedGlobals.length,
+          presented,
+          state: 'candidate',
+        }),
+      );
+    }
+    if (presented) {
+      if (chunkPublicationGlobals && chunkPublicationSlots) {
+        const previousVisibleCount = this.pageTableDrawn;
+        const activeListStartedAt = performance.now();
+        this.radChunkPublishActiveListVersion = this.replaceActiveIndices(chunkPublicationSlots);
+        this.retainVisibleInstanceCount(previousVisibleCount);
+        activeListMs = performance.now() - activeListStartedAt;
+        this.radChunkPendingGlobals = chunkPublicationGlobals;
+        this.radChunkPublishGeneration = plan.candidateGeneration as number;
+        this.radChunkPublishRevision = plan.candidateRevision ?? null;
+        this.radChunkSelectionIdValue++;
+        this.radChunkPendingSelectionIdValue = this.radChunkSelectionIdValue;
+        this.radChunkPendingHardValidityRevisionValue = this.radChunkHardValidityRevisionValue;
+        this.radChunkPendingPageIdentity = chunkPublicationPageIdentity ?? null;
+        this.radChunkPendingFiles = chunkPublicationPageIdentity
+          ? new Set(chunkPublicationPageIdentity.keys())
+          : null;
+        this.radChunkPendingSelectionHashA = chunkPublicationMapping?.selectionHashA ?? null;
+        this.radChunkPendingSelectionHashB = chunkPublicationMapping?.selectionHashB ?? null;
+        this.radChunkPendingBudgetSettled =
+          plan.budgetClamped === true &&
+          this.radChunkDrawBudgetSaturated(chunkPublicationGlobals.length) &&
+          (this.radChunkAllocator?.residentCount ?? 0) >=
+            (this.radChunkAllocator?.capacityPages ?? Number.POSITIVE_INFINITY);
+        this.radChunkSelectionCompletedAtValue = performance.now();
+        this.radChunkSortSubmittedAtValue = this.radChunkSelectionCompletedAtValue;
+        this.radChunkCameraObsoleteValue =
+          this.radChunkPublishRevision !== null &&
+          (this.radChunkPublishRevision !== this.demandGeneration || this.demandNeedsNewRevision);
+        this.radChunkPendingRevealQuality = {
+          revealReady: plan.revealReady === true,
+          maxCentralProjectedRatio: plan.maxCentralProjectedRatio ?? 0,
+          maxVisibleProjectedRatio: plan.maxVisibleProjectedRatio ?? 0,
+        };
+      } else if (indexedPublication) {
+        const poolIndices = this.poolIndicesForSlabSlots(indexedPublication);
+        const previousVisibleCount = this.pageTableDrawn;
+        const activeListStartedAt = performance.now();
+        this.indexedPublishActiveListVersion = this.replaceActiveIndices(poolIndices);
+        this.retainVisibleInstanceCount(previousVisibleCount);
+        activeListMs = performance.now() - activeListStartedAt;
+        this.indexedPendingDisplaySlots = indexedPublication;
+        this.indexedPublishGeneration = plan.candidateGeneration as number;
+        this.indexedPublishRevision = plan.candidateRevision ?? null;
+        const slotToNode = this.sampleRadDiagnosticValues(indexedPublication).map((slot) => ({
+          slot,
+          global: this.pageTableGlobals[slot] ?? 0xffffffff,
+        }));
+        const slotSet = new Set<number>();
+        let duplicateSlots = false;
+        let outOfRangeSlots = false;
+        for (const slot of indexedPublication) {
+          if (slotSet.has(slot)) duplicateSlots = true;
+          slotSet.add(slot);
+          if (slot >= limit) outOfRangeSlots = true;
+        }
+        const diagnostic = publicationDiagnostic;
+        if (diagnostic) {
+          diagnostic.slotToNode = slotToNode;
+          diagnostic.slotChecks = {
+            duplicate: duplicateSlots,
+            outOfRange: outOfRangeSlots,
+            displayedMutation: false,
+          };
+        }
+        if (duplicateSlots || outOfRangeSlots || plan.diagnosticCut?.valid === false) {
+          if (diagnostic) this.rejectRadPublicationDiagnostic(diagnostic, 'invalid-candidate');
+          this.discardIndexedPublication('invalid-candidate');
+          return;
+        }
+      } else {
+        this.setSlabResident(drawn);
+        this.pageTableDrawn = drawn;
+        this.pageTableDisplayGeneration =
+          plan.displayGeneration ?? this.pageTableDisplayGeneration + 1;
+        this.invalidateSort();
+      }
+    }
+    const budgetSettled =
+      this.radChunkResidency &&
+      plan.budgetClamped === true &&
+      chunkPublicationGlobals !== undefined &&
+      chunkPublicationSlots !== null &&
+      !presented &&
+      this.radChunkDrawBudgetSaturated(chunkPublicationGlobals.length) &&
+      (this.radChunkAllocator?.residentCount ?? 0) >=
+        (this.radChunkAllocator?.capacityPages ?? Number.POSITIVE_INFINITY);
+    if (budgetSettled) this.settleRadChunkDemand();
+    const converged = plan.converged || budgetSettled;
     const continuedOlderPlan = this.pageTableContinuePending;
-    this.frontierConverged = plan.converged;
-    this.pageTableContinuePending = !plan.converged;
-    if (continuedOlderPlan && plan.converged) {
+    this.frontierConverged = converged;
+    this.pageTableContinuePending = !converged;
+    if (continuedOlderPlan && converged) {
       // The drain deliberately ignored the newer camera bundled with its
       // request. Re-solve that coalesced view immediately instead of waiting
       // for the idle timer or another movement threshold.
@@ -4334,13 +6047,101 @@ export class StreamedSplatMesh extends SplatMesh {
     this.lastPlanMoves = plan.lastPlanMoves ?? plan.moveSlots.length;
     this.lastPlanGeneration = plan.planGeneration ?? this.lastPlanGeneration + 1;
     this.lastPlanBudget = plan.planBudget ?? this.pageTableDrawBudget;
+    const traversalId = plan.traversalId ?? 0;
+    const traversalMs =
+      traversalId > 0 && traversalId !== this.lastCountedTraversalId ? (plan.traversalMs ?? 0) : 0;
+    if (traversalId > 0) this.lastCountedTraversalId = traversalId;
     this.frontierTraversal = {
-      strategy: plan.traversalStrategy ?? 'heap',
+      strategy: plan.traversalStrategy ?? 'one-pass',
       fallback: plan.traversalFallback ?? false,
       fallbackCount: plan.traversalFallbackCount ?? 0,
       rootCoverInfeasible: plan.rootCoverInfeasible ?? false,
-      traversalMs: plan.traversalMs ?? 0,
+      traversalMs,
+      traversalId,
     };
+    this.lastPlanReason = plan.planReason ?? null;
+    this.candidateCancellationCount =
+      plan.candidateCancellationCount ?? this.candidateCancellationCount;
+    this.boundedCutRefusalReason = plan.boundedCutRefusalReason;
+    this.protectedCacheBytesValue = plan.protectedCacheBytes ?? this.protectedCacheBytesValue;
+    this.lastSkipSamples = plan.skipSamples ?? [];
+    if (plan.maxCentralProjectedRatio !== undefined) {
+      this.maxCentralProjectedRatioValue = plan.maxCentralProjectedRatio;
+    }
+    if (plan.maxVisibleProjectedRatio !== undefined) {
+      this.maxVisibleProjectedRatioValue = plan.maxVisibleProjectedRatio;
+    }
+    if (plan.candidateGeneration !== undefined) {
+      if (this.frontierTraceStagingGeneration !== plan.candidateGeneration) {
+        this.frontierTraceStagingGeneration = plan.candidateGeneration;
+        this.recordFrontierTrace('staging-start', {
+          generation: plan.candidateGeneration,
+          candidateSize: plan.candidateSize,
+          candidateNewSlots: plan.candidateNewSlots,
+          candidateReusedSlots: plan.candidateReusedSlots,
+          planReason: plan.planReason ?? null,
+        });
+      }
+      this.recordFrontierTrace('traversal-complete', {
+        generation: plan.candidateGeneration,
+        candidateSize: plan.candidateSize,
+        candidateNewSlots: plan.candidateNewSlots,
+        candidateReusedSlots: plan.candidateReusedSlots,
+        writes: plan.appends.count,
+        planReason: plan.planReason ?? null,
+        traversalId: plan.traversalId,
+        revealReady: plan.revealReady,
+        maxCentralProjectedRatio: plan.maxCentralProjectedRatio,
+        maxVisibleProjectedRatio: plan.maxVisibleProjectedRatio,
+      });
+      if (!this.radChunkResidency && !candidateRevisionCurrent && plan.candidateComplete) {
+        const diagnostic = publicationDiagnostic;
+        if (diagnostic) {
+          this.rejectRadPublicationDiagnostic(
+            diagnostic,
+            'stale-camera-or-configuration-revision',
+            this.demandGeneration,
+            this.demandNeedsNewRevision,
+          );
+        }
+        // A complete candidate for an older camera/configuration revision may
+        // already be awaiting the worker acknowledgement. Keep the displayed
+        // cut, but immediately solve the current demand so the old publication
+        // is cancelled and cannot leave refinement stalled at the coarse cut.
+        this.pendingWork = true;
+        this.lastScheduleTime = -Infinity;
+        this.demandNeedsNewRevision = true;
+      }
+      if (plan.candidateComplete) {
+        this.recordFrontierTrace('staging-complete', {
+          generation: plan.candidateGeneration,
+          candidateSize: plan.candidateSize,
+          candidateNewSlots: plan.candidateNewSlots,
+          candidateReusedSlots: plan.candidateReusedSlots,
+          planReason: plan.planReason ?? null,
+        });
+      }
+    }
+    if (presented && indexedPublication) {
+      // Keep quality attached to the exact candidate whose active-list version
+      // is being rendered. A later worker plan may update the diagnostics while
+      // this candidate is still waiting for sort/render acknowledgement; using
+      // that newer plan could reveal an older coarse cut with the wrong verdict.
+      this.indexedPendingRevealQuality = {
+        revealReady: plan.revealReady === true,
+        maxCentralProjectedRatio: plan.maxCentralProjectedRatio ?? 0,
+        maxVisibleProjectedRatio: plan.maxVisibleProjectedRatio ?? 0,
+      };
+      this.recordFrontierTrace('active-list-replacement', {
+        generation: plan.candidateGeneration ?? null,
+        activeCount: indexedPublication.length,
+        writes: plan.appends.count,
+        planReason: plan.planReason ?? null,
+        revealReady: plan.revealReady,
+        maxCentralProjectedRatio: plan.maxCentralProjectedRatio,
+        maxVisibleProjectedRatio: plan.maxVisibleProjectedRatio,
+      });
+    }
     if (plan.cameraLocal) {
       this.lastPlanCamera = plan.cameraLocal;
       this.firstFrontierCamera ??= plan.cameraLocal;
@@ -4354,25 +6155,59 @@ export class StreamedSplatMesh extends SplatMesh {
           `evicted chunks; they render as holes.`,
       );
     }
+    if (plan.diagnosticGatherMissingFiles && plan.diagnosticGatherMissingFiles.length > 0) {
+      console.debug(
+        '[vlam:rad-gather-mismatch]',
+        JSON.stringify({
+          frameApplied: this.radFrame,
+          generation: plan.candidateGeneration ?? null,
+          revision: plan.candidateRevision ?? null,
+          missingFiles: Array.from(plan.diagnosticGatherMissingFiles),
+        }),
+      );
+    }
     // Applying a plan runs off the render loop's own timing, so its cost is
     // invisible to `getUpdateTimings` even though it lands on the same thread.
     // Recorded because a churning frontier can make this the largest stall in a
     // frame, and a cap has to be aimed at whichever half dominates.
     const planTimings = this.planTimingsValue;
-    planTimings.applyMs = residentFinishedAt - applyStartedAt;
+    const handlerFinishedAt = performance.now();
+    planTimings.applyMs = handlerFinishedAt - applyStartedAt;
+    planTimings.handlerMs = planTimings.applyMs;
     planTimings.writeMs = writeFinishedAt - applyStartedAt;
     planTimings.residentMs = residentFinishedAt - writeFinishedAt;
+    planTimings.mappingMs = chunkPublicationMapping?.mappingMs ?? 0;
+    planTimings.pageIdentityMs = 0;
+    planTimings.activeListMs = activeListMs;
     planTimings.moves = plan.moveSlots.length;
     planTimings.appends = plan.appends.count;
     if (planTimings.applyMs > planTimings.worstApplyMs) {
       planTimings.worstApplyMs = planTimings.applyMs;
       planTimings.worstSplats = planTimings.moves + planTimings.appends;
     }
-    // Follow the cut with the screen-radius band. The worker refines below the
-    // quality target to spend the draw budget, and those finer nodes project
-    // smaller - a band still sized for the target cut would cull them, so the
-    // extra budget would buy nothing visible. Scaling by the same ratio keeps
-    // the band spanning one LOD level.
+    if (this.onPerformanceEvent !== undefined) {
+      console.debug(
+        '[vlam:rad-plan-timing]',
+        JSON.stringify({
+          seq: plan.seq,
+          generation: plan.candidateGeneration ?? null,
+          handlerMs: planTimings.handlerMs,
+          installMs: planTimings.installMs,
+          writeMs: planTimings.writeMs,
+          residentMs: planTimings.residentMs,
+          mappingMs: planTimings.mappingMs,
+          pageIdentityMs: planTimings.pageIdentityMs,
+          protectionMs: planTimings.protectionMs,
+          activeListMs: planTimings.activeListMs,
+          unifiedGatherMs: planTimings.unifiedGatherMs,
+          sortMs: planTimings.sortMs,
+        }),
+      );
+    }
+    // Follow the cut with the screen-radius band. One-pass selection stops at
+    // the configured pixel target; leftover draw budget is a ceiling, not a
+    // reason to manufacture finer nodes. Scaling the band by solvedLimit keeps
+    // it spanning one LOD level if a heap A/B walk does spend leftover budget.
     if (
       presented &&
       this.frontierBandBase !== null &&
@@ -4398,12 +6233,13 @@ export class StreamedSplatMesh extends SplatMesh {
     for (let i = 0; i < plan.evicted.length; i++) {
       this.pageTableCachedFiles.delete(plan.evicted[i] as number);
     }
+    if (plan.evicted.length > 0) this.pageTableHostCacheRevision++;
     this.fetchCountsValue.cacheBytes = plan.cacheBytes;
     this.fetchCountsValue.cacheLimitBytes = plan.cacheLimitBytes;
+    this.pageTableCacheAtLimit = plan.cacheBytes >= plan.cacheLimitBytes;
     // Recomputed every plan, not latched: the sweep must resume when the scene
     // budget raises this mesh's allowance. `cacheFull`/`evicted` stay monotonic
     // - they are diagnostics answering "did this happen", not live state.
-    this.pageTableCacheAtLimit = plan.cacheBytes >= plan.cacheLimitBytes;
     if (plan.evicted.length > 0) {
       this.fetchCountsValue.cacheFull = true;
       this.fetchCountsValue.evicted += plan.evicted.length;
@@ -4411,22 +6247,181 @@ export class StreamedSplatMesh extends SplatMesh {
     // The chunks the frontier wants next, biggest-on-screen first - requested now
     // and kept as the priority list the next reschedule fetches before anything.
     this.pageTableFetchPriority = Array.from(plan.touched);
-    if (this.focusedDemand && this.demandSolvedLimit !== plan.solvedLimit) {
-      this.demandSolvedLimit = plan.solvedLimit;
-      this.demandKey = '';
-      this.pendingWork = true;
-    }
-    if (!this.focusedDemand) {
-      for (const file of this.pageTableFetchPriority) this.requestChunk(file, 'priority');
-    }
+    this.reconcileDemand(this.demandReadyGeneration === this.demandGeneration);
     // Keep refining while chunks stream in (the frontier keeps changing), and
     // while the worker is still ramping its budget up to the governed one - that
     // ramp is what keeps a hard camera cut from arriving as one ~100 ms plan, so
     // the next pass must follow immediately or detail stalls where it stopped.
-    if (this.fetching.size > 0 || !plan.converged) {
+    if (this.fetching.size > 0 || !converged) {
       this.pendingWork = true;
-      if (!plan.converged) this.lastScheduleTime = -Infinity;
+      if (!converged) this.lastScheduleTime = -Infinity;
     }
+    if (
+      this.indexedPageTable &&
+      plan.planReason === 'awaiting-publication' &&
+      this.indexedPendingDisplaySlots === null &&
+      this.indexedPublishGeneration === null
+    ) {
+      this.pendingWork = true;
+      this.lastScheduleTime = -Infinity;
+      this.resumeIndexedRefinementAfterPublication();
+    }
+  }
+
+  /** Files that must keep their whole GPU page until the matching draw retires. */
+  private protectedRadChunkFiles(): Set<number> {
+    const protectedFiles = new Set<number>([0, ...this.radChunkDisplayedFiles]);
+    if (this.radChunkPendingFiles) {
+      for (const file of this.radChunkPendingFiles) protectedFiles.add(file);
+    }
+    for (const file of this.scene.pinnedFiles) protectedFiles.add(file);
+    return protectedFiles;
+  }
+
+  /** Stops demand once a complete budget-full walk reproduces the displayed cut. */
+  private settleRadChunkDemand(): void {
+    this.radChunkDemandSettledRevision = this.demandGeneration;
+    this.radChunkDemandSettledCamera = this.lastPostedCamera;
+    this.radChunkDemandSettledForward = this.lastPostedForward;
+    this.radChunkDemandSettledLimit = this.lastPostedLimit;
+    this.radChunkDemandSettledConfig = this.radChunkDemandConfig();
+    this.frontierConverged = true;
+    this.pageTableContinuePending = false;
+    this.demandWants = [];
+    this.demandFirstSeen.clear();
+    const protectedFiles = this.protectedRadChunkFiles();
+    for (const [file, entry] of this.fetching) {
+      if (
+        entry.kind === 'priority' &&
+        entry.classicWant === undefined &&
+        !protectedFiles.has(file) &&
+        !entry.controller.signal.aborted
+      ) {
+        entry.controller.abort();
+      }
+    }
+  }
+
+  private radChunkDrawBudgetSaturated(count: number): boolean {
+    return this.pageTableDrawBudget > 0 && count >= this.pageTableDrawBudget * 0.99;
+  }
+
+  private radChunkDemandSettlementIsCurrent(
+    camera: readonly [number, number, number],
+    forward: readonly [number, number, number],
+    limit: number,
+  ): boolean {
+    const settledCamera = this.radChunkDemandSettledCamera;
+    const settledForward = this.radChunkDemandSettledForward;
+    if (!settledCamera || !settledForward) return false;
+    if (squaredDistance3(camera, settledCamera) > 1) return false;
+    const forwardDot =
+      forward[0] * settledForward[0] +
+      forward[1] * settledForward[1] +
+      forward[2] * settledForward[2];
+    if (forwardDot < 0.999961923) return false;
+    const scale = Math.max(Math.abs(limit), Math.abs(this.radChunkDemandSettledLimit), 1e-9);
+    if (Math.abs(limit - this.radChunkDemandSettledLimit) / scale > 0.01) return false;
+    return this.radChunkDemandSettledConfig === this.radChunkDemandConfig();
+  }
+
+  private radChunkDemandConfig(): string {
+    const fov = this.pageTableFoveation;
+    return `${this.pageTableDrawBudget}|${fov.coneFov0}|${fov.coneFov}|${fov.coneFoveate}|${fov.behindFoveate}`;
+  }
+
+  /** Releases the least-recently-used unprotected chunk page. */
+  private evictRadChunkPage(): boolean {
+    const protectionStartedAt = performance.now();
+    const protectedFiles = this.protectedRadChunkFiles();
+    this.planTimingsValue.protectionMs = performance.now() - protectionStartedAt;
+    let oldestFile: number | undefined;
+    let oldestTime = Infinity;
+    for (const [file, page] of this.radChunkPages) {
+      if (protectedFiles.has(file) || page.lastUsed >= oldestTime) continue;
+      oldestFile = file;
+      oldestTime = page.lastUsed;
+    }
+    if (oldestFile === undefined) return false;
+    const page = this.radChunkPages.get(oldestFile);
+    if (!page || !this.radChunkAllocator) return false;
+    this.removeRange(page.range);
+    this.radChunkPages.delete(oldestFile);
+    this.radChunkAllocator.release(oldestFile);
+    this.pageTableCachedFiles.delete(oldestFile);
+    this.pageTableHostCacheRevision++;
+    this.fetchCountsValue.evicted++;
+    this.syncRadChunkPages();
+    return true;
+  }
+
+  /** Uploads a decoded RAD chunk once into its stable page. */
+  private installRadChunkPage(file: number, data: SplatData): boolean {
+    const allocator = this.radChunkAllocator;
+    if (!this.radChunkResidency || !allocator) return true;
+    if (this.radChunkPages.has(file)) return true;
+    const installStartedAt = performance.now();
+    let page = allocator.allocate(file, data.count);
+    while (page === undefined && this.evictRadChunkPage()) {
+      page = allocator.allocate(file, data.count);
+    }
+    if (page === undefined) {
+      const installMs = performance.now() - installStartedAt;
+      this.planTimingsValue.installMs = installMs;
+      this.fetchCountsValue.pageInstallMs += installMs;
+      warn(
+        `StreamedSplatMesh: RAD chunk ${file} could not obtain a stable GPU page; ` +
+          'the chunk-page experiment remains on its previous complete selection.',
+      );
+      return false;
+    }
+    try {
+      const range = this.appendInactivePage(data, allocator.chunkSize);
+      this.radChunkPages.set(file, { range, count: data.count, lastUsed: performance.now() });
+      this.pageTableCachedFiles.add(file);
+      this.pageTableHostCacheRevision++;
+      this.syncRadChunkPages();
+      const installMs = performance.now() - installStartedAt;
+      this.planTimingsValue.installMs = installMs;
+      this.fetchCountsValue.pageInstalls++;
+      this.fetchCountsValue.pageInstallMs += installMs;
+      return true;
+    } catch (error) {
+      allocator.release(file);
+      const installMs = performance.now() - installStartedAt;
+      this.planTimingsValue.installMs = installMs;
+      this.fetchCountsValue.pageInstallMs += installMs;
+      warn(`StreamedSplatMesh: failed to upload RAD chunk ${file}; retaining the old cut.`, error);
+      return false;
+    }
+  }
+
+  /** Mirrors stable page presence to the traversal worker. */
+  private syncRadChunkPages(): void {
+    if (!this.radChunkResidency || !this.radChunkAllocator) return;
+    this.postToWorker({
+      type: 'chunkPages',
+      files: Uint32Array.from(this.radChunkAllocator.residentFiles),
+    });
+  }
+
+  /** Maps worker-selected RAD globals directly to pool indices. */
+  private poolIndicesForRadGlobals(globals: ArrayLike<number>): Uint32Array | null {
+    if (!this.radChunkAllocator) return null;
+    const slots = this.radChunkAllocator.poolSlots(globals);
+    if (!slots) return null;
+    const now = performance.now();
+    let previousFile = -1;
+    for (let i = 0; i < globals.length; i++) {
+      const file = Math.floor((globals[i] as number) / this.radChunkAllocator.chunkSize);
+      // Selections are grouped by chunk. Page recency is shared by every
+      // node in that chunk; millions of per-splat clock reads add no precision.
+      if (file === previousFile) continue;
+      previousFile = file;
+      const page = this.radChunkPages.get(file);
+      if (page) page.lastUsed = now;
+    }
+    return slots;
   }
 
   /** Forwards a decoded chunk's arrays to the worker (buffers transferred) so the
@@ -4434,10 +6429,11 @@ export class StreamedSplatMesh extends SplatMesh {
   private forwardChunkToWorker(file: number, data: SplatData): void {
     const tree = data.radTree;
     if (!tree) return;
+    if (!this.installRadChunkPage(file, data)) return;
     this.pageTableCachedFiles.add(file);
-    this.demandGeneration++;
-    this.demandDiagnostics.generation = this.demandGeneration;
-    this.demandKey = '';
+    this.pageTableHostCacheRevision++;
+    // Chunk arrivals do not obsolete camera demand. Incomplete replies from
+    // waiter expansion must still merge into the current revision.
     // Only forward SH the pool will actually render. A `.rad` chunk decodes
     // whatever bands the file carries regardless of what was asked for, and the
     // worker charges its cache for every byte it is handed - 15 coefficients is
@@ -4458,28 +6454,39 @@ export class StreamedSplatMesh extends SplatMesh {
     // the only way they differ is palette SH, and a streamed mesh never has it -
     // the slicer drops `chunk.sh` before a chunk ever reaches the pool.
     const sh = this.shBands > 0 ? data.shPacked : undefined;
+    const copy = this.radChunkResidency
+      ? {
+          positions: data.positions.slice(),
+          colors: data.colors.slice(),
+          covariances: data.covariances.slice(),
+          childCount: tree.childCount.slice(),
+          childStart: tree.childStart.slice(),
+          size: tree.size.slice(),
+          ...(sh ? { packed: sh.packed.slice() } : {}),
+        }
+      : null;
     this.postToWorker(
       {
         type: 'chunk',
         file,
         count: data.count,
-        positions: data.positions,
-        colors: data.colors,
-        covariances: data.covariances,
-        childCount: tree.childCount,
-        childStart: tree.childStart,
-        size: tree.size,
+        positions: copy?.positions ?? data.positions,
+        colors: copy?.colors ?? data.colors,
+        covariances: copy?.covariances ?? data.covariances,
+        childCount: copy?.childCount ?? tree.childCount,
+        childStart: copy?.childStart ?? tree.childStart,
+        size: copy?.size ?? tree.size,
         shBands: sh?.bands ?? 0,
-        ...(sh ? { shPacked: sh.packed, shRange: sh.range } : {}),
+        ...(sh ? { shPacked: copy?.packed ?? sh.packed, shRange: sh.range } : {}),
       },
       [
-        data.positions.buffer,
-        data.colors.buffer,
-        data.covariances.buffer,
-        tree.childCount.buffer,
-        tree.childStart.buffer,
-        tree.size.buffer,
-        ...(sh ? [sh.packed.buffer] : []),
+        (copy?.positions ?? data.positions).buffer,
+        (copy?.colors ?? data.colors).buffer,
+        (copy?.covariances ?? data.covariances).buffer,
+        (copy?.childCount ?? tree.childCount).buffer,
+        (copy?.childStart ?? tree.childStart).buffer,
+        (copy?.size ?? tree.size).buffer,
+        ...(sh ? [(copy?.packed ?? sh.packed).buffer] : []),
       ],
     );
   }
@@ -4491,11 +6498,20 @@ export class StreamedSplatMesh extends SplatMesh {
     return MAX_INFLIGHT;
   }
 
-  /**
-   * Whether this mesh may run its speculative background sweep. A mesh with no
-   * weight is hidden or suspended; a mesh with no `fetchWeight` at all is a
-   * host that never asked for arbitration, and keeps the old behaviour.
-   */
+  private pageTableActiveFetches(): number {
+    let active = 0;
+    for (const entry of this.fetching.values()) {
+      if (
+        entry.kind === 'priority' &&
+        entry.classicWant === undefined &&
+        !entry.controller.signal.aborted
+      ) {
+        active++;
+      }
+    }
+    return active;
+  }
+
   /**
    * Sets this mesh's share of the scene's fetch bandwidth, as
    * {@link StreamedSplatMeshOptions.fetchWeight} does at load.
@@ -4509,33 +6525,14 @@ export class StreamedSplatMesh extends SplatMesh {
     this.fetchWeight = weight;
   }
 
-  private sweepAllowed(): boolean {
-    // A whole-scene sweep cannot finish inside a smaller decoded cache. On a
-    // large RAD it fills the spare slots with off-view chunks, then competes
-    // with the frontier's priority misses and triggers an eviction/refetch loop.
-    // Keep pre-warming captures whose complete decoded set fits their current
-    // allowance; a raised scene-wide allowance re-enables it automatically.
+  /**
+   * Whether this mesh may run its speculative background sweep. A mesh with no
+   * weight is hidden or suspended; a mesh with no `fetchWeight` at all is a
+   * host that never asked for arbitration, and keeps the old behaviour.
+   * @internal
+   */
+  sweepAllowed(): boolean {
     if (estimateSceneDecodedBytes(this.scene) > this.cacheLimitBytes) return false;
-    // The `smooth` profile (the default on mobile) declines the sweep outright.
-    //
-    // The sweep is speculative pre-warming of the *whole capture*, and without a
-    // scene-wide `cacheBudget` it does not stop until every chunk is cached: the
-    // cap is sized from the capture itself (`min(PAGETABLE_CACHE_FLOOR_BYTES,
-    // estimateSceneDecodedBytes)`), so on any capture that fits there is never
-    // an eviction to reach it. Measured on the 5.9M-leaf reference `.rad` with
-    // SH declined: a 235 MB cache floor against a 235 MB decoded capture, i.e. a
-    // steady ~1 chunk/second drip pulling all 447 MB down and decoding it, long
-    // after the view had settled at full detail. Multiply that by the meshes in
-    // a multi-mesh scene and it is the largest memory risk in a viewer - which is
-    // what `cacheBudget` bounds, without stopping the sweep itself.
-    //
-    // On a desktop that is a good trade - RAM is cheap and turning the camera is
-    // then served from memory instead of a level-by-level network ladder. On a
-    // phone it is the wrong one in every currency at once: hundreds of MB of
-    // possibly-metered download, a decoded cache that rivals the splat pool on a
-    // device that gets its tab killed for exactly that, and continuous decode
-    // CPU (and therefore heat) spent on a camera move that may never happen.
-    // What it costs to decline: refinement after a turn fetches on demand.
     if (this.performanceProfile === 'smooth') return false;
     if (this.fetchWeight === undefined) return true;
     const weight = this.fetchWeight();
@@ -4549,12 +6546,77 @@ export class StreamedSplatMesh extends SplatMesh {
     }
   }
 
+  /** Reclaims old-camera RAD priority slots after a translation-only cut. */
+  private reclaimStalePriorityFetches(): void {
+    if (!this.radChunkResidency) return;
+    const protectedFiles = this.protectedRadChunkFiles();
+    const activeBefore = this.pageTableActiveFetches();
+    const retained = new Set<number>();
+    let cancelled = 0;
+    for (const [file, entry] of this.fetching) {
+      if (entry.kind !== 'priority' || entry.classicWant !== undefined) continue;
+      if (entry.cameraEpoch === this.cameraEpoch || entry.controller.signal.aborted) continue;
+      if (protectedFiles.has(file)) {
+        retained.add(file);
+        continue;
+      }
+      entry.controller.abort();
+      cancelled++;
+      if (this.onPerformanceEvent !== undefined) {
+        console.debug(
+          '[vlam:rad-fetch-cancel]',
+          JSON.stringify({
+            file,
+            reason: 'hard-relocation',
+            demandGeneration: entry.demandGeneration,
+            cameraEpoch: entry.cameraEpoch,
+            cameraKey: entry.demandKey,
+            cameraPosition: entry.requestedCameraPosition,
+            currentCameraEpoch: this.cameraEpoch,
+            currentCameraKey: this.demandKey,
+            currentCameraPosition: this.latestDemandCamera,
+          }),
+        );
+      }
+    }
+    this.demandDiagnostics.staleRequestsCancelled = cancelled;
+    this.demandDiagnostics.protectedFilesRetained = [...retained].sort((a, b) => a - b);
+    this.demandDiagnostics.staleCancellationReason = 'hard-relocation';
+    this.demandDiagnostics.activeRequestsBeforeReclamation = activeBefore;
+    this.demandDiagnostics.activeRequestsAfterReclamation = this.pageTableActiveFetches();
+    this.demandDiagnostics.hardRelocations++;
+    if (this.onPerformanceEvent !== undefined) {
+      console.debug(
+        '[vlam:rad-reclaim]',
+        JSON.stringify({
+          reason: 'hard-relocation',
+          demandGeneration: this.demandGeneration,
+          cameraEpoch: this.cameraEpoch,
+          cameraKey: this.demandKey,
+          cameraPosition: this.latestDemandCamera,
+          staleRequestsCancelled: cancelled,
+          protectedFilesRetained: [...retained].sort((a, b) => a - b),
+          activeRequestsBeforeReclamation: activeBefore,
+          activeRequestsAfterReclamation: this.pageTableActiveFetches(),
+        }),
+      );
+    }
+  }
+
   private requestChunk(file: number, kind: ChunkFetchKind, classicWant?: ClassicFetchWant): void {
     if (
       this.cache.has(file) ||
       this.pageTableCachedFiles.has(file) ||
       this.fetching.has(file) ||
       this.fetching.size >= this.maxInflight
+    ) {
+      return;
+    }
+    if (
+      this.frontierWorker &&
+      kind === 'priority' &&
+      classicWant === undefined &&
+      this.pageTableActiveFetches() >= 3
     ) {
       return;
     }
@@ -4581,14 +6643,44 @@ export class StreamedSplatMesh extends SplatMesh {
     // tick, and the scheduler wakes it when the pipe frees up.
     if (this.fetchHandle && !this.fetchScheduler?.tryAcquire(this.fetchHandle, kind)) return;
     const controller = new AbortController();
-    const focusRequest = this.focusedDemand;
     const knownBytes = this.scene.chunkOptions?.[file]?.rad?.length ?? 0;
     const requestedAt = performance.now();
-    if (focusRequest) {
+    if (this.frontierWorker) {
       this.demandDiagnostics.requests++;
       this.demandDiagnostics.knownRequestedBytes += knownBytes;
     }
-    this.fetching.set(file, { controller, kind, classicWant });
+    this.fetching.set(file, {
+      controller,
+      kind,
+      classicWant,
+      demandGeneration: this.demandGeneration,
+      cameraEpoch: this.cameraEpoch,
+      demandKey: this.demandKey,
+      requestedCameraPosition: this.latestDemandCamera ?? this.lastPostedCamera,
+    });
+    if (
+      this.demandDiagnostics.hardRelocationDetectedAt !== null &&
+      this.demandDiagnostics.firstCurrentRevisionFetchAt === null &&
+      this.demandReadyGeneration === this.demandGeneration
+    ) {
+      this.demandDiagnostics.firstCurrentRevisionFetchAt = requestedAt;
+      this.demandDiagnostics.cameraToFirstFetchMs =
+        requestedAt - this.demandDiagnostics.hardRelocationDetectedAt;
+    }
+    if (this.onPerformanceEvent !== undefined && this.frontierWorker) {
+      console.debug(
+        '[vlam:rad-fetch-start]',
+        JSON.stringify({
+          file,
+          kind,
+          active: this.pageTableActiveFetches(),
+          demandGeneration: this.demandGeneration,
+          cameraEpoch: this.cameraEpoch,
+          cameraKey: this.demandKey,
+          cameraPosition: this.latestDemandCamera ?? this.lastPostedCamera,
+        }),
+      );
+    }
     this.loader
       .load(url, {
         kind: this.scene.chunkKind,
@@ -4599,8 +6691,10 @@ export class StreamedSplatMesh extends SplatMesh {
         // A chunk that resolved just before dispose still lands here one
         // microtask later; keeping it would repopulate the cleared cache (or
         // post to a terminated frontier worker).
-        if (this.disposed) return;
-        if (focusRequest) {
+        // Abort can race a loader that has already resolved. Do not forward a
+        // stale old-camera chunk after reclamation has handed the slot away.
+        if (this.disposed || controller.signal.aborted) return;
+        if (this.frontierWorker) {
           this.demandDiagnostics.completed++;
           this.demandDiagnostics.knownCompletedBytes += knownBytes;
           this.demandDiagnostics.requestToDecodeMs += performance.now() - requestedAt;
@@ -4649,8 +6743,12 @@ export class StreamedSplatMesh extends SplatMesh {
         // hands its slot back too - a leak here silently shrinks the scene's
         // whole pipe until the pool is torn down.
         if (this.fetchHandle) this.fetchScheduler?.release(this.fetchHandle);
-        if (this.focusedDemand) this.reconcileDemand();
-        this.pendingWork = true;
+        if (this.frontierWorker) this.reconcileDemand(false);
+        this.pendingWork = !(
+          this.radChunkResidency &&
+          this.radChunkDemandSettledRevision === this.demandGeneration &&
+          this.fetching.size === 0
+        );
       });
   }
 
@@ -4718,10 +6816,25 @@ const _cameraWorldQuat = new THREE.Quaternion();
 const _cameraLocal = new THREE.Vector3();
 const _projScreen = new THREE.Matrix4();
 const _frustum = new THREE.Frustum();
+const _streamCameraWorld = new THREE.Vector3();
+const _streamCameraLocal = new THREE.Vector3();
+const _streamCameraForward = new THREE.Vector3();
+const _streamProjection = new THREE.Matrix4();
+const _startupSettledPosition = new THREE.Vector3();
 const _sphere = new THREE.Sphere();
 /** Camera forward in mesh-local space, for the page-table traversal's foveation. */
 const _cameraForward = new THREE.Vector3();
 const _drawSize = new THREE.Vector2();
+
+function squaredDistance3(
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+): number {
+  const dx = a[0] - b[0];
+  const dy = a[1] - b[1];
+  const dz = a[2] - b[2];
+  return dx * dx + dy * dy + dz * dz;
+}
 
 /** Validates the page-table RAD first-image fraction; zero restores the old hold. */
 function validateRadInitialDisplayFraction(value: number | undefined): number {
@@ -4732,6 +6845,61 @@ function validateRadInitialDisplayFraction(value: number | undefined): number {
     );
   }
   return value;
+}
+
+function resolveRadInitialRevealPolicy(
+  options: StreamedSplatMeshOptions,
+): 'progressive' | 'allocation-fraction' | 'projected-quality' {
+  const named = options.radInitialRevealPolicy;
+  if (named !== undefined) {
+    if (
+      named !== 'progressive' &&
+      named !== 'allocation-fraction' &&
+      named !== 'projected-quality'
+    ) {
+      throw new RangeError(
+        `radInitialRevealPolicy must be 'progressive', 'allocation-fraction', or 'projected-quality', got ${JSON.stringify(named)}.`,
+      );
+    }
+    return named;
+  }
+  // Legacy callers that named a fraction without a policy keep that hold.
+  return options.radInitialDisplayFraction !== undefined ? 'allocation-fraction' : 'progressive';
+}
+
+/** Stable camera/config identity for demand revisions. Quantized so sub-ulp
+ * matrix jitter does not mint a new revision every frame. */
+function pageTableDemandKey(
+  camera: readonly number[],
+  forward: readonly number[],
+  projection: readonly number[],
+  limit: number,
+  budget: number,
+  fov: { coneFov0: number; coneFov: number; coneFoveate: number; behindFoveate: number },
+): string {
+  const q = (value: number, digits: number) => value.toFixed(digits);
+  return [
+    camera.map((value) => q(value, 4)).join(','),
+    forward.map((value) => q(value, 5)).join(','),
+    projection.map((value) => q(value, 6)).join(','),
+    q(limit, 8),
+    budget,
+    fov.coneFov0,
+    fov.coneFov,
+    fov.coneFoveate,
+    fov.behindFoveate,
+  ].join('|');
+}
+
+function initialPublishMinSplats(
+  policy: 'progressive' | 'allocation-fraction' | 'projected-quality',
+  fraction: number | undefined,
+  drawBudget: number,
+): number {
+  if (policy === 'progressive' || policy === 'projected-quality') return 0;
+  const value = validateRadInitialDisplayFraction(fraction);
+  // `0` is the target-detail hold: publish only once requested children exist.
+  return value === 0 ? Number.MAX_SAFE_INTEGER : Math.ceil(drawBudget * value);
 }
 
 /** A `SplatData` view over a contiguous run `[j, j + count)` of a plan's packed

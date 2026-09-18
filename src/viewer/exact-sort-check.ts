@@ -1,8 +1,11 @@
 import * as THREE from 'three/webgpu';
 import { MergedSplatMesh, type SplatData } from '../lib/core';
+import { exactSort, radixSort } from '../lib/sorting/radix';
 
 /** GPU regression for exact global ordering with live per-source placement. */
 export async function verifyExactMergedSort(renderer: THREE.WebGPURenderer) {
+  const exact = exactSort();
+  const radix = radixSort();
   const count = 2051; // Cross radix workgroups and leave a partial final group.
   const data = (color: readonly [number, number, number]): SplatData => {
     const positions = new Float32Array(count * 3);
@@ -21,7 +24,7 @@ export async function verifyExactMergedSort(renderer: THREE.WebGPURenderer) {
   const blueData = data([0, 0, 255]);
   const mesh = new MergedSplatMesh({
     capacity: 8192,
-    sortStrategy: 'exact',
+    sortStrategy: exact,
     sortMetric: 'depth',
     sortIntervalMs: 0,
   });
@@ -32,7 +35,6 @@ export async function verifyExactMergedSort(renderer: THREE.WebGPURenderer) {
   const red = mesh.addSource(redData, transforms[0], { orientation: 'source' });
   const blue = mesh.addSource(blueData, transforms[1], { orientation: 'source' });
   const state = mesh as unknown as {
-    radixSorterLoad: Promise<void>;
     sorter: { kind: string; exactDepth: boolean };
     sourceIndexAttribute: THREE.StorageBufferAttribute;
     splatIndexAttribute: THREE.StorageInstancedBufferAttribute;
@@ -43,7 +45,6 @@ export async function verifyExactMergedSort(renderer: THREE.WebGPURenderer) {
   const target = new THREE.RenderTarget(256, 256, { type: THREE.UnsignedByteType });
   const samples: Array<{ pose: string; count: number; pixel: number[]; stable: boolean }> = [];
   try {
-    await state.radixSorterLoad;
     const sample = async (pose: string, cameraZ: number, blueVisible = true) => {
       camera.position.set(0, 0, cameraZ);
       camera.lookAt(0, 0, 0);
@@ -51,7 +52,7 @@ export async function verifyExactMergedSort(renderer: THREE.WebGPURenderer) {
       mesh.update(camera, renderer);
       if (
         state.sorter.kind !== 'radix' ||
-        state.sorter.exactDepth !== (mesh.sortStrategy === 'exact')
+        state.sorter.exactDepth !== (mesh.sortStrategy === exact)
       ) {
         throw new Error('Merged scene did not select the requested radix sorting.');
       }
@@ -100,10 +101,10 @@ export async function verifyExactMergedSort(renderer: THREE.WebGPURenderer) {
     await mesh.setSortStrategy('counting');
     mesh.update(camera, renderer);
     if (state.sorter.kind !== 'counting') throw new Error('SD did not select counting.');
-    await mesh.setSortStrategy('radix');
+    await mesh.setSortStrategy(radix);
     const switched = await sample('radix after SD', 3);
     const liveSwitch = switched.every((value, index) => value === moved[index]);
-    await mesh.setSortStrategy('exact');
+    await mesh.setSortStrategy(exact);
     await sample('exact after radix', 3);
     transforms[1]!.makeRotationY(Math.PI / 2).scale(new THREE.Vector3(2, 1, 0.5));
     transforms[1]!.setPosition(0, 0, 0.5);

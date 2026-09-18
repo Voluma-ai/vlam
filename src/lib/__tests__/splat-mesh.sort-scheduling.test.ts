@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SplatMesh, type SplatMeshOptions } from '../core/splat-mesh';
 import { writeCovariance } from '../core/splat-data';
 import type { SplatSorter } from '../core/sorter';
+import { exactSort, radixSort } from '../sorting/radix';
 
 interface SplatMeshInternals {
   activeCount: number;
@@ -262,9 +263,9 @@ describe('SplatMesh sort scheduling', () => {
     const worker = new SplatMesh({ capacity: 1 }, { sortStrategy: 'worker' });
     const radix = new SplatMesh(
       { capacity: 1 },
-      { sortStrategy: 'radix', performanceProfile: 'smooth' },
+      { sortStrategy: radixSort(), performanceProfile: 'smooth' },
     );
-    const exact = new SplatMesh({ capacity: 1 }, { sortStrategy: 'exact' });
+    const exact = new SplatMesh({ capacity: 1 }, { sortStrategy: exactSort() });
     meshes.push(counting, worker, radix, exact);
     expect(() => radix.setPerformanceProfile('quality')).not.toThrow();
   });
@@ -293,7 +294,7 @@ describe('SplatMesh sort scheduling', () => {
     }
   });
 
-  it('uses balanced culls while preserving detail controls off mobile', () => {
+  it('preserves full detail off mobile', () => {
     const mesh = new SplatMesh({ capacity: 4096 });
     meshes.push(mesh);
     const defaults = mesh as unknown as {
@@ -301,7 +302,7 @@ describe('SplatMesh sort scheduling', () => {
       maxStdDev: number;
       minSplatSizePx: number;
     };
-    expect(defaults.performanceProfile).toBe('balanced');
+    expect(defaults.performanceProfile).toBe('quality');
     expect(defaults.maxStdDev).toBe(3);
     expect(defaults.minSplatSizePx).toBe(0);
   });

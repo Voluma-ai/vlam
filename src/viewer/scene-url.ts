@@ -50,6 +50,11 @@ export function isStreamedScene(name: string): boolean {
   return (STREAMED_EXTENSIONS as readonly string[]).includes(extension);
 }
 
+/** Whether a scene URL or path is a single-file streaming RAD capture. */
+export function isRadScene(name: string): boolean {
+  return splatNameExtension(scenePathname(name)) === '.rad';
+}
+
 /** Anything `?scene=` accepts: a self-contained file or a streamed manifest. */
 export function isSupportedSceneUrl(name: string): boolean {
   return isSupportedSplatFile(name) || isStreamedScene(name);
