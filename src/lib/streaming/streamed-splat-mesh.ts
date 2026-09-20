@@ -159,6 +159,24 @@ const RAD_DIAGNOSTIC_SAMPLE_SIZE = 4096;
 type InlineWorkerCtor = new () => Worker;
 
 const DATA_TEXTURE_WIDTH = 2048;
+
+/** One authored RAD chunk, backed by independent texture rows. */
+type RadChunkPageRecord = {
+  readonly ranges: readonly SplatRange[];
+  /** Pool index of splat 0 in each texture row; filled once at install. */
+  readonly starts: Uint32Array;
+  readonly count: number;
+  lastUsed: number;
+};
+
+/** Maps a chunk-local node to its (possibly non-contiguous) pool slot. */
+function radChunkPoolSlot(page: RadChunkPageRecord, local: number): number | undefined {
+  if (local < 0 || local >= page.count) return undefined;
+  const row = (local / DATA_TEXTURE_WIDTH) | 0;
+  const start = page.starts[row];
+  if (start === undefined) return undefined;
+  return start + local - row * DATA_TEXTURE_WIDTH;
+}
 /** Max splats appended per frame (bounds the copy + staging-upload cost). */
 /**
  * A coverage hold waits for in-view covering cells (classic nearby L1 / far
@@ -843,10 +861,7 @@ export class StreamedSplatMesh extends SplatMesh {
    */
   private readonly slabPages: SplatRange[] = [];
   /** Whole RAD chunks backed by stable row ranges in chunk-page mode. */
-  private readonly radChunkPages = new Map<
-    number,
-    { readonly ranges: readonly SplatRange[]; readonly count: number; lastUsed: number }
-  >();
+  private readonly radChunkPages = new Map<number, RadChunkPageRecord>();
   private readonly radChunkAllocator: RadChunkPageAllocator | null;
   /** Shared pools must leave governed headroom for sibling marker meshes. */
   private readonly radChunkUsesSharedPool: boolean;
@@ -2219,7 +2234,7 @@ export class StreamedSplatMesh extends SplatMesh {
       this.radChunkPageLookupRevision = allocator.revision;
     }
     let previousFile = -1;
-    let previousPage = -1;
+    let resident: RadChunkPageRecord | undefined;
     let selectionHashA = 2166136261;
     let selectionHashB = 3735928559;
     const now = performance.now();
@@ -2232,18 +2247,15 @@ export class StreamedSplatMesh extends SplatMesh {
         if (page === undefined) return null;
         if (cachedPage === undefined) this.radChunkPageLookup.set(file, page);
         previousFile = file;
-        previousPage = page;
         pageIdentity.set(file, page);
-        const resident = this.radChunkPages.get(file);
+        resident = this.radChunkPages.get(file);
         if (!resident) return null;
         resident.lastUsed = now;
       }
-      const resident = this.radChunkPages.get(file);
       const local = global - file * chunkSize;
-      if (!resident || local >= resident.count) return null;
-      const row = resident.ranges[Math.floor(local / SplatMesh.DATA_TEXTURE_WIDTH)];
-      if (!row) return null;
-      slots[i] = this.poolRangeBacking(row).start + (local % SplatMesh.DATA_TEXTURE_WIDTH);
+      const slot = resident ? radChunkPoolSlot(resident, local) : undefined;
+      if (slot === undefined) return null;
+      slots[i] = slot;
       selectionHashA = Math.imul(selectionHashA ^ global, 16777619) >>> 0;
       selectionHashB = Math.imul(selectionHashB ^ (global + i), 2246822519) >>> 0;
     }
@@ -6475,16 +6487,22 @@ export class StreamedSplatMesh extends SplatMesh {
       // A shared pool is commonly fragmented by the main scene and several marker
       // meshes. Keep the authored chunk logically stable while backing it with
       // independent texture rows, so a free 65K page need not be contiguous.
-      for (let offset = 0; offset < data.count; offset += SplatMesh.DATA_TEXTURE_WIDTH) {
-        const count = Math.min(
-          SplatMesh.DATA_TEXTURE_WIDTH,
-          Math.max(0, data.count - offset),
-        );
+      for (let offset = 0; offset < data.count; offset += DATA_TEXTURE_WIDTH) {
+        const count = Math.min(DATA_TEXTURE_WIDTH, Math.max(0, data.count - offset));
         ranges.push(
-          this.appendInactivePage(sliceSplatData(data, offset, count), SplatMesh.DATA_TEXTURE_WIDTH),
+          this.appendInactivePage(sliceSplatData(data, offset, count), DATA_TEXTURE_WIDTH),
         );
       }
-      this.radChunkPages.set(file, { ranges, count: data.count, lastUsed: performance.now() });
+      const starts = new Uint32Array(ranges.length);
+      for (let i = 0; i < ranges.length; i++) {
+        starts[i] = this.poolRangeBacking(ranges[i] as SplatRange).start;
+      }
+      this.radChunkPages.set(file, {
+        ranges,
+        starts,
+        count: data.count,
+        lastUsed: performance.now(),
+      });
       this.pageTableCachedFiles.add(file);
       this.pageTableHostCacheRevision++;
       this.syncRadChunkPages();
@@ -6520,7 +6538,7 @@ export class StreamedSplatMesh extends SplatMesh {
     const slots = new Uint32Array(globals.length);
     const now = performance.now();
     let previousFile = -1;
-    let page: (typeof this.radChunkPages extends Map<number, infer Value> ? Value : never) | undefined;
+    let page: RadChunkPageRecord | undefined;
     for (let i = 0; i < globals.length; i++) {
       const global = globals[i] as number;
       const file = Math.floor(global / allocator.chunkSize);
@@ -6533,11 +6551,9 @@ export class StreamedSplatMesh extends SplatMesh {
         page.lastUsed = now;
       }
       const local = global - file * allocator.chunkSize;
-      if (!page || local >= page.count) return null;
-      const row = page.ranges[Math.floor(local / SplatMesh.DATA_TEXTURE_WIDTH)];
-      if (!row) return null;
-      slots[i] =
-        this.poolRangeBacking(row).start + (local % SplatMesh.DATA_TEXTURE_WIDTH);
+      const slot = page ? radChunkPoolSlot(page, local) : undefined;
+      if (slot === undefined) return null;
+      slots[i] = slot;
     }
     return slots;
   }

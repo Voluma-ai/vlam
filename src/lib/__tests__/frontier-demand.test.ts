@@ -117,7 +117,10 @@ describe('page-table demand reconciliation', () => {
         pageOf: (file: number) => number | undefined;
         poolSlots: (globals: ArrayLike<number>) => Uint32Array | null;
       } | null;
-      radChunkPages: Map<number, { lastUsed: number }>;
+      radChunkPages: Map<
+        number,
+        { ranges: unknown[]; starts: Uint32Array; count: number; lastUsed: number }
+      >;
       radChunkDisplayedGlobals: Uint32Array;
       radChunkPendingGlobals: Uint32Array | null;
       radChunkPublishGeneration: number | null;
@@ -167,7 +170,10 @@ describe('page-table demand reconciliation', () => {
         pageOf: (file: number) => number | undefined;
         poolSlots: (globals: ArrayLike<number>) => Uint32Array | null;
       } | null;
-      radChunkPages: Map<number, { lastUsed: number }>;
+      radChunkPages: Map<
+        number,
+        { ranges: unknown[]; starts: Uint32Array; count: number; lastUsed: number }
+      >;
       radChunkDisplayedGlobals: Uint32Array;
       radChunkPendingGlobals: Uint32Array | null;
       radChunkPublishGeneration: number | null;
@@ -199,8 +205,18 @@ describe('page-table demand reconciliation', () => {
         return slots;
       },
     };
-    inner.radChunkPages.set(0, { lastUsed: 0 });
-    inner.radChunkPages.set(1, { lastUsed: 0 });
+    inner.radChunkPages.set(0, {
+      ranges: [],
+      starts: Uint32Array.from([0]),
+      count: 4,
+      lastUsed: 0,
+    });
+    inner.radChunkPages.set(1, {
+      ranges: [],
+      starts: Uint32Array.from([4]),
+      count: 4,
+      lastUsed: 0,
+    });
     return { inner, pages };
   }
 

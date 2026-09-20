@@ -97,12 +97,16 @@ describe('RAD page-table SH paging', () => {
     const inner = mesh as unknown as {
       installRadChunkPage: (file: number, data: ReturnType<typeof splats>) => boolean;
       poolIndicesForRadGlobals: (globals: Uint32Array) => Uint32Array | null;
-      radChunkPages: Map<number, { ranges: Array<unknown> }>;
+      radChunkPages: Map<number, { ranges: Array<unknown>; starts: Uint32Array }>;
     };
     const data = splats(1, Array.from({ length: chunkSize }, (_, index) => index));
 
     expect(inner.installRadChunkPage(0, data)).toBe(true);
-    expect(inner.radChunkPages.get(0)?.ranges).toHaveLength(32);
+    const page = inner.radChunkPages.get(0);
+    expect(page?.ranges).toHaveLength(32);
+    expect(page?.starts).toEqual(
+      Uint32Array.from(Array.from({ length: 32 }, (_, index) => index * 2 * WIDTH)),
+    );
     expect(inner.poolIndicesForRadGlobals(Uint32Array.from([0, WIDTH, chunkSize - 1]))).toEqual(
       Uint32Array.from([0, 2 * WIDTH, 62 * WIDTH + WIDTH - 1]),
     );
