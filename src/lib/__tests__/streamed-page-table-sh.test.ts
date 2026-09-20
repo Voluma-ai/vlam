@@ -99,7 +99,10 @@ describe('RAD page-table SH paging', () => {
       poolIndicesForRadGlobals: (globals: Uint32Array) => Uint32Array | null;
       radChunkPages: Map<number, { ranges: Array<unknown>; starts: Uint32Array }>;
     };
-    const data = splats(1, Array.from({ length: chunkSize }, (_, index) => index));
+    const data = splats(
+      1,
+      Array.from({ length: chunkSize }, (_, index) => index),
+    );
 
     expect(inner.installRadChunkPage(0, data)).toBe(true);
     const page = inner.radChunkPages.get(0);
@@ -177,7 +180,9 @@ describe('RAD page-table SH paging', () => {
 
     for (let file = 0; file < 4; file++) {
       const first = file * 4;
-      expect(inner.installRadChunkPage(file, splats(1, [first, first + 1, first + 2, first + 3]))).toBe(true);
+      expect(
+        inner.installRadChunkPage(file, splats(1, [first, first + 1, first + 2, first + 3])),
+      ).toBe(true);
     }
     expect(inner.radChunkPages.size).toBe(4);
   });
@@ -212,7 +217,15 @@ describe('RAD page-table SH paging', () => {
       radChunkPages: Map<number, { ranges: Array<unknown> }>;
     };
 
-    expect(inner.installRadChunkPage(0, splats(1, Array.from({ length: count }, (_, index) => index)))).toBe(true);
+    expect(
+      inner.installRadChunkPage(
+        0,
+        splats(
+          1,
+          Array.from({ length: count }, (_, index) => index),
+        ),
+      ),
+    ).toBe(true);
     expect(inner.radChunkPages.get(0)?.ranges).toHaveLength(Math.ceil(count / WIDTH));
   });
 
