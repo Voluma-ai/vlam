@@ -1464,7 +1464,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.clearActiveSlotMap(source, previousCount);
     for (let slot = 0; slot < indices.length; slot++) {
       const poolIndex = indices[slot] as number;
-      if (poolIndex >= source.length) {
+      if (poolIndex >= this.pool.capacity) {
         throw new RangeError(
           'SplatMesh.replaceActiveIndices: frontier contains an invalid pool index.',
         );
@@ -1501,11 +1501,25 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   protected onActiveListRendered(_activeListVersion: number): void {}
 
   /**
+   * Called when unified rendering tried to publish an older active list.
+   * The in-flight candidate stays queued; a later matching gather/sort acks it.
+   */
+  protected onActiveListSuperseded(_activeListVersion: number): void {}
+
+  /**
    * Unified rendering has submitted this mesh's current indices with a matching
    * sort. Receipt of a source view is not, by itself, publication.
+   *
+   * A token that does not match the live active list is ignored. Subclasses
+   * must not drop the in-flight candidate: the next matching unified frame
+   * still has to acknowledge that live generation.
    */
   notifyUnifiedPublication(activeListVersion = this.activeListVersion): void {
-    if (this.disposed || activeListVersion !== this.activeListVersion) return;
+    if (this.disposed) return;
+    if (activeListVersion !== this.activeListVersion) {
+      this.onActiveListSuperseded(activeListVersion);
+      return;
+    }
     this.onActiveListRendered(activeListVersion);
   }
 
@@ -1634,6 +1648,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       cached.contentRevision === this.contentRevision &&
       cached.graphRevision === this.graphRevision &&
       cached.activeCount === this.activeCount &&
+      cached.activeListVersion === this.activeListVersion &&
       cached.sh === this.materialInputs.sh &&
       cached.modifiers === this.modifierList &&
       cached.hasSourcePlacement === (this.perSourceSort !== null) &&
@@ -1654,6 +1669,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       capacity: this.capacity,
       sourceIndex: this.sourceIndexAttribute,
       activeCount: this.activeCount,
+      activeListVersion: this.activeListVersion,
       centersTexture: this.centersTexture,
       colorsTexture: this.materialInputs.textures.colorsTexture,
       covarianceATexture: this.materialInputs.textures.covarianceATexture,

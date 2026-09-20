@@ -13,6 +13,11 @@ chunks, no SH). Read together with `ROADMAP.md` M14. Implemented under
 
 ### Current streaming architecture (large captures)
 
+`StreamedSplatMeshOptions.radStrategy` defaults to `'auto'`: moderate captures
+keep the prefix reader and large captures use the page-table reader. Set
+`radStrategy: 'page-table'` for an explicit page-table construction on a fitting
+capture; its budget, device-cap, and finest-level safety rules are unchanged.
+
 - **Default `foveationMode: 'page-table'`** for `.rad` whose leaf count exceeds
   the budget-lift ceiling (~6M): Spark's selected-index model, off-thread
   [`FrontierPager`](../../src/lib/formats/rad/frontier-pager.ts) +

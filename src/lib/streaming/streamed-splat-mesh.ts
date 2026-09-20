@@ -159,6 +159,24 @@ const RAD_DIAGNOSTIC_SAMPLE_SIZE = 4096;
 type InlineWorkerCtor = new () => Worker;
 
 const DATA_TEXTURE_WIDTH = 2048;
+
+/** One authored RAD chunk, backed by independent texture rows. */
+type RadChunkPageRecord = {
+  readonly ranges: readonly SplatRange[];
+  /** Pool index of splat 0 in each texture row; filled once at install. */
+  readonly starts: Uint32Array;
+  readonly count: number;
+  lastUsed: number;
+};
+
+/** Maps a chunk-local node to its (possibly non-contiguous) pool slot. */
+function radChunkPoolSlot(page: RadChunkPageRecord, local: number): number | undefined {
+  if (local < 0 || local >= page.count) return undefined;
+  const row = (local / DATA_TEXTURE_WIDTH) | 0;
+  const start = page.starts[row];
+  if (start === undefined) return undefined;
+  return start + local - row * DATA_TEXTURE_WIDTH;
+}
 /** Max splats appended per frame (bounds the copy + staging-upload cost). */
 /**
  * A coverage hold waits for in-view covering cells (classic nearby L1 / far
@@ -295,7 +313,15 @@ function radChunkResidencyPages(
   const chunkCount = scene.chunkUrls.length;
   if (chunkSize !== SLAB_PAGE_SPLATS) return { fallback: 'non-authored-page-size' };
   if (profile?.isMobile) return { fallback: 'mobile-device' };
-  const drawTarget = Math.min(budget, options.foveationDrawBudget ?? PAGETABLE_DRAW_BUDGET);
+  const sharedDrawCapacity = options.pool
+    ? Math.max(1, Math.floor(options.pool.capacity / chunkSize / 1.25)) * chunkSize
+    : Number.MAX_SAFE_INTEGER;
+  const drawTarget = Math.min(
+    budget,
+    options.foveationDrawBudget ?? PAGETABLE_DRAW_BUDGET,
+    sharedDrawCapacity,
+    Math.max(1, chunkCount) * chunkSize,
+  );
   const minimumPages = Math.ceil(drawTarget / chunkSize);
   let pages = Math.min(RAD_CHUNK_PAGE_TARGET, chunkCount);
   if (pages < minimumPages) return { fallback: 'residency-below-draw-budget' };
@@ -430,6 +456,16 @@ export interface StreamedSplatMeshOptions extends SplatMeshOptions {
   lodScale?: number;
   /** Explicit format; by default the manifest's extension decides. */
   format?: StreamedSplatFormat;
+  /**
+   * RAD LOD strategy. `'auto'` preserves the normal prefix/page-table choice;
+   * `'page-table'` forces the selected-index page table for a fitting capture
+   * while keeping the resolved budget, device-cap, and finest-level safety
+   * rules.
+   *
+   * The option is ignored for non-RAD formats. Invalid runtime values are
+   * rejected consistently by the streamed loader.
+   */
+  radStrategy?: 'auto' | 'page-table';
   /** Serializable fetch settings for the manifest and its chunks. */
   request?: SplatRequestOptions;
   /**
@@ -824,12 +860,12 @@ export class StreamedSplatMesh extends SplatMesh {
    * `(source, chunk)` pairs.)
    */
   private readonly slabPages: SplatRange[] = [];
-  /** Whole RAD chunks backed by stable inactive pool ranges in chunk-page mode. */
-  private readonly radChunkPages = new Map<
-    number,
-    { readonly range: SplatRange; readonly count: number; lastUsed: number }
-  >();
+  /** Whole RAD chunks backed by stable row ranges in chunk-page mode. */
+  private readonly radChunkPages = new Map<number, RadChunkPageRecord>();
   private readonly radChunkAllocator: RadChunkPageAllocator | null;
+  /** Shared pools must leave governed headroom for sibling marker meshes. */
+  private readonly radChunkUsesSharedPool: boolean;
+  private readonly radChunkSharedPoolPages: number;
   private readonly radChunkPageLookup = new Map<number, number>();
   private radChunkPageLookupRevision = -1;
   private readonly radChunkResidency: boolean;
@@ -1271,6 +1307,7 @@ export class StreamedSplatMesh extends SplatMesh {
     // different ceilings on the same phone. An explicit `budget` still wins;
     // `budgetCap` tightens the resolved default without replacing it.
     const deviceProfile = options.deviceProfile;
+    const radStrategy = validateRadStrategy(options.radStrategy);
     const deviceBudget = resolveSplatBudget(options.budget, deviceProfile, {
       format,
       ...(options.budgetCap === undefined ? {} : { cap: options.budgetCap }),
@@ -1351,7 +1388,14 @@ export class StreamedSplatMesh extends SplatMesh {
         // resolved value decides how much of it to keep. Passing it is what lets
         // the `smooth` profile (and an explicit `shBands: 0`) decline SH on a
         // `.rad` at all - without it the file's bands were adopted wholesale.
-        scene = await buildRadScene(source, sourceOptions, options.request, shBands, budgetLifts);
+        scene = await buildRadScene(
+          source,
+          sourceOptions,
+          options.request,
+          shBands,
+          budgetLifts,
+          radStrategy,
+        );
       } catch (error) {
         if (isAbortError(error)) throw error;
         throw toSplatLoadError(error, { phase: 'manifest', url: source.manifestUrl });
@@ -1624,6 +1668,10 @@ export class StreamedSplatMesh extends SplatMesh {
     this.radChunkResidency = radChunkResidency;
     this.radResidencyRequestedValue = radResidencyRequested ? 'chunk-pages' : 'indexed';
     this.radResidencyFallbackReasonValue = radResidencyFallbackReason;
+    this.radChunkUsesSharedPool = options.pool !== undefined;
+    this.radChunkSharedPoolPages = options.pool
+      ? Math.floor(options.pool.capacity / (scene.chunkSize ?? SLAB_PAGE_SPLATS))
+      : 0;
     this.radChunkAllocator = radChunkResidency
       ? new RadChunkPageAllocator(
           Math.floor(capacity / (scene.chunkSize ?? SLAB_PAGE_SPLATS)),
@@ -1753,7 +1801,9 @@ export class StreamedSplatMesh extends SplatMesh {
       this.pageTableDrawTarget = options.foveationDrawBudget ?? PAGETABLE_DRAW_BUDGET;
       this.pageTableDrawTargetExplicit = options.foveationDrawBudget !== undefined;
       this.pageTableRequestedDraw = Math.min(budget, this.pageTableDrawTarget);
-      this.pageTableDrawBudget = this.pageTableRequestedDraw;
+      this.pageTableDrawBudget = this.radChunkUsesSharedPool
+        ? Math.min(this.pageTableRequestedDraw, this.radChunkSharedDrawCapacity())
+        : this.pageTableRequestedDraw;
       this.pageTableTargetPx = options.foveationTargetPx ?? DEFAULT_FOVEATION_TARGET_PX;
       this.pageTableFoveation = { ...FRONTIER_FOVEATION_DEFAULTS, ...options.frontierFoveation };
       if (
@@ -2184,7 +2234,7 @@ export class StreamedSplatMesh extends SplatMesh {
       this.radChunkPageLookupRevision = allocator.revision;
     }
     let previousFile = -1;
-    let previousPage = -1;
+    let resident: RadChunkPageRecord | undefined;
     let selectionHashA = 2166136261;
     let selectionHashB = 3735928559;
     const now = performance.now();
@@ -2197,12 +2247,15 @@ export class StreamedSplatMesh extends SplatMesh {
         if (page === undefined) return null;
         if (cachedPage === undefined) this.radChunkPageLookup.set(file, page);
         previousFile = file;
-        previousPage = page;
         pageIdentity.set(file, page);
-        const resident = this.radChunkPages.get(file);
-        if (resident) resident.lastUsed = now;
+        resident = this.radChunkPages.get(file);
+        if (!resident) return null;
+        resident.lastUsed = now;
       }
-      slots[i] = previousPage * chunkSize + (global - file * chunkSize);
+      const local = global - file * chunkSize;
+      const slot = resident ? radChunkPoolSlot(resident, local) : undefined;
+      if (slot === undefined) return null;
+      slots[i] = slot;
       selectionHashA = Math.imul(selectionHashA ^ global, 16777619) >>> 0;
       selectionHashB = Math.imul(selectionHashB ^ (global + i), 2246822519) >>> 0;
     }
@@ -2510,6 +2563,15 @@ export class StreamedSplatMesh extends SplatMesh {
     this.lastScheduleTime = -Infinity;
     this.resumeIndexedRefinementAfterPublication();
   }
+
+  /**
+   * A stale unified token must not discard the live page-table candidate.
+   * Large RAD cuts wait on `published` before the worker can replace a 7.5M
+   * selection; dropping that generation stalls refinement on the first cover.
+   * `onActiveListRendered` already ignores a mismatched snapshot, so the next
+   * gather of the live list is what acks the worker.
+   */
+  protected override onActiveListSuperseded(_activeListVersion: number): void {}
 
   protected override rebuildActiveList(): void {
     if (this.radChunkResidency) {
@@ -3376,9 +3438,12 @@ export class StreamedSplatMesh extends SplatMesh {
       // Page-table mode draws the frontier, not the LOD schedule - keep its
       // draw target under the (possibly shared/governed) pool budget too.
       this.pageTableRequestedDraw = Math.min(next, this.pageTableDrawTarget);
-      this.pageTableDrawBudget = this.pageTableRequestedDraw;
+      this.pageTableDrawBudget = this.radChunkUsesSharedPool
+        ? Math.min(this.pageTableRequestedDraw, this.radChunkSharedDrawCapacity())
+        : this.pageTableRequestedDraw;
       if (this.radChunkResidency && this.pageTableDrawBudget !== previousDrawBudget) {
         this.radChunkHardValidityRevisionValue++;
+        this.trimRadChunkPagesToBudget();
       }
       if (!this.radChunkResidency) {
         this.syncSlabPages(this.pageTableStagingSlots);
@@ -6345,7 +6410,7 @@ export class StreamedSplatMesh extends SplatMesh {
     if (oldestFile === undefined) return false;
     const page = this.radChunkPages.get(oldestFile);
     if (!page || !this.radChunkAllocator) return false;
-    this.removeRange(page.range);
+    for (const range of page.ranges) this.removeRange(range);
     this.radChunkPages.delete(oldestFile);
     this.radChunkAllocator.release(oldestFile);
     this.pageTableCachedFiles.delete(oldestFile);
@@ -6355,11 +6420,53 @@ export class StreamedSplatMesh extends SplatMesh {
     return true;
   }
 
+  /**
+   * A private RAD pool may use the full standalone residency target. In a
+   * shared pool, cap physical pages near the governed draw budget so an
+   * outgoing marker cannot consume the storage needed for its incoming peer.
+   */
+  private radChunkSharedPageLimit(): number {
+    const allocator = this.radChunkAllocator;
+    if (!allocator || !this.radChunkUsesSharedPool) return allocator?.capacityPages ?? 0;
+    const budgetPages = Math.ceil(this.pageTableDrawBudget / allocator.chunkSize);
+    const tenantCeiling = Math.max(1, Math.floor(this.radChunkSharedPoolPages / 1.25));
+    return Math.max(
+      1,
+      Math.min(allocator.capacityPages, tenantCeiling, Math.ceil(budgetPages * 1.25)),
+    );
+  }
+
+  private radChunkSharedDrawCapacity(): number {
+    const allocator = this.radChunkAllocator;
+    if (!allocator || !this.radChunkUsesSharedPool) return Number.MAX_SAFE_INTEGER;
+    const tenantPages = Math.min(
+      allocator.capacityPages,
+      Math.max(1, Math.floor(this.radChunkSharedPoolPages / 1.25)),
+    );
+    return tenantPages * allocator.chunkSize;
+  }
+
+  private trimRadChunkPagesToBudget(): void {
+    if (!this.radChunkUsesSharedPool || !this.radChunkAllocator) return;
+    const limit = this.radChunkSharedPageLimit();
+    while (this.radChunkAllocator.residentCount > limit && this.evictRadChunkPage()) {
+      // Eviction skips the displayed and pending cuts; later publications make
+      // more old pages eligible and subsequent installs continue the trim.
+    }
+  }
+
   /** Uploads a decoded RAD chunk once into its stable page. */
   private installRadChunkPage(file: number, data: SplatData): boolean {
     const allocator = this.radChunkAllocator;
     if (!this.radChunkResidency || !allocator) return true;
     if (this.radChunkPages.has(file)) return true;
+    if (this.radChunkUsesSharedPool) {
+      const limit = this.radChunkSharedPageLimit();
+      while (allocator.residentCount >= limit && this.evictRadChunkPage()) {
+        // Make room within this mesh's governed share before taking pool rows.
+      }
+      if (allocator.residentCount >= limit) return false;
+    }
     const installStartedAt = performance.now();
     let page = allocator.allocate(file, data.count);
     while (page === undefined && this.evictRadChunkPage()) {
@@ -6375,9 +6482,27 @@ export class StreamedSplatMesh extends SplatMesh {
       );
       return false;
     }
+    const ranges: SplatRange[] = [];
     try {
-      const range = this.appendInactivePage(data, allocator.chunkSize);
-      this.radChunkPages.set(file, { range, count: data.count, lastUsed: performance.now() });
+      // A shared pool is commonly fragmented by the main scene and several marker
+      // meshes. Keep the authored chunk logically stable while backing it with
+      // independent texture rows, so a free 65K page need not be contiguous.
+      for (let offset = 0; offset < data.count; offset += DATA_TEXTURE_WIDTH) {
+        const count = Math.min(DATA_TEXTURE_WIDTH, Math.max(0, data.count - offset));
+        ranges.push(
+          this.appendInactivePage(sliceSplatData(data, offset, count), DATA_TEXTURE_WIDTH),
+        );
+      }
+      const starts = new Uint32Array(ranges.length);
+      for (let i = 0; i < ranges.length; i++) {
+        starts[i] = this.poolRangeBacking(ranges[i] as SplatRange).start;
+      }
+      this.radChunkPages.set(file, {
+        ranges,
+        starts,
+        count: data.count,
+        lastUsed: performance.now(),
+      });
       this.pageTableCachedFiles.add(file);
       this.pageTableHostCacheRevision++;
       this.syncRadChunkPages();
@@ -6387,6 +6512,7 @@ export class StreamedSplatMesh extends SplatMesh {
       this.fetchCountsValue.pageInstallMs += installMs;
       return true;
     } catch (error) {
+      for (const range of ranges) this.removeRange(range);
       allocator.release(file);
       const installMs = performance.now() - installStartedAt;
       this.planTimingsValue.installMs = installMs;
@@ -6407,19 +6533,27 @@ export class StreamedSplatMesh extends SplatMesh {
 
   /** Maps worker-selected RAD globals directly to pool indices. */
   private poolIndicesForRadGlobals(globals: ArrayLike<number>): Uint32Array | null {
-    if (!this.radChunkAllocator) return null;
-    const slots = this.radChunkAllocator.poolSlots(globals);
-    if (!slots) return null;
+    const allocator = this.radChunkAllocator;
+    if (!allocator) return null;
+    const slots = new Uint32Array(globals.length);
     const now = performance.now();
     let previousFile = -1;
+    let page: RadChunkPageRecord | undefined;
     for (let i = 0; i < globals.length; i++) {
-      const file = Math.floor((globals[i] as number) / this.radChunkAllocator.chunkSize);
+      const global = globals[i] as number;
+      const file = Math.floor(global / allocator.chunkSize);
       // Selections are grouped by chunk. Page recency is shared by every
       // node in that chunk; millions of per-splat clock reads add no precision.
-      if (file === previousFile) continue;
-      previousFile = file;
-      const page = this.radChunkPages.get(file);
-      if (page) page.lastUsed = now;
+      if (file !== previousFile) {
+        previousFile = file;
+        page = this.radChunkPages.get(file);
+        if (!page) return null;
+        page.lastUsed = now;
+      }
+      const local = global - file * allocator.chunkSize;
+      const slot = page ? radChunkPoolSlot(page, local) : undefined;
+      if (slot === undefined) return null;
+      slots[i] = slot;
     }
     return slots;
   }
@@ -6834,6 +6968,13 @@ function squaredDistance3(
   const dy = a[1] - b[1];
   const dz = a[2] - b[2];
   return dx * dx + dy * dy + dz * dz;
+}
+
+/** Validates the explicit RAD strategy, including JavaScript callers. */
+function validateRadStrategy(value: 'auto' | 'page-table' | undefined): 'auto' | 'page-table' {
+  if (value === undefined || value === 'auto') return 'auto';
+  if (value === 'page-table') return value;
+  throw new RangeError(`radStrategy must be 'auto' or 'page-table', got ${JSON.stringify(value)}.`);
 }
 
 /** Validates the page-table RAD first-image fraction; zero restores the old hold. */

@@ -64,7 +64,11 @@ export async function buildRadScene(
   request?: SplatRequestOptions,
   maxShBands: 0 | 1 | 2 | 3 = 3,
   budgetLifts = true,
+  radStrategy: 'auto' | 'page-table' = 'auto',
 ): Promise<StreamedScene> {
+  if (radStrategy !== 'auto' && radStrategy !== 'page-table') {
+    throw new RangeError(`buildRadScene: invalid radStrategy ${JSON.stringify(radStrategy)}.`);
+  }
   const { meta, chunksStart } = await fetchRadHeader(source.manifestUrl, request);
   const chunkSize = meta.chunkSize ?? meta.count;
   const numChunks = meta.chunks.length;
@@ -123,7 +127,10 @@ export async function buildRadScene(
   const effectiveBudget = budgetLifts
     ? liftBudgetToFinestLevel(options.budget, leafCount)
     : options.budget;
-  const foveate = leafCount > FOVEATION_LEAF_THRESHOLD || leafCount > effectiveBudget;
+  const foveate =
+    radStrategy === 'page-table' ||
+    leafCount > FOVEATION_LEAF_THRESHOLD ||
+    leafCount > effectiveBudget;
 
   // Decode chunk 0 for bounds (the header has none) and to seed the tree root.
   // It must use the same splat order the streamed chunks will, or its
