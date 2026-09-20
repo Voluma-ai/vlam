@@ -39,7 +39,8 @@ scene.add(unified); // add the unified mesh INSTEAD of the sources
 <!-- full file: docs/guide/samples/unified-basic.ts -->
 
 The default uses counting sort and vertex projection. Experimental GPU paths
-stay on their opt-in entries:
+stay on their opt-in entries. Do not pass the strings `'radix'` or `'exact'`;
+those are not valid `sortStrategy` values.
 
 ```ts
 import { exactSort } from '@voluma/vlam/sorting/radix';

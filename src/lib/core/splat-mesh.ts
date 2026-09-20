@@ -81,6 +81,7 @@ import { StorageMirrorReleaser } from './storage-attribute-mirror';
 import { dataTexturesUploaded, releaseDataTextureMirrors } from './data-texture-mirror';
 import { assertStorageBufferFitsDevice } from './webgpu-limits';
 import {
+  assertSplatSortStrategy,
   isAutomaticProjectionStrategy,
   isComputeProjectionStrategy,
   type ProjectedSplatPipeline,
@@ -678,6 +679,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         throw new Error('SplatMesh: storageMode "render-only" does not support worker sorting.');
       }
     }
+    assertSplatSortStrategy(options.sortStrategy ?? 'counting', 'SplatMesh');
 
     // Pool data textures (CPU backing arrays kept for partial uploads):
     //   centers      RGBA32F or RGBA16F  x, y, z, (unused)
@@ -1019,6 +1021,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * even at rest.
    */
   async setSortStrategy(strategy: SplatSortStrategy): Promise<void> {
+    assertSplatSortStrategy(strategy, 'SplatMesh.setSortStrategy');
     if (this.storageModeValue === 'render-only' && strategy === 'worker') {
       throw new Error('SplatMesh.setSortStrategy: worker sorting requires editable CPU storage.');
     }
@@ -2099,15 +2102,22 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.writeViewUniforms(projectionCamera, viewWidth, viewHeight, sortCamera);
     this.currentModelView.multiplyMatrices(sortCamera.matrixWorldInverse, this.matrixWorld);
     this.writeSortState(sortCamera);
-    const sortHold =
+    // Camera-only sorts may wait for the previous GPU pass: a slightly stale
+    // permutation of the same active list is still valid. A content swap is
+    // not — streamed LOD reuses pool slots, so a held sort draws new centers
+    // through the old order (unsorted flashes while walking). Relighting
+    // lengthens `onSubmittedWorkDone`, which used to span several swaps.
+    const contentInvalidated =
+      this.sortScheduler.hasPendingForce() ||
+      this.activeListVersion !== this.sortedActiveListVersion ||
+      this.orderIsForeign;
+    const sortHoldRequested =
       options.sort !== false &&
       this.sortScheduler.beginSubmissionFrame(sortFrameNumber, performance.now());
+    const sortHold = sortHoldRequested && !contentInvalidated;
     if (sortHold) {
       this.sortScheduler.markSubmissionSuppressed(
-        this.sortScheduler.hasPendingForce() ||
-          this.activeListVersion !== this.sortedActiveListVersion ||
-          this.orderIsForeign ||
-          !this.currentSortState.equals(this.lastSortedState),
+        !this.currentSortState.equals(this.lastSortedState),
       );
     }
     this.updateTimings.activeListUpdateRanges = this.sourceIndexAttribute.updateRanges.length;

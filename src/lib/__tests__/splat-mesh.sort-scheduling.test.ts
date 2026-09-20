@@ -70,6 +70,25 @@ function cameraAt(x: number): THREE.Camera {
   return camera;
 }
 
+function perspectiveAt(x: number): THREE.PerspectiveCamera {
+  const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 100);
+  camera.position.set(x, 0, 0);
+  camera.updateMatrixWorld(true);
+  return camera;
+}
+
+function rendererWithPendingGpu(): THREE.WebGPURenderer {
+  return {
+    backend: {
+      isWebGPUBackend: true,
+      device: { queue: { onSubmittedWorkDone: () => new Promise<void>(() => {}) } },
+    },
+    getDrawingBufferSize: (out: THREE.Vector2) => out.set(800, 600),
+    compute: vi.fn(),
+    copyTextureToTexture: vi.fn(),
+  } as unknown as THREE.WebGPURenderer;
+}
+
 describe('SplatMesh sort scheduling', () => {
   const meshes: SplatMesh[] = [];
   afterEach(() => {
@@ -126,6 +145,35 @@ describe('SplatMesh sort scheduling', () => {
     internals(mesh).rebuildActiveList();
     internals(mesh).requestSortIfNeeded(cameraAt(1), renderer(true));
     expect(sort).toHaveBeenCalledTimes(2);
+  });
+
+  it('still sorts an active-list swap while a previous GPU sort is in flight', () => {
+    const { mesh, sort } = meshWithSorter({ sortIntervalMs: 1000 });
+    const gpuRenderer = rendererWithPendingGpu();
+    const camera = perspectiveAt(0);
+    const scene = new THREE.Scene();
+
+    mesh.update(camera, gpuRenderer);
+    expect(sort).toHaveBeenCalledTimes(1);
+    mesh.onAfterRender(gpuRenderer as never, scene, camera);
+
+    mesh.appendRange(makeSplatData(1));
+    internals(mesh).rebuildActiveList();
+    mesh.update(camera, gpuRenderer);
+    expect(sort).toHaveBeenCalledTimes(2);
+  });
+
+  it('still holds a camera-only sort while a previous GPU sort is in flight', () => {
+    const { mesh, sort } = meshWithSorter({ sortIntervalMs: 0 });
+    const gpuRenderer = rendererWithPendingGpu();
+    const scene = new THREE.Scene();
+
+    mesh.update(perspectiveAt(0), gpuRenderer);
+    expect(sort).toHaveBeenCalledTimes(1);
+    mesh.onAfterRender(gpuRenderer as never, scene, perspectiveAt(0));
+
+    mesh.update(perspectiveAt(1), gpuRenderer);
+    expect(sort).toHaveBeenCalledTimes(1);
   });
 
   it('forces even a one-splat active-list change before cadence expires', () => {

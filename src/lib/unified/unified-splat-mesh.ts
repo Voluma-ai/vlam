@@ -24,7 +24,11 @@ import {
   type SplatSortStrategyFactory,
 } from '../core/splat-mesh-types';
 import { cameraVisibleSortRange, radialSortState } from '../core/splat-sort-bounds';
-import { isComputeProjectionStrategy, type ProjectedSplatPipeline } from '../core/strategy-types';
+import {
+  assertSplatSortStrategy,
+  isComputeProjectionStrategy,
+  type ProjectedSplatPipeline,
+} from '../core/strategy-types';
 
 interface SourceRecord {
   source: SplatMesh;
@@ -117,7 +121,8 @@ export interface UnifiedSplatMeshOptions {
   srgbOutput?: boolean;
   /**
    * Global depth-sort strategy. Defaults to the lower-cost counting sorter.
-   * `'worker'` is unsupported: unified rendering is WebGPU-only.
+   * `'worker'` is unsupported: unified rendering is WebGPU-only. The strings
+   * `'radix'` and `'exact'` are not accepted; pass `radixSort()` / `exactSort()`.
    */
   sortStrategy?: 'counting' | SplatSortStrategyFactory;
   /**
@@ -416,6 +421,10 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       sourceIndexAttribute: this.workSourceIndex,
     };
     const sortStrategy = options.sortStrategy ?? 'counting';
+    assertSplatSortStrategy(sortStrategy, 'UnifiedSplatMesh');
+    if (sortStrategy === 'worker') {
+      throw new RangeError('UnifiedSplatMesh: worker sorting is unsupported.');
+    }
     this.sorter =
       typeof sortStrategy === 'string'
         ? new ComputeSorter({ ...sortInputs, sortMetric: this.sortMetric })

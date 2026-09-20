@@ -122,6 +122,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- String `'radix'` / `'exact'` `sortStrategy` values are rejected instead of
+  silently selecting counting sort. Hosts must pass `radixSort()` /
+  `exactSort()` from `@voluma/vlam/sorting/radix`.
+- Streamed WebGPU sorts no longer wait on a previous GPU pass after an active
+  list swap. The in-flight hold remains for camera-only motion; content
+  replacements sort immediately so reused pool slots cannot draw through a
+  stale order (visible as unsorted flashes while walking LCC2/SOG cuts,
+  especially with relighting keeping the queue busy).
 - Incompatible packed-SH requests now stay inside an explicitly supplied shared
   pool. VLAM disables higher-order SH for the mismatched mesh instead of
   allocating a private pool outside the host's memory envelope, and streamed

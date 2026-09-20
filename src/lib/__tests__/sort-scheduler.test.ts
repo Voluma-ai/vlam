@@ -155,6 +155,30 @@ describe('WebGpuSortScheduler', () => {
     expect(scheduler.shouldSubmit(accepted, accepted, 1_000, 10)).toBe(true);
   });
 
+  it('ignores a stale GPU completion after a replacement submission', async () => {
+    const scheduler = new WebGpuSortScheduler();
+    let resolveOld: () => void = () => {};
+    const oldDone = new Promise<void>((resolve) => {
+      resolveOld = resolve;
+    });
+    scheduler.markAccepted(0);
+    scheduler.markSubmission(1, 100);
+    scheduler.acknowledgeSubmission(1, 0, oldDone);
+    expect(scheduler.beginSubmissionFrame(2, 16)).toBe(true);
+
+    scheduler.markSubmission(2, 200);
+    scheduler.acknowledgeSubmission(2, 16, new Promise(() => {}));
+    resolveOld();
+    await Promise.resolve();
+    expect(scheduler.beginSubmissionFrame(3, 32)).toBe(true);
+    expect(scheduler.submissionDiagnostics()).toMatchObject({
+      serial: 2,
+      frame: 2,
+      tracking: 'gpu-completion',
+      inputCount: 200,
+    });
+  });
+
   it('honors zero and fixed overrides independently of active count', () => {
     const everyFrame = new WebGpuSortScheduler(0);
     const fixed = new WebGpuSortScheduler(25);
