@@ -21,6 +21,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- `StreamedSplatMeshOptions.radStrategy` now accepts `'auto'` (the default,
+  preserving moderate-RAD prefix and large-RAD page-table selection) or
+  `'page-table'` to force the indexed page table for fitting RAD captures.
+  Shared-pool page-table sources publish exact backing-pool indices only after
+  the matching unified gather, sort, and render, retaining the previous cut
+  through incomplete, stale, superseded, or capacity-blocked replacements.
 - Experimental radix sorting and compute projection now live behind the
   `@voluma/vlam/sorting/radix` and `@voluma/vlam/projection/compute` strategy
   factories; the root viewer and base unified entry remain lightweight with

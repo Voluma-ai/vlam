@@ -239,6 +239,19 @@ describe('buildRadScene prefix-vs-foveated choice', () => {
     expect(estimateSceneDecodedBytes(scene)).toBe(8 * 52);
   });
 
+  it('forces the page-table reader for a fitting capture when requested', async () => {
+    stubScene();
+    const scene = await buildRadScene(
+      httpDatasetSource('http://host/scene.rad'),
+      { ...options, budget: 4 },
+      undefined,
+      3,
+      true,
+      'page-table',
+    );
+    expect(scene.foveation).toBeDefined();
+  });
+
   it('foveates when the budget cannot hold the leaves', async () => {
     // Mobile is exempt from the finest-level lift, so its budget stays put. The
     // prefix reader would then spread it uniformly over the whole capture and

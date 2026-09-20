@@ -3,7 +3,7 @@ import type { WebGLRenderer } from 'three';
 import { uniform } from 'three/tsl';
 import { ComputeSorter, releaseRendererAttributes } from '../core/compute-sorter';
 import { clampDepthOfFieldSettings, type DepthOfFieldSettings } from '../core/depth-of-field';
-import { SplatMesh, getSplatPublicationToken } from '../core/splat-mesh';
+import { SplatMesh } from '../core/splat-mesh';
 import type { SplatPickOptions, SplatPickResult, UnifiedSourceView } from '../core/splat-mesh';
 import { isFillConstrainedSplatDevice } from '../core/splat-budget';
 import { WebGpuSortScheduler } from '../core/sort-scheduler';
@@ -795,6 +795,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       if (
         record.view === null ||
         record.view.activeCount !== view.activeCount ||
+        record.view.activeListVersion !== view.activeListVersion ||
         record.view.contentRevision !== view.contentRevision ||
         record.view.graphRevision !== view.graphRevision ||
         !record.view.matrixWorld.equals(view.matrixWorld)
@@ -1032,7 +1033,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       this.readyPublicationVersion = ++this.unifiedPublicationVersion;
       this.readyPublication = admitted.map((record) => ({
         source: record.source,
-        token: getSplatPublicationToken(record.source),
+        token: (record.view as UnifiedSourceView).activeListVersion,
       }));
     } else if (geometryInvalidated || layoutChanged || offset === 0) {
       this.readyPublicationVersion = -1;

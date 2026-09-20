@@ -458,6 +458,8 @@ export interface UnifiedSourceView {
   readonly sourceIndex: THREE.StorageBufferAttribute;
   /** Active entries at the front of {@link sourceIndex}. */
   readonly activeCount: number;
+  /** Version of the exact active-index list exposed through {@link sourceIndex}. */
+  readonly activeListVersion: number;
   /** Local-space centers, RGBA32F and pool-indexed. */
   readonly centersTexture: THREE.DataTexture;
   /** Source display color and opacity, RGBA8 and pool-indexed. */
