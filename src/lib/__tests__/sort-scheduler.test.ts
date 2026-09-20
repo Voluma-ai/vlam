@@ -27,6 +27,7 @@ describe('WebGpuSortScheduler', () => {
     accepted.copy(pose(1));
 
     scheduler.markSubmission(1, 5_000_000);
+    expect(scheduler.hasSubmissionInFlight()).toBe(true);
     expect(scheduler.beginSubmissionFrame(2, 16)).toBe(false);
     scheduler.acknowledgeSubmission(1, 0);
     expect(scheduler.beginSubmissionFrame(2, 16)).toBe(true);
@@ -41,6 +42,24 @@ describe('WebGpuSortScheduler', () => {
       tracking: 'render-ack-fallback',
       inputCount: 5_000_000,
     });
+  });
+
+  it('does not force cadence after a camera-only suppressed hold', async () => {
+    const scheduler = new WebGpuSortScheduler(1000);
+    let resolveDone: () => void = () => {};
+    const done = new Promise<void>((resolve) => {
+      resolveDone = resolve;
+    });
+    scheduler.markAccepted(0);
+    scheduler.markSubmission(1, 5_000_000);
+    scheduler.acknowledgeSubmission(1, 0, done);
+    expect(scheduler.beginSubmissionFrame(2, 16)).toBe(true);
+    scheduler.markSubmissionSuppressed(false);
+
+    resolveDone();
+    await Promise.resolve();
+    expect(scheduler.hasSubmissionInFlight()).toBe(false);
+    expect(scheduler.hasPendingForce()).toBe(false);
   });
 
   it('uses the active-count tier boundaries', () => {

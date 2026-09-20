@@ -11,6 +11,7 @@ interface SplatMeshInternals {
   rebuildActiveList(): void;
   requestSortIfNeeded(camera: THREE.Camera, renderer: THREE.WebGPURenderer): void;
   noteRenderer(renderer: THREE.WebGPURenderer): void;
+  sortScheduler: { submissionDiagnostics(): { action: string } };
 }
 
 class StagingTestMesh extends SplatMesh {
@@ -77,16 +78,28 @@ function perspectiveAt(x: number): THREE.PerspectiveCamera {
   return camera;
 }
 
-function rendererWithPendingGpu(): THREE.WebGPURenderer {
+function rendererWithPendingGpu(completion?: Promise<void>): THREE.WebGPURenderer {
   return {
     backend: {
       isWebGPUBackend: true,
-      device: { queue: { onSubmittedWorkDone: () => new Promise<void>(() => {}) } },
+      device: {
+        queue: {
+          onSubmittedWorkDone: () => completion ?? new Promise<void>(() => {}),
+        },
+      },
     },
     getDrawingBufferSize: (out: THREE.Vector2) => out.set(800, 600),
     compute: vi.fn(),
     copyTextureToTexture: vi.fn(),
   } as unknown as THREE.WebGPURenderer;
+}
+
+function pendingGpuCompletion(): { renderer: THREE.WebGPURenderer; resolve: () => void } {
+  let resolve = (): void => {};
+  const completion = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { renderer: rendererWithPendingGpu(completion), resolve };
 }
 
 describe('SplatMesh sort scheduling', () => {
@@ -147,7 +160,7 @@ describe('SplatMesh sort scheduling', () => {
     expect(sort).toHaveBeenCalledTimes(2);
   });
 
-  it('still sorts an active-list swap while a previous GPU sort is in flight', () => {
+  it('holds an in-flight GPU sort across an active-list swap and coalesces', () => {
     const { mesh, sort } = meshWithSorter({ sortIntervalMs: 1000 });
     const gpuRenderer = rendererWithPendingGpu();
     const camera = perspectiveAt(0);
@@ -160,7 +173,8 @@ describe('SplatMesh sort scheduling', () => {
     mesh.appendRange(makeSplatData(1));
     internals(mesh).rebuildActiveList();
     mesh.update(camera, gpuRenderer);
-    expect(sort).toHaveBeenCalledTimes(2);
+    expect(sort).toHaveBeenCalledTimes(1);
+    expect(internals(mesh).sortScheduler.submissionDiagnostics().action).toBe('coalesced');
   });
 
   it('still holds a camera-only sort while a previous GPU sort is in flight', () => {
@@ -174,6 +188,48 @@ describe('SplatMesh sort scheduling', () => {
 
     mesh.update(perspectiveAt(1), gpuRenderer);
     expect(sort).toHaveBeenCalledTimes(1);
+    expect(internals(mesh).sortScheduler.submissionDiagnostics().action).toBe('suppressed');
+  });
+
+  it('does not force a coalesced camera-only sort ahead of cadence', async () => {
+    const { renderer, resolve } = pendingGpuCompletion();
+    const { mesh, sort } = meshWithSorter({ sortIntervalMs: 1000 });
+    const scene = new THREE.Scene();
+    vi.spyOn(performance, 'now').mockReturnValue(0);
+
+    mesh.update(perspectiveAt(0), renderer);
+    expect(sort).toHaveBeenCalledTimes(1);
+    mesh.onAfterRender(renderer as never, scene, perspectiveAt(0));
+    mesh.update(perspectiveAt(1), renderer);
+    expect(sort).toHaveBeenCalledTimes(1);
+
+    resolve();
+    await Promise.resolve();
+    mesh.update(perspectiveAt(2), renderer);
+    expect(sort).toHaveBeenCalledTimes(1);
+  });
+
+  it('forces a coalesced content sort once the in-flight GPU pass completes', async () => {
+    const { renderer, resolve } = pendingGpuCompletion();
+    const { mesh, sort } = meshWithSorter({ sortIntervalMs: 1000 });
+    const camera = perspectiveAt(0);
+    const scene = new THREE.Scene();
+    vi.spyOn(performance, 'now').mockReturnValue(0);
+
+    mesh.update(camera, renderer);
+    expect(sort).toHaveBeenCalledTimes(1);
+    mesh.onAfterRender(renderer as never, scene, camera);
+
+    mesh.appendRange(makeSplatData(1));
+    internals(mesh).rebuildActiveList();
+    mesh.update(camera, renderer);
+    expect(sort).toHaveBeenCalledTimes(1);
+    expect(internals(mesh).sortScheduler.submissionDiagnostics().action).toBe('coalesced');
+
+    resolve();
+    await Promise.resolve();
+    mesh.update(camera, renderer);
+    expect(sort).toHaveBeenCalledTimes(2);
   });
 
   it('forces even a one-splat active-list change before cadence expires', () => {

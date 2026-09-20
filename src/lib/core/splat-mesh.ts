@@ -2102,23 +2102,21 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.writeViewUniforms(projectionCamera, viewWidth, viewHeight, sortCamera);
     this.currentModelView.multiplyMatrices(sortCamera.matrixWorldInverse, this.matrixWorld);
     this.writeSortState(sortCamera);
-    // Camera-only sorts may wait for the previous GPU pass: a slightly stale
-    // permutation of the same active list is still valid. A content swap is
-    // not — streamed LOD reuses pool slots, so a held sort draws new centers
-    // through the old order (unsorted flashes while walking). Relighting
-    // lengthens `onSubmittedWorkDone`, which used to span several swaps.
-    const contentInvalidated =
-      this.sortScheduler.hasPendingForce() ||
-      this.activeListVersion !== this.sortedActiveListVersion ||
-      this.orderIsForeign;
-    const sortHoldRequested =
+    // One GPU counting sort owns `splatIndex` until it completes. Dispatching a
+    // replacement while that pass is in flight lets the older scatter finish
+    // over a newer cut (unsorted flashes while walking LCC2/SOG, worse with
+    // relighting occupying the same queue). Content changes coalesce and
+    // re-sort when the buffer is free; camera-only motion keeps cadence.
+    // Streamed LOD delays the visible swap instead of overlapping.
+    const sortHold =
       options.sort !== false &&
       this.sortScheduler.beginSubmissionFrame(sortFrameNumber, performance.now());
-    const sortHold = sortHoldRequested && !contentInvalidated;
     if (sortHold) {
-      this.sortScheduler.markSubmissionSuppressed(
-        !this.currentSortState.equals(this.lastSortedState),
-      );
+      const contentNeedsSort =
+        this.sortScheduler.hasPendingForce() ||
+        this.activeListVersion !== this.sortedActiveListVersion ||
+        this.orderIsForeign;
+      this.sortScheduler.markSubmissionSuppressed(contentNeedsSort);
     }
     this.updateTimings.activeListUpdateRanges = this.sourceIndexAttribute.updateRanges.length;
     const projectionSubmissionsBefore = this.projectedPipeline?.projectionDispatches ?? 0;
@@ -2218,6 +2216,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     sortInputCount: number;
   }> {
     return this.updateTimings;
+  }
+
+  /** True while a GPU sort still owns the shared order buffer. */
+  protected hasInFlightSortSubmission(): boolean {
+    return this.sortScheduler.hasSubmissionInFlight();
   }
 
   private markSortSubmission(inputCount: number): void {
