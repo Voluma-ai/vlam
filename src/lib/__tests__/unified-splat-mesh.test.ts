@@ -117,6 +117,12 @@ describe('UnifiedSplatMesh', () => {
     ).toThrow(/unsupported sortStrategy "radix"/);
   });
 
+  it('rejects worker sorting instead of falling through to counting', () => {
+    expect(
+      () => new UnifiedSplatMesh(mockRenderer(), 1, { sortStrategy: 'worker' as never }),
+    ).toThrow(/worker sorting is unsupported/);
+  });
+
   it('copies the source projected-footprint floor into the unified draw path', () => {
     const renderer = mockRenderer();
     const mesh = source({ minSplatSizePx: 1.5 });

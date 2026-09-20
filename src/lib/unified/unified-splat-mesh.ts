@@ -420,11 +420,12 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       splatIndexAttribute: order,
       sourceIndexAttribute: this.workSourceIndex,
     };
-    const sortStrategy = options.sortStrategy ?? 'counting';
-    assertSplatSortStrategy(sortStrategy, 'UnifiedSplatMesh');
-    if (sortStrategy === 'worker') {
+    const requested: unknown = options.sortStrategy ?? 'counting';
+    if (requested === 'worker') {
       throw new RangeError('UnifiedSplatMesh: worker sorting is unsupported.');
     }
+    assertSplatSortStrategy(requested, 'UnifiedSplatMesh');
+    const sortStrategy = requested;
     this.sorter =
       typeof sortStrategy === 'string'
         ? new ComputeSorter({ ...sortInputs, sortMetric: this.sortMetric })
