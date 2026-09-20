@@ -161,6 +161,8 @@ export class WebGpuSortScheduler {
     this.submissionAcknowledgedFrame = -1;
     this.submissionFallbackReleaseFrame = -1;
     this.submissionFallbackReleaseAt = -Infinity;
+    // A replacement sort already covers any coalesced camera/content request.
+    this.deferredSubmission = false;
   }
 
   /** Whether the matching draw callback still needs to acknowledge the submission. */
@@ -171,17 +173,18 @@ export class WebGpuSortScheduler {
   /** Acknowledges the rendered submission and arms either the GPU or Chromium fallback release. */
   acknowledgeSubmission(frame: number, now: number, completion?: Promise<void>): void {
     if (!this.submissionInFlight || !this.submissionAwaitingRender) return;
+    const serial = this.submissionSerialValue;
     this.submissionAwaitingRender = false;
     this.submissionAcknowledgedFrame = frame;
     this.submissionAcknowledgementMsValue = Math.max(0, now - this.lastAcceptedAt);
     if (completion) {
       this.submissionTrackingValue = 'gpu-completion';
       void completion.then(
-        () => this.completeSubmission(),
-        () => this.armFallback(frame, now),
+        () => this.completeSubmission(serial),
+        () => this.armFallback(frame, now, serial),
       );
     } else {
-      this.armFallback(frame, now);
+      this.armFallback(frame, now, serial);
     }
   }
 
@@ -202,13 +205,15 @@ export class WebGpuSortScheduler {
     return { acceptedCount: this.acceptedCount, lastAcceptedAt: this.lastAcceptedAt };
   }
 
-  private armFallback(frame: number, now: number): void {
+  private armFallback(frame: number, now: number, serial: number): void {
+    if (serial !== this.submissionSerialValue) return;
     this.submissionTrackingValue = 'render-ack-fallback';
     this.submissionFallbackReleaseFrame = frame + FALLBACK_HOLD_FRAMES;
     this.submissionFallbackReleaseAt = now + FALLBACK_HOLD_MS;
   }
 
-  private completeSubmission(): void {
+  private completeSubmission(serial?: number): void {
+    if (serial !== undefined && serial !== this.submissionSerialValue) return;
     this.submissionInFlight = false;
     this.submissionAwaitingRender = false;
     if (this.deferredSubmission) {

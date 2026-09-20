@@ -47,4 +47,10 @@ describe('live sorter selection', () => {
     expect(internals.sorter).toBeNull();
     expect(dispose).toHaveBeenCalledOnce();
   });
+
+  it('rejects the former radix string instead of falling through to counting', () => {
+    expect(() => new SplatMesh({ capacity: 8 }, { sortStrategy: 'radix' as never })).toThrow(
+      /unsupported sortStrategy "radix"/,
+    );
+  });
 });

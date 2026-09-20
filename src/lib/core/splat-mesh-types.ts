@@ -186,7 +186,8 @@ export interface SplatMeshOptions {
    * after the worker reply, so streaming changes become visible asynchronously
    * but never expose a mismatched intermediate scene. Experimental radix
    * strategies are supplied by `radixSort()` and `exactSort()` from
-   * `@voluma/vlam/sorting/radix`.
+   * `@voluma/vlam/sorting/radix`. The strings `'radix'` and `'exact'` are not
+   * accepted; they used to fall through to counting sort.
    * Merged pools honor the same strategy, applying each source's live
    * placement before computing its key for the global sort.
    *

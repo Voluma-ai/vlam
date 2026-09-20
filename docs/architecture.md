@@ -62,6 +62,8 @@ src/
  static-lod/ → `@voluma/vlam/static-lod`
  streaming/ → `@voluma/vlam/streaming` (StreamedSplatMesh, governors, LOD)
  unified/ → `@voluma/vlam/unified`
+ sorting/radix/ → `@voluma/vlam/sorting/radix` (`radixSort`, `exactSort`)
+ projection/compute/ → `@voluma/vlam/projection/compute`
  selection/ → `@voluma/vlam/selection`
  effects/ → `@voluma/vlam/effects`
  formats/
@@ -92,7 +94,7 @@ src/
  compute-sorter.ts GPU counting sort, 8 TSL compute passes (WebGPU)
  projected-splat-pipeline.ts experimental project-once cull, dense list + indirect args
  radix-sort.ts radix constants + reference CPU sort (verification)
- radix-sorter.ts experimental GPU radix sorter (lazy-loaded)
+ radix-sorter.ts experimental GPU radix sorter; inject via `radixSort()` / `exactSort()`
  worker-sorter.ts CPU counting sort in a worker (WebGL2 fallback)
  sort-worker.ts the worker script behind worker-sorter
 
@@ -250,6 +252,7 @@ error messages, and comments stay strictly professional.
 | Chromium drops Dawn if `GPUAdapter` is collected | `createWebGPURenderer` pins the adapter on the renderer (a normal JS object) and guards `device.popErrorScope` so three's fire-and-forget pipeline validation cannot reject as `"Instance dropped in popErrorScope"`. Holding only the `GPUDevice` host object is not enough; Linux SwiftShader in CI is the usual repro. |
 | Sort precision scales with scene size | The GPU sort buckets depth linearly across the whole scene's range, so a big scene gives coarse near-camera buckets → thousands of overlapping splats tie → they reshuffle as the camera moves (popping on grass/foliage). It uses 2²² buckets (sub-splat-width) so ties stay coplanar and invisible. Do NOT switch to a multi-pass LSD radix: the parallel `atomicAdd` scatter is **not** stable, so pass 2 scrambles pass 1's order (only the top bits end up sorted). The CPU worker's sequential scatter *is* stable, so it can and does use a 2-pass 24-bit radix. |
 | WebGPU never defaults to the CPU sort worker | Spark matching is load speed and LOD quality. `sortStrategy: 'worker'` on WebGPU is an explicit A/B opt-in (`?sort=worker` in the demo). Do not switch the demo or library default to the worker to "match Spark's lower-frequency sort": at millions of splats that lags hundreds of ms behind the camera. |
+| String `'radix'` / `'exact'` is not a sorter | After the factory split, leftover strings selected counting sort (0.10.1). Hosts must pass `radixSort()` / `exactSort()` from `@voluma/vlam/sorting/radix`; the library now throws on those names. |
 | Worker snapshots publish atomically | **Do not optimize this boundary away.** A worker request owns copied dirty core/SH/channel rows and an exact active-index list, identified by a generation rather than slot spans. The old published textures, order, and count remain visible until that reply is prepared; then all three advance together. Slot reuse (especially RAD), compaction, or continuous loading make range equality insufficient. Keep one snapshot in flight/awaiting publication; on error restore row coverage and retry. Deterministic delayed-reply tests are the regression lock. |
 | Never assume the initial texture upload covers later writes | The backends upload a `needsUpdate` texture at different moments (WebGL: first render, even with 0 instances). Only constructor-time pool writes may ride the initial upload; every post-construction write must go through the staging-copy flush, or the skipped rows render invisible (a rectangular "hole" of alpha-0 splats). |
 | Staging upload heights thrash an exact-size LRU | Page-table RAD plans dirty many non-adjacent row spans with distinct heights. Cache staging textures by power-of-two height buckets and copy only the live rows via `copyTextureToTexture` `srcRegion` (`Box2`); an exact-height LRU of a few slots will allocate dozens of textures per flush and spike `swapUploadWorstMs`. |

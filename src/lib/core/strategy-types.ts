@@ -180,3 +180,31 @@ export function sortStrategyLabel(
   if (strategy === 'counting' || strategy === 'worker') return strategy;
   return strategy.exactDepth ? 'exact' : 'radix';
 }
+
+/** Built-in names plus injected radix factories from `@voluma/vlam/sorting/radix`. */
+export function isSplatSortStrategy(strategy: unknown): strategy is SplatSortStrategy {
+  if (strategy === 'counting' || strategy === 'worker') return true;
+  if (typeof strategy !== 'object' || strategy === null) return false;
+  const candidate = strategy as SplatSortStrategyFactory;
+  return (
+    candidate.kind === 'radix' &&
+    typeof candidate.exactDepth === 'boolean' &&
+    typeof candidate.create === 'function'
+  );
+}
+
+/**
+ * Rejects the former `'radix'` / `'exact'` string names. Those implementations
+ * live behind `radixSort()` / `exactSort()` from `@voluma/vlam/sorting/radix`.
+ * Leftover strings selected counting sort in 0.10.1.
+ */
+export function assertSplatSortStrategy(
+  strategy: unknown,
+  where: string,
+): asserts strategy is SplatSortStrategy {
+  if (isSplatSortStrategy(strategy)) return;
+  const label = typeof strategy === 'string' ? JSON.stringify(strategy) : typeof strategy;
+  throw new RangeError(
+    `${where}: unsupported sortStrategy ${label}. Pass radixSort() or exactSort() from @voluma/vlam/sorting/radix.`,
+  );
+}
