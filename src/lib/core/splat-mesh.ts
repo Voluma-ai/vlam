@@ -1500,12 +1500,19 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   /** Called from a microtask after the matching order has actually rendered. */
   protected onActiveListRendered(_activeListVersion: number): void {}
 
-  /** Called when unified rendering tried to publish an older active list. */
+  /**
+   * Called when unified rendering tried to publish an older active list.
+   * The in-flight candidate stays queued; a later matching gather/sort acks it.
+   */
   protected onActiveListSuperseded(_activeListVersion: number): void {}
 
   /**
    * Unified rendering has submitted this mesh's current indices with a matching
    * sort. Receipt of a source view is not, by itself, publication.
+   *
+   * A token that does not match the live active list is ignored. Subclasses
+   * must not drop the in-flight candidate: the next matching unified frame
+   * still has to acknowledge that live generation.
    */
   notifyUnifiedPublication(activeListVersion = this.activeListVersion): void {
     if (this.disposed) return;

@@ -2552,18 +2552,14 @@ export class StreamedSplatMesh extends SplatMesh {
     this.resumeIndexedRefinementAfterPublication();
   }
 
-  protected override onActiveListSuperseded(_activeListVersion: number): void {
-    if (!this.frontierWorker) return;
-    if (
-      this.radChunkResidency
-        ? this.radChunkPublishGeneration !== null
-        : this.indexedPublishGeneration !== null
-    ) {
-      this.discardIndexedPublication('unified-active-list-superseded');
-      this.pendingWork = true;
-      this.lastScheduleTime = -Infinity;
-    }
-  }
+  /**
+   * A stale unified token must not discard the live page-table candidate.
+   * Large RAD cuts wait on `published` before the worker can replace a 7.5M
+   * selection; dropping that generation stalls refinement on the first cover.
+   * `onActiveListRendered` already ignores a mismatched snapshot, so the next
+   * gather of the live list is what acks the worker.
+   */
+  protected override onActiveListSuperseded(_activeListVersion: number): void {}
 
   protected override rebuildActiveList(): void {
     if (this.radChunkResidency) {

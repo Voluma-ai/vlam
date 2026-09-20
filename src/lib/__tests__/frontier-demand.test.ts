@@ -106,7 +106,7 @@ describe('page-table demand reconciliation', () => {
       lastPostedProjection: readonly number[] | null;
       onActiveListReady: (activeListVersion: number) => void;
       onActiveListRendered: (activeListVersion: number) => void;
-      notifyUnifiedPublication: () => void;
+      notifyUnifiedPublication: (activeListVersion?: number) => void;
       rebuildActiveList: () => void;
       frontierWorker: WorkerStub;
       radChunkResidency: boolean;
@@ -859,6 +859,54 @@ describe('page-table demand reconciliation', () => {
 
     expect(inner.indexedPublishGeneration).toBe(7);
     expect(inner.indexedPendingDisplaySlots).not.toBeNull();
+    expect(
+      inner.frontierWorker.posted.some(
+        (message) => (message as { type?: string }).type === 'published',
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps the live unified candidate when a stale token arrives after rebuild', () => {
+    const inner = fixture();
+    inner.indexedPublishGeneration = 8;
+    inner.indexedPendingDisplaySlots = new Uint32Array([0]);
+    inner.indexedPublishActiveListVersion = inner.activeListVersion;
+    const stale = inner.activeListVersion;
+
+    inner.rebuildActiveList();
+    inner.notifyUnifiedPublication(stale);
+
+    expect(inner.indexedPublishGeneration).toBe(8);
+    expect(inner.indexedPendingDisplaySlots).not.toBeNull();
+    expect(
+      inner.frontierWorker.posted.some(
+        (message) => (message as { type?: string }).type === 'published',
+      ),
+    ).toBe(false);
+
+    inner.notifyUnifiedPublication();
+    expect(
+      inner.frontierWorker.posted.some(
+        (message) =>
+          (message as { type?: string; generation?: number }).type === 'published' &&
+          (message as { generation?: number }).generation === 8,
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps a chunk-page candidate when a stale unified token arrives', () => {
+    const { inner } = chunkPagesFixture();
+    inner.radChunkPublishGeneration = 11;
+    inner.radChunkPendingGlobals = Uint32Array.from([0]);
+    inner.radChunkPublishActiveListVersion = inner.activeListVersion;
+    const stale = inner.activeListVersion;
+    inner.activeListVersion = stale + 1;
+
+    inner.notifyUnifiedPublication(stale);
+
+    expect(inner.radChunkPublishGeneration).toBe(11);
+    expect(inner.radChunkPendingGlobals).not.toBeNull();
+    expect(inner.radChunkLastInvalidationReasonValue).not.toBe('unified-active-list-superseded');
     expect(
       inner.frontierWorker.posted.some(
         (message) => (message as { type?: string }).type === 'published',
