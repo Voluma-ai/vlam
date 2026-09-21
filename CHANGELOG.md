@@ -127,6 +127,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   finish over new nearby splats (the unsorted white-blob flash while walking
   Tempel/LCC2, worse with relighting on the same queue). Content changes
   re-sort when the pass completes; camera-only motion keeps sort cadence.
+  Generic `SplatMesh` and `StaticLodSplatMesh` keep the previous instance
+  count and GPU `sourceIndex` until that matching sort can run, so a compact
+  or active-list swap cannot draw through the previous permutation.
 - The hidden startup hold and first cover still publish during that GPU wait
   so `isStreaming` can go false. Later blocked swaps retry without looking
   like the scene is still loading.

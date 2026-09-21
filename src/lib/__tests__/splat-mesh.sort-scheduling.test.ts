@@ -12,6 +12,7 @@ interface SplatMeshInternals {
   requestSortIfNeeded(camera: THREE.Camera, renderer: THREE.WebGPURenderer): void;
   noteRenderer(renderer: THREE.WebGPURenderer): void;
   sortScheduler: { submissionDiagnostics(): { action: string } };
+  sourceIndexAttribute: THREE.BufferAttribute;
 }
 
 class StagingTestMesh extends SplatMesh {
@@ -170,11 +171,38 @@ describe('SplatMesh sort scheduling', () => {
     expect(sort).toHaveBeenCalledTimes(1);
     mesh.onAfterRender(gpuRenderer as never, scene, camera);
 
+    const sourceVersion = internals(mesh).sourceIndexAttribute.version;
     mesh.appendRange(makeSplatData(1));
     internals(mesh).rebuildActiveList();
     mesh.update(camera, gpuRenderer);
     expect(sort).toHaveBeenCalledTimes(1);
     expect(internals(mesh).sortScheduler.submissionDiagnostics().action).toBe('coalesced');
+    expect((mesh.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(1);
+    expect(internals(mesh).sourceIndexAttribute.version).toBe(sourceVersion);
+    expect(internals(mesh).activeCount).toBe(2);
+  });
+
+  it('keeps the previous WebGPU instanceCount when a removal is held', () => {
+    const { mesh, sort } = meshWithSorter({ sortIntervalMs: 1000 });
+    const gpuRenderer = rendererWithPendingGpu();
+    const camera = perspectiveAt(0);
+    const scene = new THREE.Scene();
+
+    const extra = mesh.appendRange(makeSplatData(1));
+    internals(mesh).rebuildActiveList();
+    mesh.update(camera, gpuRenderer);
+    expect(sort).toHaveBeenCalledTimes(1);
+    mesh.onAfterRender(gpuRenderer as never, scene, camera);
+    expect((mesh.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(2);
+
+    mesh.removeRange(extra);
+    const sourceVersion = internals(mesh).sourceIndexAttribute.version;
+    internals(mesh).rebuildActiveList();
+    mesh.update(camera, gpuRenderer);
+    expect(sort).toHaveBeenCalledTimes(1);
+    expect((mesh.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(2);
+    expect(internals(mesh).sourceIndexAttribute.version).toBe(sourceVersion);
+    expect(internals(mesh).activeCount).toBe(1);
   });
 
   it('still holds a camera-only sort while a previous GPU sort is in flight', () => {
@@ -225,11 +253,14 @@ describe('SplatMesh sort scheduling', () => {
     mesh.update(camera, renderer);
     expect(sort).toHaveBeenCalledTimes(1);
     expect(internals(mesh).sortScheduler.submissionDiagnostics().action).toBe('coalesced');
+    const sourceVersion = internals(mesh).sourceIndexAttribute.version;
 
     resolve();
     await Promise.resolve();
     mesh.update(camera, renderer);
     expect(sort).toHaveBeenCalledTimes(2);
+    expect((mesh.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(2);
+    expect(internals(mesh).sourceIndexAttribute.version).toBeGreaterThan(sourceVersion);
   });
 
   it('forces even a one-splat active-list change before cadence expires', () => {
