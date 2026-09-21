@@ -779,11 +779,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     const projectionCamera: THREE.Camera = xrView?.eye ?? camera;
     // One global sort from the head serves both eyes (see `xr-view.ts`).
     const viewCamera: THREE.Camera = xrView?.head ?? camera;
-    const sortState =
-      this.sortMetric === 'radial'
-        ? radialSortState(this.matrixWorld, viewCamera.matrixWorld, this.currentSortState)
-        : this.currentSortState.copy(viewCamera.matrixWorldInverse);
-    const cameraChanged = !sortState.equals(this.lastSortedState);
+    // Camera-only holds must not forcePending: that bypasses sort cadence.
+    let contentChanged = this.sortScheduler.hasPendingForce();
     const viewport = this.drawingBufferSize;
     if (targetSize) viewport.copy(targetSize);
     else if (xrView) viewport.set(xrView.width, xrView.height);
@@ -795,7 +792,6 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.focal.value.set((focalX * viewport.x) / 2, (focalY * viewport.y) / 2);
     const updated = this.candidateScratch;
     updated.length = 0;
-    let refinementCandidateChanged = this.sortScheduler.hasPendingForce() || cameraChanged;
     for (let i = 0; i < this.sources.length; i++) {
       const record = this.sources[i] as SourceRecord;
       // Children take the application camera: they resolve the XR view for
@@ -810,7 +806,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         record.view.graphRevision !== view.graphRevision ||
         !record.view.matrixWorld.equals(view.matrixWorld)
       ) {
-        refinementCandidateChanged = true;
+        contentChanged = true;
       }
       if (holdForRefinementSort) continue;
       record.view = view;
@@ -818,7 +814,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       updated.push(record);
     }
     if (holdForRefinementSort) {
-      this.sortScheduler.markSubmissionSuppressed(refinementCandidateChanged);
+      this.sortScheduler.markSubmissionSuppressed(contentChanged);
       this.performanceTimingsValue.totalMs = performance.now() - prepareStartedAt;
       this.performanceTimingsValue.gatherMs = 0;
       this.performanceTimingsValue.sortSubmitMs = 0;

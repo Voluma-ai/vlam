@@ -372,6 +372,15 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     snapshot: WorkerPublicationSnapshot;
     order: Uint32Array;
   } | null = null;
+  /**
+   * CPU active list changed while a GPU sort still owns `splatIndex`. Keep
+   * the previous `instanceCount` and GPU `sourceIndex` until that pass
+   * completes and the matching sort can run. Uploading the new list sooner
+   * lets the in-flight scatter finish over new indices; advancing the draw
+   * count sooner renders a stale permutation (removed splats linger, live
+   * ones vanish).
+   */
+  private gpuDrawListHeld = false;
 
   /**
    * Bumped whenever the resident splat set or its positions change (activate,
@@ -2102,23 +2111,24 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.writeViewUniforms(projectionCamera, viewWidth, viewHeight, sortCamera);
     this.currentModelView.multiplyMatrices(sortCamera.matrixWorldInverse, this.matrixWorld);
     this.writeSortState(sortCamera);
-    // Camera-only sorts may wait for the previous GPU pass: a slightly stale
-    // permutation of the same active list is still valid. A content swap is
-    // not — streamed LOD reuses pool slots, so a held sort draws new centers
-    // through the old order (unsorted flashes while walking). Relighting
-    // lengthens `onSubmittedWorkDone`, which used to span several swaps.
-    const contentInvalidated =
-      this.sortScheduler.hasPendingForce() ||
-      this.activeListVersion !== this.sortedActiveListVersion ||
-      this.orderIsForeign;
-    const sortHoldRequested =
+    // One GPU counting sort owns `splatIndex` until it completes. Dispatching a
+    // replacement while that pass is in flight lets the older scatter finish
+    // over a newer cut (unsorted flashes while walking LCC2/SOG, worse with
+    // relighting occupying the same queue). Content changes coalesce and
+    // re-sort when the buffer is free; camera-only motion keeps cadence.
+    // Streamed LOD delays the visible swap instead of overlapping. Generic
+    // meshes keep the previous `instanceCount` / GPU `sourceIndex` until that
+    // matching sort can run, so a compact or `StaticLodSplatMesh` cut cannot
+    // draw the new list through the previous permutation.
+    const sortHold =
       options.sort !== false &&
       this.sortScheduler.beginSubmissionFrame(sortFrameNumber, performance.now());
-    const sortHold = sortHoldRequested && !contentInvalidated;
     if (sortHold) {
-      this.sortScheduler.markSubmissionSuppressed(
-        !this.currentSortState.equals(this.lastSortedState),
-      );
+      const contentNeedsSort =
+        this.sortScheduler.hasPendingForce() ||
+        this.activeListVersion !== this.sortedActiveListVersion ||
+        this.orderIsForeign;
+      this.sortScheduler.markSubmissionSuppressed(contentNeedsSort);
     }
     this.updateTimings.activeListUpdateRanges = this.sourceIndexAttribute.updateRanges.length;
     const projectionSubmissionsBefore = this.projectedPipeline?.projectionDispatches ?? 0;
@@ -2218,6 +2228,44 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     sortInputCount: number;
   }> {
     return this.updateTimings;
+  }
+
+  /** True while a GPU sort still owns the shared order buffer. */
+  protected hasInFlightSortSubmission(): boolean {
+    return this.sortScheduler.hasSubmissionInFlight();
+  }
+
+  /**
+   * GPU `splatIndex` still describes the previous active list. Mutating the
+   * CPU list is fine; publishing it (or the new instance count) is not.
+   */
+  private shouldRetainGpuDrawList(): boolean {
+    return !this.usesCpuDrawList() && this.sortScheduler.hasSubmissionInFlight();
+  }
+
+  /** Uploads a held CPU active list immediately before the matching GPU sort. */
+  private flushHeldGpuActiveList(): void {
+    if (!this.gpuDrawListHeld) return;
+    this.sourceIndexAttribute.needsUpdate = true;
+  }
+
+  /** Drops a speculative `sourceIndex` upload when that GPU sort did not run. */
+  private abandonHeldGpuActiveListUpload(): void {
+    if (!this.gpuDrawListHeld) return;
+    this.sourceIndexAttribute.needsUpdate = false;
+  }
+
+  /**
+   * Advances the drawn instance count once a GPU sort has been accepted for
+   * the held list. Page-table sources may overwrite this in
+   * {@link onActiveListReady} with the same pending count.
+   */
+  private publishHeldGpuDrawCount(): void {
+    if (!this.gpuDrawListHeld) return;
+    if (!this.workerPublicationEnabled) {
+      (this.geometry as THREE.InstancedBufferGeometry).instanceCount = this.activeCount;
+    }
+    this.gpuDrawListHeld = false;
   }
 
   private markSortSubmission(inputCount: number): void {
@@ -3249,9 +3297,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     for (const range of ranges) {
       addMergedUpdateRange(this.sourceIndexAttribute, range.start, range.count);
     }
-    if (ranges.length > 0) {
-      this.sourceIndexAttribute.needsUpdate = true;
-    }
+    const retainGpuDraw = this.shouldRetainGpuDrawList();
+    if (retainGpuDraw) {
+      this.gpuDrawListHeld = true;
+      this.sourceIndexAttribute.needsUpdate = false;
+    } else if (ranges.length > 0) this.sourceIndexAttribute.needsUpdate = true;
 
     // Until the asynchronous WebGL worker returns, keep its draw list on a
     // valid unsorted active permutation. WebGPU compute sorters overwrite
@@ -3283,7 +3333,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         this.splatIndexAttribute.needsUpdate = true;
       }
     }
-    if (!this.workerPublicationEnabled) {
+    if (!this.workerPublicationEnabled && !retainGpuDraw) {
       (this.geometry as THREE.InstancedBufferGeometry).instanceCount = this.activeCount;
     }
     this.activeListVersion++;
@@ -3322,7 +3372,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.activeCount = cursor;
     this.sourceIndexAttribute.clearUpdateRanges();
     if (cursor > 0) this.sourceIndexAttribute.addUpdateRange(0, cursor);
-    this.sourceIndexAttribute.needsUpdate = true;
+    const retainGpuDraw = this.shouldRetainGpuDrawList();
+    if (retainGpuDraw) {
+      this.gpuDrawListHeld = true;
+      this.sourceIndexAttribute.needsUpdate = false;
+    } else this.sourceIndexAttribute.needsUpdate = true;
 
     // Without a GPU sorter the draw list must hold the active pool indices
     // itself, or the first instances would render pool slots 0..n-1
@@ -3336,7 +3390,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       this.splatIndexAttribute.needsUpdate = true;
       this.drawListSorted = false;
     }
-    if (!this.workerPublicationEnabled) {
+    if (!this.workerPublicationEnabled && !retainGpuDraw) {
       (this.geometry as THREE.InstancedBufferGeometry).instanceCount = cursor;
     }
 
@@ -4064,6 +4118,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       projectionCamera.projectionMatrix,
       this.activeCount,
     );
+    this.flushHeldGpuActiveList();
     if (this.activeCount > 0) {
       this.projectedSorter!.sort(
         this.currentModelView,
@@ -4076,6 +4131,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.recordProjectedSort(projectionCamera);
     this.sortedActiveListVersion = this.activeListVersion;
     this.orderIsForeign = false;
+    this.publishHeldGpuDrawCount();
     this.projectionStrategyState.effective = 'compute';
     this.projectionStrategyState.reason = isAutomaticProjectionStrategy(
       this.projectionStrategyValue,
@@ -4185,7 +4241,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       if (this.activeListVersion === this.sortedActiveListVersion && !this.orderIsForeign)
         return false;
     }
-    if (this.activeCount === 0) return false;
+    if (this.activeCount === 0) {
+      this.flushHeldGpuActiveList();
+      this.publishHeldGpuDrawCount();
+      return false;
+    }
     this.currentModelView.multiplyMatrices(camera.matrixWorldInverse, this.matrixWorld);
     this.writeSortState(camera);
 
@@ -4221,6 +4281,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
     this.sorter ??= this.createSorter(renderer);
     if (!this.sorter) return false;
+    this.flushHeldGpuActiveList();
     if (
       this.sorter.sort(
         this.currentModelView,
@@ -4237,10 +4298,12 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       if (this.sorter.kind !== 'worker') this.markSortSubmission(this.activeCount);
       if (this.sorter.kind !== 'worker') {
         this.sortedActiveListVersion = this.activeListVersion;
+        this.publishHeldGpuDrawCount();
         this.onActiveListReady(this.activeListVersion);
       }
       return true;
     }
+    this.abandonHeldGpuActiveListUpload();
     return false;
   }
 

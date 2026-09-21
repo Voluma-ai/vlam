@@ -61,6 +61,8 @@ type Internals = {
   neededFiles: Set<number>;
   failedFiles: Set<number>;
   pendingWork: boolean;
+  hasInFlightSortSubmission: () => boolean;
+  shouldReschedule: (camera: THREE.Camera, now: number) => boolean;
   activeCount: number;
   cacheBytesTotal: number;
   freeSplatCapacity: number;
@@ -543,6 +545,69 @@ describe('StreamedSplatMesh initial reveal (hold-near-l0)', () => {
     expect(inner.activeCount).toBe(100);
     expect(mesh.initialRevealState.status).toBe('ready');
     expect(inner.initialRevealPhase).toBe('released');
+  });
+
+  it('commits the hold while a GPU sort is in flight so reveal can settle', () => {
+    const near = run({
+      file: 0,
+      level: 0,
+      leafStart: 0,
+      leafEnd: 1,
+      distance: 0,
+      inView: true,
+      coverageGroup: 1,
+    });
+    const { mesh, inner } = setup({ desired: [near] });
+    cache(inner, 0, 100);
+    inner.hasInFlightSortSubmission = () => true;
+
+    inner.reschedule(camera, 0);
+
+    expect(inner.resident.has(runKey(near))).toBe(true);
+    expect(mesh.initialRevealState.status).toBe('ready');
+    expect(inner.initialRevealPhase).toBe('released');
+
+    inner.reschedule(camera, 1);
+    expect(mesh.isStreaming).toBe(false);
+  });
+
+  it('does not keep isStreaming true when a later LOD swap waits on GPU sort', () => {
+    const near = run({
+      file: 0,
+      level: 0,
+      leafStart: 0,
+      leafEnd: 1,
+      distance: 0,
+      inView: true,
+      coverageGroup: 1,
+    });
+    const extra = run({
+      file: 1,
+      level: 0,
+      leafStart: 1,
+      leafEnd: 2,
+      distance: 0,
+      inView: true,
+      coverageGroup: 2,
+    });
+    const { mesh, inner } = setup({ desired: [near] });
+    cache(inner, 0, 100);
+    inner.reschedule(camera, 0);
+    expect(mesh.initialRevealState.status).toBe('ready');
+
+    cache(inner, 1, 100);
+    inner.scene.source.computeDesiredRuns = () => [near, extra];
+    inner.hasInFlightSortSubmission = () => true;
+    inner.reschedule(camera, 1);
+
+    expect(inner.resident.has(runKey(near))).toBe(true);
+    expect(inner.resident.has(runKey(extra))).toBe(false);
+    expect(mesh.isStreaming).toBe(false);
+    expect(inner.shouldReschedule(camera, 2)).toBe(true);
+
+    inner.hasInFlightSortSubmission = () => false;
+    inner.reschedule(camera, 2);
+    expect(inner.resident.has(runKey(extra))).toBe(true);
   });
 
   it('keeps the hold while a home-cell L0 sibling is still missing', () => {

@@ -1198,6 +1198,12 @@ export class StreamedSplatMesh extends SplatMesh {
   private collisionAbort: AbortController | undefined;
 
   private pendingWork = true;
+  /**
+   * A classic visible cut is ready but a GPU sort still owns `splatIndex`.
+   * Retry next tick without claiming {@link isStreaming}: hosts treat that
+   * flag as "the first view has not settled."
+   */
+  private lodCommitBlockedBySort = false;
   private lastScheduleTime = -Infinity;
   /** Reused leaf-coverage bitmap for {@link substituteCoverage}; grows only. */
   private coverageScratch: Uint8Array | undefined;
@@ -3992,7 +3998,7 @@ export class StreamedSplatMesh extends SplatMesh {
   }
 
   private shouldReschedule(camera: THREE.Camera, now: number): boolean {
-    if (this.pendingWork) return true;
+    if (this.pendingWork || this.lodCommitBlockedBySort) return true;
     if (now - this.lastScheduleTime > IDLE_RESCHEDULE_MS) return true;
 
     camera.getWorldPosition(_cameraWorldPos);
@@ -4018,6 +4024,7 @@ export class StreamedSplatMesh extends SplatMesh {
     }
     const compactionCountBefore = this.compactionCount;
     this.pendingWork = false;
+    this.lodCommitBlockedBySort = false;
     this.lastScheduleTime = now;
     camera.getWorldPosition(this.lastCameraPos);
     camera.getWorldQuaternion(this.lastCameraQuat);
@@ -4267,6 +4274,7 @@ export class StreamedSplatMesh extends SplatMesh {
       // coverage. Independent regions must never wait for a global wave.
       for (const group of groups) {
         if (group.adds.length === 0) {
+          if (this.deferVisibleLodSwap()) continue;
           this.applyGroup(group, now); // dropped regions: just free them
           continue;
         }
@@ -4336,6 +4344,7 @@ export class StreamedSplatMesh extends SplatMesh {
             this.pendingWork = true;
             continue;
           }
+          if (this.deferVisibleLodSwap()) continue;
           this.commitStagedGroup(group);
           continue;
         }
@@ -4353,6 +4362,7 @@ export class StreamedSplatMesh extends SplatMesh {
           this.pendingWork = true;
           continue;
         }
+        if (this.deferVisibleLodSwap()) continue;
         if (!this.applyGroup(group, now)) {
           this.pendingWork = true; // transient pool pressure; retry next tick
           continue;
@@ -4988,6 +4998,30 @@ export class StreamedSplatMesh extends SplatMesh {
     this.retireHeldTicks = 0;
   }
 
+  /**
+   * Classic cuts must not replace the drawn ranges while a GPU sort still
+   * owns `splatIndex`. The in-flight scatter was dispatched against the
+   * previous source list; letting it finish over a new cut is the unsorted
+   * flash on Tempel/LCC2. Page-table publication already retains the previous
+   * instance count until the matching sort is visible.
+   *
+   * The hidden startup hold and the first cover still publish: blocking them
+   * leaves `initialReveal` pending and {@link isStreaming} true until the
+   * host settle timeout. Later swaps wait on a private flag so the spinner
+   * can clear.
+   */
+  private deferVisibleLodSwap(): boolean {
+    if (this.frontierWorker) return false;
+    if (this.initialRevealPhase === 'capture' || this.initialRevealPhase === 'holding') {
+      return false;
+    }
+    const envCount = this.envHandle?.count ?? 0;
+    if (this.activeSplatCount <= envCount) return false;
+    if (!this.hasInFlightSortSubmission()) return false;
+    this.lodCommitBlockedBySort = true;
+    return true;
+  }
+
   private groupFullyStaged(group: SwapGroup): boolean {
     return group.adds.every((run) => this.staged.get(runKey(run))?.uploadedCount === run.count);
   }
@@ -4998,6 +5032,7 @@ export class StreamedSplatMesh extends SplatMesh {
    * stuck wave can still make progress - that is the retiredEarly hole.
    */
   private commitRadWave(ready: readonly SwapGroup[], now: number, force: boolean): void {
+    if (this.deferVisibleLodSwap()) return;
     this.waveHasPublished = true;
     for (const group of ready) {
       if (group.adds.length === 0) {
@@ -5445,6 +5480,7 @@ export class StreamedSplatMesh extends SplatMesh {
           this.pendingWork = true;
           continue;
         }
+        if (this.deferVisibleLodSwap()) continue;
         for (const [key, entry] of staged) {
           this.removeRange(entry.handle);
           this.staged.delete(key);

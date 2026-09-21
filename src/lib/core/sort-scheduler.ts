@@ -142,7 +142,12 @@ export class WebGpuSortScheduler {
     return true;
   }
 
-  /** Records that the current sort candidate was merged behind the outstanding submission. */
+  /**
+   * Records that the current sort candidate was skipped because a previous
+   * GPU pass still owns the order buffer. Pass `true` only for content /
+   * active-list changes that must re-sort when the buffer is free. Camera-only
+   * motion should pass `false` and keep {@link shouldSubmit} cadence.
+   */
   markSubmissionSuppressed(needsResubmission: boolean): void {
     this.submissionActionValue = needsResubmission ? 'coalesced' : 'suppressed';
     if (needsResubmission) this.deferredSubmission = true;
@@ -163,6 +168,11 @@ export class WebGpuSortScheduler {
     this.submissionFallbackReleaseAt = -Infinity;
     // A replacement sort already covers any coalesced camera/content request.
     this.deferredSubmission = false;
+  }
+
+  /** Whether a GPU sort still owns the shared order buffer. */
+  hasSubmissionInFlight(): boolean {
+    return this.submissionInFlight;
   }
 
   /** Whether the matching draw callback still needs to acknowledge the submission. */
