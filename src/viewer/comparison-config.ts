@@ -1,13 +1,7 @@
 import { PerspectiveCamera, Vector3 } from 'three';
 
 /** Cached captures the standalone comparison pages can load. */
-export const COMPARISON_SCENES = [
-  'Tempel',
-  'goose',
-  'hotel',
-  'lcc',
-  'poland',
-] as const;
+export const COMPARISON_SCENES = ['Tempel', 'goose', 'hotel', 'lcc', 'poland'] as const;
 export type ComparisonScene = (typeof COMPARISON_SCENES)[number];
 
 /** How the comparison adapters open a cached asset URL. */
