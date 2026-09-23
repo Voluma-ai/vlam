@@ -161,9 +161,9 @@ requirements met; not exercised here) · ❓ unverified, no device/report
 | Chrome / Edge, Windows & Linux desktop | WebGPU | ✅ | Primary development target. Discrete Windows NVIDIA Ampere is classified `gpuClass: 'discrete'`; see below. |
 | Chrome / Edge desktop, WebGPU disabled or unavailable | WebGL2 | ✅ | Full-path fallback. Force it in the demo with `?backend=webgl`. |
 | Safari, iOS, iPhone 15 Pro | WebGPU | ✅ | Core rendering and `.rad` mobile defaults are verified. |
-| Safari, iOS, iPhone 15 (non-Pro) | WebGPU | ❓ | **Open gate, ROADMAP N4.** Same A-series generation as Pro; not separately run. |
+| Safari, iOS, iPhone 15 (non-Pro) | WebGPU | ✅ | 2026-09-23, iOS 26.6.2. Viewport 393×852 at 3×, adapter `apple / apple / apple`, classified `mobile integrated`. Goose holds 60 Hz; Tempel and hotel below. |
 | Safari, macOS | WebGPU | ✅ | MacBook Air M3, 8 GB. Classified 2026-08-21 (`mem - desktop integrated`, no `deviceMemory`). Demo SD/HD measured 2026-08-25 in Safari and Chrome; default stays fill-constrained. |
-| Chrome, Android, Galaxy S7 (Mali, no WebGPU) | WebGL2 | 🔎 | Smoke only for the no-WebGPU budget tier (ROADMAP N4). Runs, low fps expected. Not a support claim. |
+| Chrome, Android, Galaxy S7 (Mali, no WebGPU) | WebGL2 | 🔎 | Smoke only for the no-WebGPU budget tier. Runs, low fps expected. Not a support claim. |
 | Chrome, Android, Galaxy S24 Ultra (Adreno 750) | WebGPU | ✅ | 2026-08-25, Chrome 151, public demo `?hud=1&gpuTimestamps=1`. HUD `mem 8 mobile discrete`, native dpr 2.625. Goose HD, streamed Dehaar / sandwijck SD vs HD below. Not a 60 Hz claim on dense scenes. |
 | Chrome, Android, Pixel 8a (Mali-G715) | WebGPU / WebGL2 | ✅ | 2026-09-15, Chrome 152 on Android 16/API 36, adapter `arm / valhall`. Three-repeat Goose/Kauz static matrix, main-viewer Tempel/hotel defaults, portrait/landscape DPR and coverage A/B, startup probes, and ten-minute Goose/Tempel thermal soaks. Device-neutral instrumentation and the predecessor adaptive controller were exercised on this Mali device; no global candidate promoted. |
 | Chrome, Android, other devices | WebGPU / WebGL2 | ❓ | Not exercised by this project. |
@@ -347,9 +347,9 @@ cap makes GPU worse; 5 s of orbit does not finish the stream. HD mid-stream
 was GPU-bound instead: ~17 rAF, GPU render 61.47 ms at 482k / 1M. Do not
 treat any sandwijck shot as a thermal soak.
 
-Keep the mobile SD default. Do not raise `MOBILE_BUDGETS`. Remaining
-protocol: `?pixelRatio=` steps, `?minSplatPx=`, ten-minute soak, landscape.
-iPhone 15 non-Pro is still open.
+Keep the mobile SD default. Do not raise `MOBILE_BUDGETS`. The non-Pro
+iPhone 15 run of the pixel-ratio steps, splat-floor A/B, landscape check, and
+ten-minute soak is below.
 
 **Pixel 8a, Chrome 152 WebGPU/WebGL2 (2026-09-15).** The connected Pixel 8a
 reported Android 16/API 36, 1080×2400 at 420 dpi, USB power, battery saver off,
@@ -441,8 +441,52 @@ display at 60 Hz.
 Raw JSON, screenshots, logs, thermal samples, and controllers (including the
 generalized foreground matrix) are in the ignored
 `.tmp/android-pixel-8a/20260915-144500/` directory. This validates the
-Android gate only; it does not close the non-Pro iPhone 15 row or generalize
-the result to Android GPUs beyond this Mali device.
+Android gate only. It does not generalize the result to Android GPUs beyond
+this Mali device.
+
+**iPhone 15 non-Pro, Safari WebGPU (2026-09-23).** iOS 26.6.2, one foreground
+Safari tab, local demo over HTTPS. The logical screen is 393×852 at
+`devicePixelRatio` 3, which is also the iPhone 15 Pro size. The handset was
+identified as the non-Pro 15. WebGPU adapter info was `vendor: apple`,
+`architecture: apple`, `device: apple`, with no `deviceMemory`. The viewer
+classified it `mobile integrated`. The page was a secure context and
+`navigator.gpu` was present. Safari omitted `screen.refreshRate`, so every
+timed run supplied `refreshHz=60`. Callback p10 on the Goose runs was 16 ms
+against a supplied 16.67 ms display interval (`refreshSource: provided`).
+Runs used `?hud=1`, manual benchmark start after the scene settled, SD
+(`smooth`, 3σ, MSAA off), and `?orbit=0` so the sample motion is the
+benchmark rotate. The portrait drawing buffer at pixel ratio 1 was 393×695,
+inside Safari chrome on the 393×852 screen. GPU sort checks passed on every
+WebGPU run (`sortok`). No global default change.
+
+| Scene / backend / motion | Splats | Frame median / p95 / p99 | Result |
+| --- | ---: | ---: | --- |
+| Goose / WebGPU / stationary | 149,120 | 17.0 / 17.0 / 17.0 ms | 3 runs, pixel ratio 1, missed 1 / 0 / 0 |
+| Goose / WebGPU / orbit | 149,120 | 17.0 / 17.0 / 17.0 ms | 3 runs, pixel ratio 1, missed 1 / 0 / 1 |
+| Goose / WebGL2 / stationary | 149,120 | 17.0 / 17.0 / 17.0 ms | 1 smoke run, missed 2. No GPU sort check |
+| Tempel / WebGPU / orbit, portrait | 752,694 | 17.0 / 17.0 / 24.0 ms | 1 run, pixel ratio 1, missed 50, 11 frames >33.33 ms |
+| Hotel RAD / WebGPU / orbit, portrait | 262,240 | 17.0 / 51.0 / 86.0 ms | 1 run, pixel ratio 0.8, missed 666, 221 frames >33.33 ms |
+| Tempel / WebGPU / orbit, landscape | 752,694 | 17.0 / 18.0 / 45.0 ms | 1 run, pixel ratio 0.8, buffer 587×263, missed 311, 47 frames >33.33 ms |
+
+Goose pixel-ratio pins (`adaptiveDpr=0`) stayed on the 17 ms median: 1.0 was
+17.0 / 17.0 / 17.0 ms, 0.9 was 17.0 / 17.0 / 18.0 ms (25 missed, 6 frames
+>33.33 ms), and 0.8 was 17.0 / 17.0 / 18.0 ms. The 1.5 px and 3.5 px splat
+floors on static Goose both kept all 149,120 splats and a 17.0 ms median, so
+that pair does not show the resident-cut change measured on streamed Tempel
+elsewhere. Landscape layout was 734×329. The Tempel landscape orbit showed no
+gaps, discs, or LOD popping.
+
+The ten-minute Goose soak was skipped: a 149k static scene does not add
+thermal pressure beyond dense Tempel. The Tempel soak (30 s warm-up, 600 s
+sample) held 740,514 splats at pixel ratio 0.8, frame times 17.0 / 29.0 /
+178.0 ms, 28,704 frames, 7,768 missed refreshes, and 1,037 frames >33.33 ms.
+The median stayed on the 60 Hz cadence. The page did not crash or lose the
+device. Safari does not expose battery temperature, so there is no °C sample.
+The >33.33 ms figures are threshold counts, not missed-vsync totals.
+
+The compact log is in the ignored `.tmp/iphone-15/run.jsonl` file. This
+closes the non-Pro iPhone 15 row. It does not change mobile budgets or the
+SD default.
 
 **Recording a mobile device check.** Open `?hud=1` in a single foreground tab
 so the perf HUD paints (a background tab reports `1 rAF` and empty HUD; extra
@@ -461,8 +505,8 @@ Report any literal >33.33 ms count as a threshold count, not missed vsyncs. A/B 
 splat floor with `?minSplatPx=1.5` against `?minSplatPx=3.5` (3.5 px is the
 blobby zoomed-out reference). Run a ten-minute thermal soak on one sparse
 and one dense capture. Check portrait and landscape for gaps, discs, and
-LOD popping. An iPhone 15 Pro or Galaxy S24 Ultra run does not close the
-non-Pro 15 row.
+LOD popping. An iPhone 15 Pro or Galaxy S24 Ultra run does not stand in
+for a non-Pro 15 check. The 2026-09-23 non-Pro run above closes that row.
 
 ## Sorting semantics (documented threshold)
 

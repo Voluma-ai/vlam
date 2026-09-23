@@ -19,6 +19,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Verified
+
+- iPhone 15 non-Pro, Safari on iOS 26.6.2, WebGPU (`mobile integrated`).
+  Goose stays at 17 ms for stationary and orbit passes, including one WebGL2
+  smoke pass. Portrait Tempel orbit is 17 / 17 / 24 ms at 752,694 splats;
+  hotel orbit is 17 / 51 / 86 ms at 262,240 splats. Landscape Tempel showed
+  no gaps, discs, or LOD popping. A ten-minute Tempel soak kept a 17 ms
+  median (p99 178 ms) without a crash. No mobile-default change. See
+  `docs/capabilities.md`.
+
 ### Changed
 
 - `StreamedSplatMeshOptions.radStrategy` now accepts `'auto'` (the default,

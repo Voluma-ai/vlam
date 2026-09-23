@@ -7,16 +7,10 @@ Git history, not in this queue.
 
 ## Next
 
-- **Mobile device gate** — Android Pixel 8a/Mali validation is complete and
-  documented in the capabilities matrix. The remaining gate is the non-Pro
-  iPhone 15: complete the same thermal, orientation, deadline, DPR, and
-  coverage checks there. Galaxy S7/WebGL2 is a smoke-test floor, not a
-  performance target.
-
-## Later
-
 - **1.0 stabilization** — freeze the API, finalize migration notes, changelog,
-  and release tag after the checks above pass.
+  and release tag. The non-Pro iPhone 15 device gate is recorded in
+  `docs/capabilities.md`. Galaxy S7/WebGL2 remains a smoke-test floor, not a
+  performance target.
 
 ## Post-1.0 opportunities (optional)
 
@@ -144,9 +138,9 @@ selection features until their benefits are measured and visually validated.
   **Acceptance:** same-camera reference captures outside and inside scene
   bounds, correct projected size and picked positions, and perspective
   non-regression on WebGPU, WebGL2, and unified rendering.
+
 ## External blockers
 
 | Work                        | Blocker                                  |
 | --------------------------- | ---------------------------------------- |
-| Mobile matrix               | Non-Pro iPhone 15 hardware                 |
 | Reference pixel comparisons | External datasets and viewers            |
