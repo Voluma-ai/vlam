@@ -12,6 +12,7 @@ playwright-report
 blob-report
 splatstest
 .claude
+.codex
 .cursor*
 bundle-visualization.html
 # wrangler's local state and bundles: miniflare's SQLite cache plus generated

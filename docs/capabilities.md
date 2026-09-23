@@ -46,7 +46,7 @@ and [`architecture.md`](architecture.md).
 | --- | --- | --- | --- | --- | --- |
 | Core splat draw (EWA, ±3σ, premul α) | ✅ | ✅ |, | material tests | demo orbit |
 | Depth sort (counting / radix adaptive) | ✅ GPU | ✅ CPU worker | ✅ work-buffer sort | `compute-sorter`, `sort-worker` | `?verifySort=1` |
-| Compute projection + cull before sort | ⚠️ `computeProjection({ mode: 'auto' })` selects the measured large static SH discrete-GPU cohort once; `computeProjection()` remains experimental | ✅ deliberate vertex fallback | ⚠️ opt-in after gather | `projection/compute`, `projected-splat-pipeline`, `*.xr.test.ts` | `?projectionStrategy=auto`; Langenthal-Manola4A harness |
+| Compute projection + cull before sort | ⚠️ `computeProjection({ mode: 'auto' })` selects the measured large static SH discrete-GPU cohort once; `computeProjection()` remains experimental | ✅ deliberate vertex fallback | ⚠️ opt-in after gather | `projection/compute`, `projected-splat-pipeline`, `*.xr.test.ts` | `?projectionStrategy=auto` |
 | Sort within-bucket inversions | ⚠️ expected | ⚠️ radix stable; GPU counting may tie | ⚠️ same | sorter tests | invisible if &lt; bucket width |
 | Streamed LOD / budget | ✅ | ✅ | ✅ per-source cut gathered | streamed-splat-mesh.* | `?budget=` |
 | Shared budget across meshes (`BudgetGovernor`) | ✅ weighted split via `setBudget`; flat-leaf, octree-cut and RAD page-table paths | ✅ same | ⚠️ per-source meshes registrable | `budget-governor.test.ts` | 3× Hotel RAD camera A/B (Chrome/macOS WebGPU) |
@@ -165,7 +165,7 @@ requirements met; not exercised here) · ❓ unverified, no device/report
 | Safari, macOS | WebGPU | ✅ | MacBook Air M3, 8 GB. Classified 2026-08-21 (`mem - desktop integrated`, no `deviceMemory`). Demo SD/HD measured 2026-08-25 in Safari and Chrome; default stays fill-constrained. |
 | Chrome, Android, Galaxy S7 (Mali, no WebGPU) | WebGL2 | 🔎 | Smoke only for the no-WebGPU budget tier. Runs, low fps expected. Not a support claim. |
 | Chrome, Android, Galaxy S24 Ultra (Adreno 750) | WebGPU | ✅ | 2026-08-25, Chrome 151, public demo `?hud=1&gpuTimestamps=1`. HUD `mem 8 mobile discrete`, native dpr 2.625. Goose HD, streamed Dehaar / sandwijck SD vs HD below. Not a 60 Hz claim on dense scenes. |
-| Chrome, Android, Pixel 8a (Mali-G715) | WebGPU / WebGL2 | ✅ | 2026-09-15, Chrome 152 on Android 16/API 36, adapter `arm / valhall`. Three-repeat Goose/Kauz static matrix, main-viewer Tempel/hotel defaults, portrait/landscape DPR and coverage A/B, startup probes, and ten-minute Goose/Tempel thermal soaks. Device-neutral instrumentation and the predecessor adaptive controller were exercised on this Mali device; no global candidate promoted. |
+| Chrome, Android, Pixel 8a (Mali-G715) | WebGPU / WebGL2 | ✅ | 2026-09-15, Chrome 152 on Android 16/API 36, adapter `arm / valhall`. Three-repeat Goose static matrix, main-viewer Tempel/hotel defaults, portrait/landscape DPR and coverage A/B, startup probes, and ten-minute Goose/Tempel thermal soaks. Device-neutral instrumentation and the predecessor adaptive controller were exercised on this Mali device; no global candidate promoted. |
 | Chrome, Android, other devices | WebGPU / WebGL2 | ❓ | Not exercised by this project. |
 | Firefox | WebGPU | ❓ | Firefox's WebGPU rollout status is not tracked by this project and has not been tested here. Where WebGPU is absent, the WebGL2 fallback applies. |
 | Firefox | WebGL2 | 🔎 | Nothing in the fallback path is Chromium-specific, but it has not been run here. |
@@ -366,8 +366,6 @@ to automatic brightness, portrait, 60 Hz, and battery saver off.
 | Goose / WebGPU / orbit | 149,120 | 16.8 / 16.9 / 17.0 ms | Nonblank, 3 runs |
 | Goose / WebGL2 / stationary | 149,120 | 16.8 / 16.9 / 16.9 ms | Nonblank, 3 runs |
 | Goose / WebGL2 / orbit | 149,120 | 16.8 / 16.9 / 16.9 ms | Nonblank, 3 runs |
-| Kauz SH2 source, rendered SH0 / WebGPU / orbit | 1,827,467 | 50.2 / 67.1 / 83.8 ms | Nonblank, 3 runs |
-| Kauz SH2 source, rendered SH0 / WebGL2 / orbit | 1,827,467 | 50.3 / 67.1 / 83.7 ms | Nonblank, 3 runs |
 
 **Foreground 60-second adaptive/pinned measurements.** All runs used fixed
 `refreshHz=60`, SD/smooth/3σ, MSAA off, and an orbiting streamed workload after
