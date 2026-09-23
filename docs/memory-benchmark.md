@@ -189,8 +189,8 @@ fresh-tab runs.
 | Goose editable | WebGPU | 149,120 / 149,504 | 244 (238–286) | 10,166,272 | 0 | 10,682,624 | 0 |
 | Goose render-only | WebGPU | 149,120 / 149,504 | 239 (235–240) | 0 | 10,166,272 | 10,682,624 | 0 |
 | Goose editable | WebGL2 | 149,120 / 149,504 | 652 (652–663) | 17,006,592 | 0 | 8,372,224 | 0 |
-| Langenthal SH3 editable | WebGPU | 8,724,225 / 8,724,480 | 9,547 (8,519–9,727) | 608,993,280 | 0 | 590,938,368 | 0 |
-| Langenthal SH3 render-only | WebGPU | 8,724,225 / 8,724,480 | 9,686 (8,413–9,842) | 0 | 608,993,280 | 590,938,368 | 0 |
+| Large SH3 SOG editable | WebGPU | 8,724,225 / 8,724,480 | 9,547 (8,519–9,727) | 608,993,280 | 0 | 590,938,368 | 0 |
+| Large SH3 SOG render-only | WebGPU | 8,724,225 / 8,724,480 | 9,686 (8,413–9,842) | 0 | 608,993,280 | 590,938,368 | 0 |
 | Tempel SH3 streamed | WebGPU | 929,298 / 1,501,184 | 247 (192–264) | 198,156,288 | 0 | 200,605,952 | 151,402,600 |
 | Tempel SH3 streamed | WebGL2 | 929,298 / 1,501,184 | 574 (289–2,522) | 264,470,528 | 0 | 180,142,080 | 151,402,600 |
 | Hotel SH3 RAD streamed | WebGPU | 999,999 / 1,501,184 | 552 (517–1,058) | 198,156,288 | 0 | 200,605,952 | 461,452,090 |
@@ -198,8 +198,7 @@ fresh-tab runs.
 | Generated SH3 PLY render-only | WebGPU | 1,000,000 / 1,001,472 | 3,847 (3,773–4,018) | 0 | 132,194,304 | 132,448,512 | 0 |
 | Generated SH3 PLY editable | WebGL2 | 1,000,000 / 1,001,472 | 3,885 (3,881–4,120) | 176,521,216 | 0 | 120,176,640 | 0 |
 
-Capture identities were Goose `d494f057…e1723eb50` (1,797,493 bytes),
-Langenthal `01c6efa1…d2cb6056` (121,633,146 bytes), Tempel
+Capture identities were Goose `d494f057…e1723eb50` (1,797,493 bytes), Tempel
 `ca6e09f3…d0277438` (233,111,420 aggregate bytes), and Hotel
 `413381d9…a129f773` (202,177,968 bytes; 3,189,208 leaves / 4,195,019 nodes).
 The ignored 252,001,551-byte PLY was generated with chunked writes as a

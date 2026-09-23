@@ -98,8 +98,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   from upload volume during large RAD investigation.
 - `ShComputeCache` stays active under `projectionStrategy: 'compute'`. The
   projector skips SH when the cache will supply color, and the vertex stage
-  samples the 4 B/splat RGBA8 texture. On Langenthal-Manola4A (8.72M SH3,
-  RTX 3090) adaptive compute+cache cuts overview paired GPU 18.62 → 11.10 ms
+  samples the 4 B/splat RGBA8 texture. On an 8.72M-splat SH3 SOG (RTX 3090)
+  adaptive compute+cache cuts overview paired GPU 18.62 → 11.10 ms
   and restores vsync (frame p95 16.80); interior is 5.23 ms against PlayCanvas
   5.98 ms cull-free. `sortIntervalMs=0` still refreshes SH every frame. See
   `docs/render-benchmark.md`.
@@ -114,18 +114,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   packs the resolved RGBA8 color into the projection cache, and shrinks
   counting-sort histogram work to the GPU-visible count. Opt-in
   `minPixelSize` / `minContribution` culls match PlayCanvas independently of
-  `performanceProfile: 'smooth'`. The comparison harness registers the
-  8.72M-splat Langenthal-Manola4A capture and a PlayCanvas 2.22.1 adapter
+  `performanceProfile: 'smooth'`. The comparison harness registers an
+  8.72M-splat SH3 SOG and a PlayCanvas 2.22.1 adapter
   that runs on WebGPU with GPU-sort and reports `GpuProfiler` pass timings.
   An indoor RTX 3090 A/B cut paired GPU 39% in the hall and missed vsync on
   an all-visible overview before cache/cull policy. An `sh=0` split
   attributes the overview regression entirely to per-frame SH in the
   projector; see `docs/render-benchmark.md`.
-- The comparison corpus now reproducibly caches the remotely hosted
-  1,827,467-splat SH2 Kauz SOG, with pinned SHA-256 and visually inspected
-  close/elevated cameras. Its five-run RTX 3090 result documents a compute
-  median win on the elevated view but projector/sorter tails that keep the
-  automatic policy conservative.
 - WebGPU comparison archives now retain each resolved render and compute
   submission alongside their per-frame totals, so future tail work can be
   attributed without adding asynchronous readback to the measured loop.
@@ -179,7 +174,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   an explicit compute path is suspended for XR.
 - Camera/view SH-cache refreshes under compute projection now dispatch only
   the projector's GPU-visible survivor list; initial and content refreshes
-  still initialize the complete pool. The RTX 3090 Langenthal overview-orbit
+  still initialize the complete pool. The RTX 3090 large-SH3 overview-orbit
   p95 fell from 14.07 to 7.80 ms paired GPU in five alternating reference runs.
 - Compute projection now reuses the indirect visible list for an unchanged
   model/view, projection, viewport, resident content, and depth-of-field

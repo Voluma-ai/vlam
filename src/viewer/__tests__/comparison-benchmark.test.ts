@@ -62,12 +62,6 @@ describe('shared comparison configuration', () => {
       comparisonConfig('/vlam-benchmark.html', new URLSearchParams('scene=hotel')),
     ).toMatchObject({ scene: 'hotel' });
     expect(
-      comparisonConfig('/vlam-benchmark.html', new URLSearchParams('scene=Langenthal-Manola4A')),
-    ).toMatchObject({ scene: 'Langenthal-Manola4A' });
-    expect(
-      comparisonConfig('/vlam-benchmark.html', new URLSearchParams('scene=Kauz-sh2')),
-    ).toMatchObject({ scene: 'Kauz-sh2' });
-    expect(
       comparisonConfig('/vlam-benchmark.html', new URLSearchParams('scene=poland')),
     ).toMatchObject({ scene: 'poland' });
     expect(comparisonAssetKind('/benchmark-assets/Tempel/Tempel.lcc2')).toBe('lcc2');

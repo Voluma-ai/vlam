@@ -95,8 +95,8 @@ selection features until their benefits are measured and visually validated.
   WebGPU. Exact dense coverage, footprint-aware edge culling, indirect
   arguments, pixels, WebGL2 fallback and XR fallback have automated coverage.
   Goose (149k, no SH) failed the first evidence gate: paired GPU median
-  regressed 40.8% interior / 5.8% overview. Langenthal-Manola4A indoor
-  (8,724,225 SH3, RTX 3090) wins the mezzanine (paired GPU 11.81 → 7.20 ms,
+  regressed 40.8% interior / 5.8% overview. An 8,724,225-splat SH3 SOG on an
+  RTX 3090 wins the interior (paired GPU 11.81 → 7.20 ms,
   21% visible) and missed vsync on the close exterior overview (frame p95
   16.80 → 33.40 ms at 99.9% visible) until `ShComputeCache` stayed active
   under compute projection. With the library adaptive sort cadence the
@@ -113,7 +113,7 @@ selection features until their benefits are measured and visually validated.
   content and DoF state, so an unchanged compute view reuses its indirect list
   without falling back to a vertex sort; the native RTX 3090 stationary probe
   records zero sampled projection, cull, sort and SH submissions. An
-  intermediate 1.83M SH2 Kauz SOG now exercises the missing scene-size band,
+  intermediate 1.83M SH2 SOG exercises the missing scene-size band,
   but its median/tail split rules out a broader automatic cohort on this GPU;
   a second GPU class is still needed before the auto threshold can broaden.
   Cache compaction is tracked separately below.

@@ -6,7 +6,7 @@ import type {
   AutomaticProjectionPolicyResult,
 } from './strategy-types';
 
-/** The only measured automatic cohort is the 8.72M-splat Langenthal capture. */
+/** The only measured automatic cohort is a static SH capture of at least 8 million splats. */
 export const AUTO_PROJECTION_MIN_SPLATS = 8_000_000;
 /**
  * Conservative cap for projection plus cached SH allocations on an identified
