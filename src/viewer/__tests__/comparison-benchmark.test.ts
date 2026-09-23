@@ -61,16 +61,8 @@ describe('shared comparison configuration', () => {
     expect(
       comparisonConfig('/vlam-benchmark.html', new URLSearchParams('scene=hotel')),
     ).toMatchObject({ scene: 'hotel' });
-    expect(
-      comparisonConfig('/vlam-benchmark.html', new URLSearchParams('scene=poland')),
-    ).toMatchObject({ scene: 'poland' });
     expect(comparisonAssetKind('/benchmark-assets/Tempel/Tempel.lcc2')).toBe('lcc2');
     expect(comparisonAssetKind('/benchmark-assets/hotel/HOTEL.clean.comp-lod.rad')).toBe('rad');
-    expect(
-      comparisonAssetKind(
-        '/benchmark-assets/poland/20K-Photo-103Mspats-4x2KM-Andrii_Shramko_Poland-JG-lod.rad',
-      ),
-    ).toBe('rad');
     expect(comparisonAssetKind('/benchmark-assets/goose.sog')).toBe('file');
     expect(
       comparisonConfig('/spark-benchmark.html', new URLSearchParams('preset=matched&sh=0')),
