@@ -127,6 +127,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- `vitest` and `@vitest/coverage-v8` now require `^4.1.11`
+  (CVE-2026-84373 / GHSA-82fw-gwwq-j7x9). `@vitest/mocker` 4.1.10
+  accepted redirect-mock targets without checking Vite's file-serving
+  allowlist. Dev-tooling only; the published package is unchanged.
+- Transitive `sharp` is pinned at `0.35.4` (CVE-2026-84383 /
+  GHSA-2jg2-4ch7-h545). `miniflare` (via `wrangler`) otherwise resolves
+  `0.35.2`, whose bundled libheif can be reached when decoding untrusted
+  AVIF. Dev-tooling only; the published package is unchanged.
 - Classic streamed LOD no longer commits a new cut while a GPU sort still
   owns the order buffer. Dispatching a replacement let the older scatter
   finish over new nearby splats (the unsorted white-blob flash while walking
