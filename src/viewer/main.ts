@@ -58,6 +58,7 @@ import {
   type WorldWarpPreset,
 } from '../lib/effects';
 import type { RelightingAttachment, RelightingProxy } from '../lib/relighting';
+import { createRelightClock } from './relight-clock';
 import { showError, hideError, isErrorVisible, describeLoadError } from './failure';
 import { loadingOverlayText, loadingPill } from './loading-status';
 import { createDropZone, filesFromDirectoryInput } from './drop-zone';
@@ -1927,6 +1928,7 @@ async function main(): Promise<void> {
   let relightSetupSequence = 0;
   let relightScene: THREE.Scene | null = null;
   let relightTarget: THREE.RenderTarget | null = null;
+  const relightClock = createRelightClock();
   let relightSun: THREE.DirectionalLight | null = null;
   let relightMidSun: THREE.DirectionalLight | null = null;
   let relightOuterSun: THREE.DirectionalLight | null = null;
@@ -2258,10 +2260,24 @@ async function main(): Promise<void> {
       light.target.updateMatrixWorld();
     };
 
-    const applyRelightSun = (elapsed: number): void => {
+    const applyRelightSun = (): void => {
       if (!relightSun || !relightMidSun || !relightOuterSun || !relightFarSun) return;
-      const angle = elapsed * 0.05625;
-      relightSunDir.set(Math.cos(angle), 0.75, Math.sin(angle)).normalize();
+      const { azimuth, elevation, heading } = relightClock.tick();
+      const horizontal = Math.cos(elevation);
+      // Heading zero maps geographic north to scene -Z; positive heading turns toward +X.
+      relightSunDir.set(horizontal * Math.sin(azimuth + heading), Math.sin(elevation),
+        -horizontal * Math.cos(azimuth + heading));
+      const daylight = THREE.MathUtils.smoothstep(elevation, -0.12, 0.12);
+      const brightness = 0.2 + 0.8 * daylight;
+      relightAttachment?.update({ brightness, background: brightness });
+      const warmth = 1 - THREE.MathUtils.smoothstep(elevation, 0, 0.65);
+      relightSunColor.setRGB(1, 1 - 0.3 * warmth, 1 - 0.62 * warmth);
+      const sunIntensity = daylight * (0.4 + 0.6 * Math.max(0, Math.sin(elevation)));
+      for (const light of [relightSun, relightMidSun, relightOuterSun, relightFarSun]) {
+        light.intensity = sunIntensity;
+        light.castShadow = elevation > 0 && (light === relightSun || light === relightFarSun
+          || relightController?.tier !== 'performance');
+      }
       camera.getWorldDirection(relightCamForward);
       relightNearFocus
         .copy(camera.position)
@@ -2286,7 +2302,7 @@ async function main(): Promise<void> {
         light.shadow.needsUpdate = true;
       }
     };
-    applyRelightSun(0);
+    applyRelightSun();
 
     relightApplyQuality = (): void => {
       if (!relightController) return;
@@ -2311,9 +2327,9 @@ async function main(): Promise<void> {
       background: 1,
       softness: 2,
     });
-    updateEffects = (t) => {
+    updateEffects = () => {
       if (renderer.xr.isPresenting || !relightController) return;
-      applyRelightSun(t);
+      applyRelightSun();
     };
   };
 
@@ -2371,7 +2387,9 @@ async function main(): Promise<void> {
       renderer.setClearColor(0xffffff, 0);
       renderer.autoClear = true;
       renderer.clear(true, true, true);
-      renderer.render(relightScene, camera);
+      // A transparent factor map leaves only the clock's ambient dimming at night.
+      // Disabling castShadow alone would still leave shadow() sampling the proxy map.
+      if (relightSunDir.y > 0) renderer.render(relightScene, camera);
     } finally {
       // Always restore the backbuffer so the gray proxy never composites onto
       // the canvas (a failed/partial RT bind would otherwise leave mesh fragments).
@@ -2662,6 +2680,7 @@ async function main(): Promise<void> {
       liveWarp = null;
       syncWarpIntensitySlider?.({ visible: false });
     }
+    relightClock.setVisible(effectMode === 'relight');
     if (effectMode !== 'relight') {
       teardownRelight();
     }

@@ -377,6 +377,47 @@
         font: 12px/1 ui-monospace, monospace;
         text-align: right;
       }
+      #relight-clock {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 7px;
+        padding: 6px 10px;
+        border: 1px solid rgba(255, 166, 0, 0.18);
+        border-radius: 12px;
+        background: rgba(20, 20, 26, 0.85);
+        color: #ba8;
+        font: 12px/1.4 system-ui, sans-serif;
+        pointer-events: auto;
+      }
+      #relight-clock[hidden] { display: none; }
+      #relight-clock label { display: flex; align-items: center; gap: 4px; }
+      #relight-clock label[hidden] { display: none; }
+      #relight-clock input, #relight-clock select, #relight-clock button {
+        box-sizing: border-box;
+        max-width: 155px;
+        padding: 3px 5px;
+        border: 1px solid rgba(255, 166, 0, 0.25);
+        border-radius: 5px;
+        background: #201d20;
+        color: #dbc8a8;
+        font: inherit;
+      }
+      #relight-clock button {
+        display: grid;
+        flex: 0 0 30px;
+        width: 30px;
+        height: 30px;
+        padding: 0;
+        border-radius: 999px;
+        place-items: center;
+        cursor: pointer;
+      }
+      #relight-clock button svg { width: 16px; height: 16px; fill: currentColor; }
+      #relight-clock input[type='range'] { width: 160px; accent-color: #ba8; }
+      #relight-clock input[type='number'] { width: 75px; }
+      #relight-clock input[aria-label='IANA time zone'] { width: 145px; }
+      #relight-clock output { min-width: 120px; font: 12px ui-monospace, monospace; }
       /* Separation panel (?separate=1) sits with the effects row and shares its look. */
       #separate {
         flex: 0 1 auto;
