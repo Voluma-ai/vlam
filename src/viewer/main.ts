@@ -2265,8 +2265,11 @@ async function main(): Promise<void> {
       const { azimuth, elevation, heading } = relightClock.tick();
       const horizontal = Math.cos(elevation);
       // Heading zero maps geographic north to scene -Z; positive heading turns toward +X.
-      relightSunDir.set(horizontal * Math.sin(azimuth + heading), Math.sin(elevation),
-        -horizontal * Math.cos(azimuth + heading));
+      relightSunDir.set(
+        horizontal * Math.sin(azimuth + heading),
+        Math.sin(elevation),
+        -horizontal * Math.cos(azimuth + heading),
+      );
       const daylight = THREE.MathUtils.smoothstep(elevation, -0.12, 0.12);
       const brightness = 0.2 + 0.8 * daylight;
       relightAttachment?.update({ brightness, background: brightness });
@@ -2275,8 +2278,11 @@ async function main(): Promise<void> {
       const sunIntensity = daylight * (0.4 + 0.6 * Math.max(0, Math.sin(elevation)));
       for (const light of [relightSun, relightMidSun, relightOuterSun, relightFarSun]) {
         light.intensity = sunIntensity;
-        light.castShadow = elevation > 0 && (light === relightSun || light === relightFarSun
-          || relightController?.tier !== 'performance');
+        light.castShadow =
+          elevation > 0 &&
+          (light === relightSun ||
+            light === relightFarSun ||
+            relightController?.tier !== 'performance');
       }
       camera.getWorldDirection(relightCamForward);
       relightNearFocus
