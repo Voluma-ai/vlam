@@ -622,12 +622,12 @@ export function worldWarpPreset(
     const r2gs = j2.sub(r0.mul(r0.dot(j2))).sub(r1.mul(r1.dot(j2)));
     const r2 = r2gs.div(r2gs.length().max(1e-6));
     const qView = asNode<'mat3'>(mat3(r0, r1, r2));
-    const viewR = asNode<'mat3'>(modelViewMatrix.toMat3());
-    const viewRT = viewR.transpose();
-    const warpR = asNode<'mat3'>(viewRT.mul(qView).mul(viewR));
+    const viewR = ctx.localToView ?? asNode<'mat3'>(modelViewMatrix.toMat3());
+    const viewInverse = viewR.inverse();
+    const warpR = asNode<'mat3'>(viewInverse.mul(qView).mul(viewR));
 
     return {
-      offset: asNode<'vec3'>(ctx.offset.add(viewRT.mul(warpedV.sub(v)))),
+      offset: asNode<'vec3'>(ctx.offset.add(viewInverse.mul(warpedV.sub(v)))),
       rotation: asNode<'mat3'>(warpR.mul(ctx.rotation)),
     };
   };

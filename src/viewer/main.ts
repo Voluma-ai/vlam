@@ -62,6 +62,7 @@ import { createRelightClock } from './relight-clock';
 import { showError, hideError, isErrorVisible, describeLoadError } from './failure';
 import { loadingOverlayText, loadingPill } from './loading-status';
 import { createDropZone, filesFromDirectoryInput } from './drop-zone';
+import { applyOwnedScene, loadLocalRad } from './local-rad';
 import {
   SINGLE_FILE_EXTENSIONS,
   SINGLE_FILE_LIST,
@@ -2804,6 +2805,17 @@ async function main(): Promise<void> {
     next: LoadedScene,
     options: { frame?: boolean; sideView?: boolean; keepWelcome?: boolean } = {},
   ): Promise<void> => {
+    await applyOwnedScene(
+      next.mesh,
+      () => mountScene(next, options),
+      () => mounted && splats === next.mesh && next.mesh.parent === scene,
+    );
+  };
+
+  const mountScene = async (
+    next: LoadedScene,
+    options: { frame?: boolean; sideView?: boolean; keepWelcome?: boolean } = {},
+  ): Promise<void> => {
     const nextSortScene =
       next.sortScene ?? ((options.frame ?? true) ? next.title : currentSortScene);
     currentSortScene = nextSortScene;
@@ -2819,6 +2831,7 @@ async function main(): Promise<void> {
       restoreXrMaterial();
       scene.remove(splats);
       splats.dispose();
+      mounted = false;
       // The paint tool holds the old mesh's range handles and cannot survive
       // the swap; benchmark points likewise belong to the old scene's space.
       lastPickedPoint = null;
@@ -3248,8 +3261,7 @@ async function main(): Promise<void> {
     // URL answers the range requests the streamed reader makes, so nothing is
     // copied - the same in-place read a dropped folder gets.
     if (file.name.toLowerCase().endsWith('.rad')) {
-      const blobUrl = URL.createObjectURL(file);
-      void StreamedSplatMesh.load(blobUrl, {
+      void loadLocalRad(file, {
         format: 'rad',
         deviceProfile,
         ...(pinnedBudget === undefined ? {} : { budget: pinnedBudget }),
@@ -3259,7 +3271,6 @@ async function main(): Promise<void> {
         .then(async (mesh) => {
           if (sequence !== dropSequence) {
             mesh.dispose();
-            URL.revokeObjectURL(blobUrl);
             return;
           }
           await applyScene({
@@ -3272,7 +3283,6 @@ async function main(): Promise<void> {
           dropMounted = true;
         })
         .catch((error: unknown) => {
-          URL.revokeObjectURL(blobUrl);
           if (sequence !== dropSequence) return;
           loadingTitle = null;
           loadingProgress = null;

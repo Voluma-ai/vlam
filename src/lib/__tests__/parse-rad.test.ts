@@ -198,8 +198,8 @@ describe('parseRad', () => {
     expect(data.colors[0]).toBe(Math.round(0.5 * 255));
     expect(data.colors[1]).toBe(Math.round(0.25 * 255));
     expect(data.colors[2]).toBe(Math.round(0.75 * 255));
-    // Spark LOD alpha encoding: stored opacity is `alpha / 2` (shader recovers ×2).
-    expect(data.colors[3]).toBe(Math.round(0.75 * 0.5 * 255));
+    // Whole-file leaves carry ordinary alpha; only streamed chunks use half-alpha.
+    expect(data.colors[3]).toBe(Math.round(0.75 * 255));
     // Identity rotation: covariance is just the squared scales on the diagonal.
     expect(data.covariances[0]).toBeCloseTo(0.5 * 0.5, 4);
     expect(data.covariances[3]).toBeCloseTo(0.25 * 0.25, 4);
@@ -842,3 +842,18 @@ function rebuildChunkMeta(chunk: readonly number[], meta: unknown): ArrayBuffer 
   new DataView(header.buffer).setUint32(4, metaJson.length, true);
   return new Uint8Array([...header, ...metaPadded, ...rest]).buffer;
 }
+
+it('quantizes whole-file opacity once while retaining streamed half-alpha', async () => {
+  const chunks = [0, 0.3, 1].map((alpha) =>
+    buildChunk(1, false, splatProperties([0, 0, 0], alpha, [1, 1, 1], [1, 1, 1])),
+  );
+  const whole = await parseRad(buildRadFileChunks(chunks));
+  expect([whole.colors[3], whole.colors[7], whole.colors[11]]).toEqual([0, 77, 255]);
+  for (let i = 0; i < chunks.length; i++) {
+    const raw = new Uint8Array(chunks[i]!);
+    const single = await parseRad(raw.buffer);
+    expect(single.colors[3]).toBe(whole.colors[i * 4 + 3]);
+    const streamed = await parseRadChunkStreaming(raw.buffer);
+    expect(streamed.colors[3]).toBe(Math.round([0, 0.3, 1][i]! * 0.5 * 255));
+  }
+});

@@ -224,3 +224,34 @@ describe('foldSplatModifierStack - worldWarpPreset', () => {
     expect(material.vertexNode).not.toBeUndefined();
   });
 });
+
+it('supplies a memoized local-to-view transform only when a modifier reads it', () => {
+  const camera = uniform(new THREE.Vector3());
+  let calls = 0;
+  const localToView = uniform(new THREE.Matrix3());
+  const inputs = {
+    index: uniform(0).toInt(),
+    localCenter: uniform(new THREE.Vector3()),
+    color: uniform(new THREE.Vector4(1, 1, 1, 1)),
+    makeNormal: () => uniform(new THREE.Vector3(0, 1, 0)),
+    makeChannel: () => uniform(0),
+    makeLocalToView: () => {
+      calls++;
+      return localToView;
+    },
+  };
+  foldSplatModifierStack([(ctx) => ({ color: ctx.color })], camera, inputs);
+  expect(calls).toBe(0);
+  foldSplatModifierStack(
+    [
+      (ctx) => {
+        expect(ctx.localToView).toBe(localToView);
+        expect(ctx.localToView).toBe(localToView);
+        return {};
+      },
+    ],
+    camera,
+    inputs,
+  );
+  expect(calls).toBe(1);
+});

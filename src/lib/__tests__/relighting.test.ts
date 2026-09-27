@@ -28,6 +28,8 @@ describe('attachRelighting', () => {
     };
     const first = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
     const second = new THREE.DataTexture(new Uint8Array([128, 128, 128, 255]), 1, 1);
+    const disposeFirst = vi.spyOn(first, 'dispose');
+    const disposeSecond = vi.spyOn(second, 'dispose');
     const attachment = attachRelighting(target, { map: first });
     const installed = target.displayColorModifier;
     expect(installed).not.toBe(previous);
@@ -36,6 +38,9 @@ describe('attachRelighting', () => {
     attachment.update({ map: second });
     expect(target.displayColorModifier).not.toBe(installed);
     attachment.dispose();
+    attachment.dispose();
+    expect(disposeFirst).not.toHaveBeenCalled();
+    expect(disposeSecond).not.toHaveBeenCalled();
     expect(target.displayColorModifier).toBe(previous);
   });
 

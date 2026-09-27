@@ -417,6 +417,11 @@ describe('parseSogDirectory', () => {
       '/means_l.webp',
       '../means_l.webp',
       'nested/../../means_l.webp',
+      ' https://evil.example/a',
+      '\thttps://evil.example/a',
+      'h\nttps://evil.example/a',
+      '%2e%2e/means_l.webp',
+      '%2E%2E/scene-other/means_l.webp',
     ];
     for (const name of hostileNames) {
       const meta = makeMeta(1, {
@@ -437,4 +442,37 @@ describe('parseSogDirectory', () => {
       expect(fetched.every((url) => url.startsWith('https://host.example/scene/'))).toBe(true);
     }
   });
+});
+
+it('resolves nested files and queries against the directory pathname', async () => {
+  vi.stubGlobal('ImageDecoder', StubImageDecoder);
+  const meta = makeMeta(1, {
+    means: { mins: [0, 0, 0], maxs: [1, 1, 1], files: ['nested/means_l.webp?q=1', 'means_u.webp'] },
+  });
+  const fetched: string[] = [];
+  vi.stubGlobal('fetch', async (url: URL) => {
+    fetched.push(url.href);
+    return new Response(
+      url.pathname.endsWith('meta.json') ? JSON.stringify(meta) : fakeImage(1, 1),
+    );
+  });
+  await parseSogDirectory('https://host.example/scene?token=abc');
+  expect(fetched[0]).toBe('https://host.example/scene/meta.json');
+  expect(fetched).toContain('https://host.example/scene/nested/means_l.webp?q=1');
+});
+
+it('uses only own-property mapped files as the local folder allowlist', async () => {
+  vi.stubGlobal('ImageDecoder', StubImageDecoder);
+  const files = Object.assign(Object.create({ meta: 'blob:https://host.example/inherited' }), {
+    'meta.json': 'blob:https://host.example/meta',
+  }) as Record<string, string>;
+  vi.stubGlobal(
+    'fetch',
+    async (url: URL) =>
+      new Response(url.href.endsWith('/meta') ? JSON.stringify(makeMeta(1)) : fakeImage(1, 1)),
+  );
+  await expect(parseSogDirectory('local-folder', { files })).rejects.toThrow(/missing/);
+  for (const name of ['means_l.webp', 'means_u.webp', 'scales.webp', 'quats.webp', 'sh0.webp'])
+    files[name] = `blob:https://host.example/${name}`;
+  expect((await parseSogDirectory('local-folder', { files })).count).toBe(1);
 });
