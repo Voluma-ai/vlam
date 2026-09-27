@@ -83,7 +83,10 @@ export interface ChunkCacheBudgetOptions {
    */
   minIntervalMs?: number;
   /**
-   * Relative allowance change below which a mesh is not notified. Default 0.15.
+   * Relative change from the last delivered allowance. Default 0.15.
+   * Shares remain unchanged until any share crosses this threshold; then all
+   * changed shares are delivered, decreases first. Membership and total-budget
+   * changes bypass it.
    *
    * Every notification is a worker post and, indirectly, an eviction pass. A
    * camera drifting slowly would otherwise repost a 1% different number every
@@ -151,7 +154,7 @@ export class ChunkCacheBudget {
     const next = Math.floor(bytes);
     if (next === this.totalBytesValue) return;
     this.totalBytesValue = next;
-    this.allocate();
+    this.allocate({ force: true });
   }
 
   /** Meshes currently registered. */
@@ -277,13 +280,19 @@ export class ChunkCacheBudget {
       pool = Math.max(0, pool);
     }
 
+    // Compare with what clients actually received, so gradual drift accumulates.
+    // Once one share crosses its deadband, deliver the whole redistribution.
+    if (
+      !options.force &&
+      !entries.some((entry) => this.movedEnough(entry.allowance, next.get(entry) ?? 0))
+    )
+      return;
+    entries.sort((a, b) => (next.get(a) ?? 0) - a.allowance - ((next.get(b) ?? 0) - b.allowance));
     for (const entry of entries) {
       const value = next.get(entry) ?? 0;
       const previous = entry.allowance;
       entry.allowance = value;
-      if (entry === options.silentFor) continue;
-      if (!options.force && !this.movedEnough(previous, value)) continue;
-      if (previous === value) continue;
+      if (entry === options.silentFor || previous === value) continue;
       entry.client.onAllowanceChanged(value);
     }
   }

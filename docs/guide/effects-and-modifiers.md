@@ -37,6 +37,14 @@ const warp = worldWarpPreset({ intensity: 0.55, radius: 2 });
 warp.intensity.value = -0.4; // fold, no recompile
 ```
 
+`ctx.localToView` is an optional, readonly linear matrix supplied lazily by the
+renderer. It maps modifier-local vectors into view space on both standalone and
+unified paths. Convert a view displacement with its inverse, and a view rotation
+with `A.inverse() · Rview · A`, where `A = ctx.localToView`. This preserves the
+transform under nonuniform scale; a transpose only works for orthogonal matrices.
+Manually constructed contexts may omit it; `worldWarpPreset` falls back to the
+standalone model-view matrix.
+
 `worldWarpPreset` is camera-centered: walking/orbiting is unchanged, distant splats wrap. Extreme warps still sort by pre-displacement depth. Worked example: [Tiny planet](../../site/examples/tiny-planet.md).
 
 <!-- full file: docs/guide/samples/effects-presets.ts -->
@@ -161,7 +169,9 @@ mesh.modifiers = [heightTint]; // structural change → one recompile
 
 Constraints to know (from the
 modifier contract): covariance is pre-baked,
-so `scale` is uniform-only and `rotation` rigid-only; displaced splats keep
+so `scale` is uniform-only. A view-space rigid rotation must be conjugated
+through `localToView` as described above; under nonuniform scale the resulting
+local matrix need not be orthogonal. Displaced splats keep
 their pre-displacement depth-sort order; modifiers run per splat, not per
 pixel. Pure-TSL modifiers run on both backends; a `wgslFn` escape hatch (as
 in `revealPreset`) is WebGPU-only.

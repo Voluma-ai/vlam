@@ -447,6 +447,7 @@ export class SplatPool {
       targetRow += range.rowCount;
     }
     this.resetFreeRows(targetRow);
+    this.activeSlotByPoolIndex.fill(0xffffffff);
     for (const tenant of this.tenants) tenant.onPoolCompacted();
   }
 

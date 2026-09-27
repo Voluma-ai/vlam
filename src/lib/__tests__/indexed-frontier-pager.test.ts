@@ -233,3 +233,37 @@ describe('IndexedFrontierPager', () => {
     expect(pager.consumeResizeSafeCapacity()).toBe(2);
   });
 });
+
+it('restores relocated display residency before freeing an unpublished shrink', () => {
+  const pager = new IndexedFrontierPager(8, 2);
+  let generation = pager.select([0, 1, 2, 3, 4, 5, 6, 7]);
+  pager.stage(generation, 8);
+  pager.beginPublication(generation);
+  pager.acknowledge(generation);
+  generation = pager.select([6, 7]);
+  pager.stage(generation, 8);
+  pager.beginPublication(generation);
+  pager.acknowledge(generation);
+  const old = pager.displaySlots;
+  expect(pager.requestShrink(2)).toBe(false);
+  generation = pager.select([6, 7], 2);
+  expect(pager.stage(generation, 8)?.globals).toEqual(Uint32Array.of(6, 7));
+  pager.beginPublication(generation);
+  expect(pager.cancelUnpublishedPublication()).toBe(true);
+  expect(pager.cancelUnpublishedPublication()).toBe(false);
+  expect(pager.acknowledge(generation)).toBe(false);
+  expect(pager.displaySlots).toEqual(old);
+  expect(pager.hasResidentIn(3)).toBe(true);
+  generation = pager.select([6, 7]);
+  expect(pager.stage(generation, 8)?.globals).toHaveLength(0);
+  pager.beginPublication(generation);
+  pager.acknowledge(generation);
+  generation = pager.select([6, 7], 2);
+  expect(pager.stage(generation, 8)?.complete).toBe(true);
+  pager.beginPublication(generation);
+  pager.acknowledge(generation);
+  expect(pager.capacity).toBe(2);
+  generation = pager.select([8, 9]);
+  expect(pager.stage(generation, 8)?.complete).toBe(false);
+  expect(pager.hasResidentIn(3)).toBe(true);
+});

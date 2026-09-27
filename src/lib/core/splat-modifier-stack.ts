@@ -35,6 +35,7 @@ export function foldSplatModifierStack(
     /** Optional coordinate-space adapters for compute-time modifier folding. */
     makeWorldCenter?: () => THREE.Node<'vec3'>;
     makeViewCenter?: () => THREE.Node<'vec3'>;
+    makeLocalToView?: () => THREE.Node<'mat3'>;
   },
 ): {
   color: THREE.Node<'vec4'>;
@@ -75,6 +76,7 @@ export function foldSplatModifierStack(
   let worldCenter: THREE.Node<'vec3'> | null = null;
   let viewCenter: THREE.Node<'vec3'> | null = null;
   let normal: THREE.Node<'vec3'> | null = null;
+  let localToView: THREE.Node<'mat3'> | null = null;
   const channelNodes = new Map<string, THREE.Node<'float'>>();
   const context: SplatContext = {
     index: inputs.index,
@@ -96,6 +98,11 @@ export function foldSplatModifierStack(
           ? inputs.makeViewCenter()
           : modelViewMatrix.mul(vec4(inputs.localCenter, 1.0)).xyz,
       ));
+    },
+    get localToView() {
+      return (localToView ??= inputs.makeLocalToView
+        ? inputs.makeLocalToView()
+        : asNode<'mat3'>(modelViewMatrix.toMat3()));
     },
     get normal() {
       return (normal ??= inputs.makeNormal());

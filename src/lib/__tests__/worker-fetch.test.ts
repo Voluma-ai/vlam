@@ -78,3 +78,100 @@ describe('worker fetch validation', () => {
     expect(progress).toHaveBeenLastCalledWith(4, 0);
   });
 });
+
+describe('decoded CORS body lengths', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it.each([2, 4, 9])('treats a hidden encoding as a hint for a %i-byte body', async (length) => {
+    const bytes = Uint8Array.from({ length }, (_, i) => i + 1);
+    const response = new Response(
+      new ReadableStream({
+        start(controller) {
+          for (const byte of bytes) controller.enqueue(Uint8Array.of(byte));
+          controller.close();
+        },
+      }),
+      { headers: { 'Content-Length': '4' } },
+    );
+    Object.defineProperty(response, 'type', { value: 'cors' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => response),
+    );
+    const progress = vi.fn();
+    await expect(fetchBuffer('https://scene.test/a', undefined, signal, progress)).resolves.toEqual(
+      bytes.buffer,
+    );
+    expect(progress.mock.calls.every(([, total]) => total === 0)).toBe(true);
+  });
+  it.each([2, 6])('still rejects a trustworthy identity mismatch of %i bytes', async (length) => {
+    const response = new Response(new Uint8Array(length), {
+      headers: { 'Content-Length': '4', 'Content-Encoding': 'identity' },
+    });
+    Object.defineProperty(response, 'type', { value: 'cors' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => response),
+    );
+    await expect(fetchBuffer('https://scene.test/a', undefined, signal, vi.fn())).rejects.toThrow(
+      /length|longer/,
+    );
+  });
+  it('cancels and unlocks an unfinished reader without masking a callback failure', async () => {
+    const cancel = vi.fn(() => {
+      throw new Error('cancel failed');
+    });
+    const body = new ReadableStream({
+      start(c) {
+        c.enqueue(Uint8Array.of(1));
+      },
+      cancel,
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(body)),
+    );
+    const failure = new Error('progress failed');
+    await expect(
+      fetchBuffer('https://scene.test/a', undefined, signal, () => {
+        throw failure;
+      }),
+    ).rejects.toThrow('progress failed');
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(body.locked).toBe(false);
+  });
+  it('accepts a compressed response without a progress callback', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(Uint8Array.of(1, 2, 3), {
+            headers: { 'Content-Length': '2', 'Content-Encoding': 'gzip' },
+          }),
+      ),
+    );
+    await expect(fetchBuffer('https://scene.test/a', undefined, signal)).resolves.toEqual(
+      Uint8Array.of(1, 2, 3).buffer,
+    );
+  });
+});
+
+it('unlocks a body reader after an abort without replacing the AbortError', async () => {
+  const error = new DOMException('cancelled', 'AbortError');
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      controller.error(error);
+    },
+  });
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => new Response(body)),
+  );
+  try {
+    await expect(fetchBuffer('https://scene.test/a', undefined, signal, vi.fn())).rejects.toBe(
+      error,
+    );
+    expect(body.locked).toBe(false);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});

@@ -36,6 +36,8 @@ export interface SplatContext {
   readonly worldCenter: Node<'vec3'>;
   /** `modelViewMatrix · localCenter` (view space). */
   readonly viewCenter: Node<'vec3'>;
+  /** Linear mesh-local → view transform, supplied lazily by the render path. */
+  readonly localToView?: Node<'mat3'>;
   /** Camera position in mesh-local space. */
   readonly cameraLocal: Node<'vec3'>;
   /** Color + opacity after SH - the stack's input color. */
@@ -61,7 +63,7 @@ export interface SplatContext {
   readonly offset: Node<'vec3'>;
   /** Uniform scale multiplier. */
   readonly scale: Node<'float'>;
-  /** Rigid rotation. */
+  /** Mesh-local linear orientation transform (including view-space conjugation). */
   readonly rotation: Node<'mat3'>;
   /** Visibility. */
   readonly visible: Node<'bool'>;
@@ -95,7 +97,9 @@ export interface SplatOutputs {
  * changing a modifier's own uniforms or storage buffers never does.
  *
  * Constraints (see `docs/guide/effects-and-modifiers.md`): covariance is pre-baked,
- * so `scale` is uniform-only and `rotation` rigid-only; displaced splats
+ * so `scale` is uniform-only. Express view-space rotations in local coordinates
+ * with `localToView.inverse() · Rview · localToView`; under nonuniform scale
+ * this conjugation need not itself be orthogonal. Displaced splats
  * keep their pre-displacement depth-sort order.
  */
 export type SplatModifier = (context: SplatContext) => SplatOutputs;

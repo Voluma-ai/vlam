@@ -341,18 +341,14 @@ export class IndexedFrontierPager {
     const awaiting = this.awaitingAck;
     if (!awaiting) return false;
     const previous = new Set(awaiting.previousDisplayed);
-    for (const slot of this.displayed) {
-      if (!previous.has(slot)) this.release(slot);
-    }
+    // Restore mappings before releasing replacements: release must distinguish
+    // a relocated displayed global from a genuinely candidate-only resident.
     for (const slot of awaiting.previousDisplayed) {
       const global = this.slotGlobal[slot] as number;
-      const current = this.slotOf.get(global);
-      if (global >= 0 && current !== undefined && current !== slot) {
-        this.slotGlobal[current] = -1;
-        this.free.push(current);
-        this.slotOf.set(global, slot);
-        this.slotGlobal[slot] = global;
-      }
+      if (global >= 0) this.slotOf.set(global, slot);
+    }
+    for (const slot of this.displayed) {
+      if (!previous.has(slot)) this.release(slot);
     }
     this.displayed = awaiting.previousDisplayed;
     this.publishedGeneration = awaiting.previousGeneration;

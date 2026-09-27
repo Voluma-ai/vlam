@@ -19,6 +19,21 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Fixed
+
+- Stop streamed chunk requests and late retries after disposal or terminal worker
+  failure; preserve shared-pool mappings and pending cuts through compaction.
+- Deliver cache budget redistributions together, decreases first, and preserve
+  indexed RAD residency when cancelling a relocated replacement during shrink.
+- Keep viewer-created local RAD URLs alive until mesh disposal, and release
+  scene candidates that fail before adoption.
+- Confine SOG directory fetches to their resolved directory and accept decoded
+  CORS body lengths when compression headers are hidden.
+- Decode whole-file RAD leaf opacity directly. Remove `lodAlpha: true` workarounds
+  for whole-file loads; streamed LOD alpha encoding remains unchanged.
+- Follow source and parent placement in merged CPU spatial queries; use the true
+  inverse for scaled world warp and the documented default relighting blend.
+
 ### Verified
 
 - iPhone 15 non-Pro, Safari on iOS 26.6.2, WebGPU (`mobile integrated`).
