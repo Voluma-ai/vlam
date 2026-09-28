@@ -47,6 +47,36 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [0.10.4] - 2026-09-27
 
+### Fixed
+
+- Stop streamed chunk requests and late retries after disposal or terminal worker
+  failure; preserve shared-pool mappings and pending cuts through compaction.
+
+- Deliver cache budget redistributions together, decreases first, and preserve
+  indexed RAD residency when cancelling a relocated replacement during shrink.
+
+- Keep viewer-created local RAD URLs alive until mesh disposal, and release
+  scene candidates that fail before adoption.
+
+- Confine SOG directory fetches to their resolved directory and accept decoded
+  CORS body lengths when compression headers are hidden.
+
+- Decode whole-file RAD leaf opacity directly. Remove `lodAlpha: true` workarounds
+  for whole-file loads; streamed LOD alpha encoding remains unchanged.
+
+- Follow source and parent placement in merged CPU spatial queries; use the true
+  inverse for scaled world warp and the documented default relighting blend.
+
+- `vitest` and `@vitest/coverage-v8` now require `^4.1.11`
+  (CVE-2026-84373 / GHSA-82fw-gwwq-j7x9). `@vitest/mocker` 4.1.10
+  accepted redirect-mock targets without checking Vite's file-serving
+  allowlist. Dev-tooling only; the published package is unchanged.
+
+- Transitive `sharp` is pinned at `0.35.4` (CVE-2026-84383 /
+  GHSA-2jg2-4ch7-h545). `miniflare` (via `wrangler`) otherwise resolves
+  `0.35.2`, whose bundled libheif can be reached when decoding untrusted
+  AVIF. Dev-tooling only; the published package is unchanged.
+
 ### Verified
 
 - iPhone 15 non-Pro, Safari on iOS 26.6.2, WebGPU (`mobile integrated`).

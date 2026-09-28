@@ -514,7 +514,7 @@ function mergeChunks(chunks: readonly DecodedChunk[]): SplatData {
   for (const chunk of chunks) {
     for (let i = 0; i < chunk.count; i++) {
       if (chunk.childCount && chunk.childCount[i] !== 0) continue; // internal node
-      writeSplat(chunk, i, out, positions, colors, covariances);
+      writeSplat(chunk, i, out, positions, colors, covariances, false);
       if (packed && chunk.shPacked) {
         const words = shCoefficientCount(sourceSh!.bands);
         packed.set(chunk.shPacked.packed.subarray(i * words, (i + 1) * words), out * words);
@@ -745,6 +745,7 @@ function writeSplat(
   positions: Float32Array,
   colors: Uint8Array,
   covariances: Float32Array,
+  lodAlpha = true,
 ): void {
   // Spark's LOD alpha encoding: store `alpha / 2` in the 8-bit channel so the
   // shader (`×2`) recovers `alpha ∈ [0, 2]`. A leaf's opacity is `≤ 1`; a merged
@@ -759,7 +760,7 @@ function writeSplat(
   colors[dst * 4 + 0] = clampByte((chunk.rgb[src * 3 + 0] as number) * 255);
   colors[dst * 4 + 1] = clampByte((chunk.rgb[src * 3 + 1] as number) * 255);
   colors[dst * 4 + 2] = clampByte((chunk.rgb[src * 3 + 2] as number) * 255);
-  colors[dst * 4 + 3] = clampByte(alpha * 0.5 * 255);
+  colors[dst * 4 + 3] = clampByte(alpha * (lodAlpha ? 0.5 : 1) * 255);
   writeCovariance(
     covariances,
     dst,

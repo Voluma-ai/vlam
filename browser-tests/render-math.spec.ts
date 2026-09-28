@@ -11,10 +11,31 @@ test('preserves Gaussian, DoF, RAD, clipping and picking across material paths',
   await expect(page.locator('#result')).not.toHaveText('', { timeout: 150_000 });
   const data = JSON.parse((await page.locator('#result').textContent())!) as {
     backend: string;
-    results: { name: string; unified: boolean; pixels: number[]; hit: number[] | null }[];
+    pickOwnership: (number[] | null)[];
+    results: {
+      name: string;
+      unified: boolean;
+      pixels: number[];
+      initialPixels: number[] | null;
+      restoredPixels: number[] | null;
+      updatedPixels: number[] | null;
+      hit: number[] | null;
+    }[];
   };
   expect(data.backend).toBe(backend);
   expect(errors).toEqual([]);
+  if (backend === 'webgpu') {
+    expect(data.pickOwnership).toHaveLength(3);
+    for (const hit of data.pickOwnership) {
+      expect(hit).not.toBeNull();
+      expect(hit![0]).toBeCloseTo(0, 5);
+      expect(hit![1]).toBeCloseTo(0, 5);
+      expect(hit![2]).toBeCloseTo(0, 5);
+    }
+  }
+  await page
+    .locator('#captures')
+    .screenshot({ path: info.outputPath(`${backend}-render-math.png`) });
   for (const unified of backend === 'webgpu' ? [false, true] : [false]) {
     const cases = data.results.filter((result) => result.unified === unified);
     const result = (name: string) => {
@@ -45,6 +66,47 @@ test('preserves Gaussian, DoF, RAD, clipping and picking across material paths',
       expect(result(name).hit, name).not.toBeNull();
       expect(result(name).hit![2], name).toBeCloseTo(0, 5);
     }
+    const maxDifference = (a: number[], b: number[]) =>
+      Math.max(...a.map((value, i) => Math.abs(value - b[i]!)));
+    expect(coverage('rad-whole-zero')).toBe(0);
+    expect(centerAlpha('rad-whole-translucent')).toBeGreaterThan(0);
+    expect(centerAlpha('rad-whole-translucent')).toBeLessThan(centerAlpha('rad-whole-opaque'));
+    expect(maxDifference(result('rad-whole-opaque').pixels, result('rad-reference').pixels)).toBe(
+      0,
+    );
+    expect
+      .soft(maxDifference(result('warp-zero').pixels, result('warp-zero-baked').pixels))
+      .toBeLessThanOrEqual(2);
+    for (const name of ['warp-planet', 'warp-fold']) {
+      expect.soft(coverage(name)).toBeGreaterThan(0);
+      expect
+        .soft(maxDifference(result(name).pixels, result(`${name}-baked`).pixels), name)
+        .toBeLessThanOrEqual(2);
+      expect.soft(maxDifference(result(name).initialPixels!, result(name).restoredPixels!)).toBe(0);
+      expect
+        .soft(maxDifference(result(name).pixels, result(name).initialPixels!))
+        .toBeGreaterThan(5);
+    }
+    expect
+      .soft(maxDifference(result('relight-default').pixels, result('relight-one').pixels))
+      .toBe(0);
+    expect.soft(maxDifference(result('relight-zero').pixels, result('axis').pixels)).toBe(0);
+    expect
+      .soft(maxDifference(result('relight-default').updatedPixels!, result('axis').pixels))
+      .toBe(0);
+    expect
+      .soft(maxDifference(result('relight-zero').updatedPixels!, result('relight-one').pixels))
+      .toBe(0);
+    expect
+      .soft(maxDifference(result('relight-one').pixels, result('axis').pixels))
+      .toBeGreaterThan(5);
+    expect(maxDifference(result('mixed-before').pixels, result('mixed-compacted').pixels)).toBe(0);
+    expect(result('mixed-before').hit).not.toBeNull();
+    expect(result('mixed-compacted').hit, `${backend} unified=${unified}`).not.toBeNull();
+    expect(result('mixed-compacted').hit![0]).toBeCloseTo(result('mixed-before').hit![0]!, 5);
+    expect(result('mixed-removed').hit).toBeNull();
+    expect(coverage('mixed-removed')).toBeGreaterThan(0);
+    expect(coverage('mixed-removed')).toBeLessThan(coverage('mixed-compacted'));
     expect(coverage('dof')).toBeGreaterThan(coverage('axis'));
     expect(centerAlpha('dof')).toBeLessThan(centerAlpha('axis'));
     expect(centerAlpha('antialias')).toBeLessThan(centerAlpha('axis'));

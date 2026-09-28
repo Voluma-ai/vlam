@@ -543,7 +543,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     getViewportSize: () => this.viewport.value,
     getPickVisible: () => this.effectiveVisibility,
     hasSorter: () => this.sorter !== null,
-    usesUnculledPickList: () => this.computeProjectionActive,
+    usesUnculledPickList: () => this.computeProjectionActive || this.unifiedPickVisibility !== null,
     updateWorldMatrix: () => this.updateWorldMatrix(true, false),
     prepare: (camera, renderer) => {
       // After render-only CPU release, do not flush or re-sort: both paths can
@@ -560,7 +560,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     setView: (camera, width, height) => this.writeViewUniforms(camera, width, height),
     applyPickGraph: (material) => {
       const inputs = this.graphInputs(this.materialInputs.textures, this.materialInputs.sh);
-      if (this.computeProjectionActive) {
+      if (this.computeProjectionActive || this.unifiedPickVisibility !== null) {
+        // Unified sources have no standalone sorter to refresh a relocated draw list.
         inputs.pickSource = { indices: this.sourceIndexAttribute, capacity: this.capacity };
       }
       applySplatMaterialGraph(material, 'pick', inputs);
@@ -1744,7 +1745,12 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         'SplatMesh.setUnifiedPickVisibility: storageMode "render-only" does not support UnifiedSplatMesh sources.',
       );
     }
+    const ownershipChanged = (this.unifiedPickVisibility === null) !== (visible === null);
     this.unifiedPickVisibility = visible;
+    if (ownershipChanged) {
+      this.picker.rebuildMaterial();
+      this.picker.markNeedsUpdate();
+    }
   }
 
   /**
@@ -2030,12 +2036,20 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.markRowsWritten(targetRow, record.rowCount);
   }
 
+  /** Obsolete addresses were cleared centrally before this tenant rebuilds. */
+  private rebuildingCompactedPool = false;
+
   /** {@link SplatPoolTenant}: rebuild everything keyed by pool index. */
   onPoolCompacted(): void {
     this.queryEpoch++; // rows moved, so pool-index → position changed
     // Pool indices changed, so rebuild immediately before another public pool
     // mutation can consult the reverse active-slot map.
-    this.rebuildActiveList();
+    this.rebuildingCompactedPool = true;
+    try {
+      this.rebuildActiveList();
+    } finally {
+      this.rebuildingCompactedPool = false;
+    }
     this.contentRevision++;
   }
 
@@ -3433,6 +3447,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /** Clears only the pool indices that were active, not the whole pool map. */
   private clearActiveSlotMap(source: Uint32Array, count: number): void {
+    if (this.rebuildingCompactedPool) return;
     const end = Math.min(count, source.length);
     for (let slot = 0; slot < end; slot++) {
       this.activeSlotByPoolIndex[source[slot] as number] = 0xffffffff;

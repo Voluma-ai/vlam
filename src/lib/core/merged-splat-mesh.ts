@@ -38,7 +38,15 @@
  * {@link UnifiedSplatMesh} instead.
  */
 import * as THREE from 'three/webgpu';
-import { SplatMesh, type SplatMeshOptions, type SplatRange } from './splat-mesh';
+import {
+  SplatMesh,
+  type SplatMeshOptions,
+  type SplatRange,
+  type SplatNearestResult,
+  type SplatHeightResult,
+  type SplatRayResult,
+} from './splat-mesh';
+import { UniformGrid } from './splat-query';
 import type { SplatData } from './splat-data';
 import { yUpTransformForFormat, type SplatOrientation } from './orientation';
 import {
@@ -71,6 +79,9 @@ export interface MergedSplatSourceOptions {
 interface SourceRecord extends SourceBounds {
   /** The pool range this source's splats occupy. */
   range: SplatRange;
+  count: number;
+  grid?: UniformGrid;
+  gridStart?: number;
   /** Data-frame → world correction applied before the placement matrix. */
   correction: THREE.Matrix4 | null;
   /** Live placement (world = placement · correction); kept for re-placement. */
@@ -152,6 +163,7 @@ export class MergedSplatMesh extends SplatMesh {
     const sphere = box.getBoundingSphere(new THREE.Sphere());
     const record: SourceRecord = {
       range,
+      count: data.count,
       correction,
       placement: placement.clone(),
       box,
@@ -206,6 +218,119 @@ export class MergedSplatMesh extends SplatMesh {
     this.sources[id] = undefined;
     this.invalidateSort();
     return true;
+  }
+
+  /** Releases per-source CPU query caches alongside the base mesh resources. */
+  override dispose(): void {
+    if (this.disposed) return;
+    for (const source of this.sources) {
+      if (!source) continue;
+      source.grid = undefined;
+      source.gridStart = undefined;
+    }
+    super.dispose();
+  }
+
+  /** Nearest undisplaced center, ranked after source placement and the outer world transform. */
+  override queryNearest(worldPoint: THREE.Vector3, radius: number): SplatNearestResult | null {
+    if (!(radius >= 0)) return null;
+    let point: THREE.Vector3 | null = null;
+    let bestSq = Infinity;
+    this.visitQueryCenters(worldPoint, radius, (world) => {
+      const distanceSq = world.distanceToSquared(worldPoint);
+      if (distanceSq <= radius * radius && distanceSq < bestSq) {
+        bestSq = distanceSq;
+        point = world.clone();
+      }
+    });
+    return point ? { point, distance: Math.sqrt(bestSq) } : null;
+  }
+
+  /** Highest placed center beneath a world point, with world-Y drop and horizontal tolerance. */
+  override queryHeight(
+    worldPoint: THREE.Vector3,
+    maxDrop: number,
+    radius = maxDrop / 2,
+  ): SplatHeightResult | null {
+    if (!(maxDrop >= 0) || !(radius >= 0)) return null;
+    let point: THREE.Vector3 | null = null;
+    let bestY = -Infinity;
+    this.visitQueryCenters(worldPoint, maxDrop + radius, (world) => {
+      const drop = worldPoint.y - world.y;
+      const dx = world.x - worldPoint.x;
+      const dz = world.z - worldPoint.z;
+      if (drop >= 0 && drop <= maxDrop && dx * dx + dz * dz <= radius * radius && world.y > bestY) {
+        bestY = world.y;
+        point = world.clone();
+      }
+    });
+    return point ? { point, drop: worldPoint.y - bestY } : null;
+  }
+
+  /** First placed center inside the world-space ray cone; retains a linear scan. */
+  override queryRay(
+    ray: THREE.Ray,
+    radiusAtUnitDistance = 0.025,
+    minimumRadius = 0.05,
+  ): SplatRayResult | null {
+    if (!(radiusAtUnitDistance >= 0) || !(minimumRadius >= 0) || ray.direction.lengthSq() === 0)
+      return null;
+    const direction = ray.direction.clone().normalize();
+    const delta = new THREE.Vector3();
+    let point: THREE.Vector3 | null = null;
+    let bestDistance = Infinity;
+    this.visitQueryCenters(null, 0, (world) => {
+      delta.subVectors(world, ray.origin);
+      const distance = delta.dot(direction);
+      if (distance < 0 || distance >= bestDistance) return;
+      delta.addScaledVector(direction, -distance);
+      const radius = Math.max(minimumRadius, distance * radiusAtUnitDistance);
+      if (delta.lengthSq() <= radius * radius) {
+        bestDistance = distance;
+        point = world.clone();
+      }
+    });
+    return point ? { point, distance: bestDistance } : null;
+  }
+
+  private visitQueryCenters(
+    worldPoint: THREE.Vector3 | null,
+    radius: number,
+    visit: (world: THREE.Vector3) => void,
+  ): void {
+    if (this.disposed) return;
+    this.updateWorldMatrix(true, false);
+    const matrix = new THREE.Matrix4();
+    const inverse = new THREE.Matrix4();
+    const local = new THREE.Vector3();
+    const world = new THREE.Vector3();
+    for (const source of this.sources) {
+      if (!source) continue;
+      const { start, backing } = this.poolRangeBacking(source.range);
+      matrix.multiplyMatrices(this.matrixWorld, source.matrix);
+      const candidate = (index: number) => {
+        world.fromArray(backing.centers, index * 4).applyMatrix4(matrix);
+        visit(world);
+      };
+      // Singular placements still have well-defined world centers. Scan them
+      // directly rather than using an inverse that collapses to a zero matrix.
+      if (!worldPoint || matrix.determinant() === 0 || !Number.isFinite(radius)) {
+        for (let i = 0; i < source.count; i++) candidate(start + i);
+        continue;
+      }
+      if (!source.grid || source.gridStart !== start) {
+        const indices = Uint32Array.from({ length: source.count }, (_, i) => start + i);
+        source.grid = new UniformGrid(backing.centers, indices, source.count);
+        source.gridStart = start;
+      }
+      inverse.copy(matrix).invert();
+      local.copy(worldPoint).applyMatrix4(inverse);
+      const e = inverse.elements;
+      // The inverse's Frobenius norm bounds its largest singular value, even
+      // when parent rotation and nonuniform scale combine to produce shear.
+      const bound = Math.hypot(e[0], e[1], e[2], e[4], e[5], e[6], e[8], e[9], e[10]);
+      source.grid.forEachWithin(local.x, local.y, local.z, radius * bound, candidate);
+    }
   }
 
   /** Recomputes a source's world matrix (placement · correction) and republishes it. */

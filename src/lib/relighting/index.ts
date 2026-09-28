@@ -193,7 +193,7 @@ export function attachRelighting(
   initial: RelightingSettings,
 ): RelightingAttachment {
   const previous = target.displayColorModifier;
-  const blend = uniform(0);
+  const blend = uniform(DEFAULT_RELIGHT_BLEND);
   const brightness = uniform(DEFAULT_RELIGHT_BRIGHTNESS);
   const background = uniform(DEFAULT_RELIGHT_BACKGROUND);
   const softness = uniform(DEFAULT_RELIGHT_SOFTNESS);

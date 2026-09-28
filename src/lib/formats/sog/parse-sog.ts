@@ -107,14 +107,24 @@ export async function parseSogDirectory(
     files?: Readonly<Record<string, string>>;
   } = {},
 ): Promise<SplatData> {
-  const base = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+  const base = options.files ? null : new URL(baseUrl);
+  if (base && !base.pathname.endsWith('/')) base.pathname += '/';
   return parseSogFromEntries(async (name) => {
     assertPlainRelativeName(name);
-    const mapped = options.files?.[name];
+    const mapped =
+      options.files && Object.hasOwn(options.files, name) ? options.files[name] : undefined;
     if (options.files && mapped === undefined) {
       throw new Error(`SOG chunk is missing "${name}".`);
     }
-    const url = mapped === undefined ? new URL(name, base) : new URL(mapped);
+    const url = mapped === undefined ? new URL(name, base!) : new URL(mapped);
+    if (
+      mapped === undefined &&
+      (url.protocol !== base!.protocol ||
+        url.origin !== base!.origin ||
+        !url.pathname.startsWith(base!.pathname))
+    ) {
+      throw new Error(`SOG meta.json references a file outside its directory: "${name}".`);
+    }
     let response: Response;
     try {
       response = await fetch(url, toRequestInit(options.request, options.signal));

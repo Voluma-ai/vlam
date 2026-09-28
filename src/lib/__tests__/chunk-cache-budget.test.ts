@@ -201,3 +201,60 @@ describe('ChunkCacheBudget', () => {
     expect(mesh.notified).toEqual([]);
   });
 });
+
+it('retains delivered allowances until cumulative drift crosses the deadband', () => {
+  const budget = new ChunkCacheBudget({ totalBytes: 1000, perMeshFloorBytes: 0, minIntervalMs: 0 });
+  const a = new FakeMesh(1).join(budget);
+  const b = new FakeMesh(1).join(budget);
+  for (const weight of [1.05, 1.1, 1.2, 1.3]) {
+    a.weight = weight;
+    budget.weightsChanged();
+    expect(budget.allowanceFor(a.handle)).toBe(500);
+    expect(budget.allowanceFor(b.handle)).toBe(500);
+  }
+  a.weight = 1.5;
+  budget.weightsChanged();
+  expect(budget.allowanceFor(a.handle)).toBe(600);
+  expect(budget.allowanceFor(b.handle)).toBe(400);
+});
+
+it('delivers decreases before increases when only the smaller share crosses its deadband', () => {
+  const budget = new ChunkCacheBudget({ totalBytes: 1000, perMeshFloorBytes: 0, minIntervalMs: 0 });
+  const delivered = [0, 0];
+  const order: number[] = [];
+  let weights = [950, 50];
+  const handles = [0, 1].map((i) => {
+    const handle = budget.register({
+      weight: () => weights[i]!,
+      ceilingBytes: 1000,
+      onAllowanceChanged: (bytes) => {
+        delivered[i] = bytes;
+        order.push(i);
+        expect(delivered[0]! + delivered[1]!).toBeLessThanOrEqual(1000);
+      },
+    });
+    delivered[i] = budget.allowanceFor(handle);
+    return handle;
+  });
+  order.length = 0;
+  weights = [920, 80];
+  budget.weightsChanged();
+  expect(delivered).toEqual([920, 80]);
+  expect(order).toEqual([0, 1]);
+  for (const total of [990, 980, 970]) {
+    budget.setTotalBytes(total);
+    expect(delivered.reduce((a, b) => a + b)).toBeLessThanOrEqual(total);
+    expect(handles.map((h) => budget.allowanceFor(h))).toEqual(delivered);
+  }
+});
+
+it('forces every small total-budget reduction past the weight deadband', () => {
+  const budget = new ChunkCacheBudget({ totalBytes: 1000, perMeshFloorBytes: 0, minIntervalMs: 0 });
+  const a = new FakeMesh(1).join(budget);
+  const b = new FakeMesh(1).join(budget);
+  for (const total of [990, 980, 970, 960]) {
+    budget.setTotalBytes(total);
+    expect(a.notified.at(-1)).toBe(total / 2);
+    expect(b.notified.at(-1)).toBe(total / 2);
+  }
+});

@@ -3,6 +3,7 @@ import * as THREE from 'three/webgpu';
 import type { WebGLRenderer } from 'three';
 import { createStreamedMeshFixture } from './helpers/streamed-mesh-fixture';
 import { StreamedSplatMesh } from '../streaming/streamed-splat-mesh';
+import { SplatMesh } from '../core/splat-mesh';
 import { SplatPool } from '../core/splat-mesh-pool';
 import { experiments } from '../internal/experiments';
 
@@ -233,7 +234,14 @@ describe('RAD page-table SH paging', () => {
   });
 
   it('maps shared page-table candidates to disjoint pool indices for unified views', () => {
-    const pool = new SplatPool({ capacity: 4 * WIDTH });
+    const pool = new SplatPool({ capacity: 6 * WIDTH });
+    const hole = new SplatMesh({ capacity: WIDTH }, { pool });
+    hole.appendRange({
+      count: 1,
+      positions: new Float32Array(3),
+      colors: new Uint8Array(4),
+      covariances: new Float32Array(6),
+    });
     pools.push(pool);
     const scene = {
       source: { budget: WIDTH },
@@ -323,8 +331,20 @@ describe('RAD page-table SH paging', () => {
 
     a.applyFrontierPlan(plan(2, [4, 5], [2, 3], [0, 1, 2, 3], 4));
     expect(a.pageTableDrawn).toBe(2);
+    const pendingVersion = a.activeListVersion;
+    hole.dispose();
+    pool.compact();
+    expect(a.pageTableDrawn).toBe(2);
+    expect(a.poolRangeBacking(a.slabPages[0]).start).toBe(0);
+    expect(
+      (meshes[0]!.getUnifiedSourceView().sourceIndex.array as Uint32Array).slice(0, 4),
+    ).toEqual(Uint32Array.of(0, 1, 2, 3));
+    a.onActiveListRendered(pendingVersion);
+    expect(a.pageTableDrawn).toBe(2);
     a.onActiveListRendered(a.activeListVersion);
     expect(a.pageTableDrawn).toBe(4);
+    meshes[1]!.dispose();
+    expect(() => pool.compact()).not.toThrow();
   });
 
   it.each([1, 2, 3] as const)(
@@ -682,4 +702,161 @@ describe('RAD page-table SH paging', () => {
       ),
     ).toHaveLength(0);
   });
+});
+
+it('refreshes chunk-page starts and preserves a pending sparse cut through shared compaction', () => {
+  const pool = new SplatPool({ capacity: 8 * WIDTH, packedShBands: 1, packedShTextureCount: 1 });
+  const hole = new SplatMesh({ capacity: WIDTH }, { pool });
+  hole.appendRange({
+    count: 1,
+    positions: new Float32Array(3),
+    colors: new Uint8Array(4),
+    covariances: new Float32Array(6),
+  });
+  const scene = {
+    source: { budget: 4 },
+    chunkUrls: ['0', '1'],
+    chunkKind: 'file',
+    bounds: new THREE.Box3(new THREE.Vector3(), new THREE.Vector3(1, 1, 1)),
+    pinnedFiles: new Set<number>(),
+    maxResidentSplats: 8,
+    chunkSize: 4,
+    foveation: { minScreenRadiusPx: 1.6, maxScreenRadiusPx: 4 },
+  };
+  const mesh = createStreamedMeshFixture(
+    scene,
+    4,
+    8,
+    { foveationMode: 'page-table', pool, shBands: 1 },
+    FrontierWorkerStub,
+    false,
+    true,
+  );
+  const inner = mesh as unknown as {
+    installRadChunkPage(file: number, data: ReturnType<typeof splats>): boolean;
+    rebuildActiveList(): void;
+    radChunkDisplayedGlobals: Uint32Array;
+    radChunkPendingGlobals: Uint32Array | null;
+    radChunkPublishGeneration: number | null;
+    radChunkPublishActiveListVersion: number | null;
+    pageTableDrawn: number;
+    activeListVersion: number;
+    radChunkPages: Map<number, { starts: Uint32Array }>;
+    poolIndicesForRadGlobals(globals: Uint32Array): Uint32Array | null;
+  };
+  expect(inner.installRadChunkPage(0, splats(1, [0, 1, 2, 3]))).toBe(true);
+  expect(inner.installRadChunkPage(1, splats(1, [4, 5, 6, 7]))).toBe(true);
+  inner.radChunkDisplayedGlobals = Uint32Array.of(1, 6);
+  inner.pageTableDrawn = 2;
+  inner.radChunkPendingGlobals = Uint32Array.of(0, 3, 5);
+  inner.radChunkPublishGeneration = 7;
+  inner.rebuildActiveList();
+  const oldVersion = inner.activeListVersion;
+  hole.dispose();
+  pool.compact();
+  expect(inner.radChunkPages.get(0)?.starts).toEqual(Uint32Array.of(0));
+  expect(inner.radChunkPages.get(1)?.starts).toEqual(Uint32Array.of(WIDTH));
+  expect(inner.poolIndicesForRadGlobals(inner.radChunkDisplayedGlobals)).toEqual(
+    Uint32Array.of(1, WIDTH + 2),
+  );
+  expect((mesh.getUnifiedSourceView().sourceIndex.array as Uint32Array).slice(0, 3)).toEqual(
+    Uint32Array.of(0, 3, WIDTH + 1),
+  );
+  expect(inner.radChunkPublishGeneration).toBe(7);
+  expect(inner.radChunkPublishActiveListVersion).toBe(inner.activeListVersion);
+  expect(inner.activeListVersion).toBeGreaterThan(oldVersion);
+  expect(inner.pageTableDrawn).toBe(2);
+  expect(pool.backing.shPacked[0]![0]).toBe(1);
+  expect(pool.backing.shPacked[0]![WIDTH * 4]).toBe(401);
+  mesh.dispose();
+  pool.dispose();
+});
+
+it('keeps the last committed indexed display on terminal worker failure', () => {
+  const scene = {
+    source: { budget: 4 },
+    chunkUrls: ['0'],
+    chunkKind: 'file',
+    bounds: new THREE.Box3(new THREE.Vector3(), new THREE.Vector3(1, 1, 1)),
+    pinnedFiles: new Set<number>(),
+    maxResidentSplats: 8,
+    chunkSize: 4,
+    foveation: { minScreenRadiusPx: 1.6, maxScreenRadiusPx: 4 },
+  };
+  const mesh = createStreamedMeshFixture(
+    scene,
+    4,
+    8,
+    { foveationMode: 'page-table' },
+    FrontierWorkerStub,
+  );
+  const inner = mesh as unknown as {
+    indexedDisplayedSlots: Uint32Array;
+    indexedPendingDisplaySlots: Uint32Array | null;
+    indexedPublishGeneration: number | null;
+    pageTableDrawn: number;
+    rebuildActiveList(): void;
+    failFrontierWorker(error: unknown): void;
+    activeListVersion: number;
+    onActiveListRendered(version: number): void;
+  };
+  inner.indexedDisplayedSlots = Uint32Array.of(0);
+  inner.pageTableDrawn = 1;
+  inner.indexedPendingDisplaySlots = Uint32Array.of(1, 2);
+  inner.indexedPublishGeneration = 3;
+  inner.rebuildActiveList();
+  const stale = inner.activeListVersion;
+  inner.failFrontierWorker(new Error('terminal'));
+  expect(mesh.streamingError?.phase).toBe('worker');
+  expect(inner.indexedPendingDisplaySlots).toBeNull();
+  expect(inner.indexedPublishGeneration).toBeNull();
+  expect(mesh.activeSplatCount).toBe(1);
+  expect(inner.pageTableDrawn).toBe(1);
+  inner.onActiveListRendered(stale);
+  expect(inner.pageTableDrawn).toBe(1);
+  mesh.dispose();
+});
+
+it('stays idle after terminal failure despite later budget and cache updates', () => {
+  const scene = {
+    source: { budget: 4 },
+    chunkUrls: ['0'],
+    chunkKind: 'file',
+    bounds: new THREE.Box3(new THREE.Vector3(), new THREE.Vector3(1, 1, 1)),
+    pinnedFiles: new Set<number>(),
+    maxResidentSplats: 8,
+    chunkSize: 4,
+    foveation: { minScreenRadiusPx: 1.6, maxScreenRadiusPx: 4 },
+  };
+  const mesh = createStreamedMeshFixture(
+    scene,
+    4,
+    8,
+    { foveationMode: 'page-table' },
+    FrontierWorkerStub,
+  );
+  const inner = mesh as unknown as {
+    failFrontierWorker(error: unknown): void;
+    applyCacheAllowance(bytes: number): void;
+    cacheLimitBytes: number;
+    retrying: Map<number, { attempts: number; after: number }>;
+    pendingWork: boolean;
+  };
+  inner.retrying.set(0, { attempts: 1, after: Infinity });
+  inner.failFrontierWorker(new Error('terminal'));
+  expect(mesh.isStreaming).toBe(false);
+  expect(inner.retrying.size).toBe(0);
+  mesh.setBudget(3);
+  inner.applyCacheAllowance(inner.cacheLimitBytes + 1);
+  mesh.lodBaseDistance = 12;
+  const camera = new THREE.PerspectiveCamera();
+  const renderer = {
+    getDrawingBufferSize: (out: THREE.Vector2) => out.set(800, 600),
+    backend: { isWebGPUBackend: true },
+  } as unknown as THREE.WebGPURenderer;
+  mesh.update(camera, renderer);
+  expect(mesh.isStreaming).toBe(false);
+  mesh.dispose();
+  expect(inner.pendingWork).toBe(false);
+  expect(mesh.isStreaming).toBe(false);
 });

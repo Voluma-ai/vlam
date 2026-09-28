@@ -154,16 +154,22 @@ LOD tree, `alpha` is encoded in `[0,2]` (values >1 encode a size-expansion
 factor in Spark's renderer). The display and unified shaders recover that
 encoded value from the original texture channel and apply visual opacity
 (source fades, alpha modifiers) only after merged-vs-leaf classification.
-`writeSplat` applies it: opacity is `min(alpha,1)`
-and the scales are multiplied by `radExpansion(alpha)` (1 for leaves, up to 3.8
-at alpha=2) so coarse nodes render enlarged enough to cover their subtree,
-matching Spark. Spark 2.1's tagged decoder also writes that 3.8 expansion into
+Streamed `writeSplat` stores `alpha / 2`, quantized once. The shader doubles
+that channel and expands the Gaussian cutoff for merged nodes (1 for leaves,
+up to 3.8 at alpha=2), preserving their raw covariance. This lets coarse nodes
+cover their subtree while retaining the fitted shape, matching Spark. Spark 2.1's tagged decoder also writes that 3.8 expansion into
 lod-tree hierarchy sizes; VLAM traversal metadata matches the decoder. Covariance
 stays the raw fitted shape and is not inflated to make size comparisons pass.
 Without the expansion, merged nodes render up to ~3.8× too small and leave
 gaps in the foveated far field.
 
 ## Whole-file vs. streamed
+
+Whole-file `parseRad` / `loadSplatData` output carries ordinary leaf opacity,
+quantized once from decoded alpha. Use the renderer's default `lodAlpha: false`.
+Applications that previously used `lodAlpha: true` to compensate for dim
+whole-file RAD output should remove that workaround. Streamed chunks retain
+half-alpha encoding and their existing LOD rendering settings.
 
 - **Whole-file** (`parseRad`, small files via `loadSplatData`): decode every chunk,
   keep **leaf splats only** (drop merged nodes), producing a `SplatData`

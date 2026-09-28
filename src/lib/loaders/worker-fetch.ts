@@ -158,51 +158,60 @@ async function readBodyWithProgress(
   onProgress: SplatProgressCallback,
 ): Promise<ArrayBuffer> {
   const declared = Number(response.headers.get('Content-Length'));
-  // Content-Length is the encoded representation's length. It cannot size a
-  // decoded stream when an intermediary applies gzip or Brotli, so use it only
-  // for identity bodies. The accumulation path keeps progress truthful instead
-  // of rejecting a perfectly valid compressed transfer as "short".
   const encoding = response.headers.get('Content-Encoding');
-  const hasIdentityEncoding = encoding === null || /^identity$/i.test(encoding.trim());
-  const total =
-    hasIdentityEncoding && Number.isSafeInteger(declared) && declared > 0 ? declared : 0;
+  // CORS exposes Content-Length but may hide the encoding of the wire body.
+  const ambiguous = response.type === 'cors' && encoding === null;
+  const identity = encoding === null || /^identity$/i.test(encoding.trim());
+  const capacity = identity && Number.isSafeInteger(declared) && declared > 0 ? declared : 0;
+  const total = ambiguous ? 0 : capacity;
   const reader = (response.body as ReadableStream<Uint8Array>).getReader();
   const chunks: Uint8Array[] = [];
-  const out = total > 0 ? new Uint8Array(total) : null;
+  let out = capacity > 0 ? new Uint8Array(capacity) : null;
   let loaded = 0;
+  let finished = false;
 
-  onProgress(0, total);
   try {
+    onProgress(0, total);
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) break;
-      if (out) {
-        // A body longer than its own Content-Length would overrun the buffer.
-        if (loaded + value.byteLength > total) {
-          throw new Error(`Response body is longer than its Content-Length of ${total} bytes.`);
-        }
-        out.set(value, loaded);
-      } else {
-        chunks.push(value);
+      if (done) {
+        finished = true;
+        break;
       }
+      if (out && loaded + value.byteLength > out.length) {
+        if (!ambiguous)
+          throw new Error(`Response body is longer than its Content-Length of ${total} bytes.`);
+        if (loaded > 0) chunks.push(out.subarray(0, loaded));
+        out = null;
+      }
+      if (out) out.set(value, loaded);
+      else chunks.push(value);
       loaded += value.byteLength;
       onProgress(loaded, total);
     }
+    if (out) {
+      if (!ambiguous && loaded !== total) {
+        throw new Error(
+          `Response body ended at ${loaded} bytes, short of its ${total}-byte length.`,
+        );
+      }
+      return loaded === out.length ? out.buffer : out.buffer.slice(0, loaded);
+    }
+    const joined = new Uint8Array(loaded);
+    let at = 0;
+    for (const chunk of chunks) {
+      joined.set(chunk, at);
+      at += chunk.byteLength;
+    }
+    return joined.buffer;
   } finally {
+    if (!finished) {
+      try {
+        await reader.cancel();
+      } catch {
+        /* Preserve the original read or callback error. */
+      }
+    }
     reader.releaseLock();
   }
-
-  if (out) {
-    if (loaded !== total) {
-      throw new Error(`Response body ended at ${loaded} bytes, short of its ${total}-byte length.`);
-    }
-    return out.buffer;
-  }
-  const joined = new Uint8Array(loaded);
-  let at = 0;
-  for (const chunk of chunks) {
-    joined.set(chunk, at);
-    at += chunk.byteLength;
-  }
-  return joined.buffer;
 }

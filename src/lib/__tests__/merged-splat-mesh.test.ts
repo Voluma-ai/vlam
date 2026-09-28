@@ -240,3 +240,117 @@ describe('worldBoundsOf', () => {
     expect(out.containsPoint(new THREE.Vector3(4, 0, 0))).toBe(true);
   });
 });
+
+describe('merged CPU queries', () => {
+  it('follows source and parent movement, orientation, scale and compaction', () => {
+    const mesh = new MergedSplatMesh({ capacity: 8192 });
+    const parent = new THREE.Group();
+    parent.add(mesh);
+    const removed = mesh.addSource(makeData(1));
+    const id = mesh.addSource(makeData(2, 'ply'), new THREE.Matrix4().makeTranslation(4, 3, -2));
+    const transform = new THREE.Matrix4().compose(
+      new THREE.Vector3(4, 3, -2),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(0.3, 0.5, 0.2)),
+      new THREE.Vector3(-2, 0.5, 3),
+    );
+    parent.position.set(10, 2, -3);
+    parent.rotation.y = 0.4;
+    parent.scale.set(0.5, 2, 3);
+    mesh.setSourceTransform(id, transform);
+    mesh.updateWorldMatrix(true, false);
+    const expected = new THREE.Vector3(1, 0, 0)
+      .applyMatrix4(mesh.getSourceTransform(id)!)
+      .applyMatrix4(mesh.matrixWorld);
+    expect(mesh.queryNearest(expected, 0.01)?.point.distanceTo(expected)).toBeLessThan(1e-5);
+    expect(
+      mesh.queryHeight(expected.clone().add(new THREE.Vector3(0, 1, 0)), 1.1, 0.01)?.drop,
+    ).toBeCloseTo(1);
+    expect(
+      mesh
+        .queryRay(
+          new THREE.Ray(
+            expected.clone().add(new THREE.Vector3(0, 0, 1)),
+            new THREE.Vector3(0, 0, -1),
+          ),
+          0,
+          0.01,
+        )
+        ?.point.distanceTo(expected),
+    ).toBeLessThan(1e-5);
+    mesh.removeSource(removed);
+    mesh.compact();
+    expect(mesh.queryNearest(expected, 0.01)?.point.distanceTo(expected)).toBeLessThan(1e-5);
+    mesh.setSourceTransform(id, new THREE.Matrix4().makeTranslation(20, 0, 0));
+    expect(mesh.queryNearest(expected, 0.01)).toBeNull();
+    mesh.removeSource(id);
+    expect(mesh.queryNearest(new THREE.Vector3(), 100)).toBeNull();
+    mesh.dispose();
+    expect(mesh.queryNearest(expected, 100)).toBeNull();
+  });
+
+  it('ranks by world distance and handles a singular placement without inversion', () => {
+    const mesh = new MergedSplatMesh({ capacity: 8192 });
+    mesh.addSource(makeData(1, undefined, 1), new THREE.Matrix4().makeScale(10, 1, 1));
+    mesh.addSource(makeData(1, undefined, 2), new THREE.Matrix4().makeScale(0.1, 1, 1));
+    expect(mesh.queryNearest(new THREE.Vector3(), 20)?.distance).toBeCloseTo(0.2);
+    const singular = mesh.addSource(makeData(1), new THREE.Matrix4().makeScale(0, 0, 0));
+    expect(mesh.queryNearest(new THREE.Vector3(), 0)?.distance).toBe(0);
+    expect(mesh.queryHeight(new THREE.Vector3(0, 1, 0), 2, 0)?.drop).toBe(1);
+    mesh.removeSource(singular);
+    mesh.dispose();
+  });
+});
+
+it('keeps raw query grids while a source moves and rebuilds them only after relocation', () => {
+  const mesh = new MergedSplatMesh({ capacity: 8192 });
+  const removed = mesh.addSource(makeData(1));
+  const id = mesh.addSource(makeData(2, undefined, 2));
+  mesh.queryNearest(new THREE.Vector3(2, 0, 0), 1);
+  const inner = mesh as unknown as { sources: Array<{ grid?: unknown; gridStart?: number }> };
+  const grid = inner.sources[id]!.grid;
+  const start = inner.sources[id]!.gridStart;
+  expect(grid).toBeDefined();
+  mesh.setSourceTransform(id, new THREE.Matrix4().makeTranslation(3, 0, 0));
+  expect(mesh.queryNearest(new THREE.Vector3(5, 0, 0), 0.1)?.point.x).toBe(5);
+  expect(inner.sources[id]!.grid).toBe(grid);
+  mesh.removeSource(removed);
+  mesh.compact();
+  expect(mesh.queryNearest(new THREE.Vector3(5, 0, 0), 0.1)?.point.x).toBe(5);
+  expect(inner.sources[id]!.gridStart).not.toBe(start);
+  expect(inner.sources[id]!.grid).not.toBe(grid);
+  mesh.dispose();
+});
+
+it('applies the per-format orientation correction to CPU query centers', () => {
+  const mesh = new MergedSplatMesh({ capacity: 4096 });
+  const data = makeData(1, 'ply');
+  data.positions.set([0, 1, 2]);
+  const id = mesh.addSource(data);
+  const expected = new THREE.Vector3(0, 1, 2).applyMatrix4(mesh.getSourceTransform(id)!);
+  expect(mesh.queryNearest(expected, 0.001)?.point.distanceTo(expected)).toBeLessThan(1e-6);
+  expect(
+    mesh.queryHeight(expected.clone().add(new THREE.Vector3(0, 1, 0)), 2, 0.001)?.drop,
+  ).toBeCloseTo(1);
+  expect(
+    mesh.queryRay(
+      new THREE.Ray(expected.clone().add(new THREE.Vector3(0, 0, 1)), new THREE.Vector3(0, 0, -1)),
+      0,
+      0.001,
+    )?.distance,
+  ).toBeCloseTo(1);
+  mesh.dispose();
+});
+
+it('releases every source query grid on repeated disposal', () => {
+  const mesh = new MergedSplatMesh({ capacity: 8192 });
+  mesh.addSource(makeData(4));
+  mesh.addSource(makeData(4, undefined, 10));
+  mesh.queryNearest(new THREE.Vector3(), 20);
+  const inner = mesh as unknown as { sources: Array<{ grid?: unknown; gridStart?: number }> };
+  expect(inner.sources.every((source) => source.grid !== undefined)).toBe(true);
+  mesh.dispose();
+  mesh.dispose();
+  expect(inner.sources.every((source) => source.grid === undefined)).toBe(true);
+  expect(inner.sources.every((source) => source.gridStart === undefined)).toBe(true);
+  expect(mesh.queryNearest(new THREE.Vector3(), 20)).toBeNull();
+});

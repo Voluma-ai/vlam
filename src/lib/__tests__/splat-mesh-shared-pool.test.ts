@@ -235,3 +235,40 @@ describe('SplatMesh sharing a SplatPool', () => {
     pool.dispose();
   });
 });
+
+it.each([false, true])(
+  'preserves reverse mappings across interleaved tenant compaction (reverse=%s)',
+  (reverse) => {
+    const W = SPLAT_DATA_TEXTURE_WIDTH;
+    const pool = new SplatPool({ capacity: 5 * W });
+    const first = new SplatMesh({ capacity: 5 * W }, { pool });
+    const second = new SplatMesh({ capacity: 5 * W }, { pool });
+    const [a, b] = reverse ? [second, first] : [first, second];
+    const data = {
+      count: 1,
+      positions: new Float32Array([1, 2, 3]),
+      colors: new Uint8Array([255, 0, 0, 255]),
+      covariances: new Float32Array(6),
+    };
+    const hole = a.appendRange(data);
+    const rb = b.appendRange(data);
+    const ra = a.appendRange(data);
+    a.removeRange(hole);
+    pool.compact();
+    expect(a.activeSplatCount).toBe(1);
+    expect(b.activeSplatCount).toBe(1);
+    expect(pool.activeSlotByPoolIndex[0]).toBe(0);
+    expect(pool.activeSlotByPoolIndex[W]).toBe(0);
+    a.removeRange(ra);
+    expect(b.activeSplatCount).toBe(1);
+    b.removeRange(rb);
+    expect(a.activeSplatCount).toBe(0);
+    expect(b.activeSplatCount).toBe(0);
+    const reused = a.appendRange(data);
+    expect(a.activeSplatCount).toBe(1);
+    a.removeRange(reused);
+    first.dispose();
+    second.dispose();
+    pool.dispose();
+  },
+);

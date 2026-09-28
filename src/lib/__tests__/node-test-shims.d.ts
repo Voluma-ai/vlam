@@ -29,3 +29,25 @@ declare const process: {
 interface ImportMeta {
   readonly dirname: string;
 }
+
+// Narrow Node interfaces for the cross-origin browser download fixture.
+declare module 'node:http' {
+  export interface Server {
+    listen(port: number, host: string, callback: () => void): void;
+    address(): { port: number } | string | null;
+    close(callback: (error?: Error) => void): void;
+  }
+  export function createServer(
+    handler: (
+      request: unknown,
+      response: {
+        writeHead(status: number, headers: Record<string, string | number>): void;
+        end(body: Uint8Array): void;
+      },
+    ) => void,
+  ): Server;
+}
+
+declare module 'node:zlib' {
+  export function gzipSync(bytes: Uint8Array): Uint8Array;
+}

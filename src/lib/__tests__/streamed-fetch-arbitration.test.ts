@@ -371,3 +371,60 @@ describe('StreamedSplatMesh page-table chunk forwarding', () => {
     mesh.dispose();
   });
 });
+
+it.each(['dispose-success', 'dispose-failure', 'worker-success', 'worker-failure'])(
+  'stops late demand callbacks after %s and releases its shared slot once',
+  async (mode) => {
+    const scheduler = new ChunkFetchScheduler({ maxGlobalInflight: 2 });
+    const release = vi.spyOn(scheduler, 'release');
+    const mesh = makeStreamedMesh({ fetchScheduler: scheduler });
+    const inner = mesh as unknown as Internals & {
+      frontierWorker: StubWorker;
+      pageTableDemand: boolean;
+      demandWants: { file: number }[];
+      failFrontierWorker(error: unknown): void;
+      retrying: Map<number, unknown>;
+      pendingWork: boolean;
+    };
+    // At most one settled promise: even the original defect cannot create an
+    // infinite microtask loop, because any unintended follow-up stays pending.
+    let resolve!: (data: SplatData) => void;
+    let reject!: (error: unknown) => void;
+    let loads = 0;
+    inner.loader.load = () => {
+      loads++;
+      return loads === 1
+        ? new Promise((yes, no) => {
+            resolve = yes;
+            reject = no;
+          })
+        : new Promise(() => {});
+    };
+    inner.frontierWorker = new StubWorker();
+    inner.demandWants = [{ file: 1 }];
+    inner.requestChunk(0, 'priority');
+    if (mode.startsWith('dispose')) {
+      mesh.dispose();
+      mesh.dispose();
+    } else inner.failFrontierWorker(new Error('terminal'));
+    if (mode.endsWith('success')) resolve(makeData(1));
+    else reject(new Error('late failure'));
+    await flush();
+    expect(loads).toBe(1);
+    expect(inner.fetching.size).toBe(0);
+    expect(inner.cache.size).toBe(0);
+    expect(inner.retrying.size).toBe(0);
+    expect(release).toHaveBeenCalledTimes(1);
+    inner.requestChunk(1, 'priority');
+    expect(loads).toBe(1);
+    mesh.dispose();
+    scheduler.dispose();
+  },
+);
+
+it('reports no streaming work after disposal before the first update', () => {
+  const mesh = makeStreamedMesh();
+  expect(mesh.isStreaming).toBe(true);
+  mesh.dispose();
+  expect(mesh.isStreaming).toBe(false);
+});

@@ -2596,6 +2596,12 @@ export class StreamedSplatMesh extends SplatMesh {
 
   protected override rebuildActiveList(): void {
     if (this.radChunkResidency) {
+      for (const page of this.radChunkPages.values()) {
+        for (let i = 0; i < page.ranges.length; i++) {
+          page.starts[i] = this.poolRangeBacking(page.ranges[i] as SplatRange).start;
+        }
+      }
+      this.radChunkPageLookupRevision = -1;
       const globals = this.radChunkPendingGlobals ?? this.radChunkDisplayedGlobals;
       const indices = this.poolIndicesForRadGlobals(globals);
       if (!indices) return;
@@ -2821,7 +2827,7 @@ export class StreamedSplatMesh extends SplatMesh {
    * current camera/configuration may cancel unpinned downloads.
    */
   private reconcileDemand(complete = true): void {
-    if (!this.pageTableDemand) return;
+    if (this.disposed || this.pageTableDisposed || !this.pageTableDemand) return;
     if (
       !this.radChunkResidency &&
       complete &&
@@ -2898,9 +2904,12 @@ export class StreamedSplatMesh extends SplatMesh {
       detail ? `Streaming worker failed. ${detail}` : 'Streaming worker failed.',
       { phase: 'worker', url: '', retryable: false, cause: error },
     );
+    if (this.indexedPageTable || this.radChunkResidency)
+      this.discardIndexedPublication('worker-failed');
     this.pageTableDisposed = true;
     this.pageTableInFlight = false;
     this.pendingWork = false;
+    this.retrying.clear();
     for (const { controller } of this.fetching.values()) controller.abort();
     this.frontierWorker?.terminate();
     if (this.frontierWorker) {
@@ -2922,7 +2931,7 @@ export class StreamedSplatMesh extends SplatMesh {
    *
    */
   private applyCacheAllowance(bytes: number): void {
-    if (this.disposed) return;
+    if (this.disposed || this.pageTableDisposed) return;
     if (bytes === this.cacheLimitBytes) return;
     this.cacheLimitBytes = bytes;
     if (this.frontierWorker) {
@@ -3494,7 +3503,7 @@ export class StreamedSplatMesh extends SplatMesh {
         );
       }
     }
-    this.pendingWork = true;
+    this.pendingWork = !this.disposed && !this.pageTableDisposed;
     this.lastScheduleTime = -Infinity;
     return this.frontierWorker && this.pageTableDrawBudget < next ? this.pageTableDrawBudget : next;
   }
@@ -3624,9 +3633,11 @@ export class StreamedSplatMesh extends SplatMesh {
   /**
    * Whether the scene is still resolving toward its target detail - chunks
    * are fetching, or a retry/append is pending. Goes false once the view
-   * has settled (useful to drive a loading indicator).
+   * has settled or streaming has stopped after failure/disposal (useful to
+   * drive a loading indicator).
    */
   get isStreaming(): boolean {
+    if (this.disposed || this.pageTableDisposed) return false;
     return this.pendingWork || this.fetching.size > 0 || this.retrying.size > 0;
   }
 
@@ -3644,6 +3655,11 @@ export class StreamedSplatMesh extends SplatMesh {
     renderer: THREE.WebGPURenderer,
     options: SplatUpdateOptions = {},
   ): void {
+    if (this.disposed) return;
+    if (this.pageTableDisposed) {
+      super.update(camera, renderer, options);
+      return;
+    }
     this.radFrame++;
     this.radDiagnosticRenderer = this.onPerformanceEvent ? renderer : null;
     const now = performance.now();
@@ -3968,6 +3984,8 @@ export class StreamedSplatMesh extends SplatMesh {
 
   override dispose(): void {
     if (this.disposed) return;
+    this.pageTableDisposed = true;
+    this.pendingWork = false;
     for (const resolve of this.snapshotWaiters.values()) resolve(null);
     this.snapshotWaiters.clear();
     this.loader.dispose();
@@ -6899,6 +6917,7 @@ export class StreamedSplatMesh extends SplatMesh {
   }
 
   private requestChunk(file: number, kind: ChunkFetchKind, classicWant?: ClassicFetchWant): void {
+    if (this.disposed || this.pageTableDisposed) return;
     if (
       this.cache.has(file) ||
       this.pageTableCachedFiles.has(file) ||
@@ -6988,7 +7007,7 @@ export class StreamedSplatMesh extends SplatMesh {
         // post to a terminated frontier worker).
         // Abort can race a loader that has already resolved. Do not forward a
         // stale old-camera chunk after reclamation has handed the slot away.
-        if (this.disposed || controller.signal.aborted) return;
+        if (this.disposed || this.pageTableDisposed || controller.signal.aborted) return;
         if (this.frontierWorker) {
           this.demandDiagnostics.completed++;
           this.demandDiagnostics.knownCompletedBytes += knownBytes;
@@ -7014,7 +7033,13 @@ export class StreamedSplatMesh extends SplatMesh {
         // wanted. `isAbortError` also matches the non-DOMException AbortError
         // `ChunkLoader.dispose` raises where DOMException is unavailable -
         // treating that as a failure would log and retry against a dead worker.
-        if (isAbortError(error)) return;
+        if (
+          this.disposed ||
+          this.pageTableDisposed ||
+          controller.signal.aborted ||
+          isAbortError(error)
+        )
+          return;
         const attempts = (this.retrying.get(file)?.attempts ?? 0) + 1;
         if (attempts >= MAX_CHUNK_ATTEMPTS) {
           this.retrying.delete(file);
@@ -7038,6 +7063,7 @@ export class StreamedSplatMesh extends SplatMesh {
         // hands its slot back too - a leak here silently shrinks the scene's
         // whole pipe until the pool is torn down.
         if (this.fetchHandle) this.fetchScheduler?.release(this.fetchHandle);
+        if (this.disposed || this.pageTableDisposed) return;
         if (this.frontierWorker) this.reconcileDemand(false);
         this.pendingWork = !(
           this.radChunkResidency &&
