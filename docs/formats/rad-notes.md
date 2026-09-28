@@ -1,4 +1,4 @@
-# SparkJS `.rad` / `.radc`: format notes (M14)
+# SparkJS `.rad` / `.radc`: format notes
 
 Research notes for World Labs' Spark 2.0 `.rad` ("radiance field") LOD splat
 format, read directly from the MIT-licensed Rust reference in
@@ -6,7 +6,7 @@ format, read directly from the MIT-licensed Rust reference in
 (`rust/spark-lib/src/rad.rs`, `splat_encode.rs`, `chunk_tree.rs`) and
 cross-checked against two real captures: `bentleywar.rad` (6.3M splats, 97
 chunks, SH degree 3) and the Eemhart `point_cloud-lod.rad` (53M splats, 816
-chunks, no SH). Read together with `ROADMAP.md` M14. Implemented under
+chunks, no SH). The implementation lives under
 `src/lib/formats/rad/` (`parse-rad.ts`, `rad.ts`, `rad-frontier.ts`,
 `frontier-pager.ts`, `frontier-worker.ts`) and the whole-file path in
 `load-worker.ts`.
@@ -104,7 +104,7 @@ decoding chunk 0 (which coarsely covers the whole scene).
 
 `filename` present on a chunk range ⇒ it is an external `.radc` file (the
 `spark build-lod --rad-chunked` layout). Whole-file loading rejects those (it
-needs one self-contained file); **streaming supports them** (M14.3):
+needs one self-contained file); **streaming supports them**:
 `buildRadScene` resolves each `filename` against the manifest and the worker
 fetches it whole (`RadChunkRangeRequest` with no `start`/`length`), vs a byte
 range for a single-file `.rad`. Dropping a `scene.rad` + `scene-*.radc` folder
@@ -220,7 +220,7 @@ immaterial; only their `file` matters, to make the mesh fetch them). Growth
 stops once the drawn count reaches `budget · FILL`, so the prefix, and the
 pool, sized to the budget, never chases the full 53M total.
 
-## Blob suppression (M14.5, shipped)
+## Blob suppression
 
 The user's ask, "skip the coarse LOD levels when they're close", ships as a
 screen-space cull: `SplatMesh`'s `maxSplatScreenRadius` (px) culls any splat
@@ -301,7 +301,7 @@ distance-prioritized chunk selection is provably stuck at the coarse floor.
 (Confirmed in-engine: a chunk-cut `RadLodSource` selected exactly `{0}` and
 drew 49,718 splats regardless of camera.)
 
-## M14.6: Foveation modes (summary; history in `history/rad-paging-history.md`)
+## Foveation modes
 
 Spark's own runtime cut (reverse-engineered from `rust/spark-rs/src/lod_tree.rs`,
 `traverse_lod_trees`) is a **CPU priority-frontier traversal**, not a chunk cut:
@@ -454,7 +454,7 @@ the mesh past it buys nothing, `setBudget` warns once when that happens rather
 than leaving the mesh quietly coarse. `StreamedSplatMesh.drawBudget` exposes the
 effective target.
 
-### Coverage and budget (M14.7: Spark parity)
+### Coverage and budget
 
 Two invariants of `traverseFrontier`, both taken from Spark's
 `new_traverse_lod_trees` (`rust/spark-worker-rs/src/lod_tree.rs`):
@@ -774,4 +774,4 @@ timeline captures, and split view retain indexed fallback.
  format transform.
 - **Merged-node alpha expansion** (`alpha > 1`): applied to the rendered splat's
  own extent as of the covariance fix in `writeSplat` (`radExpansion`), matching
- Spark. Also still used to derive `size` for M14.6.
+ Spark. Also still used to derive `size` for foveation.

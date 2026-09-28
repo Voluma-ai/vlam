@@ -13,33 +13,46 @@ interface SplatViewerProps {
 
 export function SplatViewer({ src, className }: SplatViewerProps) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const [status, setStatus] = useState<'loading' | 'ready' | 'failed'>('loading');
+  const [loadState, setLoadState] = useState<{
+    src: string;
+    status: 'loading' | 'ready' | 'failed';
+  }>({ src, status: 'loading' });
+  const status = loadState.src === src ? loadState.status : 'loading';
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
 
-    // Everything created inside this effect is torn down by its cleanup. Both
-    // are needed because setup is async: the effect can be cleaned up while
-    // the scene is still downloading, and under StrictMode in development
-    // React deliberately mounts, unmounts and remounts to prove it.
     const controller = new AbortController();
     let disposed = false;
-    let dispose = () => {};
+    let renderer: THREE.WebGPURenderer | undefined;
+    let controls: OrbitControls | undefined;
+    let splats: SplatMesh | undefined;
+    let resize: ResizeObserver | undefined;
+    const dispose = () => {
+      renderer?.setAnimationLoop(null);
+      resize?.disconnect();
+      controls?.dispose();
+      splats?.dispose();
+      renderer?.dispose();
+      renderer?.domElement.remove();
+      renderer = undefined;
+      controls = undefined;
+      splats = undefined;
+      resize = undefined;
+    };
+    setLoadState({ src, status: 'loading' });
 
     void (async () => {
       try {
-        const renderer = await createWebGPURenderer();
-        // The effect was cleaned up while the renderer was being created:
-        // throw away what we just built instead of attaching it to a DOM node
-        // React has already discarded.
+        const activeRenderer = await createWebGPURenderer();
         if (disposed) {
-          renderer.dispose();
+          activeRenderer.dispose();
           return;
         }
-
-        renderer.setSize(host.clientWidth, host.clientHeight);
-        host.appendChild(renderer.domElement);
+        renderer = activeRenderer;
+        activeRenderer.setSize(host.clientWidth, host.clientHeight);
+        host.appendChild(activeRenderer.domElement);
 
         const scene = new THREE.Scene();
         const camera = new THREE.PerspectiveCamera(
@@ -49,55 +62,44 @@ export function SplatViewer({ src, className }: SplatViewerProps) {
           100,
         );
         camera.position.set(0.9, 0.3, 1.7);
-        const controls = new OrbitControls(camera, renderer.domElement);
-        controls.enableDamping = true;
+        const activeControls = new OrbitControls(camera, activeRenderer.domElement);
+        controls = activeControls;
+        activeControls.enableDamping = true;
 
         const data = await loadSplatData(src, { signal: controller.signal });
-        if (disposed) {
-          renderer.dispose();
-          controls.dispose();
-          return;
-        }
+        if (disposed) return;
 
-        const splats = new SplatMesh(data);
-        scene.add(splats);
-        setStatus('ready');
-
-        const resize = new ResizeObserver(() => {
+        const activeSplats = new SplatMesh(data);
+        splats = activeSplats;
+        scene.add(activeSplats);
+        const activeResize = new ResizeObserver(() => {
           const { clientWidth: w, clientHeight: h } = host;
           if (w === 0 || h === 0) return;
           camera.aspect = w / h;
           camera.updateProjectionMatrix();
-          renderer.setSize(w, h);
+          activeRenderer.setSize(w, h);
         });
-        resize.observe(host);
+        resize = activeResize;
+        activeResize.observe(host);
 
-        renderer.setAnimationLoop(() => {
-          controls.update();
-          splats.update(camera, renderer);
-          renderer.render(scene, camera);
+        activeRenderer.setAnimationLoop(() => {
+          activeControls.update();
+          activeSplats.update(camera, activeRenderer);
+          activeRenderer.render(scene, camera);
         });
-
-        dispose = () => {
-          // Stop the loop first: it touches everything disposed below.
-          renderer.setAnimationLoop(null);
-          resize.disconnect();
-          controls.dispose();
-          splats.dispose(); // pool textures, sorter buffers, pick resources
-          renderer.dispose();
-          renderer.domElement.remove();
-        };
+        setLoadState({ src, status: 'ready' });
       } catch (error) {
-        // A cancelled load is the expected outcome of unmounting mid-download,
-        // not a failure worth showing the user.
-        if (!isAbortError(error)) setStatus('failed');
+        if (!disposed) {
+          dispose();
+          if (!isAbortError(error)) setLoadState({ src, status: 'failed' });
+        }
       }
     })();
 
     return () => {
       disposed = true;
-      controller.abort(); // cancels a load still in flight
-      dispose(); // no-op if setup never got that far
+      controller.abort();
+      dispose();
     };
   }, [src]);
 

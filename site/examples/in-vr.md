@@ -1,43 +1,37 @@
 # View it in VR
 
-**What you get:** a capture at life size with an Enter VR button.
+**What you get:** a room-scale Goose scene with teleport and 30° snap turns.
 
-<ExampleEmbed slug="in-vr" hint="Needs a WebXR headset, the button says what your browser supports" />
+<ExampleEmbed slug="in-vr" hint="Needs a WebXR headset; the button reports browser support" />
 
-## Why captures are worth the headset
+The existing sample defaults to WebGL2 for a predictable headset path. Add
+`?backend=webgpu` to request WebGPU explicitly. The WebGPU path needs a
+browser and headset that support the WebXR `webgpu` feature.
 
-Photogrammetry captures work especially well in a headset because they preserve
-the scale of a real place. The render loop already supports WebXR; the main
-change is the rendering budget.
+The floor is visible around a pedestal. Only its four floor meshes are valid
+teleport destinations. Hold either controller trigger to show the destination
+marker, then release to teleport. Push the right thumbstick left or right for
+one 30° turn; release it to the centre before another turn. The camera stays
+on the XR rig, so walking in the tracked space preserves the headset's height.
 
-## A headset is a much harder deadline
+The example requests `local-floor` and reports unsupported or denied sessions.
+It restores the desktop camera and orbit controls on exit and accepts a new
+session. VLAM receives the application camera in both `splats.update(camera,
+renderer)` and `renderer.render(scene, camera)`; three manages the stereo
+camera internally.
 
-| | Monitor | Headset |
-| --- | --- | --- |
-| Views per frame | 1 | 2 |
-| Refresh | 60 Hz | 90–120 Hz |
-| Cost of a dropped frame | a stutter | physical discomfort |
+## Rendering budget
 
-This is roughly three times the work with a stricter frame deadline. Do not reuse
-the page budget unchanged.
+The bundled Goose scene is fully loaded, so its splat count is fixed for the
+whole session. A budget number on this static mesh would have no effect. For a
+streamed scene, change its budget when the session starts and restore it on exit:
 
-`resolveXrSplatBudget(pageBudget)` clamps a page budget to what a headset can actually hold. On a streamed mesh, apply it with `setBudget` when the session starts, and restore the page budget when it ends.
+<<< ../../docs/examples/samples/xr-streamed-budget.ts
 
-`recommendedXrFramebufferScale()` is the other half: a scale of 0.8 can recover
-substantial fill rate with little visible loss.
-
-## `xrSessionInit` exists because of the backend
-
-When requesting a session, pass the renderer-specific initialization:
-
-```ts
-const session = await navigator.xr.requestSession('immersive-vr', xrSessionInit(renderer, {
-  optionalFeatures: ['local-floor'],
-}));
-await renderer.xr.setSession(session);
-```
-
-`xrSessionInit` merges what the renderer's backend requires, the `'webgpu'` required feature, when that is the backend in use, into whatever features you asked for. Skip it and a WebGPU session request fails in a way that reads like a browser bug.
+The WebGL2 example applies `recommendedXrFramebufferScale()` before entering
+XR. `xrSessionInit(renderer, …)` adds the WebGPU session feature when the
+explicit WebGPU option is used. Headset comfort and stereo correctness still
+need a real device check.
 
 ## The code
 
@@ -51,21 +45,11 @@ await renderer.xr.setSession(session);
  <head>
  <meta charset="utf-8" />
  <style>
- body {
- margin: 0;
- overflow: hidden;
- font: 14px system-ui;
- }
+ body { margin: 0; overflow: hidden; font: 14px system-ui; }
  #ui {
- position: fixed;
- top: 14px;
- left: 14px;
- z-index: 1;
- display: flex;
- gap: 12px;
- align-items: center;
- color: #fff;
- text-shadow: 0 1px 4px #000;
+ position: fixed; top: 14px; left: 14px; z-index: 1;
+ display: flex; gap: 12px; align-items: center;
+ color: #fff; text-shadow: 0 1px 4px #000;
  }
  </style>
  </head>
@@ -81,17 +65,10 @@ await renderer.xr.setSession(session);
 
 :::
 
-## Practical notes
-
-**Feature-detect, always.** `navigator.xr` is absent in most browsers, and `isSessionSupported` is how you find out whether there is a headset behind it. The button should say which of those two is the reason it is disabled.
-
-**Get the scale right.** Captures rarely arrive in metres, and in VR a wrong scale is immediately, physically obvious, a room that feels like a dollhouse or a cathedral. Expect to calibrate against something you know the size of.
-
-**Put it at eye height.** A capture centred on its own origin usually sits at your ankles. This example lifts it; a real app should place the capture relative to `local-floor`.
-
-**WebXR needs HTTPS.** Localhost is exempt, so a `localhost` dev server works, but anything on your network needs a certificate before a headset will talk to it.
+WebXR requires HTTPS except on localhost. The bundled Goose is about one
+world unit tall; real captures need scale calibration before room-scale use.
 
 ## Next
 
-- [Make it fast on a phone](/examples/fast-on-phones): the standalone-headset problem is the mobile problem
-- [Huge scenes that load as you walk](/examples/big-scenes): where the XR budget actually bites
+- [Make it fast on a phone](/examples/fast-on-phones)
+- [Huge scenes that load as you walk](/examples/big-scenes)

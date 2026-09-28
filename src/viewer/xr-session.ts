@@ -57,6 +57,22 @@ export function restoreXrCameraState(camera: THREE.PerspectiveCamera, state: XrC
   camera.updateWorldMatrix(true, false);
 }
 
+/** Whether headset tracking has moved enough to change a stationary benchmark view. */
+export function xrHeadDrifted(head: THREE.Camera, desiredWorld: THREE.Matrix4): boolean {
+  head.updateWorldMatrix(true, false);
+  const actual = head.matrixWorld.elements;
+  const desired = desiredWorld.elements;
+  const dx = actual[12] - desired[12];
+  const dy = actual[13] - desired[13];
+  const dz = actual[14] - desired[14];
+  if (dx * dx + dy * dy + dz * dz > 0.02 * 0.02) return true;
+  for (let index = 0; index <= 10; index++) {
+    if (index % 4 !== 3 && Math.abs((actual[index] as number) - (desired[index] as number)) > 0.017)
+      return true;
+  }
+  return false;
+}
+
 /**
  * Places an XR rig so the current runtime head pose lands exactly on a desired
  * world-space camera pose. This removes the local-floor eye-height/room offset

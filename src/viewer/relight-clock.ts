@@ -209,15 +209,19 @@ export function createRelightClock() {
   document.querySelector('#bottom-chrome')?.append(panel);
   const dateString = (c: Civil): string =>
     `${c.year}-${String(c.month).padStart(2, '0')}-${String(c.day).padStart(2, '0')}`;
+  let renderedPlaying: boolean | null = null;
   const sync = (): void => {
     const c = civilAt(instant, format);
     const day = dateString(c);
     if (document.activeElement !== date) date.value = day;
     scrub.value = String(c.hour * 60 + c.minute);
     readout.textContent = `${day} ${String(c.hour).padStart(2, '0')}:${String(c.minute).padStart(2, '0')}`;
-    play.innerHTML = playing
-      ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>'
-      : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7z"/></svg>';
+    if (renderedPlaying !== playing) {
+      play.innerHTML = playing
+        ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>'
+        : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7z"/></svg>';
+      renderedPlaying = playing;
+    }
     play.setAttribute('aria-label', playing ? 'Pause sun clock' : 'Play sun clock');
     if (document.activeElement !== lat) lat.value = String(latitude);
     if (document.activeElement !== lon) lon.value = String(longitude);

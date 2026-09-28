@@ -27,7 +27,9 @@ import {
   estimateComputeSorterSteadyBytes,
 } from '../../core/compute-sorter';
 
-/** Options for {@link computeProjection}. */
+/** Options for {@link computeProjection}.
+ * @experimental
+ */
 export interface ComputeProjectionOptions {
   /** `explicit` always requests compute where the runtime supports it; `auto` uses the measured device policy. */
   mode?: ComputeProjectionMode;
@@ -35,7 +37,9 @@ export interface ComputeProjectionOptions {
   projectionMemoryBudgetBytes?: number;
 }
 
-/** Creates an injected standalone/unified compute-projection strategy. */
+/** Creates an injected standalone/unified compute-projection strategy.
+ * @experimental
+ */
 export function computeProjection(
   options: ComputeProjectionOptions = {},
 ): ComputeProjectionStrategy {

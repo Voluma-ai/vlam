@@ -102,7 +102,6 @@ export interface UnifiedSplatPickResult extends SplatPickResult {
 /**
  * Construction settings shared by every source in a unified renderer.
  *
- * @experimental May change in a minor release.
  */
 export interface UnifiedSplatMeshOptions {
   /** Vertex projection by default, or an injected experimental projector. */
@@ -178,7 +177,6 @@ export function supportsUnifiedSplatMesh(renderer: object): boolean {
  *
  * WebGPU only. Prefer {@link supportsUnifiedSplatMesh} before construction.
  *
- * @experimental May change in a minor release.
  */
 export class UnifiedSplatMesh extends THREE.Mesh {
   private readonly workBuffer: WorkBuffer;
@@ -773,6 +771,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     // the application camera would order the scene from wherever that camera
     // was left standing.
     const xrView = targetSize ? null : resolveXrView(camera, this.renderer);
+    this.sortScheduler.setXrJitterTolerance(xrView !== null);
     this.setComputeProjectionActive(
       this.projectedPipeline !== null && this.renderer.xr?.isPresenting !== true,
     );

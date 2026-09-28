@@ -5,6 +5,7 @@ import { createStreamedMeshFixture } from './helpers/streamed-mesh-fixture';
 import { StreamedSplatMesh } from '../streaming/streamed-splat-mesh';
 import { SplatMesh } from '../core/splat-mesh';
 import { SplatPool } from '../core/splat-mesh-pool';
+import { experiments } from '../internal/experiments';
 
 const WIDTH = 2048;
 
@@ -60,7 +61,9 @@ function splats(bands: Bands, ids: number[]) {
 describe('RAD page-table SH paging', () => {
   const meshes: StreamedSplatMesh[] = [];
   const pools: SplatPool[] = [];
+  const originalSlotMasks = experiments.radIndexedSlotMasks;
   afterEach(() => {
+    experiments.radIndexedSlotMasks = originalSlotMasks;
     for (const mesh of meshes) mesh.dispose();
     meshes.length = 0;
     for (const pool of pools) pool.dispose();
@@ -411,6 +414,87 @@ describe('RAD page-table SH paging', () => {
       }
     },
   );
+
+  it.each([false, true])('preserves indexed cut validation and retired slots (mask=%s)', (mask) => {
+    experiments.radIndexedSlotMasks = mask;
+    const capacity = 2 * WIDTH;
+    const scene = {
+      source: { budget: capacity },
+      chunkUrls: [] as string[],
+      chunkKind: 'file' as const,
+      bounds: new THREE.Box3(new THREE.Vector3(), new THREE.Vector3(1, 1, 1)),
+      pinnedFiles: new Set<number>(),
+      maxResidentSplats: capacity,
+      chunkSize: 4,
+      foveation: { minScreenRadiusPx: 1.6, maxScreenRadiusPx: 4 },
+    };
+    const mesh = createStreamedMeshFixture(
+      scene,
+      capacity,
+      capacity,
+      { foveationMode: 'page-table', shBands: 1 },
+      FrontierWorkerStub,
+    );
+    meshes.push(mesh);
+    const inner = mesh as unknown as {
+      applyFrontierPlan: (plan: Record<string, unknown>) => void;
+      onActiveListRendered: (version: number) => void;
+      indexedPublishActiveListVersion: number | null;
+      indexedPublishGeneration: number | null;
+      pageTableDrawn: number;
+      pageTableGlobals: Uint32Array;
+      pagerSlots: number;
+      pageTableCachedFiles: Set<number>;
+    };
+    inner.pageTableCachedFiles.add(0);
+    const empty = splats(1, []);
+    const plan = (generation: number, ids: number[], writes: number[], slots: number[]) => ({
+      type: 'plan',
+      seq: generation,
+      moveSlots: new Uint32Array(0),
+      moves: empty,
+      appendStart: 0,
+      appends: splats(1, ids),
+      writeSlots: Uint32Array.from(writes),
+      degenerateStart: 0,
+      degenerateCount: 0,
+      touched: new Uint32Array(0),
+      residentCount: slots.length,
+      displayCount: slots.length,
+      gatherMissing: 0,
+      dropped: 0,
+      evicted: new Uint32Array(0),
+      solvedLimit: 0.02,
+      capacity: inner.pagerSlots,
+      converged: true,
+      cacheBytes: 0,
+      cacheLimitBytes: 1024,
+      candidateGeneration: generation,
+      displayGeneration: generation,
+      candidateComplete: true,
+      candidateSlots: Uint32Array.from(slots),
+    });
+    inner.applyFrontierPlan(plan(1, [10, 11, 12, 13], [0, 1, 2, 3], [0, 1, 2, 3]));
+    inner.onActiveListRendered(inner.indexedPublishActiveListVersion!);
+    expect(inner.pageTableDrawn).toBe(4);
+    inner.applyFrontierPlan(plan(2, [14], [4], [1, 3, 4]));
+    inner.onActiveListRendered(inner.indexedPublishActiveListVersion!);
+    expect(inner.pageTableDrawn).toBe(3);
+    expect(Array.from(inner.pageTableGlobals.subarray(0, 5))).toEqual([
+      0xffffffff, 11, 0xffffffff, 13, 14,
+    ]);
+    // Duplicate publication and mutation of displayed storage must preserve the old cut.
+    inner.applyFrontierPlan(plan(3, [], [], [1, 1, 4]));
+    expect(inner.indexedPublishGeneration).toBeNull();
+    expect(inner.pageTableDrawn).toBe(3);
+    inner.applyFrontierPlan(plan(4, [16], [3], [3]));
+    expect(inner.indexedPublishGeneration).toBeNull();
+    expect(inner.pageTableGlobals[3]).toBe(13);
+    expect(inner.pageTableDrawn).toBe(3);
+    inner.applyFrontierPlan(plan(5, [], [], [1, inner.pagerSlots]));
+    expect(inner.indexedPublishGeneration).toBeNull();
+    expect(inner.pageTableDrawn).toBe(3);
+  });
 
   it('does not consume a candidate generation before its complete slot list is published', async () => {
     const capacity = 2 * WIDTH;

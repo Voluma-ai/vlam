@@ -41,6 +41,15 @@ export const EXAMPLE_APPS = [
 export function vlamPackageAliases(fromRoot: string) {
   const lib = (file: string) => path.join(fromRoot, 'src/lib', file);
   return [
+    { find: '@voluma/vlam/sorting/radix', replacement: lib('sorting/radix/index.ts') },
+    { find: '@voluma/vlam/projection/compute', replacement: lib('projection/compute/index.ts') },
+    { find: '@voluma/vlam/formats/ply', replacement: lib('formats/ply/index.ts') },
+    { find: '@voluma/vlam/formats/sog', replacement: lib('formats/sog/index.ts') },
+    { find: '@voluma/vlam/formats/rad', replacement: lib('formats/rad/index.ts') },
+    { find: '@voluma/vlam/formats/lcc', replacement: lib('formats/lcc/index.ts') },
+    { find: '@voluma/vlam/formats/spz', replacement: lib('formats/spz/index.ts') },
+    { find: '@voluma/vlam/formats/splat', replacement: lib('formats/splat/index.ts') },
+    { find: '@voluma/vlam/formats/ksplat', replacement: lib('formats/ksplat/index.ts') },
     { find: '@voluma/vlam/static-lod', replacement: lib('static-lod/index.ts') },
     { find: '@voluma/vlam/relighting', replacement: lib('relighting/index.ts') },
     { find: '@voluma/vlam/streaming', replacement: lib('streaming/index.ts') },
@@ -62,6 +71,7 @@ const HTML_PAGES: Readonly<Record<string, string>> = {
   '/render-benchmark.html': 'src/viewer/render-benchmark.html',
   '/memory-benchmark.html': 'src/viewer/memory-benchmark.html',
   '/spark-benchmark.html': 'src/viewer/spark-benchmark.html',
+  '/spark-xr-benchmark.html': 'src/viewer/spark-xr-benchmark.html',
   '/vlam-benchmark.html': 'src/viewer/vlam-benchmark.html',
   '/playcanvas-benchmark.html': 'src/viewer/playcanvas-benchmark.html',
   ...Object.fromEntries(

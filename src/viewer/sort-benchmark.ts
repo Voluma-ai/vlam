@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { SplatMesh } from '../lib/core';
+import type { UnifiedSplatMesh } from '../lib/unified';
 import type { StreamedSplatPerformanceEvent } from '../lib/streaming';
 import { estimateRefreshMetrics, type RefreshTimingHints } from './frame-timing';
 
@@ -43,6 +44,8 @@ export type FrameBenchmarkResult = Record<string, number | string | null | SlowF
 export type FrameBenchmarkStats = {
   /** Three.js render submissions in the frame that just completed. */
   renderDrawCalls?: number;
+  /** Instanced splats submitted for one eye, before vertex/fragment rejection. */
+  renderedSplatCount?: number;
 };
 
 /** A streamed frame is a swap only when it changed residents or submitted an upload. */
@@ -72,6 +75,7 @@ export function createFrameBenchmark(
   const durations: number[] = [];
   const eventsByFrame: StreamedSplatPerformanceEvent[][] = [];
   const renderDrawCalls: number[] = [];
+  const renderedSplatCounts: number[] = [];
   let pendingEvents: StreamedSplatPerformanceEvent[] = [];
   let pendingStats: FrameBenchmarkStats = {};
   let result: FrameBenchmarkResult | null = null;
@@ -95,6 +99,9 @@ export function createFrameBenchmark(
       eventsByFrame.push(pendingEvents);
       if (pendingStats.renderDrawCalls !== undefined) {
         renderDrawCalls.push(pendingStats.renderDrawCalls);
+      }
+      if (pendingStats.renderedSplatCount !== undefined) {
+        renderedSplatCounts.push(pendingStats.renderedSplatCount);
       }
     }
     previous = timestamp;
@@ -167,6 +174,10 @@ export function createFrameBenchmark(
       renderDrawCallsMean: meanOf(renderDrawCalls),
       renderDrawCallsP95: at(sortedDrawCalls, 0.95),
       renderDrawCallsMax: at(sortedDrawCalls, 1),
+      renderedSplatCountSamples: renderedSplatCounts.length,
+      renderedSplatCountMean: renderedSplatCounts.length ? meanOf(renderedSplatCounts) : null,
+      renderedSplatCountMin: renderedSplatCounts.length ? at(renderedSplatCounts, 0) : null,
+      renderedSplatCountMax: renderedSplatCounts.length ? at(renderedSplatCounts, 1) : null,
       worstFrameMs,
       swapTickCount: swapEvents.length,
       swapFrameCount: swapDurations.length,
@@ -280,4 +291,62 @@ export async function verifyGpuSort(
     if (expected[i] === 1 && seen[i] === 0) missing++;
   }
   return { count, duplicates, missing, foreign, depthInversions, largestDepthInversion };
+}
+
+/**
+ * Reads the unified counting sort's draw order and GPU-generated buckets.
+ * The caller must pause updates until both readbacks finish. This verifies
+ * complete work-slot coverage and bucket order, not sort-key generation or
+ * the visual correctness of each streamed selection.
+ */
+export async function verifyUnifiedGpuSort(mesh: UnifiedSplatMesh, renderer: THREE.WebGPURenderer) {
+  // Keep benchmark-only inspection here; no library debug API is needed.
+  const debug = mesh as unknown as {
+    orderAttribute: THREE.StorageInstancedBufferAttribute;
+    sorter: { kind: string; workingAttributes: THREE.StorageBufferAttribute[] };
+  };
+  const bucketAttribute = debug.sorter.workingAttributes?.[3];
+  if (debug.sorter.kind !== 'counting' || !bucketAttribute) {
+    return { available: false as const, reason: 'Counting-sort bucket buffer unavailable' };
+  }
+  const count = (mesh.geometry as THREE.InstancedBufferGeometry).instanceCount;
+  const serial = mesh.performanceTimings.sortSerial;
+  const [orderBytes, bucketBytes] = await Promise.all([
+    renderer.getArrayBufferAsync(debug.orderAttribute),
+    renderer.getArrayBufferAsync(bucketAttribute),
+  ]);
+  if (serial !== mesh.performanceTimings.sortSerial) {
+    return { available: false as const, reason: 'Sort changed during readback' };
+  }
+  const order = new Float32Array(orderBytes, 0, count);
+  const buckets = new Uint32Array(bucketBytes, 0, count);
+  const seen = new Uint8Array(count);
+  let duplicates = 0;
+  let foreign = 0;
+  let bucketInversions = 0;
+  let previousBucket = -1;
+  for (const index of order) {
+    if (!Number.isInteger(index) || index < 0 || index >= count) {
+      foreign++;
+      continue;
+    }
+    if (seen[index]) duplicates++;
+    seen[index] = 1;
+    const bucket = buckets[index] as number;
+    if (bucket < previousBucket) bucketInversions++;
+    previousBucket = bucket;
+  }
+  let missing = 0;
+  for (const value of seen) if (!value) missing++;
+  return {
+    available: true as const,
+    scope: 'unified-counting-buckets' as const,
+    count,
+    activeCount: mesh.performanceTimings.activeCount,
+    sortSerial: serial,
+    duplicates,
+    missing,
+    foreign,
+    bucketInversions,
+  };
 }

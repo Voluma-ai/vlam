@@ -62,7 +62,7 @@ Each is a standalone program. Follow the link for the explanation and a live run
 <<< ../../docs/examples/samples/depth-of-field.ts
 :::
 
-::: details relight.ts, Tempel `.lcc2`, collision-proxy `setRelighting` · [walkthrough](/examples/relight)
+::: details relight.ts, Tempel `.lcc2`, collision-proxy `attachRelighting` · [walkthrough](/examples/relight)
 <<< ../../docs/examples/samples/relight.ts
 :::
 
@@ -96,8 +96,12 @@ Each is a standalone program. Follow the link for the explanation and a live run
 <<< ../../docs/examples/samples/webgl-fallback.ts
 :::
 
-::: details in-vr.ts, `xrSessionInit`, `resolveXrSplatBudget`, framebuffer scale · [walkthrough](/examples/in-vr)
+::: details in-vr.ts, controller teleport, snap turns, and `xrSessionInit` · [walkthrough](/examples/in-vr)
 <<< ../../docs/examples/samples/in-vr.ts
+:::
+
+::: details xr-streamed-budget.ts, presenting-session budget for streamed scenes · [walkthrough](/examples/in-vr)
+<<< ../../docs/examples/samples/xr-streamed-budget.ts
 :::
 
 ::: details share-a-viewpoint.ts, camera pose in the URL, eased flights · [walkthrough](/examples/share-a-viewpoint)
@@ -180,7 +184,7 @@ Short reference snippets from `docs/guide/samples/`, mostly exported functions r
 <<< ../../docs/guide/samples/effects-contract.ts
 :::
 
-::: details relighting.ts, proxy-mesh screen-space `setRelighting`
+::: details relighting.ts, proxy-mesh screen-space `attachRelighting`
 <<< ../../docs/guide/samples/relighting.ts
 :::
 
@@ -196,6 +200,10 @@ Short reference snippets from `docs/guide/samples/`, mostly exported functions r
 
 ::: details unified-basic.ts, `UnifiedSplatMesh` on WebGPU
 <<< ../../docs/guide/samples/unified-basic.ts
+:::
+
+::: details unified-experimental.ts, opt-in radix sorting and compute projection
+<<< ../../docs/guide/samples/unified-experimental.ts
 :::
 
 ::: details unified-pick.ts, unified pick with source id

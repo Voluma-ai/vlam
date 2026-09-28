@@ -10,6 +10,12 @@ Two things the application still owns, both one-liners, request the session with
 `xrSessionInit(renderer)`, and cap the budget with `resolveXrSplatBudget()`
 while presenting. Both are explained under [Devices](#devices).
 
+Standalone RAD fragment culling is opt-in through `mesh.material.alphaTest`
+(default `0`, disabled). The demo sets it to at least `0.5 / 255` only during
+XR presentation and restores the previous value on session exit or scene
+replacement. Depth writes remain disabled unless `?xrDepth` explicitly enables
+them. Ordinary desktop and mobile viewing retains faint overlapping fragments.
+
 ## How stereo works here
 
 - **Per-eye projection is three's job.** The splat material builds clip
@@ -66,14 +72,15 @@ cannot be relied on (see the Vision Pro row).
 
 | Device | Browser | WebXR | WebGPU in XR | Verified |
 | --- | --- | --- | --- | --- |
-| Meta Quest 2/3/Pro | Quest Browser (Chromium) | yes | no. WebGPU is behind a flag, so the backend is WebGL2 | **on hardware** |
+| Meta Quest 3 | Quest Browser (Chromium) | yes | yes, with the experimental WebGPU setting enabled | **on hardware (WebGL2 and WebGPU XR)** |
+| Meta Quest 2/Pro | Quest Browser (Chromium) | yes | check at runtime | no WebGPU XR verification |
 | Apple Vision Pro | visionOS Safari | yes | check `XRGPUBinding` at runtime | no |
 | Pico | Pico Browser (Chromium) | yes | unlikely, treat as WebGL2 | no |
 | HTC Vive / Wolvic | Vive Browser, Wolvic | yes | unlikely, treat as WebGL2 | no |
 | Android XR | Chrome | yes | check at runtime | no |
 | Desktop + tethered headset | Chrome/Edge | yes | check at runtime | no |
 
-Only the Quest row is verified on hardware; the rest follow from the code paths
+Only the Quest 3 row is verified on hardware; the rest follow from the code paths
 above and from vendor documentation, and the runtime handles them without any
 per-device branch. **Apple Vision Pro is the case worth calling out:** visionOS
 Safari presents as *desktop* Safari, so user-agent detection cannot see it and
@@ -83,32 +90,60 @@ what saves it, which is the whole argument for keying off presentation.
 
 ## Meta Quest 3: what to expect
 
-Quest Browser ships WebGL2 (WebGPU is behind a flag), so the CPU worker sorter
-applies. The default WebXR framebuffer is ~1680×1760 **per eye** at scale 1.0 -
-about 5.9 Mpix of stereo fill on a phone-class GPU (Adreno 740) that shares the
-SoC with the compositor. The limits, in order of pain:
-
-1. **Fill rate / overdraw.** Splats are alpha-blended quads stacked hundreds
-   deep in busy views, and stereo doubles it. This, not raw splat count, is
-   the ceiling.
-2. **CPU sort latency.** Million-splat sorts at head-tracking rates lag by a
-   few frames; asynchronous timewarp hides rotation latency but not
-   translation, so a stale order reads as popping when you strafe.
-3. **Memory** is *not* the binding constraint: 1–2M splats fit comfortably,
-   especially with `poolFloatTextures: 'float16'`.
-
-Realistic splat counts at 72 Hz:
-
-| Scenario | Rendered splats |
-| --- | --- |
-| Comfortable, moderate overdraw | 300k–800k |
-| With streamed LOD / `.rad` foveation, `maxStdDev` ≈ 2–2.5, framebuffer scale 0.8, fixed foveation | ~1–1.5M resident |
-| Above ~1.5M | dropped frames on dense scenes |
+Quest Browser normally uses WebGL2; an experimental browser setting enabled
+WebGPU XR on the tested Quest 3. WebGL2 uses the worker sorter, while WebGPU
+uses GPU sorting. At native scale 1.0, the XR framebuffer is about 1680×1760
+**per eye**, so stereo fill and alpha blending can be expensive. Sort latency
+and streaming updates can also affect motion. The controlled HOTEL results
+below show that splat count alone does not predict frame pacing or visual
+quality; even the 100k–300k tested cases did not sustain 72 Hz.
 
 `resolveXrSplatBudget()` caps a presenting session at **600k**, and
 `resolveSplatBudget` applies the same ceiling to a headset it recognizes by
-user agent. Both are ceilings, not defaults, a low-memory device still scales
-below them.
+user agent. This is a scene-wide upper bound, not a promise that 600k splats
+are visible or can render at 72 Hz; a low-memory device can scale below it.
+
+## Quest 3 WebGPU XR benchmark findings (September 2026)
+
+With Quest Browser's experimental WebGPU support enabled, we compared VLAM
+WebGPU XR with Spark WebGL2 XR on the same HOTEL RAD scene. These are device
+measurements, not guaranteed headset budgets. The controlled comparison used
+0.5 XR scale, a 3σ splat cutoff, two draw calls, a requested and measured
+72 Hz display rate, motion reset at benchmark start, five seconds of warmup,
+30 seconds of sampling, and three fresh paired runs per row. VLAM used an
+opt-in unified renderer configuration; production defaults were unchanged.
+
+| Active budget | Motion | VLAM / Spark median FPS | VLAM / Spark p99 callback gap (ms) |
+| --- | --- | ---: | ---: |
+| 100k | Stationary | 54.905 / 64.861 | 21.512 / 22.219 |
+| 100k | Rotation | 62.858 / 69.912 | 24.874 / 20.871 |
+| 100k | Translation | 57.700 / 65.025 | 20.237 / 22.392 |
+| 200k | Stationary | 46.216 / 48.357 | 25.989 / 28.552 |
+| 200k | Rotation | 53.610 / 60.538 | 45.847 / 26.860 |
+| 200k | Translation | 45.957 / 48.395 | 27.048 / 28.762 |
+| 300k | Stationary | 39.226 / 39.782 | 35.081 / 35.652 |
+| 300k | Rotation | 42.947 / 47.871 | 48.702 / 35.581 |
+| 300k | Translation | 36.842 / 39.046 | 37.797 / 37.052 |
+
+The 100k stationary FPS gap is affected by different sampled GPU clocks.
+At 200k rotation, VLAM's long callback gaps were worse in all three pairs.
+A later opt-in packed center/color gather optimization improved three paired
+VLAM rotation runs over the preceding configuration. In a fresh three-pair
+200k rotation comparison of that selected configuration, VLAM reached
+**54.754 FPS / 38.986 ms p99**, versus Spark's **60.868 FPS / 27.570 ms p99**.
+Neither renderer sustained 72 Hz pacing. This is the current performance
+reference, not a demonstration of parity.
+
+Matched splat counts do not establish equal raster work or visual quality.
+Native stills showed expected scene coverage, but exact facade/color quality
+and continuous sort behavior remain unproven. The recorded `renderGpuMs`
+covers only the last eye, so it cannot explain total stereo frame time.
+Sparse GPU timestamps and CPU profiles have not isolated the remaining
+rotation-tail cause. An idle pose tolerance reduced stationary LOD traversals
+but remains opt-in because its FPS result was clock-confounded and quality
+under small real head movements has not been established. Detailed captures,
+measurement notes, and the benchmark runner output are local under
+`.tmp/quest3-webgpu-xr/quest-3-webgpu-xr-2026-09-24/` and are ignored by Git.
 
 ## Tuning knobs
 
@@ -122,10 +157,12 @@ Viewer-only XR controls (they do not widen the library API):
 
 | Query | Meaning |
 | --- | --- |
-| `?xrScale=0.7` | WebGL XR framebuffer scale, applied before the session starts (`0.25..1`) |
+| `?xrScale=0.7` | XR projection-layer scale for WebGL and WebGPU, applied before the session starts (`0.25..1`) |
 | `?xrSortHz=30` | WebGL worker-sort attempt ceiling; `0` is unrestricted |
 | `?xrDepth=0.15` | Experimental depth writes with this alpha-test threshold; `off` disables |
 | `?xrDiagnostics=1` | Show an opaque green reference cube and emit `XR_DIAGNOSTIC` JSON every 10 seconds and on exit |
+
+Quest 3 defaults to `xrScale=0.5` on WebGPU XR; use `xrScale=1` for native eye resolution. Quest WebGPU XR also renders display-ready splat colors directly, avoiding a fullscreen output-conversion pass; `?sparkColorOutput=0` restores the previous path for comparison. The local development viewer accepts `?spark=1` to open its matched Spark WebGL XR comparison with the same scene, camera, and scale parameters.
 
 The diagnostic report records the runtime refresh rate, callback and main-thread
 p50/p95/p99, missed deadlines, and worker-sort submission/completion age. Compare
@@ -134,14 +171,11 @@ splats trailing points to depth/sort behavior. The depth experiment is never
 enabled automatically because compositor use and transparent-tail artifacts
 must be verified on the target headset first.
 
-- On three 0.185.x's **WebGL XR** path,
-  `recommendedXrFramebufferScale()` →
-  `renderer.xr.setFramebufferScaleFactor(...)`, **before the session starts**:
-  three warns and ignores the call once presenting, and a live rescale needs a
-  session restart. 0.8 on a headset cuts fragment work ~36% for a barely
-  visible softening. three's WebGPU XR path creates its `XRGPUBinding`
-  projection layer at native scale and does not consume this setting; use the
-  presenting splat budget plus fixed foveation there.
+- On the **WebGL XR** path, Three consumes
+  `renderer.xr.setFramebufferScaleFactor(...)` before the session starts.
+  Three r186 omits that scale from its **WebGPU XR** projection-layer call;
+  the viewer passes `xrScale` into `XRGPUBinding.createProjectionLayer` before
+  the session starts. A live rescale still needs a session restart.
 - `renderer.xr.setFoveation(0..1)`: fixed foveated rendering, the runtime
   headroom lever, and nearly free on Quest. **Set it again on `sessionstart`.**
   three re-applies the stored value itself when it builds a *GL* layer, but
@@ -172,20 +206,20 @@ must be verified on the target headset first.
  camera: it has no single frustum to unproject the encoded depth through.
  Pass one eye (`renderer.xr.getCamera().cameras[i]`) with `ndc` in that eye's
  viewport.
-- **No XR input.** Controllers, hand tracking and Vision Pro's pinch/gaze
-  `transient-pointer` model are not wired up; the scope here is viewing. See
-  locomotion below for what that means in the demo.
+- **Library XR input is application-owned.** The [VR interaction example](../site/examples/in-vr.md)
+  adds controller teleport and snap turns with three.js. Hand tracking and
+  Vision Pro's pinch/gaze `transient-pointer` model are outside that example.
 - **No `immersive-ar` passthrough.** Splats compositing over passthrough video
   needs alpha-blend environment handling and a transparent clear path; not
   attempted.
-- **No locomotion in the demo.** It parents the camera to an XR rig on
-  `sessionstart` so you enter VR where the 2D view was standing (three derives
- the head pose from the camera's *parent*, so without a rig you would land at
- the reference-space origin, usually inside the capture), but desktop
- controls idle during the session. Teleport and snap turn are future work.
-- **Multiview (`OVR_multiview2`)** is not supported by three's WebGPURenderer
- WebGL2 backend; stereo renders in two passes. Multiview would halve
- vertex/draw cost (not fill), so it is a future item, not a blocker.
+- **The main demo remains view-only.** It parents the camera to an XR rig on
+  `sessionstart` so the headset starts at the desktop view. The separate
+  [VR interaction example](../site/examples/in-vr.md) demonstrates controller
+  teleport and snap turns.
+- **Multiview (`OVR_multiview2`)** has an opt-in path in three.js r186's
+  WebGL XR manager when the device supports it; its WebGPU XR path still
+  disables multiview. VLAM has not validated splat rendering, sorting, or
+  picking on that path, so multiview support is not claimed.
 - Testing without hardware: Meta's Immersive Web Emulator exercises the session
  lifecycle and the ArrayCamera path. `src/lib/__tests__/xr-view.test.ts`,
   `splat-mesh.xr.test.ts`, `streamed-splat-mesh.xr.test.ts` and

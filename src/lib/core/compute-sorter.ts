@@ -1,3 +1,4 @@
+import { readSplatCenter } from './splat-texture-read';
 import * as THREE from 'three/webgpu';
 import {
   Fn,
@@ -265,9 +266,10 @@ export class ComputeSorter implements SplatSorter {
               poolIndex.div(int(dataTextureWidth as number)),
             )
           : null;
+        // Constructor validation requires a texture when no work buffer is supplied.
         const center = workCenters
           ? workCenters.element(poolIndex).xyz
-          : textureLoad(centersTexture, texel as THREE.Node<'ivec2'>).xyz;
+          : readSplatCenter(centersTexture!, texel as THREE.Node<'ivec2'>);
 
         // In a unified pool each splat lives in its source's local frame; move
         // it to world space by that source's matrix before measuring depth, so

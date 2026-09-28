@@ -69,8 +69,7 @@ Brush lifecycle or stale-pick fixes discovered during existing selection
 validation fit stabilization. Defer new storage modes, rendering paths, and
 selection features until their benefits are measured and visually validated.
 
-- **Experimental radix sorter: r186 workgroup atomics** — after the separate
-  upgrade establishes three.js r186 as the minimum supported version, replace
+- **Experimental radix sorter: r186 workgroup atomics** — replace
   the global-storage ranking bitmasks in
   [`radix-sorter.ts`](src/lib/core/radix-sorter.ts) with atomic workgroup arrays.
   Target lower global-memory traffic and GPU scratch allocation while preserving

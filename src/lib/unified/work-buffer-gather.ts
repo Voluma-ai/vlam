@@ -1,3 +1,4 @@
+import { readSplatGatherInputs } from '../core/splat-texture-read';
 import * as THREE from 'three/webgpu';
 import {
   Fn,
@@ -177,7 +178,8 @@ export class WorkBufferGather {
           poolIndex.mod(int(dataTextureWidth)),
           poolIndex.div(int(dataTextureWidth)),
         );
-        const localCenter = textureLoad(centersTexture, texel).xyz;
+        const attributes = readSplatGatherInputs(centersTexture, colorsTexture, texel);
+        const localCenter = attributes.center;
         const target = instanceIndex.add(this.targetOffset.toUint());
         const inputA = textureLoad(covarianceATexture, texel);
         const inputB = textureLoad(covarianceBTexture, texel);
@@ -186,7 +188,7 @@ export class WorkBufferGather {
           vec3(inputA.y, inputA.w, inputB.x),
           vec3(inputA.z, inputB.x, inputB.y),
         );
-        const baseColor = textureLoad(colorsTexture, texel);
+        const baseColor = attributes.color;
         const colorAfterSh =
           sh === null
             ? baseColor

@@ -15,6 +15,7 @@
  * Internal. Nothing here is exported from `index.ts`.
  */
 import * as THREE from 'three/webgpu';
+import { readSplatMaterialInputs } from './splat-texture-read';
 import {
   Discard,
   Fn,
@@ -25,6 +26,7 @@ import {
   int,
   ivec2,
   mat3,
+  materialAlphaTest,
   modelViewMatrix,
   cameraProjectionMatrix,
   positionGeometry,
@@ -409,9 +411,15 @@ export function applySplatMaterialGraph(
   // evaluated with the local view direction (Kerbl et al. convention,
   // coefficients read from the SOG palette) - is added to the base color.
   const cachedColor = mode === 'display' ? inputs.shFinalColor : undefined;
-  const baseColor = textureLoad(cachedColor ?? textures.colorsTexture, splatTexel);
+  const attributes = readSplatMaterialInputs(
+    textures.centersTexture,
+    textures.colorsTexture,
+    splatTexel,
+    cachedColor,
+  );
+  const baseColor = attributes.color.toVar();
   /** The splat's center as stored in the pool - its own source's data frame. */
-  const poolCenter = textureLoad(textures.centersTexture, splatTexel).xyz;
+  const poolCenter = attributes.center;
   // Per-source placement is resolved here, ahead of everything else, so the
   // rest of the graph - modifier stack included - sees the splat where it
   // visually is. In a `MergedSplatMesh` the pool frame is an internal storage
@@ -554,9 +562,12 @@ export function applySplatMaterialGraph(
     ? varying(float(settings.maxStdDev), 'vAdjustedStdDev')
     : null;
   const vAlpha2 = settings.lodAlpha ? varying(float(1), 'vAlpha2') : null;
-  // Visual fade (modifier alpha / original encoded alpha). Applied after LOD
-  // falloff so a marker crossfade cannot reclassify a merged node as a leaf.
-  const vVisualOpacity = settings.lodAlpha ? varying(float(1), 'vVisualOpacity') : null;
+  // Visual fade (resolved alpha / original encoded alpha). Unmodified base
+  // and vertex-SH colors preserve alpha, so they need no extra varying.
+  const vVisualOpacity =
+    settings.lodAlpha && (inputs.modifiers.length > 0 || colorSource === 'cached')
+      ? varying(float(1), 'vVisualOpacity')
+      : null;
 
   material.vertexNode = Fn(() => {
     const center = stack.offset === null ? localCenter : localCenter.add(stack.offset);
@@ -571,10 +582,10 @@ export function applySplatMaterialGraph(
       const cachedAxes = projectedAxes.element(splatIndex);
       const cachedParameters = projectedParameters.element(splatIndex);
       opacityCompensation.assign(cachedParameters.x);
-      if (vAdjustedStdDev && vAlpha2 && vVisualOpacity) {
+      if (vAdjustedStdDev && vAlpha2) {
         vAdjustedStdDev.assign(cachedParameters.y);
         vAlpha2.assign(colorAfterSh.a.mul(2));
-        vVisualOpacity.assign(float(1));
+        vVisualOpacity?.assign(float(1));
       }
       const pixelOffset = cachedAxes.xy
         .mul(positionGeometry.x)
@@ -692,13 +703,13 @@ export function applySplatMaterialGraph(
       // 1..2 → 1..5) so it covers its subtree; the covariance is untouched. A leaf
       // keeps the base cutoff. Off (`lodAlpha` false) → the plain constant cutoff.
       let stdDev: THREE.Node<'float'> = float(settings.maxStdDev);
-      if (settings.lodAlpha && vAdjustedStdDev && vAlpha2 && vVisualOpacity) {
+      if (settings.lodAlpha && vAdjustedStdDev && vAlpha2) {
         const encodedOriginal = asNode<'float'>(colorAfterSh.a);
         const alpha2 = asNode<'float'>(encodedOriginal.mul(2.0));
         stdDev = radSplatStdDev(alpha2, float(settings.maxStdDev));
         vAdjustedStdDev.assign(stdDev);
         vAlpha2.assign(alpha2);
-        vVisualOpacity.assign(
+        vVisualOpacity?.assign(
           encodedOriginal
             .greaterThan(0)
             .select(stack.color.a.div(encodedOriginal.max(1e-8)), float(1)),
@@ -858,15 +869,20 @@ export function applySplatMaterialGraph(
       const squaredDistance = quadPosition.dot(quadPosition);
       Discard(squaredDistance.greaterThan(1.0));
       let opacity: THREE.Node<'float'>;
-      if (settings.lodAlpha && vAdjustedStdDev && vAlpha2 && vVisualOpacity) {
+      if (settings.lodAlpha && vAdjustedStdDev && vAlpha2) {
         opacity = asNode<'float'>(
-          radSplatOpacity(squaredDistance, vAdjustedStdDev, vAlpha2).mul(vVisualOpacity),
+          radSplatOpacity(squaredDistance, vAdjustedStdDev, vAlpha2).mul(
+            vVisualOpacity ?? float(1),
+          ),
         );
       } else {
         // True Gaussian falloff. |quadPosition| = 1 is `maxStdDev` σ from center.
         opacity = gaussianSplatOpacity(squaredDistance, gaussianExponent, splatColor.a);
       }
       const alpha = opacity.mul(opacityCompensation).mul(revealMultiplier);
+      // Custom fragmentNode bypasses Three's alpha test. Keep RAD culling
+      // opt-in through the material's live threshold (zero by default).
+      if (settings.lodAlpha) Discard(alpha.lessThan(materialAlphaTest));
       const rgb = (
         inputs.displayColorModifier?.(splatColor.rgb, screenUV, uniforms.viewport) ?? splatColor.rgb
       ).toVar();
@@ -897,9 +913,11 @@ export function applySplatMaterialGraph(
       const squaredDistance = quadPosition.dot(quadPosition);
       Discard(squaredDistance.greaterThan(1.0));
       let gaussian: THREE.Node<'float'>;
-      if (settings.lodAlpha && vAdjustedStdDev && vAlpha2 && vVisualOpacity) {
+      if (settings.lodAlpha && vAdjustedStdDev && vAlpha2) {
         gaussian = asNode<'float'>(
-          radSplatOpacity(squaredDistance, vAdjustedStdDev, vAlpha2).mul(vVisualOpacity),
+          radSplatOpacity(squaredDistance, vAdjustedStdDev, vAlpha2).mul(
+            vVisualOpacity ?? float(1),
+          ),
         );
       } else {
         gaussian = gaussianSplatOpacity(squaredDistance, gaussianExponent, splatColor.a);

@@ -1,0 +1,95 @@
+import type { ExperimentConfiguration } from '../../src/lib/internal/experiments';
+
+declare const __VLAM_EXPERIMENT__: string;
+
+/** Benchmark-server replacement for the library's disabled controls. */
+export const experiments: ExperimentConfiguration & {
+  packedCenterColors: boolean;
+  unifiedPackedColorReuse: boolean;
+} = {
+  initialPoolUpload:
+    __VLAM_EXPERIMENT__ === 'skip-empty' ||
+    __VLAM_EXPERIMENT__ === 'rad-chunk-pages' ||
+    __VLAM_EXPERIMENT__ === 'rad-indexed'
+      ? 'skip-empty'
+      : 'existing',
+  radTraversal:
+    __VLAM_EXPERIMENT__ === 'bounded-threshold'
+      ? 'bounded-threshold'
+      : __VLAM_EXPERIMENT__ === 'heap'
+        ? 'heap'
+        : 'one-pass',
+  radDecodeWorkers:
+    __VLAM_EXPERIMENT__ === 'rad-decode-2' ? 2 : __VLAM_EXPERIMENT__ === 'rad-decode-4' ? 4 : 1,
+  radResidency: __VLAM_EXPERIMENT__ === 'rad-chunk-pages' ? 'chunk-pages' : 'indexed',
+  remotePly:
+    __VLAM_EXPERIMENT__ === 'exact-stream'
+      ? 'exact-stream'
+      : __VLAM_EXPERIMENT__ === 'approximate-sh-stream'
+        ? 'approximate-sh-stream'
+        : 'buffered',
+  webglProvokingVertex: __VLAM_EXPERIMENT__ === 'first-vertex' ? 'first-vertex' : 'existing',
+  packedCenterColors:
+    __VLAM_EXPERIMENT__ === 'packed-center-colors' ||
+    __VLAM_EXPERIMENT__ === 'unified-vertex-rad-exponent' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask' ||
+    __VLAM_EXPERIMENT__ ===
+      'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse' ||
+    __VLAM_EXPERIMENT__ ===
+      'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse-idle-pose' ||
+    __VLAM_EXPERIMENT__ === 'unified-vertex-gaussian-exponent',
+  unifiedVertexRadExponent:
+    __VLAM_EXPERIMENT__ === 'unified-vertex-rad-exponent' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask' ||
+    __VLAM_EXPERIMENT__ ===
+      'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse' ||
+    __VLAM_EXPERIMENT__ ===
+      'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse-idle-pose' ||
+    __VLAM_EXPERIMENT__ === 'unified-vertex-gaussian-exponent',
+  unifiedFlatVaryings:
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask' ||
+    __VLAM_EXPERIMENT__ ===
+      'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse' ||
+    __VLAM_EXPERIMENT__ ===
+      'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse-idle-pose' ||
+    __VLAM_EXPERIMENT__ === 'unified-vertex-gaussian-exponent',
+  radIndexedCameraCoalescing:
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask' ||
+    __VLAM_EXPERIMENT__ ===
+      'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse' ||
+    __VLAM_EXPERIMENT__ ===
+      'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse-idle-pose',
+  radIndexedSkipIdleFetchScan:
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask' ||
+    __VLAM_EXPERIMENT__ ===
+      'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse' ||
+    __VLAM_EXPERIMENT__ ===
+      'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse-idle-pose',
+  radIndexedSlotMasks:
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask' ||
+    __VLAM_EXPERIMENT__ ===
+      'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse' ||
+    __VLAM_EXPERIMENT__ ===
+      'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse-idle-pose',
+  unifiedPackedColorReuse:
+    __VLAM_EXPERIMENT__ ===
+      'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse' ||
+    __VLAM_EXPERIMENT__ ===
+      'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse-idle-pose',
+  radIndexedIdlePoseTolerance:
+    __VLAM_EXPERIMENT__ ===
+    'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse-idle-pose',
+  unifiedVertexGaussianExponent: __VLAM_EXPERIMENT__ === 'unified-vertex-gaussian-exponent',
+};

@@ -17,12 +17,16 @@ function createRadixStrategy(exactDepth: boolean): SplatSortStrategyFactory {
   };
 }
 
-/** Returns the stable quantized GPU radix sorting strategy. */
+/** Returns the stable quantized GPU radix sorting strategy.
+ * @experimental
+ */
 export function radixSort(): SplatSortStrategyFactory {
   return createRadixStrategy(false);
 }
 
-/** Returns the stable Float32-depth GPU radix sorting strategy. */
+/** Returns the stable Float32-depth GPU radix sorting strategy.
+ * @experimental
+ */
 export function exactSort(): SplatSortStrategyFactory {
   return createRadixStrategy(true);
 }

@@ -13,6 +13,13 @@ export interface ExperimentConfiguration {
   radResidency: 'indexed' | 'chunk-pages';
   remotePly: 'buffered' | 'exact-stream' | 'approximate-sh-stream';
   webglProvokingVertex: 'existing' | 'first-vertex';
+  unifiedVertexRadExponent: boolean;
+  unifiedFlatVaryings: boolean;
+  radIndexedCameraCoalescing: boolean;
+  radIndexedSkipIdleFetchScan: boolean;
+  radIndexedSlotMasks: boolean;
+  radIndexedIdlePoseTolerance: boolean;
+  unifiedVertexGaussianExponent: boolean;
 }
 
 export const experiments: ExperimentConfiguration = {
@@ -22,4 +29,11 @@ export const experiments: ExperimentConfiguration = {
   radResidency: 'chunk-pages',
   remotePly: 'buffered',
   webglProvokingVertex: 'existing',
+  unifiedVertexRadExponent: false,
+  unifiedFlatVaryings: false,
+  radIndexedCameraCoalescing: false,
+  radIndexedSkipIdleFetchScan: false,
+  radIndexedSlotMasks: false,
+  radIndexedIdlePoseTolerance: false,
+  unifiedVertexGaussianExponent: false,
 } as const;

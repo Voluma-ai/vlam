@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" />
+  <title>RAD alpha cutoff lifecycle probe</title>
+  <output id="result"></output>
+  <script type="module">
+    import * as THREE from 'three/webgpu';
+    import { float, vec4 } from 'three/tsl';
+    import { SplatMesh, createWebGPURenderer } from '../lib/core';
+    import { applyXrMaterialMode, restoreXrMaterialState } from './xr-stability';
+
+    const webgl = new URLSearchParams(location.search).get('backend') === 'webgl2';
+    const renderer = await createWebGPURenderer({ antialias: false, forceWebGL: webgl });
+    await renderer.init();
+    renderer.setSize(64, 64);
+    renderer.setClearColor(0, 0);
+    const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 10);
+    camera.position.z = 2;
+    // Faint layers accumulate before quantization in HDR/intermediate targets.
+    const target = new THREE.RenderTarget(64, 64, { type: THREE.HalfFloatType });
+    const count = 128;
+    const data = {
+      count,
+      positions: new Float32Array(count * 3),
+      colors: new Uint8Array(count * 4),
+      covariances: new Float32Array(count * 6),
+    };
+    for (let i = 0; i < count; i++) {
+      data.colors.set([255, 255, 255, 160], i * 4);
+      data.covariances.set([0.03, 0.007, 0.002, 0.012, 0.003, 0.008], i * 6);
+    }
+    const mesh = new SplatMesh(data, {
+      orientation: 'source',
+      performanceProfile: 'quality',
+      lodAlpha: true,
+    });
+    const fade = (ctx) => ({ color: vec4(ctx.color.rgb, ctx.color.a.mul(float(0.001))) });
+    mesh.modifiers = [fade];
+    const scene = new THREE.Scene();
+    scene.add(mesh);
+    const samples = [];
+    const sample = async (name) => {
+      renderer.setRenderTarget(target);
+      // Allow WebGL worker setup and publication before sampling the same scene.
+      for (let frame = 0; frame < 4; frame++) {
+        mesh.update(camera, renderer);
+        renderer.clear();
+        renderer.render(scene, camera);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+      const pixels = Array.from(
+        await renderer.readRenderTargetPixelsAsync(target, 0, 0, 64, 64),
+        THREE.DataUtils.fromHalfFloat,
+      );
+      samples.push({ name, alphaTest: mesh.material.alphaTest, pixels });
+    };
+    await sample('default');
+    // Exercise the existing material control independently of the XR helper.
+    mesh.material.alphaTest = 0.5 / 255;
+    await sample('opt-in');
+    mesh.material.alphaTest = 0.0001;
+    await sample('before-xr');
+    const state = applyXrMaterialMode(mesh);
+    await sample('xr');
+    mesh.modifiers = [fade];
+    await sample('xr-rebuilt');
+    restoreXrMaterialState(state);
+    await sample('restored');
+    mesh.material.alphaTest = 0;
+    await sample('default-again');
+    renderer.setRenderTarget(null);
+    mesh.dispose();
+    target.dispose();
+    renderer.dispose();
+    document.querySelector('#result').textContent = JSON.stringify({
+      backend: renderer.backend.isWebGPUBackend ? 'webgpu' : 'webgl2',
+      samples,
+    });
+  </script>
+</html>

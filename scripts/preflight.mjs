@@ -34,4 +34,13 @@ const size = spawnSync(process.execPath, ['scripts/check-bundle-size.mjs', '--no
 if (size.error) throw size.error;
 if (size.status !== 0) process.exit(size.status ?? 1);
 
+console.log('\n==> npm run check:packed-consumer');
+const consumer = spawnSync(npm, ['run', 'check:packed-consumer'], {
+  cwd: root,
+  stdio: 'inherit',
+  shell: process.platform === 'win32',
+});
+if (consumer.error) throw consumer.error;
+if (consumer.status !== 0) process.exit(consumer.status ?? 1);
+
 console.log('\nPreflight passed.');

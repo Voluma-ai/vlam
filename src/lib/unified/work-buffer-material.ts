@@ -1,4 +1,5 @@
 import * as THREE from 'three/webgpu';
+import { experiments } from '../internal/experiments';
 import type { DisplayColorModifier, FloatUniform, Vec2Uniform } from '../core/splat-material-types';
 import {
   capProjectedEigenvaluesToScreenRadius,
@@ -99,6 +100,20 @@ export function createWorkBufferMaterial(options: {
   // non-`.rad` source can only reach `alpha ≤ 1`, for which the branches below
   // collapse to the plain Gaussian this material has always drawn.
   const adjustedStdDev = varying(float(0), 'vWorkAdjustedStdDev');
+  const mergedExponent = experiments.unifiedVertexRadExponent
+    ? varying(float(1), 'vWorkMergedExponent')
+    : null;
+  const gaussianExponent = experiments.unifiedVertexGaussianExponent
+    ? varying(float(-4.5), 'vWorkGaussianExponent').setInterpolation('flat')
+    : null;
+  if (experiments.unifiedFlatVaryings) {
+    // Gather and projection assign the same constants at every quad vertex.
+    workColor.setInterpolation('flat');
+    opacityCompensation.setInterpolation('flat');
+    displayOpacity.setInterpolation('flat');
+    adjustedStdDev.setInterpolation('flat');
+    mergedExponent?.setInterpolation('flat');
+  }
   material.vertexNode = Fn(() => {
     const workIndex = order.element(instanceIndex).toInt();
     const centerSample = centers.element(workIndex);
@@ -108,12 +123,26 @@ export function createWorkBufferMaterial(options: {
     const drawable = centerSample.w.greaterThan(0);
     displayOpacity.assign(centerSample.w);
     workColor.assign(colors.element(workIndex));
+    if (mergedExponent) {
+      const remap = workColor.a.mul(4).sub(3).min(5);
+      mergedExponent.assign(
+        workColor.a.greaterThan(1).select(
+          remap
+            .mul(remap)
+            .sub(1)
+            .mul(1 / Math.E)
+            .exp(),
+          float(1),
+        ),
+      );
+    }
     if (projectedClip && projectedAxes && projectedParameters) {
       const clipCenter = projectedClip.element(workIndex);
       const cachedAxes = projectedAxes.element(workIndex);
       const cachedParameters = projectedParameters.element(workIndex);
       opacityCompensation.assign(cachedParameters.x);
       adjustedStdDev.assign(cachedParameters.y);
+      gaussianExponent?.assign(cachedParameters.y.mul(cachedParameters.y).mul(-0.5));
       const pixelOffset = cachedAxes.xy
         .mul(positionGeometry.x)
         .add(cachedAxes.zw.mul(positionGeometry.y));
@@ -172,6 +201,7 @@ export function createWorkBufferMaterial(options: {
     // `applySplatMaterialGraph`'s `lodAlpha` branch.
     const stdDev = radSplatStdDev(workColor.a, options.maxStdDev);
     adjustedStdDev.assign(stdDev);
+    gaussianExponent?.assign(stdDev.mul(stdDev).mul(-0.5));
     const eigenvector = projectedSplatEigenvector(a, b, lambda1);
     // Screen-space minimum on each axis: a splat below the floor grows to it so
     // its Gaussian tiles with neighbours instead of leaving dark gaps between
@@ -214,7 +244,13 @@ export function createWorkBufferMaterial(options: {
   material.fragmentNode = Fn(() => {
     const squaredDistance = quadPosition.dot(quadPosition);
     Discard(squaredDistance.greaterThan(1));
-    const opacity = radSplatOpacity(squaredDistance, adjustedStdDev, workColor.a);
+    const opacity = radSplatOpacity(
+      squaredDistance,
+      adjustedStdDev,
+      workColor.a,
+      mergedExponent,
+      gaussianExponent,
+    );
     const alpha = opacity.mul(opacityCompensation).mul(displayOpacity);
     const rgb = (
       options.displayColorModifier?.(workColor.rgb, screenUV, options.viewport) ?? workColor.rgb

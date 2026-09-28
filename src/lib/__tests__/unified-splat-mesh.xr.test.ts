@@ -1,4 +1,5 @@
 import * as THREE from 'three/webgpu';
+import type { WebGLRenderer } from 'three';
 import { describe, expect, it, vi } from 'vitest';
 import { writeCovariance } from '../core/splat-data';
 import { SplatMesh } from '../core/splat-mesh';
@@ -50,6 +51,49 @@ function xrRenderer(): { renderer: THREE.WebGPURenderer; head: THREE.ArrayCamera
 }
 
 describe('UnifiedSplatMesh under XR presentation', () => {
+  it('ignores submillimeter headset jitter but sorts after meaningful movement', () => {
+    vi.stubGlobal('navigator', {
+      userAgent: 'Android Quest 3',
+      platform: 'Linux',
+      maxTouchPoints: 0,
+    });
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const { renderer, head } = xrRenderer();
+    const mesh = source();
+    const unified = new UnifiedSplatMesh(renderer, 4);
+    try {
+      unified.addSource(mesh);
+      (mesh as unknown as { update: () => void }).update = vi.fn();
+      const sorter = (unified as unknown as { sorter: { sort: () => boolean } }).sorter;
+      const sort = vi.spyOn(sorter, 'sort').mockReturnValue(true);
+      const camera = new THREE.PerspectiveCamera();
+      unified.update(camera);
+      expect(sort).toHaveBeenCalledTimes(1);
+      // Three's inherited draw callback still types the renderer as WebGL-only.
+      unified.onAfterRender(renderer as unknown as WebGLRenderer, new THREE.Scene(), camera);
+      now = 100;
+      head.position.x += 0.0002;
+      head.updateMatrix();
+      unified.update(camera);
+      now = 200;
+      head.position.x += 0.0002;
+      head.updateMatrix();
+      unified.update(camera);
+      expect(sort).toHaveBeenCalledTimes(1);
+      now = 300;
+      head.position.x += 0.05;
+      head.updateMatrix();
+      unified.update(camera);
+      expect(sort).toHaveBeenCalledTimes(2);
+    } finally {
+      unified.dispose();
+      mesh.dispose();
+      clock.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('takes the per-eye viewport and focal, and sorts from the head', () => {
     const { renderer, head } = xrRenderer();
     const mesh = source();

@@ -25,6 +25,15 @@ archived 2.1.0 reports, `renderer.version` is the actual aliased 2.1.0 package;
 `environment.spark` describes the installed 2.2.0 package tree and must not be
 read as the active renderer.
 
+Benchmark configuration lives in `benchmarks/experiments/config.ts`. The
+packed-center/color prototype lives beside it and replaces the internal center
+storage and texture readers only through `scripts/vite.config.benchmark.ts`.
+The published library and normal viewer use the production modules in
+`src/lib/core`; no packed-center option is exposed by the library. Creation,
+color writes, snapshot/live uploads, and standalone/unified shader reads must
+use the same benchmark replacements. `packed-center-colors` selects the basic
+prototype; the existing combined unified variants retain their own switches.
+
 For build-time experiments, start a separate server for each variant with
 `VLAM_EXPERIMENT=baseline npm run benchmark:dev` or
 `VLAM_EXPERIMENT=skip-empty npm run benchmark:dev`. The effective settings are
@@ -214,6 +223,15 @@ Paired JSON summaries and fixed-pose captures are under
 lifecycle probes (empty → append, disjoint, reuse, clear, compaction) passed
 for both variants on WebGPU and forced WebGL2; automated
 `browser-tests/empty-pool.spec.ts` passed for both experiment builds.
+
+For a repeat, use the pinned hotel bytes and canonical camera in headed
+foreground Chrome, alternate five baseline/skip-empty pairs per backend,
+and compare WebGPU with forced WebGL2. Run the startup harness with
+`startupMetrics=1&uaMemory=0`; record first visible and target-active
+milestones separately from settled detail. Keep the static/shared-pool
+exclusions, unchanged staging copies, pixel/picking checks, and initial
+destination-upload counts in the report. These controls avoid interpreting
+memory-checkpoint pauses as upload savings.
 
 ### Bounded RAD traversal experiment (13 September 2026)
 

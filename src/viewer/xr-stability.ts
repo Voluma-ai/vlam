@@ -25,8 +25,11 @@ export function resolveXrStabilityOptions(
   environment: ResolveXrStabilityOptions,
 ): XrStabilityOptions {
   const enabled = parseBooleanOverride(params.get('xrStability'), environment.isHeadset);
-  const defaultScale =
-    enabled && environment.backend === 'WebGL2' ? 0.7 : environment.recommendedFramebufferScale;
+  const defaultScale = enabled
+    ? environment.backend === 'WebGL2'
+      ? 0.7
+      : 0.5
+    : environment.recommendedFramebufferScale;
   const framebufferScale = finiteNumberInRange(params.get('xrScale'), 0.25, 1) ?? defaultScale;
   const defaultSortHz = enabled && environment.backend === 'WebGL2' ? 30 : null;
   const requestedSortHz = finiteNumberInRange(params.get('xrSortHz'), 0, 240);
@@ -106,8 +109,11 @@ export interface XrMaterialState {
   readonly entries: readonly XrMaterialEntryState[];
 }
 
-/** Enables the experimental depth-writing A/B mode and captures exact prior state. */
-export function applyXrDepthMode(mesh: THREE.Mesh, alphaThreshold: number): XrMaterialState {
+/** Enables the XR RAD cutoff and optional depth writes, capturing exact prior state. */
+export function applyXrMaterialMode(
+  mesh: THREE.Mesh,
+  depthAlphaThreshold: number | null = null,
+): XrMaterialState {
   const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
   const entries = materials.map((material) => ({
     material,
@@ -115,15 +121,15 @@ export function applyXrDepthMode(mesh: THREE.Mesh, alphaThreshold: number): XrMa
     alphaTest: material.alphaTest,
   }));
   for (const material of materials) {
-    material.depthWrite = true;
-    material.alphaTest = alphaThreshold;
+    if (depthAlphaThreshold !== null) material.depthWrite = true;
+    material.alphaTest = Math.max(material.alphaTest, depthAlphaThreshold ?? 0.5 / 255);
     material.needsUpdate = true;
   }
   return { entries };
 }
 
-/** Restores every material property changed by {@link applyXrDepthMode}. */
-export function restoreXrDepthMode(state: XrMaterialState | null): void {
+/** Restores every material property changed by {@link applyXrMaterialMode}. */
+export function restoreXrMaterialState(state: XrMaterialState | null): void {
   if (!state) return;
   for (const entry of state.entries) {
     entry.material.depthWrite = entry.depthWrite;

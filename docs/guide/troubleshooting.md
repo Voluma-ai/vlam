@@ -253,9 +253,9 @@ argument:
  was not trained with it (or vice versa) is a common cause of "the wrong kind
  of soft".
 - **`performanceProfile`** (`'smooth'` on mobile and fill-constrained desktops,
-  SH-preserving `'balanced'` elsewhere) - both cull splats whose projected
-  contribution is negligible. This can visibly thin fine detail on a scene you
-  expected to be complete; pass `'quality'` explicitly to keep every splat.
+  full-detail `'quality'` elsewhere). `smooth` culls negligible projected
+  contributions; opt into SH-preserving `'balanced'` culls only after checking
+  that fine detail stays complete for your scene.
 
 ## Library warnings in the console
 

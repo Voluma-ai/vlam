@@ -4,7 +4,12 @@ Two overlapping splat meshes cannot blend correctly as separate three.js
 draws, transparency needs one global back-to-front order.
 `UnifiedSplatMesh` gathers every registered source (fully loaded and streamed)
 into one work buffer, sorts them together, and draws them as a single
-transparent mesh. **WebGPU only.**
+transparent mesh. **WebGPU only.** Its constructor, source registration and
+removal, visibility and opacity controls, update, picking, secondary views,
+diagnostics, and disposal form the high-level 1.0 compatibility contract.
+The GPU-facing `UnifiedSourceView` returned by
+`SplatMesh.getUnifiedSourceView()` remains experimental even though the
+compositor consumes it internally.
 
 ## Gate on support
 
@@ -52,6 +57,8 @@ const experimental = new UnifiedSplatMesh(renderer, capacity, {
 });
 ```
 
+<!-- full file: docs/guide/samples/unified-experimental.ts -->
+
 Rules of the road:
 
 - **Sources keep their own pools, modifiers, and transforms.** Pose and
@@ -62,9 +69,9 @@ Rules of the road:
 - All sources must agree on `srgbOutput` (a constructor option),
   `maxStdDev`, `antialias`, and the resolved `minPixelSize` /
   `minContribution` contribution culls. `UnifiedSplatMesh` defaults to the
-  same balanced device profile as `SplatMesh`; use matching
-  `performanceProfile: 'quality'` options on the unified mesh and its sources
-  for full-detail rendering.
+  same device-aware profile as `SplatMesh`: `smooth` on mobile and
+  fill-constrained desktops, `quality` elsewhere. Keep the same profile on the
+  unified mesh and its sources.
 - `unified.update(camera)` replaces the per-mesh `update` calls; do not also
   call `source.update()` yourself.
 

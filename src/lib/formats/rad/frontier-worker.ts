@@ -1322,7 +1322,14 @@ function updateIndexed(
       }
       if (result.cut) {
         candidateGlobals = result.cut;
-        if (result.newCount > MAX_INTERMEDIATE_CANDIDATE_NEW_SPLATS) {
+        // An intermediate cover may retain many old nodes while refining only
+        // part of the target. Publish the complete target instead if that
+        // temporary cover would exceed the requested draw budget.
+        if (candidateGlobals.length > msg.budget && desiredGlobals.length <= msg.budget) {
+          candidateGlobals = desiredGlobals;
+          bounded = false;
+        }
+        if (result.newCount > MAX_INTERMEDIATE_CANDIDATE_NEW_SPLATS && bounded) {
           lastBoundedCutRefusalReason = 'waiting-for-children';
           postIndexedPlan(
             msg.seq,

@@ -239,6 +239,62 @@ function walkMarkdown(dir, acc = []) {
   }
 }
 
+// --- Published entries and documented peer minimum stay in sync ---
+{
+  const pkg = JSON.parse(read('package.json'));
+  const entries = Object.keys(pkg.exports)
+    .filter((entry) => entry !== './package.json')
+    .map((entry) => '../src/lib/' + (entry === '.' ? 'core' : entry.slice(2)) + '/index.ts');
+  for (const rel of ['site/typedoc.json', 'site/typedoc.site.json']) {
+    const file = join(root, rel);
+    const config = read(rel);
+    for (const entry of entries) {
+      if (!config.includes('"' + entry + '"')) {
+        fail(file, 1, 'published entry missing from API reference: ' + entry);
+      }
+    }
+  }
+  const resolverFile = 'site/.vitepress/viewer-dev-plugin.ts';
+  const resolver = read(resolverFile);
+  const sampleConfigFile = 'docs/examples/samples/tsconfig.json';
+  const sampleConfig = read(sampleConfigFile);
+  for (const entry of Object.keys(pkg.exports).filter((entry) => entry !== './package.json')) {
+    const specifier = '@voluma/vlam' + (entry === '.' ? '' : entry.slice(1));
+    if (!resolver.includes("find: '" + specifier + "'")) {
+      fail(
+        join(root, resolverFile),
+        1,
+        'published entry missing from example resolver: ' + specifier,
+      );
+    }
+    if (
+      !sampleConfig.includes('"' + specifier + '"') &&
+      !(
+        specifier.startsWith('@voluma/vlam/formats/') &&
+        sampleConfig.includes('"@voluma/vlam/formats/*"')
+      )
+    ) {
+      fail(
+        join(root, sampleConfigFile),
+        1,
+        'published entry missing from example sample aliases: ' + specifier,
+      );
+    }
+  }
+  const peer = pkg.peerDependencies.three.match(/\d+\.\d+\.\d+/)?.[0];
+  for (const rel of [
+    'README.md',
+    'site/get-started.md',
+    'docs/guide/getting-started.md',
+    'docs/capabilities.md',
+  ]) {
+    const file = join(root, rel);
+    if (!read(rel).includes('>= 0.186.0'.replace('0.186.0', peer))) {
+      fail(file, 1, 'documented three peer minimum differs from package.json');
+    }
+  }
+}
+
 if (errors.length) {
   console.error('docs:check failed:\n' + errors.map((e) => `  ${e}`).join('\n'));
   process.exit(1);

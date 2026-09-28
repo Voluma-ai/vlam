@@ -67,3 +67,9 @@ playwright/.auth/user.json
 # context or `navigator.gpu` is undefined and the viewer silently falls back to
 # WebGL2. See the `server.https` block in vite.config.ts.
 *.pem
+
+# Machine-specific Quest capture and keepalive scripts; benchmark data stays in .tmp.
+scripts/quest3-benchmark.mjs
+scripts/quest3-native-image.mjs
+scripts/quest3-review-video.mjs
+scripts/quest3-keepalive.sh

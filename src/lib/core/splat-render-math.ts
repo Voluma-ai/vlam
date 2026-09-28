@@ -159,14 +159,22 @@ export function gaussianSplatOpacity(
 }
 
 /** RAD leaf/parent falloff. Visual fades are deliberately applied by the caller. */
-export function radSplatOpacity(distanceSquared: Scalar, stdDev: Scalar, alpha: Scalar): Scalar {
-  const g = distanceSquared.mul(stdDev.mul(stdDev).mul(-0.5)).exp();
+export function radSplatOpacity(
+  distanceSquared: Scalar,
+  stdDev: Scalar,
+  alpha: Scalar,
+  mergedExponent: Scalar | null = null,
+  gaussianExponent: Scalar | null = null,
+): Scalar {
+  const g = distanceSquared.mul(gaussianExponent ?? stdDev.mul(stdDev).mul(-0.5)).exp();
   const remap = alpha.mul(4).sub(3).min(5);
-  const aExp = remap
-    .mul(remap)
-    .sub(1)
-    .mul(1 / Math.E)
-    .exp();
+  const aExp =
+    mergedExponent ??
+    remap
+      .mul(remap)
+      .sub(1)
+      .mul(1 / Math.E)
+      .exp();
   const merged = g.oneMinus().pow(aExp).oneMinus();
   return asNode<'float'>(alpha.greaterThan(1).select(merged, g.mul(alpha)));
 }

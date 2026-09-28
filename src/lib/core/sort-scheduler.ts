@@ -4,6 +4,8 @@ const TWO_MILLION = 2_000_000;
 const FIVE_MILLION = 5_000_000;
 const EIGHT_MILLION = 8_000_000;
 const MODEL_VIEW_EPSILON = 1e-6;
+const MOBILE_ROTATION_EPSILON = 1e-3;
+const MOBILE_POSITION_EPSILON = 1e-3;
 const FALLBACK_HOLD_FRAMES = 2;
 const FALLBACK_HOLD_MS = 32;
 
@@ -54,7 +56,10 @@ export function automaticSortIntervalMs(activeCount: number, isMobile = false): 
 export class WebGpuSortScheduler {
   private readonly sortIntervalMs: number | undefined;
   private readonly isMobile: boolean;
+  private xrJitterToleranceEnabled = false;
   private readonly previousModelView = new THREE.Matrix4();
+  private readonly currentInverseModelView = new THREE.Matrix4();
+  private readonly acceptedInverseModelView = new THREE.Matrix4();
   private hasPreviousModelView = false;
   private legacyWasMoving = false;
   private forcePending = true;
@@ -76,6 +81,11 @@ export class WebGpuSortScheduler {
   constructor(sortIntervalMs?: number, isMobile = false) {
     this.sortIntervalMs = validateSortIntervalMs(sortIntervalMs);
     this.isMobile = isMobile;
+  }
+
+  /** Ignore submillimetre headset tracking noise only while XR presents. */
+  setXrJitterTolerance(enabled: boolean): void {
+    this.xrJitterToleranceEnabled = enabled;
   }
 
   /** Forces the next changed or content-invalidated pose to bypass throttling. */
@@ -252,7 +262,33 @@ export class WebGpuSortScheduler {
     if (this.forcePending) return true;
     if (modelView.equals(lastAcceptedModelView)) return false;
     if (settled) return true;
+    if (
+      this.isMobile &&
+      this.xrJitterToleranceEnabled &&
+      this.isWithinMobilePoseTolerance(modelView, lastAcceptedModelView)
+    ) {
+      return false;
+    }
     return interval === 0 || now - this.lastAcceptedAt >= interval;
+  }
+
+  private isWithinMobilePoseTolerance(current: THREE.Matrix4, accepted: THREE.Matrix4): boolean {
+    const a = current.elements;
+    const b = accepted.elements;
+    for (const index of [0, 1, 2, 4, 5, 6, 8, 9, 10]) {
+      if (Math.abs((a[index] as number) - (b[index] as number)) > MOBILE_ROTATION_EPSILON) {
+        return false;
+      }
+    }
+    // Model-view translation includes rotation around the scene origin. Invert
+    // to compare the camera's actual position in mesh-local space instead.
+    const currentPose = this.currentInverseModelView.copy(current).invert().elements;
+    const acceptedPose = this.acceptedInverseModelView.copy(accepted).invert().elements;
+    return [12, 13, 14].every(
+      (index) =>
+        Math.abs((currentPose[index] as number) - (acceptedPose[index] as number)) <=
+        MOBILE_POSITION_EPSILON,
+    );
   }
 }
 
