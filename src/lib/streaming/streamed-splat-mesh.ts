@@ -1009,6 +1009,11 @@ export class StreamedSplatMesh extends SplatMesh {
   private indexedDisplayedSlots = new Uint32Array(0);
   private indexedPendingDisplaySlots: Uint32Array | null = null;
   private indexedStagingGeneration: number | null = null;
+  private indexedQueuedPose: {
+    camera: [number, number, number];
+    forward: [number, number, number];
+    projection: readonly number[];
+  } | null = null;
   private indexedResizeAwaiting: number | null = null;
   private radRevealPolicy: 'progressive' | 'allocation-fraction' | 'projected-quality' =
     'progressive';
@@ -1952,7 +1957,12 @@ export class StreamedSplatMesh extends SplatMesh {
    * boundary. The pager's runs are contiguous in *slot* space, which page
    * storage no longer guarantees is contiguous in the pool.
    */
-  private writeSlabSlots(data: PlanSplats, slot: number, count: number): void {
+  private writeSlabSlots(
+    data: PlanSplats,
+    slot: number,
+    count: number,
+    sourceOffset = 0,
+  ): void {
     let written = 0;
     while (written < count) {
       const at = slot + written;
@@ -1960,7 +1970,7 @@ export class StreamedSplatMesh extends SplatMesh {
       if (!page) return; // beyond reserved storage; `dropped` already warns
       const offset = at % this.slabPageSplats;
       const run = Math.min(count - written, this.slabPageSplats - offset);
-      const slice = slicePlanRun(data, written, run);
+      const slice = slicePlanRun(data, sourceOffset + written, run);
       this.overwriteRangeData(page, slice, offset);
       this.pageTableGlobals.set(slice.globals, at);
       this.applyPersistentSlabRun(page, offset, slice);
@@ -1975,7 +1985,7 @@ export class StreamedSplatMesh extends SplatMesh {
       const start = slots[i] as number;
       let run = 1;
       while (i + run < slots.length && (slots[i + run] as number) === start + run) run++;
-      this.writeSlabSlots(slicePlanRun(data, i, run), start, run);
+      this.writeSlabSlots(data, start, run, i);
       i += run;
     }
   }
@@ -2028,9 +2038,11 @@ export class StreamedSplatMesh extends SplatMesh {
       this.reschedule(this.lastLiveCamera, now);
       return;
     }
-    const camera = this.lastPostedCamera;
-    const forward = this.lastPostedForward;
+    const queued = experiments.radIndexedCameraCoalescing ? this.indexedQueuedPose : null;
+    const camera = queued?.camera ?? this.lastPostedCamera;
+    const forward = queued?.forward ?? this.lastPostedForward;
     if (!camera || !forward || this.pageTableInFlight) return;
+    this.indexedQueuedPose = null;
     this.pendingWork = false;
     this.lastScheduleTime = performance.now();
     this.reschedulePageTable(
@@ -2038,7 +2050,8 @@ export class StreamedSplatMesh extends SplatMesh {
       new THREE.Vector3(...forward),
       new THREE.Frustum(),
       this.lastScheduleTime,
-      this.lastPostedProjection ?? [],
+      queued?.projection ?? this.lastPostedProjection ?? [],
+      true,
     );
   }
 
@@ -2207,7 +2220,6 @@ export class StreamedSplatMesh extends SplatMesh {
     if (this.radPublicationDiagnostics.length > RAD_DIAGNOSTIC_RING_SIZE) {
       this.radPublicationDiagnostics.shift();
     }
-    console.debug('[vlam:rad-publication]', JSON.stringify(diagnostic));
   }
 
   private indexedPublicationIsCurrent(): boolean {
@@ -2510,9 +2522,17 @@ export class StreamedSplatMesh extends SplatMesh {
     const revealQuality = this.indexedPendingRevealQuality;
     this.indexedPendingRevealQuality = null;
     this.renderedGenerationValue = generation;
-    const retained = new Set(next);
-    for (const slot of this.indexedDisplayedSlots) {
-      if (!retained.has(slot)) this.pageTableGlobals[slot] = 0xffffffff;
+    if (experiments.radIndexedSlotMasks) {
+      const retained = new Uint8Array(this.pageTableGlobals.length);
+      for (const slot of next) retained[slot] = 1;
+      for (const slot of this.indexedDisplayedSlots) {
+        if (retained[slot] !== 1) this.pageTableGlobals[slot] = 0xffffffff;
+      }
+    } else {
+      const retained = new Set(next);
+      for (const slot of this.indexedDisplayedSlots) {
+        if (!retained.has(slot)) this.pageTableGlobals[slot] = 0xffffffff;
+      }
     }
     this.indexedDisplayedSlots = Uint32Array.from(next);
     this.pageTableDrawn = next.length;
@@ -2811,7 +2831,8 @@ export class StreamedSplatMesh extends SplatMesh {
       !this.radChunkResidency &&
       complete &&
       this.demandReadyGeneration === this.demandGeneration &&
-      !this.demandNeedsNewRevision
+      !this.demandNeedsNewRevision &&
+      (!experiments.radIndexedSkipIdleFetchScan || this.fetching.size > 0)
     ) {
       const wanted = new Set(this.demandWants.map((want) => want.file));
       wanted.add(0);
@@ -4023,6 +4044,7 @@ export class StreamedSplatMesh extends SplatMesh {
       for (const [key, entry] of this.staged) before.staged.set(key, entry.uploadedCount);
     }
     const compactionCountBefore = this.compactionCount;
+    const hadPendingWork = this.pendingWork;
     this.pendingWork = false;
     this.lodCommitBlockedBySort = false;
     this.lastScheduleTime = now;
@@ -4065,6 +4087,7 @@ export class StreamedSplatMesh extends SplatMesh {
         _frustum,
         now,
         _streamProjection.elements,
+        hadPendingWork,
       );
       // The page-table path still reports its per-update CPU cost. Returning
       // null here made `onPerformanceEvent` silent on the one path a `.rad`
@@ -5647,21 +5670,101 @@ export class StreamedSplatMesh extends SplatMesh {
     frustum: THREE.Frustum,
     now: number,
     projection: readonly number[] = [],
+    hadPendingWork = false,
   ): void {
     if (this.pageTableDisposed) return;
-    const camera: [number, number, number] = [cameraLocal.x, cameraLocal.y, cameraLocal.z];
-    const forward: [number, number, number] = [forwardLocal.x, forwardLocal.y, forwardLocal.z];
+    let camera: [number, number, number] = [cameraLocal.x, cameraLocal.y, cameraLocal.z];
+    let forward: [number, number, number] = [forwardLocal.x, forwardLocal.y, forwardLocal.z];
     this.latestDemandCamera = camera;
+    let projectionForPlan = projection;
+    this.indexedQueuedPose = null;
     const limit = this.pageTableLimit / this.lodScaleValue;
     const fov = this.pageTableFoveation;
-    const key = pageTableDemandKey(
+    let key = pageTableDemandKey(
       camera,
       forward,
-      projection,
+      projectionForPlan,
       limit,
       this.pageTableDrawBudget,
       fov,
     );
+    const comparePostedPose = experiments.radIndexedIdlePoseTolerance ||
+      (experiments.radIndexedCameraCoalescing &&
+        (this.pageTableInFlight || this.indexedPublishGeneration !== null ||
+          (this.indexedStagingGeneration !== null &&
+            this.indexedStagingGeneration !== this.pageTableDisplayGeneration &&
+            this.lastPlanReason !== 'waiting-for-children' &&
+            this.lastPlanReason !== 'capacity-blocked' &&
+            this.lastPlanReason !== 'non-refinement')));
+    const sameConfiguration = comparePostedPose &&
+      key.split('|').slice(3).join('|') === this.demandKey.split('|').slice(3).join('|');
+    const previousProjection = this.lastPostedProjection;
+    const sameLens = comparePostedPose && previousProjection !== null &&
+      projection.length === previousProjection.length &&
+      (projection.length === 0 ||
+        (projection.length === 16 &&
+          [0, 1, 2].every((row) => {
+            // Row norms retain lens/scale changes while ignoring view rotation.
+            const scale = Math.hypot(projection[row]!, projection[row + 4]!, projection[row + 8]!);
+            const previous = Math.hypot(
+              previousProjection[row]!, previousProjection[row + 4]!, previousProjection[row + 8]!,
+            );
+            return Math.abs(scale - previous) <= Math.max(1e-7, previous * 1e-6);
+          })));
+    const closeIdlePose = experiments.radIndexedIdlePoseTolerance &&
+      this.lastPostedCamera !== null && this.lastPostedForward !== null &&
+      squaredDistance3(camera, this.lastPostedCamera) <= 0.005 * 0.005 &&
+      forward[0] * this.lastPostedForward[0] +
+        forward[1] * this.lastPostedForward[1] +
+        forward[2] * this.lastPostedForward[2] >= Math.cos(Math.PI / 720);
+    // A desk-still XR pose can jitter by millimetres while its exact demand key
+    // changes every idle tick. Skip only a settled indexed cut: new data,
+    // unfinished refinement, publication, lens changes, and real motion still post.
+    if (
+      experiments.radIndexedIdlePoseTolerance &&
+      this.indexedPageTable && !this.radChunkResidency &&
+      !hadPendingWork && !this.pageTableInFlight && !this.pageTableContinuePending &&
+      !this.demandNeedsNewRevision && this.indexedPublishGeneration === null &&
+      this.indexedStagingGeneration === null && sameConfiguration && sameLens && closeIdlePose
+    ) {
+      this.pendingWork = false;
+      this.lastScheduleTime = now;
+      return;
+    }
+    if (
+      experiments.radIndexedCameraCoalescing &&
+      this.indexedPageTable &&
+      !this.radChunkResidency &&
+      !this.demandNeedsNewRevision &&
+      this.lastPostedCamera !== null &&
+      this.lastPostedForward !== null &&
+      this.lastPostedProjection !== null &&
+      (this.pageTableInFlight ||
+        this.indexedPublishGeneration !== null ||
+        (this.indexedStagingGeneration !== null &&
+          this.indexedStagingGeneration !== this.pageTableDisplayGeneration &&
+          this.lastPlanReason !== 'waiting-for-children' &&
+          this.lastPlanReason !== 'capacity-blocked' &&
+          this.lastPlanReason !== 'non-refinement'))
+    ) {
+      // Finish bounded staging rather than cancelling its complete cover.
+      // Tiny pose jitter does not need to queue a replacement after publication.
+      const sameLocation = squaredDistance3(camera, this.lastPostedCamera) <= 1;
+      if (sameConfiguration && sameLens && sameLocation) {
+        this.indexedQueuedPose = experiments.radIndexedIdlePoseTolerance && closeIdlePose
+          ? null
+          : { camera, forward, projection: Array.from(projection) };
+        if (this.indexedPublishGeneration !== null) {
+          this.pendingWork = false;
+          this.lastScheduleTime = now;
+          return;
+        }
+        camera = [...this.lastPostedCamera];
+        forward = [...this.lastPostedForward];
+        projectionForPlan = this.lastPostedProjection;
+        key = this.demandKey;
+      }
+    }
     const demandChanged = key !== this.demandKey;
     if (this.radChunkDemandSettledRevision >= 0) {
       if (this.radChunkDemandSettlementIsCurrent(camera, forward, limit)) {
@@ -5726,19 +5829,6 @@ export class StreamedSplatMesh extends SplatMesh {
         this.pendingWork = true;
         this.lastScheduleTime = -Infinity;
       }
-      if (this.onPerformanceEvent !== undefined) {
-        console.debug(
-          '[vlam:rad-reschedule]',
-          JSON.stringify({
-            state: 'blocked-in-flight',
-            demandGeneration: this.demandGeneration,
-            cameraEpoch: this.cameraEpoch,
-            cameraKey: this.demandKey,
-            cameraPosition: camera,
-            queuedRevision: this.demandNeedsNewRevision,
-          }),
-        );
-      }
       return;
     }
     this.pendingWork = false;
@@ -5758,7 +5848,7 @@ export class StreamedSplatMesh extends SplatMesh {
     this.lastPostedCamera = camera;
     this.hardRelocationPending = false;
     this.lastPostedForward = forward;
-    this.lastPostedProjection = projection.length ? Array.from(projection) : [];
+    this.lastPostedProjection = projectionForPlan.length ? Array.from(projectionForPlan) : [];
     this.lastPostedLimit = limit;
     const seq = ++this.pageTableSeq;
     this.pageTableActiveSeq = seq;
@@ -5773,7 +5863,7 @@ export class StreamedSplatMesh extends SplatMesh {
       ...(this.pageTableContinuePending ? { continuePendingPlan: true } : {}),
       cameraLocal: camera,
       cameraForward: forward,
-      projection: Array.from(projection),
+      projection: Array.from(projectionForPlan),
       ...this.pageTableFoveation,
       limit,
       budget: this.pageTableDrawBudget,
@@ -5845,21 +5935,30 @@ export class StreamedSplatMesh extends SplatMesh {
     // bounds union and a row-range mark for every one of them, which stalled the
     // main thread for seconds whenever a camera move churned the frontier.
     const applyStartedAt = performance.now();
+    let indexedSlotState: Uint8Array | null = null;
     if (this.indexedPageTable && !this.radChunkResidency) {
       const writeSlots = plan.writeSlots ?? new Uint32Array(0);
       if (writeSlots.length !== plan.appends.count) {
         throw new Error('StreamedSplatMesh: indexed plan write slots do not match appends.');
       }
-      const displayed = new Set(this.indexedDisplayedSlots);
-      const seen = new Set<number>();
+      // Slot IDs are dense. A byte per slot avoids rebuilding two large Sets
+      // for every camera-driven plan while retaining the same validation.
+      const slotState = (indexedSlotState = new Uint8Array(limit));
+      for (const slot of this.indexedDisplayedSlots) {
+        if (slot < limit) slotState[slot] = 1;
+      }
       let duplicate = false;
       let outOfRange = false;
       let displayedMutation = false;
       for (const slot of writeSlots) {
-        if (seen.has(slot)) duplicate = true;
-        seen.add(slot);
-        if (slot >= limit) outOfRange = true;
-        if (displayed.has(slot)) displayedMutation = true;
+        if (slot >= limit) {
+          outOfRange = true;
+          continue;
+        }
+        const state = slotState[slot];
+        if (state === 1) displayedMutation = true;
+        if (state === 2) duplicate = true;
+        slotState[slot] = 2;
       }
       if (duplicate || outOfRange || displayedMutation) {
         this.discardIndexedPublication('invalid-indexed-slot-write');
@@ -6078,26 +6177,30 @@ export class StreamedSplatMesh extends SplatMesh {
           maxVisibleProjectedRatio: plan.maxVisibleProjectedRatio ?? 0,
         };
       } else if (indexedPublication) {
-        const poolIndices = this.poolIndicesForSlabSlots(indexedPublication);
-        const previousVisibleCount = this.pageTableDrawn;
-        const activeListStartedAt = performance.now();
-        this.indexedPublishActiveListVersion = this.replaceActiveIndices(poolIndices);
-        this.retainVisibleInstanceCount(previousVisibleCount);
-        activeListMs = performance.now() - activeListStartedAt;
-        this.indexedPendingDisplaySlots = indexedPublication;
-        this.indexedPublishGeneration = plan.candidateGeneration as number;
-        this.indexedPublishRevision = plan.candidateRevision ?? null;
         const slotToNode = this.sampleRadDiagnosticValues(indexedPublication).map((slot) => ({
           slot,
           global: this.pageTableGlobals[slot] ?? 0xffffffff,
         }));
-        const slotSet = new Set<number>();
         let duplicateSlots = false;
         let outOfRangeSlots = false;
-        for (const slot of indexedPublication) {
-          if (slotSet.has(slot)) duplicateSlots = true;
-          slotSet.add(slot);
-          if (slot >= limit) outOfRangeSlots = true;
+        if (experiments.radIndexedSlotMasks) {
+          // Reuse write-validation bytes: bit4 marks membership in this cut.
+          const slotState = indexedSlotState!;
+          for (const slot of indexedPublication) {
+            if (slot >= limit) {
+              outOfRangeSlots = true;
+              continue;
+            }
+            if ((slotState[slot]! & 4) !== 0) duplicateSlots = true;
+            slotState[slot] = slotState[slot]! | 4;
+          }
+        } else {
+          const slotSet = new Set<number>();
+          for (const slot of indexedPublication) {
+            if (slotSet.has(slot)) duplicateSlots = true;
+            slotSet.add(slot);
+            if (slot >= limit) outOfRangeSlots = true;
+          }
         }
         const diagnostic = publicationDiagnostic;
         if (diagnostic) {
@@ -6113,6 +6216,15 @@ export class StreamedSplatMesh extends SplatMesh {
           this.discardIndexedPublication('invalid-candidate');
           return;
         }
+        const poolIndices = this.poolIndicesForSlabSlots(indexedPublication);
+        const previousVisibleCount = this.pageTableDrawn;
+        const activeListStartedAt = performance.now();
+        this.indexedPublishActiveListVersion = this.replaceActiveIndices(poolIndices);
+        this.retainVisibleInstanceCount(previousVisibleCount);
+        activeListMs = performance.now() - activeListStartedAt;
+        this.indexedPendingDisplaySlots = indexedPublication;
+        this.indexedPublishGeneration = plan.candidateGeneration as number;
+        this.indexedPublishRevision = plan.candidateRevision ?? null;
       } else {
         this.setSlabResident(drawn);
         this.pageTableDrawn = drawn;

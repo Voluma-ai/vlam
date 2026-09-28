@@ -26,4 +26,50 @@ export const experiments: ExperimentConfiguration = {
         ? 'approximate-sh-stream'
         : 'buffered',
   webglProvokingVertex: __VLAM_EXPERIMENT__ === 'first-vertex' ? 'first-vertex' : 'existing',
+  packedCenterColors:
+    __VLAM_EXPERIMENT__ === 'packed-center-colors' ||
+    __VLAM_EXPERIMENT__ === 'unified-vertex-rad-exponent' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse-idle-pose' ||
+    __VLAM_EXPERIMENT__ === 'unified-vertex-gaussian-exponent',
+  unifiedVertexRadExponent:
+    __VLAM_EXPERIMENT__ === 'unified-vertex-rad-exponent' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse-idle-pose' ||
+    __VLAM_EXPERIMENT__ === 'unified-vertex-gaussian-exponent',
+  unifiedFlatVaryings:
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse-idle-pose' ||
+    __VLAM_EXPERIMENT__ === 'unified-vertex-gaussian-exponent',
+  radIndexedCameraCoalescing:
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse-idle-pose',
+  radIndexedSkipIdleFetchScan:
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse-idle-pose',
+  radIndexedSlotMasks:
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse-idle-pose',
+  unifiedPackedColorReuse: __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse' ||
+    __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse-idle-pose',
+  radIndexedIdlePoseTolerance: __VLAM_EXPERIMENT__ === 'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse-idle-pose',
+  unifiedVertexGaussianExponent: __VLAM_EXPERIMENT__ === 'unified-vertex-gaussian-exponent',
 };

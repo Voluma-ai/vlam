@@ -59,3 +59,35 @@ test('preserves Gaussian, DoF, RAD, clipping and picking across material paths',
     }
   }
 });
+
+
+test('keeps faint RAD layers unless the cutoff is enabled and restores them after XR', async ({
+  page,
+}, info) => {
+  const backend = info.project.name === 'chromium-webgpu' ? 'webgpu' : 'webgl2';
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(`/src/viewer/rad-alpha-cutoff-probe.html?backend=${backend}`);
+  await expect(page.locator('#result')).not.toHaveText('', { timeout: 25_000 });
+  const data = JSON.parse((await page.locator('#result').textContent())!) as {
+    backend: string;
+    samples: { name: string; alphaTest: number; pixels: number[] }[];
+  };
+  expect(errors).toEqual([]);
+  expect(data.backend).toBe(backend);
+  const sample = (name: string) => data.samples.find((entry) => entry.name === name)!;
+  const alpha = (name: string) => sample(name).pixels[(32 * 64 + 32) * 4 + 3]!;
+  expect(sample('default').alphaTest).toBe(0);
+  expect(alpha('default')).toBeGreaterThan(0.1);
+  for (const name of ['opt-in', 'xr', 'xr-rebuilt']) {
+    expect(sample(name).alphaTest).toBe(0.5 / 255);
+    expect(
+      sample(name).pixels.every((value) => value === 0),
+      name,
+    ).toBe(true);
+  }
+  expect(sample('restored').alphaTest).toBe(0.0001);
+  expect(sample('restored').pixels).toEqual(sample('before-xr').pixels);
+  expect(sample('default-again').alphaTest).toBe(0);
+  expect(sample('default-again').pixels).toEqual(sample('default').pixels);
+});

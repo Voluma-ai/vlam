@@ -62,6 +62,7 @@ const HTML_PAGES: Readonly<Record<string, string>> = {
   '/render-benchmark.html': 'src/viewer/render-benchmark.html',
   '/memory-benchmark.html': 'src/viewer/memory-benchmark.html',
   '/spark-benchmark.html': 'src/viewer/spark-benchmark.html',
+  '/spark-xr-benchmark.html': 'src/viewer/spark-xr-benchmark.html',
   '/vlam-benchmark.html': 'src/viewer/vlam-benchmark.html',
   '/playcanvas-benchmark.html': 'src/viewer/playcanvas-benchmark.html',
   ...Object.fromEntries(

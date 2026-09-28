@@ -1,3 +1,4 @@
+import { readSplatCenter } from './splat-texture-read';
 /**
  * @role Bridge
  * Portable stable WebGPU radix sorting adapted to Three.js TSL compute nodes.
@@ -169,9 +170,10 @@ export class RadixSorter implements SplatSorter {
               int(poolIndex).div(int(dataTextureWidth as number)),
             )
           : null;
+        // Constructor validation requires a texture when no work buffer is supplied.
         const center = workCenters
           ? workCenters.element(poolIndex).xyz
-          : textureLoad(centersTexture, texel as THREE.Node<'ivec2'>).xyz;
+          : readSplatCenter(centersTexture!, texel as THREE.Node<'ivec2'>);
         // Match the draw material's placement before measuring depth, so
         // independently transformed sources interleave in one global order.
         const depthPoint = perSource

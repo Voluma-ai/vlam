@@ -20,6 +20,15 @@ const permitted = new Set([
   'exact-stream',
   'approximate-sh-stream',
   'first-vertex',
+  'packed-center-colors',
+  'unified-vertex-rad-exponent',
+  'unified-flat-varyings',
+  'unified-flat-varyings-coalesced-camera',
+  'unified-flat-varyings-coalesced-camera-idle-fetch',
+  'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask',
+  'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse',
+  'unified-flat-varyings-coalesced-camera-idle-fetch-slot-mask-packed-color-reuse-idle-pose',
+  'unified-vertex-gaussian-exponent',
 ]);
 if (!permitted.has(variant)) throw new Error(`Unknown VLAM experiment: ${variant}`);
 

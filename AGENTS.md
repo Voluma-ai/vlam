@@ -21,6 +21,9 @@ kept authoritative so this one does not drift.
  orientation) compile cleanly and are only visible in pixels. An agent that
  cannot look at the rendered output must say so explicitly rather than
  reporting a change as verified.
+- **WebGPU viewer: external browser only.** When testing the VLAM WebGPU
+ viewer, always open the external Chromium or Chrome browser. The built-in
+ browser from Codex does not work for this.
 - **Headless verification bar.** Run `npm test`, `npm run test:browser`,
   `npm run lint`, `npm run build`, `npm run docs:check`, and
   `npm run docs:samples`. Browser checks need the one-time

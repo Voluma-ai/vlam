@@ -31,6 +31,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- Standalone RAD fragment culling is opt-in through `material.alphaTest`
+  (default `0`). The viewer enables the cutoff only during WebXR presentation
+  and restores the previous threshold on exit, preserving non-XR blending.
+
 - `StreamedSplatMeshOptions.radStrategy` now accepts `'auto'` (the default,
   preserving moderate-RAD prefix and large-RAD page-table selection) or
   `'page-table'` to force the indexed page table for fitting RAD captures.

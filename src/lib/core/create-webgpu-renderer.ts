@@ -51,6 +51,7 @@ export interface WebGPURendererGpuAdapter {
 export interface WebGPURendererGpu {
   requestAdapter(options?: {
     powerPreference?: WebGpuPowerPreference;
+    xrCompatible?: boolean;
   }): Promise<WebGPURendererGpuAdapter | null>;
 }
 
@@ -75,6 +76,14 @@ export interface CreateWebGPURendererOptions extends Omit<
    * @defaultValue `'high-performance'`
    */
   powerPreference?: WebGpuPowerPreference | null;
+  /**
+   * Request an adapter whose device can be used by an immersive WebXR session.
+   * This must be selected before `requestDevice`; an existing device cannot be
+   * made XR-compatible later.
+   *
+   * @defaultValue `false`
+   */
+  xrCompatible?: boolean;
   /**
    * Throw instead of degrading to three's WebGL2 backend. Adapter and device
    * failures rethrow their original error, unwrapped.
@@ -154,7 +163,7 @@ function guardDroppedInstance(device: WebGPURendererGpuDevice): void {
  *
  * | Call | Added parameters |
  * | --- | --- |
- * | `navigator.gpu.requestAdapter` | `powerPreference: 'high-performance'`, except on Windows where Chrome ignores it and warns |
+ * | `navigator.gpu.requestAdapter` | `powerPreference: 'high-performance'`, except on Windows where Chrome ignores it and warns; `xrCompatible: true` when requested |
  * | `adapter.requestDevice` | Every advertised adapter feature as `requiredFeatures`, plus `maxStorageBufferBindingSize`, `maxBufferSize`, and `maxTextureDimension2D` at the adapter's advertised maxima as `requiredLimits` |
  * | `new THREE.WebGPURenderer` | `antialias: true`, the supported `powerPreference`, and the requested `device` (or just the raised `requiredLimits` when device creation failed and Three.js must retry); caller options can override `antialias` |
  *
@@ -227,6 +236,7 @@ export async function createWebGPURenderer(
   const {
     powerPreference = 'high-performance',
     requireWebGpu = false,
+    xrCompatible = false,
     gpu,
     ...rendererOptions
   } = options;
@@ -252,7 +262,10 @@ export async function createWebGPURenderer(
     } else {
       let adapterFailed = false;
       try {
-        adapter = await entry.requestAdapter({ ...powerOptions });
+        adapter = await entry.requestAdapter({
+          ...powerOptions,
+          ...(xrCompatible ? { xrCompatible: true } : {}),
+        });
       } catch (error) {
         if (requireWebGpu) throw error;
         // One warning per failure: an adapter that threw has already explained

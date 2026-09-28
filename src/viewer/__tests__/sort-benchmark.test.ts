@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { StreamedSplatPerformanceEvent } from '../../lib/streaming';
-import { createFrameBenchmark, isSwapPerformanceEvent } from '../sort-benchmark';
+import { createFrameBenchmark, isSwapPerformanceEvent, verifyUnifiedGpuSort } from '../sort-benchmark';
+import type * as THREE from 'three/webgpu';
+import type { UnifiedSplatMesh } from '../../lib/unified';
 
 const swapEvent = (overrides: Partial<StreamedSplatPerformanceEvent> = {}) => ({
   timestamp: 10,
@@ -129,6 +131,34 @@ describe('createFrameBenchmark swap attribution', () => {
     ]);
   });
 
+  it('samples changing rendered cuts after warm-up and excludes the terminal frame', () => {
+    const benchmark = createFrameBenchmark(0.05, 0.05);
+    benchmark.record(0, [], { renderedSplatCount: 9000 });
+    benchmark.record(40, [], { renderedSplatCount: 8000 });
+    benchmark.record(50, [], { renderedSplatCount: 100 });
+    benchmark.record(60, [], { renderedSplatCount: 200 });
+    benchmark.record(80, [], { renderedSplatCount: 0 });
+    const result = benchmark.record(100, [], { renderedSplatCount: 7000 });
+    expect(result).toMatchObject({
+      sampleCount: 3,
+      renderedSplatCountSamples: 3,
+      renderedSplatCountMean: 100,
+      renderedSplatCountMin: 0,
+      renderedSplatCountMax: 200,
+    });
+  });
+
+  it('reports unavailable rendered counts without inventing zero-work samples', () => {
+    const benchmark = createFrameBenchmark(0, 0.01);
+    benchmark.record(0);
+    expect(benchmark.record(10)).toMatchObject({
+      renderedSplatCountSamples: 0,
+      renderedSplatCountMean: null,
+      renderedSplatCountMin: null,
+      renderedSplatCountMax: null,
+    });
+  });
+
   it('excludes warm-up mutations from attribution', () => {
     const benchmark = createFrameBenchmark(0.05, 0.05);
     benchmark.record(0, [swapEvent()]);
@@ -140,6 +170,43 @@ describe('createFrameBenchmark swap attribution', () => {
     expect(benchmark.record(110)).toMatchObject({
       swapTickCount: 0,
       swapFrameCount: 0,
+    });
+  });
+});
+
+describe('unified GPU counting-order verification', () => {
+  const inspect = (order: number[], buckets: number[]) => {
+    const orderAttribute = {};
+    const bucketAttribute = {};
+    const mesh = {
+      geometry: { instanceCount: order.length },
+      performanceTimings: { activeCount: order.length, sortSerial: 1 },
+      orderAttribute,
+      sorter: { kind: 'counting', workingAttributes: [{}, {}, {}, bucketAttribute] },
+    } as unknown as UnifiedSplatMesh;
+    const renderer = {
+      getArrayBufferAsync: async (attribute: object) => attribute === orderAttribute
+        ? new Float32Array(order).buffer
+        : new Uint32Array(buckets).buffer,
+    } as unknown as THREE.WebGPURenderer;
+    return verifyUnifiedGpuSort(mesh, renderer);
+  };
+
+  it('accepts a complete permutation in ascending GPU bucket order', async () => {
+    expect(await inspect([2, 0, 1], [3, 9, 1])).toMatchObject({
+      available: true, count: 3, duplicates: 0, missing: 0, foreign: 0, bucketInversions: 0,
+    });
+  });
+
+  it('reports duplicate, missing and foreign draw slots', async () => {
+    expect(await inspect([2, 2, 0, 8], [3, 9, 1, 10])).toMatchObject({
+      duplicates: 1, missing: 2, foreign: 1,
+    });
+  });
+
+  it('reports bucket inversions even with complete slot coverage', async () => {
+    expect(await inspect([1, 0, 2], [3, 9, 1])).toMatchObject({
+      duplicates: 0, missing: 0, foreign: 0, bucketInversions: 2,
     });
   });
 });

@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
-import { screenUV, texture as tslTexture } from 'three/tsl';
+import { installRadSelectionSnapshot, snapshotVlamRadSelection } from './rad-selection-snapshot';
+import { context, screenUV, texture as tslTexture, workingToColorSpace } from 'three/tsl';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import CameraControls from 'camera-controls';
 import {
@@ -29,6 +30,7 @@ import {
   type StreamedSplatPerformanceEvent,
 } from '../lib/streaming';
 import { computeProjection } from '../lib/projection/compute';
+import { UnifiedSplatMesh } from '../lib/unified';
 import {
   DEFAULT_CLASSIC_SPLATS_PER_SWAP,
   DEFAULT_PAGE_TABLE_WRITES_PER_PLAN,
@@ -71,7 +73,12 @@ import {
   validateSceneUrl,
 } from './scene-url';
 import { createCollisionWorld, type CollisionWorld } from './collision';
-import { createFrameBenchmark, isSwapPerformanceEvent, verifyGpuSort } from './sort-benchmark';
+import {
+  createFrameBenchmark,
+  isSwapPerformanceEvent,
+  verifyGpuSort,
+  verifyUnifiedGpuSort,
+} from './sort-benchmark';
 import {
   createAdaptiveDprState,
   scopeAdaptiveDprTransitions,
@@ -91,6 +98,7 @@ import {
 import { parseFpvParam, parseOrbitPlayingParam, writeShareViewSearchParams } from './share-view';
 import {
   alignXrRigToCamera,
+  xrHeadDrifted,
   applyPresentationSplatBudget,
   attachXrSession,
   captureXrCameraState,
@@ -116,10 +124,10 @@ import { PressForwardDetector } from './press-forward';
 import { XrDiagnostics, type XrSortDiagnosticsSnapshot } from './xr-diagnostics';
 import {
   XrSortCadence,
-  applyXrDepthMode,
+  applyXrMaterialMode,
   resolveXrFoveation,
   resolveXrStabilityOptions,
-  restoreXrDepthMode,
+  restoreXrMaterialState,
   type XrMaterialState,
 } from './xr-stability';
 import {
@@ -472,6 +480,12 @@ function wireSiteMenu(): void {
 
 async function main(): Promise<void> {
   const params = new URLSearchParams(location.search);
+  if (import.meta.env.DEV && params.get('spark') === '1') {
+    params.delete('spark');
+    if (!params.has('mode')) params.set('mode', 'matched');
+    location.replace(`/spark-xr-benchmark.html?${params}`);
+    return;
+  }
   // Mobile browsers often open `target=_blank` tabs in the background. WebGPU
   // adapter setup and the first `?scene=` fetch then fail; a manual refresh
   // works because the tab is focused. Wait (briefly) before GPU/scene work.
@@ -563,6 +577,11 @@ async function main(): Promise<void> {
       : rendererAntialiasParam === '1'
         ? true
         : !perfMode.enabled;
+  const xrSupported =
+    params.get('xr') !== '0' &&
+    typeof navigator !== 'undefined' &&
+    navigator.xr !== undefined &&
+    (await navigator.xr.isSessionSupported('immersive-vr').catch(() => false));
   // Adapter, device, raised limits and the Windows powerPreference quirk, in
   // one call - including the owned `requestDevice` that keeps MSAA alive and
   // preserves the real failure instead of three's flat "WebGPU is not
@@ -570,8 +589,19 @@ async function main(): Promise<void> {
   const renderer = await createWebGPURenderer({
     antialias: rendererAntialias,
     forceWebGL,
+    xrCompatible: xrSupported,
     trackTimestamp: gpuTimestampsEnabled,
   });
+  // Avoid three's full-screen color-conversion pass for Quest XR on either backend.
+  // Splat colors are already display-ready; ordinary materials encode inline.
+  const sparkColorOutputParam = params.get('sparkColorOutput');
+  const sparkColorOutput =
+    sparkColorOutputParam === null
+      ? xrSupported && deviceProfile.isHeadset === true
+      : sparkColorOutputParam === '1';
+  // Keep XR enabled before init so Three.js or VLAM requests an XR-compatible
+  // adapter before creating the WebGPU device.
+  renderer.xr.enabled = xrSupported;
   // Render resolution. Splat rendering is fragment-bound, so on a high-DPI
   // mobile screen this is often the single largest cost; ?pixelRatio=N pins it
   // (e.g. 1 or 1.5) for A/B, overriding performance mode and adaptive DPR.
@@ -638,7 +668,12 @@ async function main(): Promise<void> {
         : pixelRatioCeiling());
   renderer.setPixelRatio(resolvePixelRatio());
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.outputColorSpace = sparkColorOutput ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace;
+  if (sparkColorOutput) {
+    renderer.contextNode = context({
+      getOutput: (output: THREE.Node<'vec4'>) => workingToColorSpace(output, THREE.SRGBColorSpace),
+    });
+  }
   container.appendChild(renderer.domElement);
   try {
     await renderer.init();
@@ -663,6 +698,44 @@ async function main(): Promise<void> {
     backend: backendName,
     recommendedFramebufferScale: recommendedXrFramebufferScale(deviceProfile),
   });
+  // Three r186 omits scaleFactor when creating its WebGPU XR projection layer.
+  // Keep the hook on this renderer's binding so ?xrScale also controls WebGPU XR.
+  if (backendName === 'WebGPU' && xrStability.framebufferScale < 1) {
+    type XrGpuLayer = { textureWidth: number; textureHeight: number };
+    type XrGpuBinding = {
+      createProjectionLayer(init: Record<string, unknown>): XrGpuLayer;
+    };
+    const xrManager = renderer.xr as unknown as {
+      getWebGPUBinding(): XrGpuBinding | null;
+    };
+    const getBinding = xrManager.getWebGPUBinding.bind(xrManager);
+    const configured = new WeakSet<XrGpuBinding>();
+    xrManager.getWebGPUBinding = () => {
+      const binding = getBinding();
+      if (binding && !configured.has(binding)) {
+        configured.add(binding);
+        const createLayer = binding.createProjectionLayer.bind(binding);
+        try {
+          binding.createProjectionLayer = (init) => {
+            const layer = createLayer({ ...init, scaleFactor: xrStability.framebufferScale });
+            console.info(
+              'VLAM_XR_LAYER',
+              JSON.stringify({
+                scale: xrStability.framebufferScale,
+                colorFormat: init.colorFormat,
+                width: layer.textureWidth,
+                height: layer.textureHeight,
+              }),
+            );
+            return layer;
+          };
+        } catch {
+          console.warn('WebGPU XR layer scale is unavailable; using the browser native scale.');
+        }
+      }
+      return binding;
+    };
+  }
   const xrSortCadence = new XrSortCadence(xrStability.sortHz);
   const xrDiagnostics = xrStability.diagnostics ? new XrDiagnostics() : null;
 
@@ -714,7 +787,9 @@ async function main(): Promise<void> {
   );
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x1a1a1f);
+  scene.background = sparkColorOutput
+    ? new THREE.Color().setRGB(0x1a / 255, 0x1a / 255, 0x1f / 255)
+    : new THREE.Color(0x1a1a1f);
 
   // Opaque world-locked reference for the Quest A/B harness. If this cube
   // trails with the goose, the fault is frame pacing or XR pose delivery; if
@@ -765,18 +840,26 @@ async function main(): Promise<void> {
   // is inside the geometry. Parenting on `sessionstart` and restoring on
   // `sessionend` keeps the 2D path untouched for anyone who never enters VR.
   const xrRig = new THREE.Group();
+  // Optional deterministic XR view motion for headset-still diagnostics.
+  const xrMotionParam = params.get('xrMotion');
+  const xrMotion =
+    xrMotionParam === 'rotate' || xrMotionParam === 'translate' ? xrMotionParam : null;
+  let xrMotionStartedAt: number | null = null;
+  const xrMotionBasePosition = new THREE.Vector3();
+  const xrMotionBaseQuaternion = new THREE.Quaternion();
+  const xrMotionRotation = new THREE.Quaternion();
+  const xrMotionUpAxis = new THREE.Vector3(0, 1, 0);
+  const xrMotionOffset = new THREE.Vector3();
   let xrCameraState: XrCameraState | null = null;
   let xrPlacementPending = false;
   let xrMaterialState: XrMaterialState | null = null;
   const restoreXrMaterial = (): void => {
-    restoreXrDepthMode(xrMaterialState);
+    restoreXrMaterialState(xrMaterialState);
     xrMaterialState = null;
   };
   const applyXrMaterial = (mesh: SplatMesh): void => {
     restoreXrMaterial();
-    if (xrStability.depthAlphaThreshold !== null) {
-      xrMaterialState = applyXrDepthMode(mesh, xrStability.depthAlphaThreshold);
-    }
+    xrMaterialState = applyXrMaterialMode(mesh, xrStability.depthAlphaThreshold);
   };
   const placeXrDiagnosticProbe = (mesh: SplatMesh): void => {
     mesh.updateWorldMatrix(true, false);
@@ -803,7 +886,10 @@ async function main(): Promise<void> {
   const logXrDiagnostics = (final: boolean): void => {
     if (!xrDiagnostics || !mounted) return;
     const report = xrDiagnostics.report(performance.now(), workerSortSnapshot(splats), final);
-    console.info('XR_DIAGNOSTIC', JSON.stringify({ ...report, config: xrStability }));
+    console.info(
+      'XR_DIAGNOSTIC',
+      JSON.stringify({ ...report, config: { ...xrStability, motion: xrMotion } }),
+    );
   };
   /** Applies the XR framebuffer cap while presenting, the page budget otherwise. */
   const applySplatBudget = (mesh: SplatMesh | undefined = splats): void => {
@@ -831,98 +917,102 @@ async function main(): Promise<void> {
     }
     applyPresentationSplatBudget(mesh, page, renderer.xr.isPresenting);
   };
-  if (params.get('xr') !== '0' && typeof navigator !== 'undefined' && navigator.xr) {
+  if (xrSupported && typeof navigator !== 'undefined' && navigator.xr) {
     try {
-      if (await navigator.xr.isSessionSupported('immersive-vr')) {
-        renderer.xr.enabled = true;
-        // three 0.185.x reads this setting only on its WebGL XR path. Its
-        // XRGPUBinding path creates a native-scale projection layer, so WebGPU
-        // uses the budget and fixed-foveation levers below instead.
-        const xrFramebufferScale = xrFramebufferScaleForBackend(
-          backendName,
-          xrStability.framebufferScale,
-        );
-        if (xrFramebufferScale !== null) {
-          // Must precede the session: three warns and ignores this once presenting.
-          renderer.xr.setFramebufferScaleFactor(xrFramebufferScale);
+      // Three r186 consumes this setter only for WebGL XR. WebGPU XR uses
+      // the binding hook above to scale its projection layer.
+      const xrFramebufferScale = xrFramebufferScaleForBackend(
+        backendName,
+        xrStability.framebufferScale,
+      );
+      if (xrFramebufferScale !== null) {
+        // Must precede the session: three warns and ignores this once presenting.
+        renderer.xr.setFramebufferScaleFactor(xrFramebufferScale);
+      }
+      const foveation = resolveXrFoveation(params.get('foveation'));
+      renderer.xr.setFoveation(foveation);
+      renderer.xr.addEventListener('sessionstart', () => {
+        xrMotionStartedAt = null;
+        // Save the exact desktop eye pose and lens before three starts
+        // copying the XR head/union camera into the application camera.
+        xrCameraState = captureXrCameraState(camera);
+        xrPlacementPending = true;
+        xrRig.position.set(0, 0, 0);
+        xrRig.quaternion.identity();
+        xrRig.scale.set(1, 1, 1);
+        xrRig.updateMatrixWorld(true);
+        scene.add(xrRig);
+        xrRig.add(camera);
+        xrSortCadence.reset();
+        if (mounted) {
+          applyXrMaterial(splats);
+          placeXrDiagnosticProbe(splats);
         }
-        const foveation = resolveXrFoveation(params.get('foveation'));
+        xrDiagnosticProbe.visible =
+          xrDiagnostics !== null && params.get('xrDiagnosticProbe') !== '0';
+        const activeSession = renderer.xr.getSession();
+        if (activeSession) {
+          xrDiagnostics?.begin(activeSession, performance.now(), workerSortSnapshot(splats));
+        }
+        // Re-assert foveation: three re-applies the stored value itself when
+        // it builds a *GL* layer, but `_initWebGPUSession` does not, so on a
+        // WebGPU-backed session the pre-session value is dropped on the floor.
         renderer.xr.setFoveation(foveation);
-        renderer.xr.addEventListener('sessionstart', () => {
-          // Save the exact desktop eye pose and lens before three starts
-          // copying the XR head/union camera into the application camera.
-          xrCameraState = captureXrCameraState(camera);
-          xrPlacementPending = true;
-          xrRig.position.set(0, 0, 0);
-          xrRig.quaternion.identity();
-          xrRig.scale.set(1, 1, 1);
-          xrRig.updateMatrixWorld(true);
-          scene.add(xrRig);
-          xrRig.add(camera);
-          xrSortCadence.reset();
-          if (mounted) {
-            applyXrMaterial(splats);
-            placeXrDiagnosticProbe(splats);
-          }
-          xrDiagnosticProbe.visible = xrDiagnostics !== null;
-          const activeSession = renderer.xr.getSession();
-          if (activeSession) {
-            xrDiagnostics?.begin(activeSession, performance.now(), workerSortSnapshot(splats));
-          }
-          // Re-assert foveation: three re-applies the stored value itself when
-          // it builds a *GL* layer, but `_initWebGPUSession` does not, so on a
-          // WebGPU-backed session the pre-session value is dropped on the floor.
-          renderer.xr.setFoveation(foveation);
-          // A pointer-driven, screen-scaled overlay has no meaning in a headset.
-          separateTool?.setInteractive(false);
-          // Stereo is a property of the session, not the device: two eye
-          // viewports together exceed a 4K desktop and every splat is drawn
-          // twice. Tighten now and restore on exit - this is what makes a
-          // tethered desktop, or a headset we failed to recognize from its
-          // user agent, size correctly anyway.
-          applySplatBudget();
-        });
-        renderer.xr.addEventListener('sessionend', () => {
-          logXrDiagnostics(true);
-          restoreXrMaterial();
-          xrDiagnosticProbe.visible = false;
-          xrSortCadence.reset();
-          // three leaves its last head pose and union projection on the
-          // application camera. Restore the exact desktop state before
-          // camera-controls resumes.
-          if (xrCameraState) restoreXrCameraState(camera, xrCameraState);
-          xrCameraState = null;
-          separateTool?.setInteractive(true);
-          xrPlacementPending = false;
-          xrRig.removeFromParent();
-          xrRig.position.set(0, 0, 0);
-          xrRig.quaternion.identity();
-          xrRig.scale.set(1, 1, 1);
-          xrRig.updateMatrixWorld(true);
-          controls.update(0);
-          applySplatBudget();
-          refreshOverlay();
-        });
-        if (chrome.enterVr) {
-          buildEnterVrButton(renderer, (message, offerWebGl) => {
-            showError({
-              title: 'Cannot enter VR',
-              message,
-              ...(offerWebGl
-                ? {
-                    action: {
-                      label: 'Reload in WebGL mode',
-                      onClick: () => {
-                        const url = new URL(location.href);
-                        url.searchParams.set('backend', 'webgl');
-                        location.href = url.toString();
-                      },
+        console.info(
+          'VLAM_XR_FOVEATION',
+          (renderer.xr.getBaseLayer() as { fixedFoveation?: number } | null)?.fixedFoveation ??
+            null,
+        );
+        // A pointer-driven, screen-scaled overlay has no meaning in a headset.
+        separateTool?.setInteractive(false);
+        // Stereo is a property of the session, not the device: two eye
+        // viewports together exceed a 4K desktop and every splat is drawn
+        // twice. Tighten now and restore on exit - this is what makes a
+        // tethered desktop, or a headset we failed to recognize from its
+        // user agent, size correctly anyway.
+        applySplatBudget();
+      });
+      renderer.xr.addEventListener('sessionend', () => {
+        xrMotionStartedAt = null;
+        logXrDiagnostics(true);
+        restoreXrMaterial();
+        xrDiagnosticProbe.visible = false;
+        xrSortCadence.reset();
+        // three leaves its last head pose and union projection on the
+        // application camera. Restore the exact desktop state before
+        // camera-controls resumes.
+        if (xrCameraState) restoreXrCameraState(camera, xrCameraState);
+        xrCameraState = null;
+        separateTool?.setInteractive(true);
+        xrPlacementPending = false;
+        xrRig.removeFromParent();
+        xrRig.position.set(0, 0, 0);
+        xrRig.quaternion.identity();
+        xrRig.scale.set(1, 1, 1);
+        xrRig.updateMatrixWorld(true);
+        controls.update(0);
+        applySplatBudget();
+        refreshOverlay();
+      });
+      if (chrome.enterVr) {
+        buildEnterVrButton(renderer, (message, offerWebGl) => {
+          showError({
+            title: 'Cannot enter VR',
+            message,
+            ...(offerWebGl
+              ? {
+                  action: {
+                    label: 'Reload in WebGL mode',
+                    onClick: () => {
+                      const url = new URL(location.href);
+                      url.searchParams.set('backend', 'webgl');
+                      location.href = url.toString();
                     },
-                  }
-                : {}),
-            });
+                  },
+                }
+              : {}),
           });
-        }
+        });
       }
     } catch (error) {
       // XR is an enhancement; a probe failure must not block the 2D viewer.
@@ -1511,7 +1601,7 @@ async function main(): Promise<void> {
   // wanted nearest the camera and are the first evicted when the cap is short).
   // ?minSplatPx=N floors each splat's projected quad radius (px), to A/B the
   // screen-space minimum-size fix for the zoomed-out dark-gap failure on mobile.
-  // `0` explicitly forces it off; no floor is applied automatically.
+  // `0` explicitly forces it off; omission retains the library device floor.
   const minSplatPxParam = params.get('minSplatPx');
   const minSplatSizePx = minSplatPxParam === null ? undefined : Number(minSplatPxParam);
   const cacheMbParam = params.get('cacheMB');
@@ -1631,6 +1721,7 @@ async function main(): Promise<void> {
       sortMetric,
       shEvaluation,
       orientation,
+      ...(sparkColorOutput ? { srgbOutput: true } : {}),
       ...(projectionStrategy === undefined ? {} : { projectionStrategy }),
       ...(performanceProfile === undefined ? {} : { performanceProfile }),
       ...(sortIntervalMs === undefined ? {} : { sortIntervalMs }),
@@ -1660,11 +1751,81 @@ async function main(): Promise<void> {
     frontierFoveation,
     ...(lodAlpha === undefined ? {} : { lodAlpha }),
   });
+  let benchmarkProjectionPaused = false;
+  if (params.get('benchmarkSelection') === '1') {
+    installRadSelectionSnapshot(async () => {
+      if (!(splats instanceof StreamedSplatMesh))
+        throw new Error('RAD snapshot requires a streamed source');
+      const snapshot = snapshotVlamRadSelection(splats);
+      const head = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+      const state = splats.frontierState;
+      let projectedCoverage;
+      if (params.get('benchmarkCoverage') === '1') {
+        if (!benchmarkUnified) throw new Error('Coverage requires the unified benchmark draw');
+        const wasSuppressed = suppressStreamedUpdate;
+        benchmarkProjectionPaused = true;
+        suppressStreamedUpdate = true;
+        if (xrPostUpdateHandle !== null) {
+          clearTimeout(xrPostUpdateHandle);
+          xrPostUpdateHandle = null;
+        }
+        try {
+          const { captureVlamProjectedCoverage, snapshotXrProjectionEyes } =
+            await import('./rad-projected-coverage');
+          projectedCoverage = await captureVlamProjectedCoverage(
+            renderer,
+            benchmarkUnified,
+            snapshotXrProjectionEyes(renderer),
+          );
+        } finally {
+          suppressStreamedUpdate = wasSuppressed;
+          benchmarkProjectionPaused = false;
+        }
+      }
+      return {
+        ...snapshot,
+        ...(projectedCoverage ? { projectedCoverage } : {}),
+        pose: {
+          position: head.getWorldPosition(new THREE.Vector3()).toArray(),
+          forward: head.getWorldDirection(new THREE.Vector3()).toArray(),
+        },
+        publication: {
+          planGeneration: state.planGeneration,
+          renderedGeneration: state.renderedGeneration,
+          sortReadyGeneration: state.sortReadyGeneration,
+        },
+      };
+    });
+  }
   let benchmark: ReturnType<typeof createFrameBenchmark> | null = null;
+  let benchmarkSamplingSnapshotTaken = false;
+  let benchmarkXrSampleStart: { position: number[]; forward: number[] } | null = null;
+  let benchmarkLodStart: { atMs: number; counters: Record<string, number> } | null = null;
+  const benchmarkLodSnapshot = (atMs: number) => {
+    if (!(splats instanceof StreamedSplatMesh) || splats.radStrategy !== 'page-table') return null;
+    const state = splats.frontierState;
+    return {
+      atMs,
+      counters: {
+        traversalId: state.traversal.traversalId,
+        demandRevision: state.demandRevision,
+        candidateCancellationCount: state.candidateCancellationCount,
+        planGeneration: state.planGeneration,
+        renderedGeneration: state.renderedGeneration ?? 0,
+        workerAcknowledgedGeneration: state.workerAcknowledgedGeneration ?? 0,
+        selectionId: state.selectionId,
+        staleRequestsCancelled: state.staleRequestsCancelled,
+        unifiedSortSerial: benchmarkUnified?.performanceTimings.sortSerial ?? 0,
+      } satisfies Record<string, number>,
+    };
+  };
   let benchmarkTransitionStartIndex = 0;
   let benchmarkAdaptiveDprEnabled = false;
   let completedAdaptiveDprTransitions: ReturnType<typeof scopeAdaptiveDprTransitions> = [];
   const beginBenchmark = (): void => {
+    benchmarkLodStart = null;
+    benchmarkSamplingSnapshotTaken = false;
+    benchmarkXrSampleStart = null;
     benchmarkTransitionStartIndex = adaptiveDprTransitions.length;
     benchmarkAdaptiveDprEnabled = adaptivePixelRatioEnabled() && pinnedPixelRatio === null;
     completedAdaptiveDprTransitions = [];
@@ -1679,6 +1840,7 @@ async function main(): Promise<void> {
   let timestampResolvePending: Promise<void> | null = null;
   let latestComputeGpuMs: number | undefined;
   let latestRenderGpuMs: number | undefined;
+  const gpuTimestampSamples: { atMs: number; computeMs?: number; renderMs?: number }[] = [];
   const resolveGpuTimestamps = (): Promise<void> => {
     if (!gpuTimestampsEnabled) return Promise.resolve();
     if (timestampResolvePending) return timestampResolvePending;
@@ -1689,6 +1851,13 @@ async function main(): Promise<void> {
       .then(([compute, render]) => {
         if (compute !== undefined) latestComputeGpuMs = compute;
         if (render !== undefined) latestRenderGpuMs = render;
+        if (compute !== undefined || render !== undefined) {
+          gpuTimestampSamples.push({
+            atMs: performance.now(),
+            computeMs: compute,
+            renderMs: render,
+          });
+        }
       })
       .finally(() => {
         timestampResolvePending = null;
@@ -1702,6 +1871,8 @@ async function main(): Promise<void> {
     document.body.appendChild(benchmarkOutput);
   }
   let swapPerformanceEvents: StreamedSplatPerformanceEvent[] = [];
+  let benchmarkSortSubmissions = 0;
+  let benchmarkSortPasses = 0;
   const sceneName = params.get('scene') ?? DEFAULT_SCENE;
   // True while the built-in default goose is on screen. Cleared when a drop or
   // any other framed scene replaces it; kept across effect rebuilds (`frame: false`).
@@ -1767,6 +1938,10 @@ async function main(): Promise<void> {
   // the listeners below are registered once and read these through the
   // closure rather than being re-bound per scene.
   let splats!: SplatMesh;
+  // Attribution path: reuse the existing gather/storage renderer without
+  // changing the source's residency, LOD selection or per-eye projection.
+  const benchmarkUnifiedEnabled = benchmarkSeconds > 0 && params.get('benchmarkUnified') === '1';
+  let benchmarkUnified: UnifiedSplatMesh | null = null;
   let splatData: SplatData | null = null;
   let mounted = false;
   let sceneTitle = sceneLabel(sceneName);
@@ -2816,6 +2991,11 @@ async function main(): Promise<void> {
     // separation tool needs, so it drives the origin rather than a second flag.
     const sceneSwapOrigin = (options.frame ?? true) ? 'external' : 'self';
     if (mounted) {
+      if (benchmarkUnified) {
+        scene.remove(benchmarkUnified);
+        benchmarkUnified.dispose();
+        benchmarkUnified = null;
+      }
       restoreXrMaterial();
       scene.remove(splats);
       splats.dispose();
@@ -3522,9 +3702,23 @@ async function main(): Promise<void> {
       // per-update CPU timings a host can see (`getUpdateTimings` is protected),
       // and they are what separates an upload stall from a sort stall when the
       // 1% low collapses.
-      ...(benchmarkSeconds > 0 || perfHud || detailedRadDiagnostics
+      ...(gpuTimestampsEnabled ||
+      (benchmarkSeconds > 0 && params.get('benchmarkLite') !== '1') ||
+      perfHud ||
+      detailedRadDiagnostics
         ? {
             onPerformanceEvent: (event: StreamedSplatPerformanceEvent) => {
+              if (
+                gpuTimestampsEnabled &&
+                benchmark?.measurementStartedAtMs != null &&
+                event.timestamp >= benchmark.measurementStartedAtMs
+              ) {
+                benchmarkSortSubmissions += event.sortSubmissions ?? 0;
+                benchmarkSortPasses += event.sortPasses ?? 0;
+              }
+              // Lightweight timing still needs real GPU sort counters.
+              if (params.get('benchmarkLite') === '1' && !perfHud && !detailedRadDiagnostics)
+                return;
               if (benchmarkSeconds > 0 && isSwapPerformanceEvent(event)) {
                 swapPerformanceEvents.push(event);
               }
@@ -4072,12 +4266,36 @@ async function main(): Promise<void> {
       controls.setLookAt(centerX + 0.75, eyeY, centerZ + 0.75, centerX, eyeY, centerZ, true);
     }
     if ((e.key === 'b' || e.key === 'B') && benchmarkSeconds > 0) {
+      if (renderer.xr.isPresenting && xrMotion && xrCameraState) {
+        renderer.xr.updateCamera(camera);
+        const head = renderer.xr.getCamera();
+        if (head.cameras.length > 0) {
+          alignXrRigToCamera(xrRig, head, xrCameraState.worldMatrix);
+          renderer.xr.updateCamera(camera);
+          xrMotionStartedAt = null;
+        }
+      }
       beginBenchmark();
       lastTimestampResolveAt = -Infinity;
       latestComputeGpuMs = undefined;
       latestRenderGpuMs = undefined;
       if (benchmarkOutput) benchmarkOutput.textContent = '';
       console.info('FRAME_BENCHMARK_STARTED');
+      if (renderer.xr.isPresenting) {
+        const head = renderer.xr.getCamera();
+        const pose = (view: THREE.Camera) => ({
+          position: view.getWorldPosition(new THREE.Vector3()).toArray(),
+          forward: view.getWorldDirection(new THREE.Vector3()).toArray(),
+        });
+        console.info(
+          'VLAM_XR_BENCHMARK_POSE',
+          JSON.stringify({
+            app: pose(camera),
+            head: pose(head),
+            left: head.cameras[0] ? pose(head.cameras[0]) : null,
+          }),
+        );
+      }
     }
   });
 
@@ -4207,8 +4425,12 @@ async function main(): Promise<void> {
   const timer = new THREE.Timer();
   const drawingBufferSize = new THREE.Vector2();
   let fatalFrame = false;
+  let xrPostUpdateHandle: ReturnType<typeof setTimeout> | null = null;
+  let xrPostUpdatePrimed = false;
+  // Development attribution probe; keep the normal update order by default.
+  const xrPostUpdateEnabled = new URLSearchParams(location.search).get('xrPostUpdate') === '1';
   renderer.setAnimationLoop((timestamp) => {
-    if (deviceLost || fatalFrame) return;
+    if (deviceLost || fatalFrame || benchmarkProjectionPaused) return;
     const cpuFrameStartedAt = performance.now();
     timer.update();
     const frameDelta = timer.getDelta();
@@ -4281,7 +4503,40 @@ async function main(): Promise<void> {
         alignXrRigToCamera(xrRig, head, xrCameraState.worldMatrix);
         renderer.xr.updateCamera(camera);
         xrPlacementPending = false;
+        console.info(
+          'VLAM_XR_POSE',
+          JSON.stringify({
+            position: camera.getWorldPosition(new THREE.Vector3()).toArray(),
+            forward: camera.getWorldDirection(new THREE.Vector3()).toArray(),
+          }),
+        );
       }
+    }
+    if (presenting && !xrPlacementPending && !xrMotion && benchmarkSeconds > 0 && xrCameraState) {
+      renderer.xr.updateCamera(camera);
+      const head = renderer.xr.getCamera();
+      if (xrHeadDrifted(head, xrCameraState.worldMatrix)) {
+        alignXrRigToCamera(xrRig, head, xrCameraState.worldMatrix);
+        renderer.xr.updateCamera(camera);
+      }
+    }
+    if (presenting && !xrPlacementPending && xrMotion) {
+      if (xrMotionStartedAt === null) {
+        xrMotionStartedAt = timestamp;
+        xrMotionBasePosition.copy(xrRig.position);
+        xrMotionBaseQuaternion.copy(xrRig.quaternion);
+      }
+      const elapsedSeconds = (timestamp - xrMotionStartedAt) / 1000;
+      if (xrMotion === 'rotate') {
+        xrMotionRotation.setFromAxisAngle(xrMotionUpAxis, elapsedSeconds * 0.12);
+        xrRig.quaternion.copy(xrMotionBaseQuaternion).multiply(xrMotionRotation);
+      } else {
+        xrRig.position
+          .copy(xrMotionBasePosition)
+          .add(xrMotionOffset.set(Math.sin((elapsedSeconds * Math.PI) / 6) * 0.25, 0, 0));
+      }
+      xrRig.updateMatrixWorld(true);
+      camera.updateMatrixWorld(true);
     }
     if (!presenting) {
       updateTeleportTransition(performance.now());
@@ -4373,10 +4628,26 @@ async function main(): Promise<void> {
       // `mounted` is false only when the initial scene failed to load: keep
       // drawing the empty scene so a dropped file has a live loop to land in.
       if (mounted && !presenting) separateTool?.update(timer.getElapsed());
-      if (mounted && !suppressStreamedUpdate) {
+      if (benchmarkUnifiedEnabled && mounted && !benchmarkUnified) {
+        const sourceView = splats.getUnifiedSourceView();
+        benchmarkUnified = new UnifiedSplatMesh(renderer, splats.capacity, {
+          performanceProfile: splats.performanceProfile,
+          srgbOutput: sourceView.srgbOutput,
+          minPixelSize: sourceView.minPixelSize,
+          minContribution: sourceView.minContribution,
+          sortMetric,
+        });
+        benchmarkUnified.addSource(splats, { visible: true });
+        scene.add(benchmarkUnified);
+      }
+      const postUpdate = xrPostUpdateEnabled && presenting && mounted && !suppressStreamedUpdate;
+      if (!postUpdate) xrPostUpdatePrimed = false;
+      if (mounted && !suppressStreamedUpdate && (!postUpdate || !xrPostUpdatePrimed)) {
         const sortThisFrame =
           !presenting || backendName !== 'WebGL2' || xrSortCadence.shouldAttempt(timestamp);
-        splats.update(camera, renderer, sortThisFrame ? undefined : XR_SKIP_SORT_OPTIONS);
+        if (benchmarkUnified) benchmarkUnified.update(camera);
+        else splats.update(camera, renderer, sortThisFrame ? undefined : XR_SKIP_SORT_OPTIONS);
+        if (postUpdate) xrPostUpdatePrimed = true;
       }
       if (mounted && splats instanceof StreamedSplatMesh) {
         const streamingError = splats.streamingError;
@@ -4431,7 +4702,33 @@ async function main(): Promise<void> {
           nearL0RevealFadeUntil = 0;
         }
       }
+      if (benchmarkUnified) {
+        benchmarkUnified.visible = !nearL0HoldActive;
+        splats.visible = false;
+      }
       renderer.render(scene, camera);
+      if (postUpdate && xrPostUpdateHandle === null) {
+        const renderedSplats = splats;
+        xrPostUpdateHandle = setTimeout(() => {
+          xrPostUpdateHandle = null;
+          if (
+            !mounted ||
+            splats !== renderedSplats ||
+            !renderer.xr.isPresenting ||
+            suppressStreamedUpdate
+          )
+            return;
+          try {
+            const sortThisFrame =
+              backendName !== 'WebGL2' || xrSortCadence.shouldAttempt(performance.now());
+            if (benchmarkUnified) benchmarkUnified.update(camera);
+            else splats.update(camera, renderer, sortThisFrame ? undefined : XR_SKIP_SORT_OPTIONS);
+          } catch (error) {
+            console.error('XR post-render update failed', error);
+            renderer.setAnimationLoop(null);
+          }
+        }, 1);
+      }
       // After the render, so labels use the camera the frame was drawn with.
       if (!presenting) updateAnnotationOverlay();
     } catch (error) {
@@ -4516,8 +4813,42 @@ async function main(): Promise<void> {
       // not GPU duration. Keeping the names distinct prevents mislabeling the
       // two measurements in device reports.
       renderDrawCalls: renderer.info.render.drawCalls,
+      ...(mounted
+        ? {
+            renderedSplatCount: (
+              (benchmarkUnified ?? splats).geometry as THREE.InstancedBufferGeometry
+            ).instanceCount,
+          }
+        : {}),
     });
+    if (benchmark && benchmark.measurementStartedAtMs !== null && !benchmarkSamplingSnapshotTaken) {
+      benchmarkSamplingSnapshotTaken = true;
+      benchmarkLodStart = benchmarkLodSnapshot(timestamp);
+      if (renderer.xr.isPresenting) {
+        const head = renderer.xr.getCamera();
+        benchmarkXrSampleStart = {
+          position: head.getWorldPosition(new THREE.Vector3()).toArray(),
+          forward: head.getWorldDirection(new THREE.Vector3()).toArray(),
+        };
+      }
+    }
     if (benchmarkResult && benchmarkOutput && benchmarkOutput.textContent === '') {
+      const lodStart = benchmarkLodStart;
+      const lodEnd = benchmarkLodSnapshot(timestamp);
+      const radSamplingWindow =
+        lodStart && lodEnd
+          ? {
+              start: lodStart,
+              end: lodEnd,
+              deltas: Object.fromEntries(
+                Object.entries(lodEnd.counters).map(([key, value]) => [
+                  key,
+                  value - lodStart.counters[key]!,
+                ]),
+              ),
+            }
+          : null;
+      console.info('FRAME_BENCHMARK_SAMPLE', JSON.stringify(benchmarkResult));
       completedAdaptiveDprTransitions = scopeAdaptiveDprTransitions(
         adaptiveDprTransitions,
         benchmarkTransitionStartIndex,
@@ -4525,6 +4856,7 @@ async function main(): Promise<void> {
         timestamp,
         benchmarkAdaptiveDprEnabled,
       );
+      const benchmarkStartMs = benchmark?.measurementStartedAtMs ?? timestamp;
       benchmark = null;
       benchmarkOutput.textContent = 'resolving';
       void Promise.resolve(timestampResolvePending)
@@ -4534,12 +4866,29 @@ async function main(): Promise<void> {
         .then(
           () =>
             new Promise<void>((resolve) => {
-              requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+              if (renderer.xr.isPresenting) {
+                window.setTimeout(resolve, 100);
+              } else {
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+              }
             }),
         )
         .then(async () => {
-          const sortVerification =
-            backendName === 'WebGPU' ? await verifyGpuSort(splats, camera, renderer) : undefined;
+          const verifyUnified = async (mesh: UnifiedSplatMesh) => {
+            const wasSuppressed = suppressStreamedUpdate;
+            suppressStreamedUpdate = true;
+            try {
+              return await verifyUnifiedGpuSort(mesh, renderer);
+            } finally {
+              suppressStreamedUpdate = wasSuppressed;
+            }
+          };
+          const sortVerification = benchmarkUnified
+            ? await verifyUnified(benchmarkUnified)
+            : backendName === 'WebGPU'
+              ? await verifyGpuSort(splats, camera, renderer)
+              : undefined;
+          const resolvedRenderSettings = splats.getUnifiedSourceView();
           renderer.getDrawingBufferSize(drawingBufferSize);
           benchmarkOutput.textContent = JSON.stringify({
             environment: {
@@ -4550,8 +4899,15 @@ async function main(): Promise<void> {
               drawingBuffer: { width: drawingBufferSize.x, height: drawingBufferSize.y },
               pixelRatio: renderer.getPixelRatio(),
               msaa: getRendererMsaaSamples(renderer),
-              splatCount: splats.activeSplatCount,
+              splatCount: splats.activeSplatCount - (benchmarkUnified?.droppedSplatCount ?? 0),
+              renderPath: benchmarkUnified ? 'unified-storage' : 'standalone-texture',
+              ...(benchmarkUnified ? { unifiedTimings: benchmarkUnified.performanceTimings } : {}),
               shBands: splats.shBands,
+              resolvedProfile: splats.performanceProfile,
+              maxStdDev: resolvedRenderSettings.maxStdDev,
+              minSplatSizePx: resolvedRenderSettings.minSplatSizePx,
+              minPixelSize: resolvedRenderSettings.minPixelSize,
+              minContribution: resolvedRenderSettings.minContribution,
               device: hudDeviceProfile,
             },
             sortStrategy: splats.sortStrategy,
@@ -4567,9 +4923,25 @@ async function main(): Promise<void> {
                 ? DEFAULT_PAGE_TABLE_WRITES_PER_PLAN
                 : DEFAULT_CLASSIC_SPLATS_PER_SWAP),
             ...benchmarkResult,
+            radSamplingWindow,
+            xrSampleStartPose: benchmarkXrSampleStart,
+            xrDiagnosticProbeVisible: xrDiagnosticProbe.visible,
             adaptiveDprTransitions: completedAdaptiveDprTransitions,
             computeGpuMs: latestComputeGpuMs,
             renderGpuMs: latestRenderGpuMs,
+            // Three r186 reuses one query pair for both WebGPU XR eye passes.
+            // The last eye overwrites the first; this is not a stereo frame cost.
+            renderGpuTimingScope:
+              renderer.xr.isPresenting && backendName === 'WebGPU' ? 'last-xr-eye' : 'render-frame',
+            ...(gpuTimestampsEnabled
+              ? {
+                  gpuTimestampSamples: gpuTimestampSamples.filter(
+                    (sample) => sample.atMs >= benchmarkStartMs && sample.atMs <= timestamp,
+                  ),
+                  benchmarkSortSubmissions,
+                  benchmarkSortPasses,
+                }
+              : {}),
             sortVerification,
             ...(splats instanceof StreamedSplatMesh && splats.radStrategy === 'page-table'
               ? {
@@ -4856,8 +5228,9 @@ function buildEnterVrButton(
         console.error('Entering VR failed:', error);
         onFailure(
           needsWebGpuFeature
-            ? 'This browser supports WebXR but not WebGPU-backed XR sessions. ' +
-                'Reload with the WebGL renderer to view this scene in VR.'
+            ? `The headset could not start this WebGPU VR session (${
+                error instanceof Error ? error.message : 'unknown error'
+              }). Try again, or reload in WebGL mode.`
             : `The headset session could not be started (${
                 error instanceof Error ? error.message : 'unknown error'
               }).`,

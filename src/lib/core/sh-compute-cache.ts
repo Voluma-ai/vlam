@@ -1,3 +1,4 @@
+import { readSplatCenter } from './splat-texture-read';
 /** Internal, opt-in SH preparation for standalone WebGPU meshes. */
 import * as THREE from 'three/webgpu';
 import {
@@ -94,7 +95,7 @@ export class ShComputeCache {
         int(instanceIndex).div(int(options.dataTextureWidth)),
       );
       const base = textureLoad(options.colorsTexture, pixel);
-      const center = textureLoad(options.centersTexture, pixel).xyz;
+      const center = readSplatCenter(options.centersTexture, pixel);
       const clipCenter = options.localViewProjection.mul(vec4(center, 1));
       // Use the display's cap-aware broad bound: a center outside the screen
       // can still contribute a large visible splat whose SH must be refreshed.
@@ -125,7 +126,7 @@ export class ShComputeCache {
             index.div(int(options.dataTextureWidth)),
           );
           const base = textureLoad(options.colorsTexture, pixel);
-          const center = textureLoad(options.centersTexture, pixel).xyz;
+          const center = readSplatCenter(options.centersTexture, pixel);
           const rgb = evaluateSplatSh(
             options.sh,
             { covarianceBTexture: options.covarianceBTexture },

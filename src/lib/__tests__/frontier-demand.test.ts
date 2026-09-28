@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { compareDemand } from '../formats/rad/frontier-demand';
+import { experiments } from '../internal/experiments';
 import type { FrontierDemandReply } from '../formats/rad/frontier-worker-protocol';
 import { createStreamedMeshFixture } from './helpers/streamed-mesh-fixture';
 
@@ -36,7 +37,11 @@ class WorkerStub {
 
 describe('page-table demand reconciliation', () => {
   const meshes: ReturnType<typeof createStreamedMeshFixture>[] = [];
+  const originalCoalescing = experiments.radIndexedCameraCoalescing;
+  const originalSkipIdleFetchScan = experiments.radIndexedSkipIdleFetchScan;
   afterEach(() => {
+    experiments.radIndexedCameraCoalescing = originalCoalescing;
+    experiments.radIndexedSkipIdleFetchScan = originalSkipIdleFetchScan;
     for (const mesh of meshes) mesh.dispose();
     meshes.length = 0;
   });
@@ -695,6 +700,140 @@ describe('page-table demand reconciliation', () => {
       ),
     ).toHaveLength(3);
   });
+
+  it.each([false, true])(
+    'preserves new demand while skipping empty cancellation scans (flag=%s)',
+    (enabled) => {
+      experiments.radIndexedSkipIdleFetchScan = enabled;
+      const inner = fixture() as ReturnType<typeof fixture> & {
+        filesForIndexedSlots: (slots: Uint32Array) => number[];
+      };
+      inner.pageTableCachedFiles.add(0);
+      inner.demandGeneration = 1;
+      inner.demandReadyGeneration = 1;
+      inner.demandNeedsNewRevision = false;
+      inner.demandWants = [{ file: 7, tier: 0, priority: 5 }];
+      const scan = vi.spyOn(inner, 'filesForIndexedSlots').mockReturnValue([4]);
+      const request = vi.spyOn(inner, 'requestChunk').mockImplementation(() => {});
+      inner.reconcileDemand(true);
+      expect(scan).toHaveBeenCalledTimes(enabled ? 0 : 1);
+      expect(request).toHaveBeenCalledWith(7, 'priority');
+    },
+  );
+
+  it('still protects displayed downloads and cancels unwanted downloads with idle-scan skipping', () => {
+    experiments.radIndexedSkipIdleFetchScan = true;
+    const inner = fixture() as ReturnType<typeof fixture> & {
+      filesForIndexedSlots: (slots: Uint32Array) => number[];
+    };
+    inner.pageTableCachedFiles.add(0);
+    inner.demandGeneration = 1;
+    inner.demandReadyGeneration = 1;
+    inner.demandNeedsNewRevision = false;
+    inner.demandWants = [{ file: 7, tier: 0, priority: 5 }];
+    const protectedController = new AbortController();
+    const obsoleteController = new AbortController();
+    inner.fetching.set(4, { controller: protectedController, kind: 'priority' });
+    inner.fetching.set(9, { controller: obsoleteController, kind: 'priority' });
+    const scan = vi.spyOn(inner, 'filesForIndexedSlots').mockReturnValue([4]);
+    vi.spyOn(inner, 'requestChunk').mockImplementation(() => {});
+    inner.reconcileDemand(true);
+    expect(scan).toHaveBeenCalledTimes(1);
+    expect(protectedController.signal.aborted).toBe(false);
+    expect(obsoleteController.signal.aborted).toBe(true);
+  });
+
+  it('finishes a nearby indexed cut before posting the latest pose after render acknowledgement', () => {
+    experiments.radIndexedCameraCoalescing = true;
+    const inner = fixture() as ReturnType<typeof fixture> & {
+      indexedPageTable: boolean;
+      indexedStagingGeneration: number | null;
+      demandNeedsNewRevision: boolean;
+    };
+    inner.indexedPageTable = true;
+    inner.pageTableInFlight = false;
+    const origin = new THREE.Vector3();
+    const forward = new THREE.Vector3(0, 0, -1);
+    const frustum = new THREE.Frustum();
+    const projection = new THREE.Matrix4().toArray();
+    inner.reschedulePageTable(origin, forward, frustum, 1000, projection);
+    const revision = inner.demandGeneration;
+    const moved = new THREE.Vector3(0.01, 0, 0);
+    const angle = Math.PI / 2;
+    const rotated = new THREE.Vector3(Math.sin(angle), 0, -Math.cos(angle));
+    const viewProjection = new THREE.Matrix4().makeRotationY(angle).toArray();
+    inner.reschedulePageTable(moved, rotated, frustum, 1010, viewProjection);
+    expect(inner.demandGeneration).toBe(revision);
+    expect(inner.demandNeedsNewRevision).toBe(false);
+    inner.pageTableInFlight = false;
+    inner.indexedStagingGeneration = 5;
+    inner.reschedulePageTable(moved, rotated, frustum, 1020, viewProjection);
+    const lastRequest = () =>
+      [...inner.frontierWorker.posted]
+        .reverse()
+        .find((message) => (message as { type?: string }).type === 'reschedule') as {
+        cameraLocal: number[];
+        cameraForward: number[];
+        projection: number[];
+        revision: number;
+      };
+    expect(lastRequest().cameraLocal).toEqual([0, 0, 0]);
+    expect(lastRequest().cameraForward).toEqual([0, 0, -1]);
+    expect(lastRequest().projection).toEqual(projection);
+    expect(lastRequest().revision).toBe(revision);
+    inner.pageTableInFlight = false;
+    inner.indexedPublishGeneration = 5;
+    inner.indexedPendingDisplaySlots = new Uint32Array([0]);
+    inner.indexedPublishActiveListVersion = inner.activeListVersion;
+    const requestsBeforeRender = inner.frontierWorker.posted.length;
+    inner.reschedulePageTable(moved, rotated, frustum, 1025, viewProjection);
+    expect(inner.frontierWorker.posted).toHaveLength(requestsBeforeRender);
+    inner.onActiveListRendered(inner.activeListVersion);
+    expect(inner.frontierWorker.posted).toContainEqual(
+      expect.objectContaining({
+        type: 'published',
+        generation: 5,
+      }),
+    );
+    inner.reschedulePageTable(moved, rotated, frustum, 1030, viewProjection);
+    expect(lastRequest().cameraLocal).toEqual(moved.toArray());
+    expect(lastRequest().cameraForward).toEqual(rotated.toArray());
+    expect(lastRequest().revision).toBe(revision + 1);
+  });
+
+  it.each(['distance', 'lens', 'budget'] as const)(
+    'retains immediate indexed revision invalidation for a %s change',
+    (change) => {
+      experiments.radIndexedCameraCoalescing = true;
+      const inner = fixture() as ReturnType<typeof fixture> & {
+        indexedPageTable: boolean;
+        demandNeedsNewRevision: boolean;
+      };
+      inner.indexedPageTable = true;
+      inner.pageTableInFlight = false;
+      const camera = new THREE.Vector3();
+      const forward = new THREE.Vector3(0, 0, -1);
+      const frustum = new THREE.Frustum();
+      const projection = new THREE.Matrix4().toArray();
+      inner.reschedulePageTable(camera, forward, frustum, 1000, projection);
+      const revision = inner.demandGeneration;
+      if (change === 'distance') camera.x = 1.01;
+      if (change === 'lens') projection[0] = 2;
+      if (change === 'budget')
+        inner.pageTableDrawBudget = Math.floor(inner.pageTableDrawBudget / 2);
+      inner.reschedulePageTable(camera, forward, frustum, 1010, projection);
+      if (change === 'distance') {
+        expect(inner.demandGeneration).toBe(revision + 1);
+        expect(inner.frontierWorker.posted.at(-1)).toMatchObject({
+          type: 'reschedule',
+          cameraLocal: [1.01, 0, 0],
+          revision: revision + 1,
+        });
+      } else {
+        expect(inner.demandNeedsNewRevision).toBe(true);
+      }
+    },
+  );
 
   it('treats a projection-only change as a new configuration after the in-flight walk', () => {
     const inner = fixture();

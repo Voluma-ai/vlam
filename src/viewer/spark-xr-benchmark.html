@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Spark WebGL XR HOTEL benchmark</title>
+    <style>
+      body { margin: 12px; color: #ddd; background: #111; font: 14px system-ui, sans-serif; }
+      button { margin: 8px 0; padding: 8px 14px; }
+      pre { white-space: pre-wrap; }
+      canvas { display: block; width: 100%; height: auto; }
+    </style>
+  </head>
+  <body>
+    <button id="enter-vr" type="button">Enter VR</button>
+    <p id="status">Loading HOTEL…</p>
+    <pre id="result"></pre>
+    <script type="module" src="/src/viewer/spark-xr-benchmark.ts"></script>
+  </body>
+</html>

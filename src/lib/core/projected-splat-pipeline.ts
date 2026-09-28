@@ -1,3 +1,4 @@
+import { readSplatCenter } from './splat-texture-read';
 import * as THREE from 'three/webgpu';
 import {
   Fn,
@@ -393,7 +394,7 @@ export class StandaloneProjectedSplatPipeline {
         index.mod(int(options.dataTextureWidth)),
         index.div(int(options.dataTextureWidth)),
       );
-      const center = textureLoad(options.centersTexture, texel).xyz;
+      const center = readSplatCenter(options.centersTexture, texel);
       const viewCenter = this.modelView.mul(vec4(center, 1)).toVar();
       const clipCenter = this.projection.mul(viewCenter).toVar();
       const covA = textureLoad(options.covarianceATexture, texel);

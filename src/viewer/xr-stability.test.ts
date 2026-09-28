@@ -2,10 +2,10 @@ import * as THREE from 'three/webgpu';
 import { describe, expect, it } from 'vitest';
 import {
   XrSortCadence,
-  applyXrDepthMode,
+  applyXrMaterialMode,
   resolveXrFoveation,
   resolveXrStabilityOptions,
-  restoreXrDepthMode,
+  restoreXrMaterialState,
 } from './xr-stability';
 
 describe('resolveXrFoveation', () => {
@@ -57,14 +57,14 @@ describe('resolveXrStabilityOptions', () => {
     });
   });
 
-  it('does not apply the WebGL scale or cadence defaults to WebGPU XR', () => {
+  it('uses Spark-sized Quest WebGPU XR layers without a WebGL sort cadence', () => {
     expect(
       resolveXrStabilityOptions(new URLSearchParams(), {
         isHeadset: true,
         backend: 'WebGPU',
         recommendedFramebufferScale: 0.8,
       }),
-    ).toMatchObject({ framebufferScale: 0.8, sortHz: null });
+    ).toMatchObject({ framebufferScale: 0.5, sortHz: null });
   });
 
   it('ignores malformed or unsafe numeric overrides', () => {
@@ -96,15 +96,38 @@ describe('XrSortCadence', () => {
   });
 });
 
-describe('XR depth mode', () => {
+describe('XR material mode', () => {
+  it('enables the RAD cutoff without depth writes and restores the default on exit', () => {
+    const material = new THREE.MeshBasicMaterial({ depthWrite: false });
+    const mesh = new THREE.Mesh(undefined, material);
+    const state = applyXrMaterialMode(mesh);
+    expect(material.depthWrite).toBe(false);
+    expect(material.alphaTest).toBe(0.5 / 255);
+
+    restoreXrMaterialState(state);
+    expect(material.depthWrite).toBe(false);
+    expect(material.alphaTest).toBe(0);
+  });
+
+  it('preserves a stricter existing cutoff', () => {
+    const material = new THREE.MeshBasicMaterial({ alphaTest: 0.03, depthWrite: false });
+    const mesh = new THREE.Mesh(undefined, material);
+    const state = applyXrMaterialMode(mesh);
+    expect(material.alphaTest).toBe(0.03);
+    expect(material.depthWrite).toBe(false);
+
+    restoreXrMaterialState(state);
+    expect(material.alphaTest).toBe(0.03);
+  });
+
   it('restores material state exactly after the session', () => {
     const material = new THREE.MeshBasicMaterial({ alphaTest: 0.03, depthWrite: false });
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(), material);
-    const state = applyXrDepthMode(mesh, 0.15);
+    const state = applyXrMaterialMode(mesh, 0.15);
     expect(material.depthWrite).toBe(true);
     expect(material.alphaTest).toBe(0.15);
 
-    restoreXrDepthMode(state);
+    restoreXrMaterialState(state);
     expect(material.depthWrite).toBe(false);
     expect(material.alphaTest).toBe(0.03);
   });

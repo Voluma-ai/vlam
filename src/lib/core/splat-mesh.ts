@@ -439,7 +439,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private readonly cachedUnifiedViewWorldBounds = new THREE.Sphere();
 
   /** Row spans written since the last flush, awaiting GPU upload. */
-  private pendingUploadRows: UploadRowSpan[] = [];
+  private pendingUploadRows: { start: number; count: number }[] = [];
   /** Persistent copy sources avoid allocating four temporary textures per upload region. */
   private readonly uploadStaging = new Map<string, Map<number, THREE.DataTexture>>();
   /** Reusable float→half encode buffers keyed like {@link uploadStaging}. */
@@ -1190,8 +1190,30 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     const firstRow = Math.floor(destination / width);
     const lastRow = Math.floor((destination + data.count - 1) / width);
     this.markRowsWritten(firstRow, lastRow - firstRow + 1);
-    _appendBox.setFromArray(data.positions);
-    this.localBounds.union(_appendBox);
+    // Sparse pager runs are often just one splat. Accumulate scalars instead
+    // of rebuilding a temporary box through Vector3 calls for every run.
+    const min = this.localBounds.min;
+    const max = this.localBounds.max;
+    let minX = min.x;
+    let minY = min.y;
+    let minZ = min.z;
+    let maxX = max.x;
+    let maxY = max.y;
+    let maxZ = max.z;
+    const positions = data.positions;
+    for (let i = 0; i < positions.length; i += 3) {
+      const x = positions[i] as number;
+      const y = positions[i + 1] as number;
+      const z = positions[i + 2] as number;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      minZ = Math.min(minZ, z);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+      maxZ = Math.max(maxZ, z);
+    }
+    min.set(minX, minY, minZ);
+    max.set(maxX, maxY, maxZ);
     this.boundsDirty = true;
     // Only writes to the selected cut invalidate unified gather/sort. RAD
     // stages new candidates in inactive slots over many batches; invalidating
@@ -1254,6 +1276,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private writeSplatRows(destination: number, data: SplatData): void {
     const { centers, colors, covarianceA, covarianceB } = this.backing;
     colors.set(data.colors, destination * 4);
+    // Editable pools retain this integer image as an alias of center backing;
+    // reuse it rather than allocate a view for every sparse frontier write.
+    const packedCenters = this.centersTexture.format === THREE.RGBAIntegerFormat
+      ? this.centersTexture.image.data as Uint32Array
+      : null;
     // Everything loop-invariant is hoisted into locals, including the two
     // optional arrays. `data` reaches here from several construction sites with
     // different shapes (sliced chunks, worker paging plans, whole SplatData), so
@@ -1275,6 +1302,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       centers[p + 0] = positions[p3 + 0] as number;
       centers[p + 1] = positions[p3 + 1] as number;
       centers[p + 2] = positions[p3 + 2] as number;
+      if (packedCenters) {
+        packedCenters[p + 3] = (colors[p] as number) | ((colors[p + 1] as number) << 8)
+          | ((colors[p + 2] as number) << 16) | ((colors[p + 3] as number) << 24);
+      }
       covarianceA[p + 0] = covariances[p6 + 0] as number;
       covarianceA[p + 1] = covariances[p6 + 1] as number;
       covarianceA[p + 2] = covariances[p6 + 2] as number;
@@ -2088,6 +2119,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // `foveationLimitPx` through a px→normalized conversion that each does
     // with its own focal length, so a size mismatch makes that loop diverge.
     const xrView = resolveXrView(camera, renderer);
+    this.sortScheduler.setXrJitterTolerance(xrView !== null);
     let projectionCamera: THREE.Camera = camera;
     let sortCamera: THREE.Camera = camera;
     let viewWidth: number;
@@ -2940,6 +2972,16 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /** Records a written row span for GPU upload and the sort-worker mirror. */
   private markRowsWritten(start: number, count: number): void {
+    // Sparse indexed writes often revisit the same row. Merge the latest span
+    // before allocating another record; the flush still merges unordered spans.
+    const last = this.pendingUploadRows[this.pendingUploadRows.length - 1];
+    const end = start + count;
+    if (last && start <= last.start + last.count && end >= last.start) {
+      const mergedStart = Math.min(start, last.start);
+      last.count = Math.max(end, last.start + last.count) - mergedStart;
+      last.start = mergedStart;
+      return;
+    }
     this.pendingUploadRows.push({ start, count });
   }
 
@@ -3112,15 +3154,23 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     snapshot: WorkerPublicationSnapshot,
   ): void {
     const floatType = this.poolFloatTextures === 'float16' ? THREE.HalfFloatType : THREE.FloatType;
+    const packedCenters = this.centersTexture.format === THREE.RGBAIntegerFormat;
     for (const row of snapshot.coreRows) {
+      if (packedCenters) {
+        this.uploadCapturedRow(renderer, row.start, row.count, THREE.RGBAIntegerFormat, 4, [{
+          key: 'centers', texture: this.centersTexture,
+          data: new Uint32Array(row.centers.buffer, row.centers.byteOffset, row.centers.length),
+          type: THREE.UnsignedIntType,
+        }]);
+      }
       this.uploadCapturedRow(renderer, row.start, row.count, THREE.RGBAFormat, 4, [
-        {
+        ...(packedCenters ? [] : [{
           key: 'centers',
           texture: this.dataTextures[0] as THREE.DataTexture,
           data: row.centers,
           type: floatType,
           encodeHalf: this.poolFloatTextures === 'float16',
-        },
+        }]),
         {
           key: 'colors',
           texture: this.dataTextures[1] as THREE.DataTexture,
@@ -3425,14 +3475,21 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       const rows = mergeUploadRows(this.pendingUploadRows);
       const floatType =
         this.poolFloatTextures === 'float16' ? THREE.HalfFloatType : THREE.FloatType;
+      const packedCenters = this.centersTexture.format === THREE.RGBAIntegerFormat;
+      if (packedCenters) {
+        this.uploadRows(renderer, rows, THREE.RGBAIntegerFormat, 4, [{
+          key: 'centers', texture: this.centersTexture,
+          data: this.centersTexture.image.data as Uint32Array, type: THREE.UnsignedIntType,
+        }]);
+      }
       this.uploadRows(renderer, rows, THREE.RGBAFormat, 4, [
-        {
+        ...(packedCenters ? [] : [{
           key: 'centers',
           texture: this.dataTextures[0] as THREE.DataTexture,
           data: this.backing.centers,
           type: floatType,
           encodeHalf: this.poolFloatTextures === 'float16',
-        },
+        }]),
         {
           key: 'colors',
           texture: this.dataTextures[1] as THREE.DataTexture,
