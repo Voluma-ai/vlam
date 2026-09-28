@@ -37,7 +37,9 @@ const BUDGET_GZIP_BYTES = {
   // after the r186/compute-projection work; retain roughly 15% review room.
   './static-lod': 94_000,
   './relighting': 50_000,
-  './streaming': 160_000,
+  // 160,248 B measured after streamed RAD culling and the shared sort
+  // scheduler landed in this graph × 1.15, rounded to 1 kB.
+  './streaming': 184_000,
   // Keep the existing unified ceiling: its post-split graph is 78,994 B and
   // must not be enlarged to hide a reintroduced optional implementation.
   './unified': 80_000,
