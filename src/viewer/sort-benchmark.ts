@@ -299,10 +299,7 @@ export async function verifyGpuSort(
  * complete work-slot coverage and bucket order, not sort-key generation or
  * the visual correctness of each streamed selection.
  */
-export async function verifyUnifiedGpuSort(
-  mesh: UnifiedSplatMesh,
-  renderer: THREE.WebGPURenderer,
-) {
+export async function verifyUnifiedGpuSort(mesh: UnifiedSplatMesh, renderer: THREE.WebGPURenderer) {
   // Keep benchmark-only inspection here; no library debug API is needed.
   const debug = mesh as unknown as {
     orderAttribute: THREE.StorageInstancedBufferAttribute;

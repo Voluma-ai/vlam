@@ -1,13 +1,24 @@
 import * as THREE from 'three';
 import { installRadSelectionSnapshot, copyResidentRadSelection } from './rad-selection-snapshot';
 import { SparkRenderer, SparkXr, SplatMesh } from '@sparkjsdev/spark';
-import { alignXrRigToCamera, captureXrCameraState, restoreXrCameraState, xrHeadDrifted } from './xr-session';
+import {
+  alignXrRigToCamera,
+  captureXrCameraState,
+  restoreXrCameraState,
+  xrHeadDrifted,
+} from './xr-session';
 
 const params = new URLSearchParams(location.search);
 const budget = Number(params.get('budget') ?? 200000);
-const mode = params.get('mode') === 'matched' ? 'matched' : params.get('mode') === 'optimized' ? 'optimized' : 'controlled';
+const mode =
+  params.get('mode') === 'matched'
+    ? 'matched'
+    : params.get('mode') === 'optimized'
+      ? 'optimized'
+      : 'controlled';
 const motion = params.get('xrMotion') ?? 'stationary';
-const sceneUrl = params.get('scene') ?? '/@fs/home/jack/Repos/vlam/.tmp/benchmark-assets/HOTEL.clean.comp-lod.rad';
+const sceneUrl =
+  params.get('scene') ?? '/@fs/home/jack/Repos/vlam/.tmp/benchmark-assets/HOTEL.clean.comp-lod.rad';
 const status = document.querySelector<HTMLElement>('#status')!;
 const result = document.querySelector<HTMLElement>('#result')!;
 const button = document.querySelector<HTMLButtonElement>('#enter-vr')!;
@@ -15,11 +26,17 @@ const fullResolution = mode === 'controlled';
 const scale = mode === 'matched' ? Number(params.get('xrScale')) || 0.5 : fullResolution ? 1 : 0.5;
 const cutoff = Number(params.get('cutoff')) || (mode === 'optimized' ? Math.sqrt(5) : 3);
 const sortRadial = mode === 'matched' ? params.get('sortMetric') === 'radial' : !fullResolution;
-const sortIntervalMs = mode === 'matched' ? Number(params.get('sortIntervalMs')) || 33 : fullResolution ? 0 : 50;
-const fixedFoveation = mode === 'matched' ? Number(params.get('foveation') ?? 1) : fullResolution ? 0 : 1;
+const sortIntervalMs =
+  mode === 'matched' ? Number(params.get('sortIntervalMs')) || 33 : fullResolution ? 0 : 50;
+const fixedFoveation =
+  mode === 'matched' ? Number(params.get('foveation') ?? 1) : fullResolution ? 0 : 1;
 const vectorParam = (name: string, fallback: [number, number, number]): THREE.Vector3 => {
   const values = params.get(name)?.split(',').map(Number);
-  return new THREE.Vector3(...(values?.length === 3 && values.every(Number.isFinite) ? values as [number, number, number] : fallback));
+  return new THREE.Vector3(
+    ...(values?.length === 3 && values.every(Number.isFinite)
+      ? (values as [number, number, number])
+      : fallback),
+  );
 };
 const renderer = new THREE.WebGLRenderer({ antialias: false });
 renderer.setPixelRatio(1);
@@ -61,7 +78,8 @@ let benchmarkProjectionPaused = false;
 if (params.get('benchmarkSelection') === '1') {
   installRadSelectionSnapshot(async () => {
     const source = mesh.packedSplats?.lodSplats;
-    if (!source || !mesh.context.enableLod.value) throw new Error('RAD snapshot requires resident packed LOD data');
+    if (!source || !mesh.context.enableLod.value)
+      throw new Error('RAD snapshot requires resident packed LOD data');
     // Spark uploads replacement index arrays directly to GL without updating
     // texture.image.data. Observe one real publication only after FPS sampling.
     type Publication = { numSplats: number; indices: Uint32Array };
@@ -70,30 +88,48 @@ if (params.get('benchmarkSelection') === '1') {
     };
     const original = adapter.updateLodIndices;
     const globalIds = await new Promise<number[]>((resolve, reject) => {
-      const restore = () => { adapter.updateLodIndices = original; clearTimeout(timer); };
-      const timer = setTimeout(() => { restore(); reject(new Error('RAD publication snapshot timed out')); }, 10000);
+      const restore = () => {
+        adapter.updateLodIndices = original;
+        clearTimeout(timer);
+      };
+      const timer = setTimeout(() => {
+        restore();
+        reject(new Error('RAD publication snapshot timed out'));
+      }, 10000);
       adapter.updateLodIndices = (meshes, cuts) => {
         original.call(spark, meshes, cuts);
         const cut = cuts[mesh.uuid];
         if (!cut) return;
         restore();
-        try { resolve(copyResidentRadSelection(cut.indices, cut.numSplats, source.numSplats)); }
-        catch (error) { reject(error instanceof Error ? error : new Error(String(error))); }
+        try {
+          resolve(copyResidentRadSelection(cut.indices, cut.numSplats, source.numSplats));
+        } catch (error) {
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
       };
     });
     const chosen = [...globalIds].sort((a, b) => a - b).slice(0, 1024);
     mesh.updateWorldMatrix(true, false);
     const positionSamples = chosen.map((globalId) => ({
       globalId,
-      worldPosition: source.getSplat(globalId).center.clone().applyMatrix4(mesh.matrixWorld).toArray(),
+      worldPosition: source
+        .getSplat(globalId)
+        .center.clone()
+        .applyMatrix4(mesh.matrixWorld)
+        .toArray(),
     }));
     const head = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
     let projectedCoverage;
     if (params.get('benchmarkCoverage') === '1') {
       benchmarkProjectionPaused = true;
       try {
-        const { captureSparkProjectedCoverage, snapshotXrProjectionEyes } = await import('./rad-projected-coverage');
-        projectedCoverage = await captureSparkProjectedCoverage(renderer, spark, snapshotXrProjectionEyes(renderer));
+        const { captureSparkProjectedCoverage, snapshotXrProjectionEyes } =
+          await import('./rad-projected-coverage');
+        projectedCoverage = await captureSparkProjectedCoverage(
+          renderer,
+          spark,
+          snapshotXrProjectionEyes(renderer),
+        );
       } finally {
         benchmarkProjectionPaused = false;
       }
@@ -105,8 +141,12 @@ if (params.get('benchmarkSelection') === '1') {
       chunkSize: 65536,
       globalIds,
       positionSamples,
-      sourceAttributes: { residentNodeCount: source.numSplats, mappingVersion: mesh.mappingVersion },
-      mappingAssumption: 'Resident LOD index equals authored RAD global ID; validate common-node positions before interpreting overlap',
+      sourceAttributes: {
+        residentNodeCount: source.numSplats,
+        mappingVersion: mesh.mappingVersion,
+      },
+      mappingAssumption:
+        'Resident LOD index equals authored RAD global ID; validate common-node positions before interpreting overlap',
       pose: {
         position: head.getWorldPosition(new THREE.Vector3()).toArray(),
         forward: head.getWorldDirection(new THREE.Vector3()).toArray(),
@@ -126,14 +166,20 @@ const xr = new SparkXr({
     placementPending = true;
     motionStart = 0;
     const layer = renderer.xr.getBaseLayer() as {
-      textureWidth?: number; textureHeight?: number;
-      framebufferWidth?: number; framebufferHeight?: number;
+      textureWidth?: number;
+      textureHeight?: number;
+      framebufferWidth?: number;
+      framebufferHeight?: number;
     } | null;
-    console.info('SPARK_XR_LAYER', JSON.stringify({
-      scale, width: layer?.textureWidth ?? layer?.framebufferWidth ?? null,
-      height: layer?.textureHeight ?? layer?.framebufferHeight ?? null,
-      foveation: (layer as typeof layer & { fixedFoveation?: number })?.fixedFoveation ?? null,
-    }));
+    console.info(
+      'SPARK_XR_LAYER',
+      JSON.stringify({
+        scale,
+        width: layer?.textureWidth ?? layer?.framebufferWidth ?? null,
+        height: layer?.textureHeight ?? layer?.framebufferHeight ?? null,
+        foveation: (layer as typeof layer & { fixedFoveation?: number })?.fixedFoveation ?? null,
+      }),
+    );
     console.info('SPARK_XR_STARTED');
   },
   onExitXr: () => {
@@ -182,7 +228,14 @@ window.addEventListener('keydown', (event) => {
     position: view.getWorldPosition(new THREE.Vector3()).toArray(),
     forward: view.getWorldDirection(new THREE.Vector3()).toArray(),
   });
-  console.info('SPARK_XR_BENCHMARK_POSE', JSON.stringify({ app: pose(camera), head: pose(head), left: head.cameras[0] ? pose(head.cameras[0]) : null }));
+  console.info(
+    'SPARK_XR_BENCHMARK_POSE',
+    JSON.stringify({
+      app: pose(camera),
+      head: pose(head),
+      left: head.cameras[0] ? pose(head.cameras[0]) : null,
+    }),
+  );
 });
 renderer.setAnimationLoop((time) => {
   if (benchmarkProjectionPaused) return;
@@ -194,10 +247,13 @@ renderer.setAnimationLoop((time) => {
         alignXrRigToCamera(rig, head, cameraState.worldMatrix);
         renderer.xr.updateCamera(camera);
         placementPending = false;
-        console.info('SPARK_XR_POSE', JSON.stringify({
-          position: camera.getWorldPosition(new THREE.Vector3()).toArray(),
-          forward: camera.getWorldDirection(new THREE.Vector3()).toArray(),
-        }));
+        console.info(
+          'SPARK_XR_POSE',
+          JSON.stringify({
+            position: camera.getWorldPosition(new THREE.Vector3()).toArray(),
+            forward: camera.getWorldDirection(new THREE.Vector3()).toArray(),
+          }),
+        );
       }
     }
     if (!placementPending) {
@@ -220,9 +276,9 @@ renderer.setAnimationLoop((time) => {
         rig.quaternion.copy(motionBaseQuaternion).multiply(motionRotation);
       }
       if (motion === 'translate') {
-        rig.position.copy(motionBasePosition).add(
-          motionOffset.set(Math.sin((elapsed * Math.PI) / 6) * 0.25, 0, 0),
-        );
+        rig.position
+          .copy(motionBasePosition)
+          .add(motionOffset.set(Math.sin((elapsed * Math.PI) / 6) * 0.25, 0, 0));
       }
       rig.updateMatrixWorld(true);
       camera.updateMatrixWorld(true);
@@ -237,7 +293,9 @@ renderer.setAnimationLoop((time) => {
   if (phase === 'warmup' && xr.session) {
     if (!sampleStart) sampleStart = time;
     if (time - sampleStart >= 5000) {
-      phase = 'sample'; sampleStart = time; lastFrame = 0;
+      phase = 'sample';
+      sampleStart = time;
+      lastFrame = 0;
       const head = renderer.xr.getCamera();
       sampleStartPose = {
         position: head.getWorldPosition(new THREE.Vector3()).toArray(),
@@ -254,16 +312,46 @@ renderer.setAnimationLoop((time) => {
       phase = 'done';
       const total = frameMs.reduce((sum, value) => sum + value, 0);
       const report = {
-        kind: 'spark-webgl-xr-benchmark', mode, motion, budget, backend: 'WebGL2', backgroundSrgb: '#1a1a1f',
+        kind: 'spark-webgl-xr-benchmark',
+        mode,
+        motion,
+        budget,
+        backend: 'WebGL2',
+        backgroundSrgb: '#1a1a1f',
         xrSampleStartPose: sampleStartPose,
-        scene: sceneUrl, scale, cutoff, fixedFoveation, sortRadial, sortIntervalMs,
+        scene: sceneUrl,
+        scale,
+        cutoff,
+        fixedFoveation,
+        sortRadial,
+        sortIntervalMs,
         minAlpha: params.has('minAlpha') ? Number(params.get('minAlpha')) : 0.5 / 255,
-        frames: frameMs.length, averageFps: total ? (frameMs.length * 1000) / total : null,
-        frameMs: { p50: percentile(frameMs, 0.5), p95: percentile(frameMs, 0.95), p99: percentile(frameMs, 0.99) },
-        cpuSubmissionMs: { p50: percentile(cpuMs, 0.5), p95: percentile(cpuMs, 0.95), p99: percentile(cpuMs, 0.99) },
-        drawCalls: { mean: draws.reduce((sum, value) => sum + value, 0) / draws.length, p95: percentile(draws, 0.95) },
-        activeSplats: { min: Math.min(...activeSplats), max: Math.max(...activeSplats), mean: activeSplats.reduce((sum, value) => sum + value, 0) / activeSplats.length, last: spark.activeSplats },
-        missedRefreshOpportunities: frameMs.reduce((sum, value) => sum + Math.max(0, Math.round(value / period) - 1), 0),
+        frames: frameMs.length,
+        averageFps: total ? (frameMs.length * 1000) / total : null,
+        frameMs: {
+          p50: percentile(frameMs, 0.5),
+          p95: percentile(frameMs, 0.95),
+          p99: percentile(frameMs, 0.99),
+        },
+        cpuSubmissionMs: {
+          p50: percentile(cpuMs, 0.5),
+          p95: percentile(cpuMs, 0.95),
+          p99: percentile(cpuMs, 0.99),
+        },
+        drawCalls: {
+          mean: draws.reduce((sum, value) => sum + value, 0) / draws.length,
+          p95: percentile(draws, 0.95),
+        },
+        activeSplats: {
+          min: Math.min(...activeSplats),
+          max: Math.max(...activeSplats),
+          mean: activeSplats.reduce((sum, value) => sum + value, 0) / activeSplats.length,
+          last: spark.activeSplats,
+        },
+        missedRefreshOpportunities: frameMs.reduce(
+          (sum, value) => sum + Math.max(0, Math.round(value / period) - 1),
+          0,
+        ),
         actualRuntimeRate: xr.session.frameRate ?? null,
       };
       result.textContent = JSON.stringify(report);

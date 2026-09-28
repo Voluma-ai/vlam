@@ -52,7 +52,11 @@ function xrRenderer(): { renderer: THREE.WebGPURenderer; head: THREE.ArrayCamera
 
 describe('UnifiedSplatMesh under XR presentation', () => {
   it('ignores submillimeter headset jitter but sorts after meaningful movement', () => {
-    vi.stubGlobal('navigator', { userAgent: 'Android Quest 3', platform: 'Linux', maxTouchPoints: 0 });
+    vi.stubGlobal('navigator', {
+      userAgent: 'Android Quest 3',
+      platform: 'Linux',
+      maxTouchPoints: 0,
+    });
     let now = 0;
     const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
     const { renderer, head } = xrRenderer();

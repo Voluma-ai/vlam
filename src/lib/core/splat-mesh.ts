@@ -1278,9 +1278,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     colors.set(data.colors, destination * 4);
     // Editable pools retain this integer image as an alias of center backing;
     // reuse it rather than allocate a view for every sparse frontier write.
-    const packedCenters = this.centersTexture.format === THREE.RGBAIntegerFormat
-      ? this.centersTexture.image.data as Uint32Array
-      : null;
+    const packedCenters =
+      this.centersTexture.format === THREE.RGBAIntegerFormat
+        ? (this.centersTexture.image.data as Uint32Array)
+        : null;
     // Everything loop-invariant is hoisted into locals, including the two
     // optional arrays. `data` reaches here from several construction sites with
     // different shapes (sliced chunks, worker paging plans, whole SplatData), so
@@ -1303,8 +1304,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       centers[p + 1] = positions[p3 + 1] as number;
       centers[p + 2] = positions[p3 + 2] as number;
       if (packedCenters) {
-        packedCenters[p + 3] = (colors[p] as number) | ((colors[p + 1] as number) << 8)
-          | ((colors[p + 2] as number) << 16) | ((colors[p + 3] as number) << 24);
+        packedCenters[p + 3] =
+          (colors[p] as number) |
+          ((colors[p + 1] as number) << 8) |
+          ((colors[p + 2] as number) << 16) |
+          ((colors[p + 3] as number) << 24);
       }
       covarianceA[p + 0] = covariances[p6 + 0] as number;
       covarianceA[p + 1] = covariances[p6 + 1] as number;
@@ -3157,20 +3161,27 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     const packedCenters = this.centersTexture.format === THREE.RGBAIntegerFormat;
     for (const row of snapshot.coreRows) {
       if (packedCenters) {
-        this.uploadCapturedRow(renderer, row.start, row.count, THREE.RGBAIntegerFormat, 4, [{
-          key: 'centers', texture: this.centersTexture,
-          data: new Uint32Array(row.centers.buffer, row.centers.byteOffset, row.centers.length),
-          type: THREE.UnsignedIntType,
-        }]);
+        this.uploadCapturedRow(renderer, row.start, row.count, THREE.RGBAIntegerFormat, 4, [
+          {
+            key: 'centers',
+            texture: this.centersTexture,
+            data: new Uint32Array(row.centers.buffer, row.centers.byteOffset, row.centers.length),
+            type: THREE.UnsignedIntType,
+          },
+        ]);
       }
       this.uploadCapturedRow(renderer, row.start, row.count, THREE.RGBAFormat, 4, [
-        ...(packedCenters ? [] : [{
-          key: 'centers',
-          texture: this.dataTextures[0] as THREE.DataTexture,
-          data: row.centers,
-          type: floatType,
-          encodeHalf: this.poolFloatTextures === 'float16',
-        }]),
+        ...(packedCenters
+          ? []
+          : [
+              {
+                key: 'centers',
+                texture: this.dataTextures[0] as THREE.DataTexture,
+                data: row.centers,
+                type: floatType,
+                encodeHalf: this.poolFloatTextures === 'float16',
+              },
+            ]),
         {
           key: 'colors',
           texture: this.dataTextures[1] as THREE.DataTexture,
@@ -3477,19 +3488,27 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         this.poolFloatTextures === 'float16' ? THREE.HalfFloatType : THREE.FloatType;
       const packedCenters = this.centersTexture.format === THREE.RGBAIntegerFormat;
       if (packedCenters) {
-        this.uploadRows(renderer, rows, THREE.RGBAIntegerFormat, 4, [{
-          key: 'centers', texture: this.centersTexture,
-          data: this.centersTexture.image.data as Uint32Array, type: THREE.UnsignedIntType,
-        }]);
+        this.uploadRows(renderer, rows, THREE.RGBAIntegerFormat, 4, [
+          {
+            key: 'centers',
+            texture: this.centersTexture,
+            data: this.centersTexture.image.data as Uint32Array,
+            type: THREE.UnsignedIntType,
+          },
+        ]);
       }
       this.uploadRows(renderer, rows, THREE.RGBAFormat, 4, [
-        ...(packedCenters ? [] : [{
-          key: 'centers',
-          texture: this.dataTextures[0] as THREE.DataTexture,
-          data: this.backing.centers,
-          type: floatType,
-          encodeHalf: this.poolFloatTextures === 'float16',
-        }]),
+        ...(packedCenters
+          ? []
+          : [
+              {
+                key: 'centers',
+                texture: this.dataTextures[0] as THREE.DataTexture,
+                data: this.backing.centers,
+                type: floatType,
+                encodeHalf: this.poolFloatTextures === 'float16',
+              },
+            ]),
         {
           key: 'colors',
           texture: this.dataTextures[1] as THREE.DataTexture,

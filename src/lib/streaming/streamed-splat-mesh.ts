@@ -1957,12 +1957,7 @@ export class StreamedSplatMesh extends SplatMesh {
    * boundary. The pager's runs are contiguous in *slot* space, which page
    * storage no longer guarantees is contiguous in the pool.
    */
-  private writeSlabSlots(
-    data: PlanSplats,
-    slot: number,
-    count: number,
-    sourceOffset = 0,
-  ): void {
+  private writeSlabSlots(data: PlanSplats, slot: number, count: number, sourceOffset = 0): void {
     let written = 0;
     while (written < count) {
       const at = slot + written;
@@ -5688,18 +5683,23 @@ export class StreamedSplatMesh extends SplatMesh {
       this.pageTableDrawBudget,
       fov,
     );
-    const comparePostedPose = experiments.radIndexedIdlePoseTolerance ||
+    const comparePostedPose =
+      experiments.radIndexedIdlePoseTolerance ||
       (experiments.radIndexedCameraCoalescing &&
-        (this.pageTableInFlight || this.indexedPublishGeneration !== null ||
+        (this.pageTableInFlight ||
+          this.indexedPublishGeneration !== null ||
           (this.indexedStagingGeneration !== null &&
             this.indexedStagingGeneration !== this.pageTableDisplayGeneration &&
             this.lastPlanReason !== 'waiting-for-children' &&
             this.lastPlanReason !== 'capacity-blocked' &&
             this.lastPlanReason !== 'non-refinement')));
-    const sameConfiguration = comparePostedPose &&
+    const sameConfiguration =
+      comparePostedPose &&
       key.split('|').slice(3).join('|') === this.demandKey.split('|').slice(3).join('|');
     const previousProjection = this.lastPostedProjection;
-    const sameLens = comparePostedPose && previousProjection !== null &&
+    const sameLens =
+      comparePostedPose &&
+      previousProjection !== null &&
       projection.length === previousProjection.length &&
       (projection.length === 0 ||
         (projection.length === 16 &&
@@ -5707,25 +5707,37 @@ export class StreamedSplatMesh extends SplatMesh {
             // Row norms retain lens/scale changes while ignoring view rotation.
             const scale = Math.hypot(projection[row]!, projection[row + 4]!, projection[row + 8]!);
             const previous = Math.hypot(
-              previousProjection[row]!, previousProjection[row + 4]!, previousProjection[row + 8]!,
+              previousProjection[row]!,
+              previousProjection[row + 4]!,
+              previousProjection[row + 8]!,
             );
             return Math.abs(scale - previous) <= Math.max(1e-7, previous * 1e-6);
           })));
-    const closeIdlePose = experiments.radIndexedIdlePoseTolerance &&
-      this.lastPostedCamera !== null && this.lastPostedForward !== null &&
+    const closeIdlePose =
+      experiments.radIndexedIdlePoseTolerance &&
+      this.lastPostedCamera !== null &&
+      this.lastPostedForward !== null &&
       squaredDistance3(camera, this.lastPostedCamera) <= 0.005 * 0.005 &&
       forward[0] * this.lastPostedForward[0] +
         forward[1] * this.lastPostedForward[1] +
-        forward[2] * this.lastPostedForward[2] >= Math.cos(Math.PI / 720);
+        forward[2] * this.lastPostedForward[2] >=
+        Math.cos(Math.PI / 720);
     // A desk-still XR pose can jitter by millimetres while its exact demand key
     // changes every idle tick. Skip only a settled indexed cut: new data,
     // unfinished refinement, publication, lens changes, and real motion still post.
     if (
       experiments.radIndexedIdlePoseTolerance &&
-      this.indexedPageTable && !this.radChunkResidency &&
-      !hadPendingWork && !this.pageTableInFlight && !this.pageTableContinuePending &&
-      !this.demandNeedsNewRevision && this.indexedPublishGeneration === null &&
-      this.indexedStagingGeneration === null && sameConfiguration && sameLens && closeIdlePose
+      this.indexedPageTable &&
+      !this.radChunkResidency &&
+      !hadPendingWork &&
+      !this.pageTableInFlight &&
+      !this.pageTableContinuePending &&
+      !this.demandNeedsNewRevision &&
+      this.indexedPublishGeneration === null &&
+      this.indexedStagingGeneration === null &&
+      sameConfiguration &&
+      sameLens &&
+      closeIdlePose
     ) {
       this.pendingWork = false;
       this.lastScheduleTime = now;
@@ -5751,9 +5763,10 @@ export class StreamedSplatMesh extends SplatMesh {
       // Tiny pose jitter does not need to queue a replacement after publication.
       const sameLocation = squaredDistance3(camera, this.lastPostedCamera) <= 1;
       if (sameConfiguration && sameLens && sameLocation) {
-        this.indexedQueuedPose = experiments.radIndexedIdlePoseTolerance && closeIdlePose
-          ? null
-          : { camera, forward, projection: Array.from(projection) };
+        this.indexedQueuedPose =
+          experiments.radIndexedIdlePoseTolerance && closeIdlePose
+            ? null
+            : { camera, forward, projection: Array.from(projection) };
         if (this.indexedPublishGeneration !== null) {
           this.pendingWork = false;
           this.lastScheduleTime = now;

@@ -179,10 +179,10 @@ export class WorkBufferGather {
           poolIndex.mod(int(dataTextureWidth)),
           poolIndex.div(int(dataTextureWidth)),
         );
-        const packedCenterColor = experiments.unifiedPackedColorReuse &&
-          centersTexture.format === THREE.RGBAIntegerFormat
-          ? textureLoad(centersTexture, texel).toVar()
-          : null;
+        const packedCenterColor =
+          experiments.unifiedPackedColorReuse && centersTexture.format === THREE.RGBAIntegerFormat
+            ? textureLoad(centersTexture, texel).toVar()
+            : null;
         const localCenter = packedCenterColor
           ? decodeSplatCenter(centersTexture, packedCenterColor)
           : readSplatCenter(centersTexture, texel);

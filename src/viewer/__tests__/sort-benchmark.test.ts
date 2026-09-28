@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { StreamedSplatPerformanceEvent } from '../../lib/streaming';
-import { createFrameBenchmark, isSwapPerformanceEvent, verifyUnifiedGpuSort } from '../sort-benchmark';
+import {
+  createFrameBenchmark,
+  isSwapPerformanceEvent,
+  verifyUnifiedGpuSort,
+} from '../sort-benchmark';
 import type * as THREE from 'three/webgpu';
 import type { UnifiedSplatMesh } from '../../lib/unified';
 
@@ -185,28 +189,39 @@ describe('unified GPU counting-order verification', () => {
       sorter: { kind: 'counting', workingAttributes: [{}, {}, {}, bucketAttribute] },
     } as unknown as UnifiedSplatMesh;
     const renderer = {
-      getArrayBufferAsync: async (attribute: object) => attribute === orderAttribute
-        ? new Float32Array(order).buffer
-        : new Uint32Array(buckets).buffer,
+      getArrayBufferAsync: async (attribute: object) =>
+        attribute === orderAttribute
+          ? new Float32Array(order).buffer
+          : new Uint32Array(buckets).buffer,
     } as unknown as THREE.WebGPURenderer;
     return verifyUnifiedGpuSort(mesh, renderer);
   };
 
   it('accepts a complete permutation in ascending GPU bucket order', async () => {
     expect(await inspect([2, 0, 1], [3, 9, 1])).toMatchObject({
-      available: true, count: 3, duplicates: 0, missing: 0, foreign: 0, bucketInversions: 0,
+      available: true,
+      count: 3,
+      duplicates: 0,
+      missing: 0,
+      foreign: 0,
+      bucketInversions: 0,
     });
   });
 
   it('reports duplicate, missing and foreign draw slots', async () => {
     expect(await inspect([2, 2, 0, 8], [3, 9, 1, 10])).toMatchObject({
-      duplicates: 1, missing: 2, foreign: 1,
+      duplicates: 1,
+      missing: 2,
+      foreign: 1,
     });
   });
 
   it('reports bucket inversions even with complete slot coverage', async () => {
     expect(await inspect([1, 0, 2], [3, 9, 1])).toMatchObject({
-      duplicates: 0, missing: 0, foreign: 0, bucketInversions: 2,
+      duplicates: 0,
+      missing: 0,
+      foreign: 0,
+      bucketInversions: 2,
     });
   });
 });

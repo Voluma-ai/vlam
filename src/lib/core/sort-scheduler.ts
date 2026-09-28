@@ -262,8 +262,11 @@ export class WebGpuSortScheduler {
     if (this.forcePending) return true;
     if (modelView.equals(lastAcceptedModelView)) return false;
     if (settled) return true;
-    if (this.isMobile && this.xrJitterToleranceEnabled &&
-        this.isWithinMobilePoseTolerance(modelView, lastAcceptedModelView)) {
+    if (
+      this.isMobile &&
+      this.xrJitterToleranceEnabled &&
+      this.isWithinMobilePoseTolerance(modelView, lastAcceptedModelView)
+    ) {
       return false;
     }
     return interval === 0 || now - this.lastAcceptedAt >= interval;
@@ -282,7 +285,9 @@ export class WebGpuSortScheduler {
     const currentPose = this.currentInverseModelView.copy(current).invert().elements;
     const acceptedPose = this.acceptedInverseModelView.copy(accepted).invert().elements;
     return [12, 13, 14].every(
-      (index) => Math.abs((currentPose[index] as number) - (acceptedPose[index] as number)) <= MOBILE_POSITION_EPSILON,
+      (index) =>
+        Math.abs((currentPose[index] as number) - (acceptedPose[index] as number)) <=
+        MOBILE_POSITION_EPSILON,
     );
   }
 }

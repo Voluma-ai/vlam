@@ -412,11 +412,13 @@ export function applySplatMaterialGraph(
   // coefficients read from the SOG palette) - is added to the base color.
   const cachedColor = mode === 'display' ? inputs.shFinalColor : undefined;
   const centerSample = textureLoad(textures.centersTexture, splatTexel).toVar();
-  const baseColor = (cachedColor
-    ? textureLoad(cachedColor, splatTexel)
-    : textures.centersTexture.format === THREE.RGBAIntegerFormat
-      ? decodeSplatColor(centerSample)
-      : textureLoad(textures.colorsTexture, splatTexel)).toVar();
+  const baseColor = (
+    cachedColor
+      ? textureLoad(cachedColor, splatTexel)
+      : textures.centersTexture.format === THREE.RGBAIntegerFormat
+        ? decodeSplatColor(centerSample)
+        : textureLoad(textures.colorsTexture, splatTexel)
+  ).toVar();
   /** The splat's center as stored in the pool - its own source's data frame. */
   const poolCenter = decodeSplatCenter(textures.centersTexture, centerSample);
   // Per-source placement is resolved here, ahead of everything else, so the

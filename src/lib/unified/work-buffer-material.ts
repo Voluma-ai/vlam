@@ -126,9 +126,14 @@ export function createWorkBufferMaterial(options: {
     if (mergedExponent) {
       const remap = workColor.a.mul(4).sub(3).min(5);
       mergedExponent.assign(
-        workColor.a
-          .greaterThan(1)
-          .select(remap.mul(remap).sub(1).mul(1 / Math.E).exp(), float(1)),
+        workColor.a.greaterThan(1).select(
+          remap
+            .mul(remap)
+            .sub(1)
+            .mul(1 / Math.E)
+            .exp(),
+          float(1),
+        ),
       );
     }
     if (projectedClip && projectedAxes && projectedParameters) {

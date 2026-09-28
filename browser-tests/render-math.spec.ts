@@ -60,7 +60,6 @@ test('preserves Gaussian, DoF, RAD, clipping and picking across material paths',
   }
 });
 
-
 test('keeps faint RAD layers unless the cutoff is enabled and restores them after XR', async ({
   page,
 }, info) => {
