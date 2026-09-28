@@ -35,8 +35,8 @@ and [`architecture.md`](architecture.md).
   binary layout; v3 often omits `fileType` (inferred). See `formats/lcc-notes.md`.
 - **RAD paging:** large captures default `foveationMode: 'page-table'`
   (`FrontierPager` + `frontier-worker`). Moderate scenes budget-lift to full
-  leaves via prefix `RadLodSource`. History: `history/rad-paging-history.md`.
-- **Over 2 GiB PLY:** streamed window decode ✅ (including `f_rest_*` SH).
+  leaves via prefix `RadLodSource`. See [RAD format notes](formats/rad-notes.md).
+- **Over 2 GiB PLY:** local, uncompressed 3DGS PLY uses windowed decode, including `f_rest_*` SH. Remote window streaming remains benchmark-only; other whole-file routes retain the browser's 2 GiB `ArrayBuffer` limit.
 - **Manual column:** gitignored captures are not named here; use your own local
   fixtures per format notes under `docs/`.
 
@@ -175,7 +175,7 @@ requirements met; not exercised here) · ❓ unverified, no device/report
 because it has not tested a version floor. The real requirement is
 transitive: whatever `three`'s `WebGPURenderer` requires for WebGPU, or a
 working WebGL2 context for the fallback. Check `three`'s own requirements for
-the version you install (`>= 0.185.0` is the peer range).
+the version you install (`>= 0.186.0` is the peer range).
 
 **What the WebGL2 fallback costs you.** It is a first-class fallback for
 standalone rendering, static `SplatMesh`, streamed `StreamedSplatMesh`,

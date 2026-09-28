@@ -78,6 +78,7 @@ export default defineConfig({
       { text: 'Home', link: '/' },
       { text: 'Get started', link: '/get-started' },
       { text: 'Examples', link: '/examples/' },
+      { text: 'Migration', link: '/migration' },
       { text: 'FAQ', link: '/faq' },
       { text: 'API', link: '/api/' },
       // Same tab: the demo has its own menu back into the docs, so opening a

@@ -49,8 +49,8 @@ const spzData = await parseSpz(await (await fetch('/scene.spz')).arrayBuffer());
 
 ### Format subpaths
 
-The main `@voluma/vlam` entry exports the core renderer and the loaders, and no
-parsers at all. Every format parser lives on its own subpath, so none of them
+The main `@voluma/vlam` entry exports the core renderer; loaders live on
+`@voluma/vlam/loaders`, and parsers live on format subpaths. Every format parser lives on its own subpath, so none of them
 enter your bundle unless you import one:
 
 ```ts
@@ -63,8 +63,9 @@ import { parseSplat } from '@voluma/vlam/formats/splat';
 import { parseKsplat } from '@voluma/vlam/formats/ksplat';
 ```
 
-You do **not** need any subpath just to load: `loadSplatData`, `loadSplatDataFile`,
-and `StreamedSplatMesh.load` accept every format and decode it in a worker.
+Use `@voluma/vlam/loaders` for `loadSplatData` and `loadSplatDataFile`,
+or `@voluma/vlam/streaming` for `StreamedSplatMesh.load`. These routes
+recognize supported formats without importing a parser directly.
 The subpaths are for direct decode or format inspection.
 
 The directly-called `parseXxx` functions throw plain `Error` on malformed
@@ -134,9 +135,11 @@ load; a partially built streamed mesh is disposed on abort, so nothing leaks.
 
 ## Size limits
 
-A browser caps a single `ArrayBuffer` at 2 GiB. Uncompressed 3DGS `.ply` is
-decoded a window at a time, so its size is unlimited; the other formats must
-be decoded whole and report a clear error past 2 GiB, convert those to SOG
+A browser caps a single `ArrayBuffer` at 2 GiB. Local uncompressed 3DGS `.ply`
+can be decoded in windows beyond that limit; remote PLY streaming remains a
+benchmark path, not a convenience loader feature. Other formats, including
+whole-file `.rad`, use whole-file decoding and report an error past 2 GiB;
+convert oversized files to SOG
 (`npx @playcanvas/splat-transform input.ply output.sog`).
 
 ## Next

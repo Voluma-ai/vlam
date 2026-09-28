@@ -11,7 +11,7 @@ against the current package.
 npm install @voluma/vlam three
 ```
 
-`three` is a peer dependency (`>= 0.185.0`).
+`three` is a peer dependency (`>= 0.186.0`).
 
 ## Minimal example
 

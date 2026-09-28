@@ -1,9 +1,8 @@
 # Surface-aware brush and selection
 
 Implementation notes for continuous, depth-aware painting with orthogonal
-surface/through × center/footprint selection. This post-1.0 opportunity is
-implemented and unit-tested; headed backend/device validation remains tracked
-in [`ROADMAP.md`](../ROADMAP.md).
+surface/through × center/footprint selection. The selection modes are implemented and validated on headed WebGPU and WebGL2;
+the completed evidence is recorded below.
 
 References: SuperSplat's
 [sphere brush](https://github.com/playcanvas/supersplat/pull/1024) and

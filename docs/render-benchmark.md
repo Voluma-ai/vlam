@@ -224,6 +224,15 @@ lifecycle probes (empty → append, disjoint, reuse, clear, compaction) passed
 for both variants on WebGPU and forced WebGL2; automated
 `browser-tests/empty-pool.spec.ts` passed for both experiment builds.
 
+For a repeat, use the pinned hotel bytes and canonical camera in headed
+foreground Chrome, alternate five baseline/skip-empty pairs per backend,
+and compare WebGPU with forced WebGL2. Run the startup harness with
+`startupMetrics=1&uaMemory=0`; record first visible and target-active
+milestones separately from settled detail. Keep the static/shared-pool
+exclusions, unchanged staging copies, pixel/picking checks, and initial
+destination-upload counts in the report. These controls avoid interpreting
+memory-checkpoint pauses as upload savings.
+
 ### Bounded RAD traversal experiment (13 September 2026)
 
 Five alternating heap / bounded-threshold pairs per scene used headed Chromium

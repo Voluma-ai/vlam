@@ -181,8 +181,8 @@ stroke contract, streamed replay behavior, and CPU benchmark.
 
 ## Proxy-mesh relighting (not a modifier)
 
-For PlayCanvas-style sun / shadow relighting of a baked capture, use core
-[`setRelighting`](relighting.md) with a lit proxy mesh rendered to a
+For PlayCanvas-style sun / shadow relighting of a baked capture, use
+[`attachRelighting`](relighting.md) from `@voluma/vlam/relighting` with a lit proxy mesh rendered to a
 screen-aligned RT. That path is per-pixel fragment modulate, not a
 `SplatModifier`. See [Proxy-mesh relighting](relighting.md).
 

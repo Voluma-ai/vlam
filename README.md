@@ -24,7 +24,7 @@ This is a pre-release not yet recommended for production. The API can still chan
 npm install @voluma/vlam three
 ```
 
-`three` is a peer dependency (`>= 0.185.0`).
+`three` is a peer dependency (`>= 0.186.0`). See the [migration guide](site/migration.md) for 0.x API changes.
 
 ## Usage
 

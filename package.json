@@ -134,6 +134,7 @@
     "docs:samples": "tsc --noEmit -p docs/guide/samples/tsconfig.json && tsc --noEmit -p docs/examples/samples/tsconfig.json",
     "docs:api": "typedoc --options site/typedoc.json",
     "size:check": "node scripts/check-bundle-size.mjs",
+    "check:packed-consumer": "node scripts/check-packed-consumer.mjs",
     "deploy": "npm run build:site && wrangler deploy"
   },
   "peerDependencies": {

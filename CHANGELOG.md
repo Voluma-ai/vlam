@@ -19,15 +19,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
-### Verified
+### Added
 
-- iPhone 15 non-Pro, Safari on iOS 26.6.2, WebGPU (`mobile integrated`).
-  Goose stays at 17 ms for stationary and orbit passes, including one WebGL2
-  smoke pass. Portrait Tempel orbit is 17 / 17 / 24 ms at 752,694 splats;
-  hotel orbit is 17 / 51 / 86 ms at 262,240 splats. Landscape Tempel showed
-  no gaps, discs, or LOD popping. A ten-minute Tempel soak kept a 17 ms
-  median (p99 178 ms) without a crash. No mobile-default change. See
-  `docs/capabilities.md`.
+- Migration guide for 0.x API renames, package subpaths, renderer setup, strategies, relighting, orientation, and device defaults.
 
 ### Changed
 
@@ -39,21 +33,88 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   (default `0`). The viewer enables the cutoff only during WebXR presentation
   and restores the previous threshold on exit, preserving non-XR blending.
 
+- Document the supported high-level WebGPU UnifiedSplatMesh contract while keeping the raw UnifiedSourceView and optional render paths experimental.
+
+- Gate tagged npm publication on preflight, the CI-equivalent secret scan, and packed-package import checks.
+
+### Fixed
+
+- Clean up the React example across load failures, cancellation, unmounts, and source changes.
+
+- Make the existing VR example use the application camera, handle session errors and teardown, and add floor teleport and snap turns.
+
+- Correct peer-version, loading, default-profile, XR, and API reference documentation.
+
+## [0.10.4] - 2026-09-27
+
+### Verified
+
+- iPhone 15 non-Pro, Safari on iOS 26.6.2, WebGPU (`mobile integrated`).
+  Goose stays at 17 ms for stationary and orbit passes, including one WebGL2
+  smoke pass. Portrait Tempel orbit is 17 / 17 / 24 ms at 752,694 splats;
+  hotel orbit is 17 / 51 / 86 ms at 262,240 splats. Landscape Tempel showed
+  no gaps, discs, or LOD popping. A ten-minute Tempel soak kept a 17 ms
+  median (p99 178 ms) without a crash. No mobile-default change. See
+  `docs/capabilities.md`.
+
+## [0.10.3] - 2026-09-21
+
+### Fixed
+
+- Classic streamed LOD no longer commits a new cut while a GPU sort still
+  owns the order buffer. Dispatching a replacement let the older scatter
+  finish over new nearby splats (the unsorted white-blob flash while walking
+  Tempel/LCC2, worse with relighting on the same queue). Content changes
+  re-sort when the pass completes; camera-only motion keeps sort cadence.
+  Generic `SplatMesh` and `StaticLodSplatMesh` keep the previous instance
+  count and GPU `sourceIndex` until that matching sort can run, so a compact
+  or active-list swap cannot draw through the previous permutation.
+
+- The hidden startup hold and first cover still publish during that GPU wait
+  so `isStreaming` can go false. Later blocked swaps retry without looking
+  like the scene is still loading.
+
+## [0.10.2] - 2026-09-20
+
+### Fixed
+
+- String `'radix'` / `'exact'` `sortStrategy` values are rejected instead of
+  silently selecting counting sort. Hosts must pass `radixSort()` /
+  `exactSort()` from `@voluma/vlam/sorting/radix`.
+
+## [0.10.1] - 2026-09-20
+
+### Changed
+
 - `StreamedSplatMeshOptions.radStrategy` now accepts `'auto'` (the default,
   preserving moderate-RAD prefix and large-RAD page-table selection) or
   `'page-table'` to force the indexed page table for fitting RAD captures.
   Shared-pool page-table sources publish exact backing-pool indices only after
   the matching unified gather, sort, and render, retaining the previous cut
   through incomplete, stale, superseded, or capacity-blocked replacements.
+
+## [0.10.0] - 2026-09-18
+
+### Added
+
+- Spark 2.1 WASM now decodes the same synthetic RAD fixture and JG chunk 0 as
+  VLAM. Child links match; hierarchy sizes match within packed f16/scale
+  quantization. Page-table plans carry `skipSamples` for the nodes that were
+  not subdivided. `?log=1` exposes that list on `vlamFetch.meshes[].stall`.
+
+### Changed
+
 - Experimental radix sorting and compute projection now live behind the
   `@voluma/vlam/sorting/radix` and `@voluma/vlam/projection/compute` strategy
   factories; the root viewer and base unified entry remain lightweight with
   counting sort and vertex projection by default.
+
 - Non-fill-constrained desktops now default to the full-detail `quality`
   profile. The previous `balanced` default could replace a complete coarse
   streamed cut with fine splats that its 2 px / contribution culls then
   rejected, leaving visible dark gaps in zoomed-out views. `balanced` remains
   available as an explicit performance opt-in.
+
 - Page-table RAD now separates worker demand from render delivery: one
   authoritative Spark 2.1 one-pass selection posts ordered chunk demand before
   gather, discovers deeper dependencies while a previous candidate is still
@@ -72,12 +133,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `awaiting-publication` / `capacity-blocked` / `unchanged-selection`) and
   standalone publication acks only after a matching sort is actually visible.
 
-### Added
+## [0.9.0] - 2026-09-15
 
-- Spark 2.1 WASM now decodes the same synthetic RAD fixture and JG chunk 0 as
-  VLAM. Child links match; hierarchy sizes match within packed f16/scale
-  quantization. Page-table plans carry `skipSamples` for the nodes that were
-  not subdivided. `?log=1` exposes that list on `vlamFetch.meshes[].stall`.
+### Added
 
 - The internal frame benchmarks now report `medianFrameMs`, independent
   `observedCallbackCadenceMs` and `displayRefreshMs`, the display-rate source,
@@ -93,17 +151,52 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   two seconds of healthy active time for upward suggestions, and backs off
   failed probes. Scene and performance-mode changes reset its state.
 
+### Fixed
+
+- Incompatible packed-SH requests now stay inside an explicitly supplied shared
+  pool. VLAM disables higher-order SH for the mismatched mesh instead of
+  allocating a private pool outside the host's memory envelope, and streamed
+  RAD forwarding omits the disabled SH data.
+
+## [0.8.3] - 2026-09-14
+
+### Added
+
 - A benchmark-only `rad-focus` request scheduler candidate for over-cache
   page-table RAD: incremental worker demand scans and camera-generation-aware
   cancellation prioritize nearby central chunks while leaving staged display
   updates intact. The production default remains unchanged pending route and
   visual performance validation; chunks may mix visible/off-screen locations.
+
 - `VLAM_DEV_HTTP=1` lets a fresh Chromium profile use the local dev viewer on
   localhost without installing the developer's mkcert CA.
+
 - Opt-in streamed performance events now report the number of pool texture
   copies and live destination bytes on every update frame, including frames
   without a LOD reschedule, to separate fragmented copy submission pressure
   from upload volume during large RAD investigation.
+
+### Fixed
+
+- Frame benchmarks now classify only streamed mutations and actual uploads as
+  swap frames; idle per-frame performance events no longer inflate swap counts
+  or erase the non-swap frame average.
+
+- Large page-table RAD captures whose decoded scene exceeds the cache allowance
+  no longer prefetch off-view chunks indefinitely. After the first complete
+  display, coarse-base fetches yield to frontier dependencies; the background
+  whole-scene sweep is disabled while it cannot fit. On the supplied 106M-splat
+  scene at a 5M draw target and 2 GiB cache, this removed the stationary
+  eviction/refetch loop and reached the full draw target in a native Chromium run.
+
+- Frontier plans holding a published cut now retire obsolete unpublished tail
+  residents after newcomers are seated, preventing an empty drain loop that
+  could freeze refinement while the worker kept replanning.
+
+## [0.8.1] - 2026-09-14
+
+### Added
+
 - `ShComputeCache` stays active under `projectionStrategy: 'compute'`. The
   projector skips SH when the cache will supply color, and the vertex stage
   samples the 4 B/splat RGBA8 texture. On an 8.72M-splat SH3 SOG (RTX 3090)
@@ -111,6 +204,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   and restores vsync (frame p95 16.80); interior is 5.23 ms against PlayCanvas
   5.98 ms cull-free. `sortIntervalMs=0` still refreshes SH every frame. See
   `docs/render-benchmark.md`.
+
 - `projectionStrategy: 'auto'` is now the library and demo default. It makes a
   one-time, diagnostics-visible compute choice only for the measured large,
   static SH NVIDIA Ampere cohort within a 1 GiB peak additional-allocation budget;
@@ -118,6 +212,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `balanced` profile applies PlayCanvas-style 2 px / 3 contribution culls
   without suppressing SH; `quality` and explicit `vertex` remain full-detail
   escapes.
+
 - Experimental compute projection now evaluates SH once per surviving splat,
   packs the resolved RGBA8 color into the projection cache, and shrinks
   counting-sort histogram work to the GPU-visible count. Opt-in
@@ -129,47 +224,29 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   an all-visible overview before cache/cull policy. An `sh=0` split
   attributes the overview regression entirely to per-frame SH in the
   projector; see `docs/render-benchmark.md`.
+
 - WebGPU comparison archives now retain each resolved render and compute
   submission alongside their per-frame totals, so future tail work can be
   attributed without adding asynchronous readback to the measured loop.
 
+### Changed
+
+- Newly allocated private dynamic pools skip the initial full-texture CPU
+  upload of empty destination images. Textures still allocate at the same
+  dimensions and types; post-construction rows keep the staged upload path.
+  Static meshes and caller-supplied shared pools are unchanged. The isolated
+  native pool test improved first-usable output from 109.2 to 83.3 ms with zero
+  initial destination uploads. Historical Apple M3 scene timings included slow
+  memory checkpoints and do not isolate a load-time improvement. The benchmark server retains
+  `VLAM_EXPERIMENT=baseline` for the previous upload behavior.
+
 ### Fixed
 
-- Classic streamed LOD no longer commits a new cut while a GPU sort still
-  owns the order buffer. Dispatching a replacement let the older scatter
-  finish over new nearby splats (the unsorted white-blob flash while walking
-  Tempel/LCC2, worse with relighting on the same queue). Content changes
-  re-sort when the pass completes; camera-only motion keeps sort cadence.
-  Generic `SplatMesh` and `StaticLodSplatMesh` keep the previous instance
-  count and GPU `sourceIndex` until that matching sort can run, so a compact
-  or active-list swap cannot draw through the previous permutation.
-- The hidden startup hold and first cover still publish during that GPU wait
-  so `isStreaming` can go false. Later blocked swaps retry without looking
-  like the scene is still loading.
-- String `'radix'` / `'exact'` `sortStrategy` values are rejected instead of
-  silently selecting counting sort. Hosts must pass `radixSort()` /
-  `exactSort()` from `@voluma/vlam/sorting/radix`.
-- Incompatible packed-SH requests now stay inside an explicitly supplied shared
-  pool. VLAM disables higher-order SH for the mismatched mesh instead of
-  allocating a private pool outside the host's memory envelope, and streamed
-  RAD forwarding omits the disabled SH data.
-
-- Frame benchmarks now classify only streamed mutations and actual uploads as
-  swap frames; idle per-frame performance events no longer inflate swap counts
-  or erase the non-swap frame average.
-- Large page-table RAD captures whose decoded scene exceeds the cache allowance
-  no longer prefetch off-view chunks indefinitely. After the first complete
-  display, coarse-base fetches yield to frontier dependencies; the background
-  whole-scene sweep is disabled while it cannot fit. On the supplied 106M-splat
-  scene at a 5M draw target and 2 GiB cache, this removed the stationary
-  eviction/refetch loop and reached the full draw target in a native Chromium run.
-- Frontier plans holding a published cut now retire obsolete unpublished tail
-  residents after newcomers are seated, preventing an empty drain loop that
-  could freeze refinement while the worker kept replanning.
 - Startup benchmark pixel probes disable slow browser-wide memory checkpoints,
   including an explicit `uaMemory=1`, and record effective settings. Historical
   full-scene empty-pool timing claims are qualified because those checkpoints
   paused loading/rendering. The verified empty-pool default remains enabled.
+
 - Experimental remote PLY input accounting now counts unique backing buffers,
   including exact second-pass reads and compressed-input concatenation. Reports
   identify accounting version 2; legacy peaks are not directly comparable.
@@ -180,22 +257,30 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   rendering applies the same resolved contribution culls as its sources in
   both vertex and compute projection paths, and reports `vertex / xr` while
   an explicit compute path is suspended for XR.
+
 - Camera/view SH-cache refreshes under compute projection now dispatch only
   the projector's GPU-visible survivor list; initial and content refreshes
   still initialize the complete pool. The RTX 3090 large-SH3 overview-orbit
   p95 fell from 14.07 to 7.80 ms paired GPU in five alternating reference runs.
+
 - Compute projection now reuses the indirect visible list for an unchanged
   model/view, projection, viewport, resident content, and depth-of-field
   state, rather than re-projecting and falling back to a vertex sort. The
   native hardware probe covers consecutive stationary updates.
+
 - PlayCanvas comparison timing now attributes `GpuProfiler` results by the
   submitted `device.renderVersion`, preserving equal-duration GPU frames. The
   harness drains pending timestamp reports after sampling and archives explicit
   submitted/resolved/rejected/pending coverage instead of inferring a new frame
   from a changed timing value.
+
 - `mode=settle` in the comparison harness now completes its five-second orbit
   during warm-up (extending shorter warm-ups as needed), rather than starting
   that movement at the first timed frame.
+
+## [0.8.0] - 2026-09-13
+
+### Fixed
 
 - Classic LCC startup now stages the whole coarse scene for broad views when
   it fits comfortably in the budget, so the first revealed frame does not omit
@@ -215,12 +300,30 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   with a stationary camera, merged sources keep source IDs synchronized with
   their center snapshots, and unified sources continue uploading when they
   delegate sorting.
+
+## [0.7.4] - 2026-09-10
+
+### Fixed
+
 - LCC2 and streamed SOG publish independent region swaps instead of entering
   RAD's global quality gate, allowing distant coverage and lower-detail cuts
   after navigation or budget changes. Missing LCC2 regions request pinned
   coarse coverage before refinement; shared ancestors replace descendants
   atomically with capacity checks and rebuilt swap groups. Physical iPhone
   Safari validation remains pending.
+
+## [0.7.3] - 2026-09-10
+
+### Changed
+
+- Closed the retained-scene-memory validation on an RTX 3090 with repeated
+  fresh-tab Goose, 8.72M SH3 SOG, 12.85M Tempel LCC2, 3.19M-leaf Hotel RAD,
+  and generated 1M SH3 PLY runs across WebGPU and forced WebGL2. Render-only
+  WebGPU released exactly the deterministic CPU backing with unchanged GPU
+  allocation and successful post-release picking; no total-browser-memory
+  improvement is claimed.
+
+### Fixed
 
 - Radix sorting initializes each workgroup's mask address before testing active
   lanes, preventing empty groups from clearing group zero's masks during sparse
@@ -229,14 +332,29 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   first sorts, growing counts, and removals. The probe copies `splatIndex` after
   the draw that consumes it; Chromium Linux SwiftShader still drops Dawn on that
   GPUBuffer readback, so the case stays an expected failure there.
+
 - GPU counting sort keeps the pool's allocated depth resolution during loading,
   preventing coarse LCC2 coverage from turning spotty or glittering before finer
   tiles arrive. No additional histogram memory is allocated; sparse streaming
   frames perform the full allocated scan instead of reducing its precision.
+
 - The isolated scene-memory harness now serves its loader module workers with
   the required embedder policy, frames oriented captures from world-space
   bounds, accepts reproducible fixed cameras, and waits for a substantial,
   stable streamed cut instead of accepting a transient idle gap.
+
+## [0.7.2] - 2026-09-10
+
+### Changed
+
+- Validated RAD page-table upload pacing in repeated headed RTX 3090 hotel-core
+  orbits. With `swapCap=16000`, the two normal-cadence samples reduced worst
+  attributed upload from the 120.6 ms baseline to 8.1 and 9.6 ms, retained exact
+  index coverage, reached the 1M frontier, and reported no holes, late chunks,
+  or cache evictions.
+
+### Fixed
+
 - RAD page-table plans now default to 16,000 pool writes, count relocation and
   freed-tail work against that ceiling, and pace sparse relocations over bounded
   slot windows. Queued atomic cuts continue across camera motion before the
@@ -244,71 +362,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   without starving a cinematic orbit. The existing `maxSplatsPerSwap` option
   controls this ceiling explicitly; classic streaming retains its 32,000
   default.
-- Compute-projection picking reads the full active list, so alternate-camera
-  picks can hit splats culled from the main view without changing its draw.
-- `createWebGPURenderer` keeps the GPUAdapter on the renderer (an ordinary
-  JS object) for the owned device's lifetime and swallows Dawn's
-  "Instance dropped in popErrorScope" teardown on that device, so three.js
-  pipeline validation cannot become an unhandled rejection after Chromium
-  collects a WebIDL wrapper or Linux SwiftShader drops the instance. The
-  surface-aware paint probe compiles through three's awaited path and
-  publishes results only after the canvas present.
-- Render-only WebGPU meshes initialize texture uploads and the lazy picking
-  pipeline, then wait for submitted GPU work before releasing CPU mirrors,
-  preventing mirror retirement from racing GPU uploads or the first pick.
-- The render-only readback integration case remains enabled on native test
-  platforms but is marked as an expected failure on Chromium Linux SwiftShader,
-  whose Dawn instance is lost despite completed queue work. Unit coverage still
-  verifies the complete mirror-release lifecycle on every platform.
-- RAD page-table startup no longer stalls on an empty first frame when an
-  unpublished resident frontier becomes stale while chunks stream in. With no
-  visible cut to protect, the pager now drains those stale slots under its
-  per-plan cap and continues toward the first publish.
 
-### Changed
-
-- Newly allocated private dynamic pools skip the initial full-texture CPU
-  upload of empty destination images. Textures still allocate at the same
-  dimensions and types; post-construction rows keep the staged upload path.
-  Static meshes and caller-supplied shared pools are unchanged. The isolated
-  native pool test improved first-usable output from 109.2 to 83.3 ms with zero
-  initial destination uploads. Historical Apple M3 scene timings included slow
-  memory checkpoints and do not isolate a load-time improvement. The benchmark server retains
-  `VLAM_EXPERIMENT=baseline` for the previous upload behavior.
-- Closed the retained-scene-memory validation on an RTX 3090 with repeated
-  fresh-tab Goose, 8.72M SH3 SOG, 12.85M Tempel LCC2, 3.19M-leaf Hotel RAD,
-  and generated 1M SH3 PLY runs across WebGPU and forced WebGL2. Render-only
-  WebGPU released exactly the deterministic CPU backing with unchanged GPU
-  allocation and successful post-release picking; no total-browser-memory
-  improvement is claimed.
-- Validated RAD page-table upload pacing in repeated headed RTX 3090 hotel-core
-  orbits. With `swapCap=16000`, the two normal-cadence samples reduced worst
-  attributed upload from the 120.6 ms baseline to 8.1 and 9.6 ms, retained exact
-  index coverage, reached the 1M frontier, and reported no holes, late chunks,
-  or cache evictions.
-- Contributor pushes now run the complete reproducible CI preflight locally;
-  renderer-sensitive changes also run Chromium WebGPU in a pinned Linux
-  Playwright container before they leave the workstation.
-
-- Upgraded the runtime peer to three.js r186 (`three >=0.186.0`). The temporary
-  `@types/three@0.185.4` pin is isolated behind one declaration shim until the
-  r186 declarations publish; `SplatMesh` and `UnifiedSplatMesh` now forward
-  disposal to `Object3D.dispose()` as required by the r186 migration.
-- Validated streamed palette SH with the 12.85M-splat SH3 Tempel `.lcc2`
-  capture in headed Chrome/Windows on WebGPU and forced WebGL2. Explicit SH0,
-  explicit SH3, and automatic tile detection resolved correctly; SH remained
-  coherent through camera motion and octree LOD replacement without holes,
-  neutral tiles, seams, or device errors.
-- Validated camera-weighted shared budgets with three independently streamed
-  Hotel RAD meshes in Chrome/macOS WebGPU: the approached mesh sharpened from
-  500,000 to 602,587 active splats while allocations remained within the 1.5M
-  total and all page-table frontiers converged without uncovered swaps.
-- The demo hides paint and select-and-cut for streamed/LOD scenes, where edits
-  cannot be applied consistently across changing residency. Annotate and
-  measure remain available.
-- The demo keeps persistent paint available for classic streamed/LOD scenes and
-  RAD page-table scenes, and hides only select-and-cut for streamed meshes.
-
+## [0.7.1] - 2026-09-10
 
 ### Added
 
@@ -324,6 +379,59 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   with no frame-p95 improvement. The opt-in remains available for continued
   profiling while the existing vertex path stays the default.
 
+- Headed Chrome 152 validation on Windows covers transformed depth boundaries,
+  anisotropic footprint grazing, gap-free continuous strokes, and both the
+  bundled 149,120-splat goose and a 3.19 M-splat RAD capture on WebGPU and
+  forced WebGL2.
+
+### Changed
+
+- Contributor pushes now run the complete reproducible CI preflight locally;
+  renderer-sensitive changes also run Chromium WebGPU in a pinned Linux
+  Playwright container before they leave the workstation.
+
+- Upgraded the runtime peer to three.js r186 (`three >=0.186.0`). The temporary
+  `@types/three@0.185.4` pin is isolated behind one declaration shim until the
+  r186 declarations publish; `SplatMesh` and `UnifiedSplatMesh` now forward
+  disposal to `Object3D.dispose()` as required by the r186 migration.
+
+- Validated streamed palette SH with the 12.85M-splat SH3 Tempel `.lcc2`
+  capture in headed Chrome/Windows on WebGPU and forced WebGL2. Explicit SH0,
+  explicit SH3, and automatic tile detection resolved correctly; SH remained
+  coherent through camera motion and octree LOD replacement without holes,
+  neutral tiles, seams, or device errors.
+
+- Validated camera-weighted shared budgets with three independently streamed
+  Hotel RAD meshes in Chrome/macOS WebGPU: the approached mesh sharpened from
+  500,000 to 602,587 active splats while allocations remained within the 1.5M
+  total and all page-table frontiers converged without uncovered swaps.
+
+- The demo hides paint and select-and-cut for streamed/LOD scenes, where edits
+  cannot be applied consistently across changing residency. Annotate and
+  measure remain available.
+
+### Fixed
+
+- Compute-projection picking reads the full active list, so alternate-camera
+  picks can hit splats culled from the main view without changing its draw.
+
+- `createWebGPURenderer` keeps the GPUAdapter on the renderer (an ordinary
+  JS object) for the owned device's lifetime and swallows Dawn's
+  "Instance dropped in popErrorScope" teardown on that device, so three.js
+  pipeline validation cannot become an unhandled rejection after Chromium
+  collects a WebIDL wrapper or Linux SwiftShader drops the instance. The
+  surface-aware paint probe compiles through three's awaited path and
+  publishes results only after the canvas present.
+
+- RAD page-table startup no longer stalls on an empty first frame when an
+  unpublished resident frontier becomes stale while chunks stream in. With no
+  visible cut to protect, the pager now drains those stale slots under its
+  per-plan cap and continues toward the first publish.
+
+## [0.7.0] - 2026-09-09
+
+### Added
+
 - Surface-aware painting now captures a continuous pointer stroke, resolves its
   samples with one bounded `SplatMesh.pickMany` depth pass, splits paths at
   misses and depth jumps, and exposes independent `surface`/`through` and
@@ -331,58 +439,34 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   world-space capsules and full ±3σ covariance footprints under transformed
   meshes. Classic streamed meshes retain geometric strokes and replay them as
   LOD runs are replaced or reloaded.
+
 - RAD page-table painting carries stable global splat IDs in worker plans,
   selects over existing pool mirrors, and replays persistent strokes as slab
   slots change owner without retaining a second geometry copy.
+
 - A headed browser regression renders surface-aware paint on WebGPU and forced
   WebGL2, checks all four depth × footprint selection outcomes, and asserts the
   painted channel changes output pixels.
-- Headed Chrome 152 validation on Windows covers transformed depth boundaries,
-  anisotropic footprint grazing, gap-free continuous strokes, and both the
-  bundled 149,120-splat goose and a 3.19 M-splat RAD capture on WebGPU and
-  forced WebGL2.
 
-- Extended the local Spark/VLAM benchmark with explicit supplied, proposed,
-  controlled, and historical-reference configurations; 720p/1440p five-run
-  primary suites; benchmark-only extent, sorting, SH, MSAA, and timestamp
-  controls; distinct live-harness and packaged-build hashes; and immutable
-  supplied-app workspace setup whose package identities include shipped
-  JavaScript. The cache/harness also run the hotel-core `.rad`
-  (`HOTEL.clean.comp-lod.rad`) via `?scene=hotel`, with HTTP Range on the
-  local asset server so both engines can stream the capture. The default
-  sequential suite is a 12-run compact matrix (Tempel 720p+QHD and hotel 720p,
-  proposed, 15 s); `suiteDensity=full` restores the previous 32-run protocol.
-- Development-only Playwright backend checks (`npm run test:browser`) now run
-  separate forced-WebGL2 and WebGPU projects; WebGPU setup cannot silently
-  pass through a fallback. The CI browser job uses the package-pinned Chromium
-  runtime with SwiftShader arguments. A WebGPU cache-motion probe verifies that
-  view-cropped SH refreshes during fixed-position rotation without a radial
-  sort and still produces valid pixels.
+### Changed
 
-- **Breaking (pre-1.0):** proxy relighting moved out of core and `/effects` to
-  `@voluma/vlam/relighting`. Use `attachRelighting(target, settings)` and its
-  controller instead of mesh `setRelighting` methods; no compatibility
-  re-exports are provided. The base viewer no longer loads this optional code.
-  The generic `displayColorModifier` hook is available on standalone and
-  unified meshes.
+- The demo keeps persistent paint available for classic streamed/LOD scenes and
+  RAD page-table scenes, and hides only select-and-cut for streamed meshes.
 
-- `/static-lod` remains available but is now explicitly experimental and
-  excluded from the v1.0 compatibility guarantee. It decodes full captures and
-  needs temporary hierarchy/array-copy memory; standard large-scene guidance
-  recommends prebuilt streamed captures.
+### Fixed
 
-- Streamed SOG and `.lcc2` enable SH by default when a tile's `meta.json`
-  reports `shN`. The loader peeks one chunk (a small JSON GET, or a ranged
-  ZIP tail plus `meta.json`) instead of allocating pool textures speculatively.
-  Still off on the `smooth` profile, demo SD, and explicit `shBands: 0`. A
-  server that ignores HTTP Range keeps SH off. See
-  [streamed shN notes](docs/formats/streamed-shn-notes.md).
+- Render-only WebGPU meshes initialize texture uploads and the lazy picking
+  pipeline, then wait for submitted GPU work before releasing CPU mirrors,
+  preventing mirror retirement from racing GPU uploads or the first pick.
 
-- Standalone Spark 2.1.0 / VLAM benchmarks with defaults and matched presets,
-  identical cached scenes and camera paths, CPU/GPU timing, retained screenshots,
-  and an alternating sequential comparison suite. VLAM accepts `backend=webgl`
-  for a WebGL2 + worker-sort diagnostic against Spark. See
-  [the protocol](docs/render-benchmark.md).
+- The render-only readback integration case remains enabled on native test
+  platforms but is marked as an expected failure on Chromium Linux SwiftShader,
+  whose Dawn instance is lost despite completed queue work. Unit coverage still
+  verifies the complete mirror-release lifecycle on every platform.
+
+- VLAM WebGPU benchmark screenshots now use an offscreen render target and
+  asynchronous GPU readback. Safari no longer archives the previous presented
+  canvas pose for fixed front/orbit validation images.
 
 ### Performance
 
@@ -402,14 +486,46 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   quantization. A development-only memory benchmark records load checkpoints,
   decoded arrays, streamed caches, and separate CPU/GPU allocation estimates.
 
-- Experimental static LOD now chooses deterministic Morton-local pairs by
-  Gaussian similarity, color, and opacity before moment matching. This avoids
-  needless blends across nearby but separate surfaces while retaining the
-  existing worker-built, resident hierarchy contract.
+## [0.6.4] - 2026-09-08
 
-- Dirty texture uploads reuse one merged row list for core and packed-SH
-  textures, without copying the pending list or allocating a new span for
-  every overlap.
+### Changed
+
+- The default mobile budget for streamed `.rad`, `.lcc`, and `.lcc2` scenes is
+  now 750k splats, up from 600k. Explicit budgets and the 600k immersive-XR cap
+  are unchanged.
+
+## [0.6.2] - 2026-09-08
+
+### Added
+
+- Extended the local Spark/VLAM benchmark with explicit supplied, proposed,
+  controlled, and historical-reference configurations; 720p/1440p five-run
+  primary suites; benchmark-only extent, sorting, SH, MSAA, and timestamp
+  controls; distinct live-harness and packaged-build hashes; and immutable
+  supplied-app workspace setup whose package identities include shipped
+  JavaScript. The cache/harness also run the hotel-core `.rad`
+  (`HOTEL.clean.comp-lod.rad`) via `?scene=hotel`, with HTTP Range on the
+  local asset server so both engines can stream the capture. The default
+  sequential suite is a 12-run compact matrix (Tempel 720p+QHD and hotel 720p,
+  proposed, 15 s); `suiteDensity=full` restores the previous 32-run protocol.
+
+### Fixed
+
+- Streamed sort bounds now include decoded environment splats beyond the LOD
+  root bounds. Distant sky splats no longer collapse into one quantized sort
+  bucket, fixing blotchy skies in captures such as Tempel with the normal GPU
+  counting sorter.
+
+- Apple Silicon standalone SH now generates frustum-cropped final RGBA8 color
+  in compute and replaces the source-color/SH bindings in the display shader.
+  On the 8.72M SH3 M3 Air comparison this removed the large-cache blank-frame
+  failure and reduced a focused orbit mean from 118.82 ms to 53.51 ms without
+  changing splat count, SH bands, extent or sorting. Unsupported, modified and
+  above-64-MiB meshes retain vertex SH. The comparison harness also flags blank
+  fixed-pose screenshots, stops sequential suites, and records uncaptured
+  WebGPU errors plus device-loss state.
+
+### Performance
 
 - Added opt-in `SplatMeshOptions.shEvaluation: 'compute'` for a final-RGBA8 SH
   cache on fully loaded standalone WebGPU meshes, plus demo/benchmark controls
@@ -433,23 +549,39 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   not a claim for every Apple GPU generation. See
   [the measurements and limitations](docs/render-benchmark.md).
 
-- Rendering benchmarks now default to a stationary camera, restart after hidden
-  intervals, drain GPU timestamps during measurement, and retain screenshots
-  after renderer disposal. Reports distinguish sampled GPU timings and actual
-  splat draws from total draw calls and include comparison settings and versions.
+## [0.6.1] - 2026-09-05
 
-- **Default splat rendering no longer pays for redundant work.** Transparent
-  double-sided splat billboards use Three.js's single-pass path, the default
-  display graph omits relighting texture reads until a map is configured, and
-  zero-aperture depth of field skips its projection math. Appearance, blending,
-  live effect setters, and the public API are unchanged. The frame benchmark
-  JSON now records Three.js render submissions separately from CPU frame time.
+### Fixed
+
+- Cross-origin streamed scenes no longer fail when an existing object-storage
+  CORS policy returns a correct `206` response without exposing `Content-Range`.
+  Visible range headers remain strictly validated, while hidden headers fall
+  back to the existing exact response-body length check.
+
+## [0.6.0] - 2026-09-05
+
+### Added
+
+- Development-only Playwright backend checks (`npm run test:browser`) now run
+  separate forced-WebGL2 and WebGPU projects; WebGPU setup cannot silently
+  pass through a fallback. The CI browser job uses the package-pinned Chromium
+  runtime with SwiftShader arguments. A WebGPU cache-motion probe verifies that
+  view-cropped SH refreshes during fixed-position rotation without a radial
+  sort and still produces valid pixels.
+
+- **Breaking (pre-1.0):** proxy relighting moved out of core and `/effects` to
+  `@voluma/vlam/relighting`. Use `attachRelighting(target, settings)` and its
+  controller instead of mesh `setRelighting` methods; no compatibility
+  re-exports are provided. The base viewer no longer loads this optional code.
+  The generic `displayColorModifier` hook is available on standalone and
+  unified meshes.
+
+- `/static-lod` remains available but is now explicitly experimental and
+  excluded from the v1.0 compatibility guarantee. It decodes full captures and
+  needs temporary hierarchy/array-copy memory; standard large-scene guidance
+  recommends prebuilt streamed captures.
 
 ### Changed
-
-- The default mobile budget for streamed `.rad`, `.lcc`, and `.lcc2` scenes is
-  now 750k splats, up from 600k. Explicit budgets and the 600k immersive-XR cap
-  are unchanged.
 
 - Loading now detects streamed formats from URL pathnames, preserves signed
   queries on requests, validates exposed partial-response `Content-Range`
@@ -468,36 +600,47 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
-- Streamed sort bounds now include decoded environment splats beyond the LOD
-  root bounds. Distant sky splats no longer collapse into one quantized sort
-  bucket, fixing blotchy skies in captures such as Tempel with the normal GPU
-  counting sorter.
-
-- Apple Silicon standalone SH now generates frustum-cropped final RGBA8 color
-  in compute and replaces the source-color/SH bindings in the display shader.
-  On the 8.72M SH3 M3 Air comparison this removed the large-cache blank-frame
-  failure and reduced a focused orbit mean from 118.82 ms to 53.51 ms without
-  changing splat count, SH bands, extent or sorting. Unsupported, modified and
-  above-64-MiB meshes retain vertex SH. The comparison harness also flags blank
-  fixed-pose screenshots, stops sequential suites, and records uncaptured
-  WebGPU errors plus device-loss state.
-
-- VLAM WebGPU benchmark screenshots now use an offscreen render target and
-  asynchronous GPU readback. Safari no longer archives the previous presented
-  canvas pose for fixed front/orbit validation images.
-
-- Cross-origin streamed scenes no longer fail when an existing object-storage
-  CORS policy returns a correct `206` response without exposing `Content-Range`.
-  Visible range headers remain strictly validated, while hidden headers fall
-  back to the existing exact response-body length check.
 - The demo defaults to stable radix sorting for LCC/LCC2 in desktop HD;
   mobile, SD and smooth profiles retain counting. HD/SD switches live through
   `SplatMesh.setSortStrategy`, and explicit `?sort=` choices still take precedence.
+
 - `MergedSplatMesh` now honors `sortStrategy: 'radix' | 'exact'` instead of
   silently using counting sort. Stable radix keys include each source's live
   transform, preserving one global depth order across overlapping clouds.
   The exact-sort GPU harness checks permutations, stable ties, camera reversal,
   source movement, rotation, scaling, removal, and unified streamed/static draws.
+
+### Performance
+
+- Experimental static LOD now chooses deterministic Morton-local pairs by
+  Gaussian similarity, color, and opacity before moment matching. This avoids
+  needless blends across nearby but separate surfaces while retaining the
+  existing worker-built, resident hierarchy contract.
+
+- Dirty texture uploads reuse one merged row list for core and packed-SH
+  textures, without copying the pending list or allocating a new span for
+  every overlap.
+
+## [0.5.0] - 2026-09-04
+
+### Added
+
+- Streamed SOG and `.lcc2` enable SH by default when a tile's `meta.json`
+  reports `shN`. The loader peeks one chunk (a small JSON GET, or a ranged
+  ZIP tail plus `meta.json`) instead of allocating pool textures speculatively.
+  Still off on the `smooth` profile, demo SD, and explicit `shBands: 0`. A
+  server that ignores HTTP Range keeps SH off. See
+  [streamed shN notes](docs/formats/streamed-shn-notes.md).
+
+- Standalone Spark 2.1.0 / VLAM benchmarks with defaults and matched presets,
+  identical cached scenes and camera paths, CPU/GPU timing, retained screenshots,
+  and an alternating sequential comparison suite. VLAM accepts `backend=webgl`
+  for a WebGL2 + worker-sort diagnostic against Spark. See
+  [the protocol](docs/render-benchmark.md).
+
+## [0.4.4] - 2026-09-04
+
+### Fixed
 
 - **Prefix-reader `.rad` publish gate no longer freezes first paint or refinement.**
   Speculative `fetchIntent` runs are excluded from the presented cut and no
@@ -511,6 +654,25 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   the first presented cut, later swaps stay monotonic: pressure must not retire
   coverage for a coarser/partial replacement. Hidden staging of a later cut
   still does not skip camera depth-sorts.
+
+### Performance
+
+- Rendering benchmarks now default to a stationary camera, restart after hidden
+  intervals, drain GPU timestamps during measurement, and retain screenshots
+  after renderer disposal. Reports distinguish sampled GPU timings and actual
+  splat draws from total draw calls and include comparison settings and versions.
+
+- **Default splat rendering no longer pays for redundant work.** Transparent
+  double-sided splat billboards use Three.js's single-pass path, the default
+  display graph omits relighting texture reads until a map is configured, and
+  zero-aperture depth of field skips its projection math. Appearance, blending,
+  live effect setters, and the public API are unchanged. The frame benchmark
+  JSON now records Three.js render submissions separately from CPU frame time.
+
+## [0.4.2] - 2026-09-03
+
+### Fixed
+
 - **Demo WebGPU sorting defaults to the per-frame counting sorter again.**
   The demo had been forcing `sortStrategy: 'worker'` to mimic Spark's async
   cadence; Spark comparison is load speed and LOD quality, not that sort.
@@ -519,21 +681,33 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `?sort=worker` remains an explicit A/B. WebGPU also no longer uploads an
   unsorted CPU `splatIndex` on the first streamed commit, which was drawing
   a few frames of pool order before the GPU permutation stuck.
+
 - **Page-table `.rad` holds the last complete LOD cut until the frontier
   has the chunks it asked for.** After the first cover, replacements stage
   onto an undrawn tail; the drawn prefix swaps only when `touched` is empty,
   the chunk cache is full, or the camera moves. Publishing every drained
   intermediate cut was still swapping LOD levels as each chunk landed. The
   cut search also no longer coarsens `solvedLimit` after a budget clamp.
+
+## [0.4.0] - 2026-09-02
+
+### Fixed
+
 - Demo auto-framing now finds a dense detailed region before framing a scene,
   so sparse distant splats cannot open the viewer on an empty view. Wheel and
   free-flight navigation use that same region's scale, preventing outlier
   bounds from causing large camera jumps.
+
+## [0.3.4] - 2026-09-02
+
+### Fixed
+
 - Demo `?scene=` downloads now show a live percent (and a bar) instead of a
   stuck "Loading…". The overlay ticker used to start only after the scene
   finished, so a large `.ply` had no determinate progress for the entire
   fetch. After the last byte the copy switches to "Decoding…" until the
   mesh mounts.
+
 - Classic `.lcc` `initialReveal` now defaults to `'hold-coverage'`: hide the
   mesh until every in-view cell has covering coverage resident, then keep
   that shell while L0 refines. Nearby cells freeze at L1 (finest+1); farther

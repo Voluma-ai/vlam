@@ -444,7 +444,7 @@ const cascadedShadow = (
 
 /**
  * Node material for a **shadow-factor** lighting RT used with
- * {@link SplatMesh.setRelighting}.
+ * {@link attachRelighting}.
  *
  * Fragment output is `vec4(vec3(mix(umbra, 1, shadow)) + boost, 1)`:
  *  - covered + lit → RGB ≈ 1 (identity modulate when brightness/background are 1)
@@ -633,7 +633,7 @@ function triangleMeshToGeometry(data: TriangleMeshData): THREE.BufferGeometry {
  * geometries. The host places {@link RelightingProxy.group} on a dedicated
  * layer / scene with lights (never the main splat scene), renders that into
  * an RGBA RT matching the main camera, then calls
- * {@link SplatMesh.setRelighting} with the RT texture.
+ * {@link attachRelighting} with the RT texture.
  *
  * Collision meshes are a convenient stand-in when their silhouette is good
  * enough; a denser reconstructed mesh is often better. This helper does not

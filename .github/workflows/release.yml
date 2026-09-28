@@ -31,6 +31,7 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
       - run: npm ci
+      - run: npx playwright install --with-deps chromium
 
       # The tag is the source of truth for what gets published - refuse to
       # publish if package.json disagrees with it.
@@ -44,10 +45,16 @@ jobs:
           fi
 
       # Re-run the gates rather than trusting that CI passed on this commit.
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build:lib
+      - run: npm run preflight
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.28.0
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      - run: gitleaks detect --no-git --config .gitleaks.toml --redact --verbose
 
       - run: npm publish --provenance --access public
         env:

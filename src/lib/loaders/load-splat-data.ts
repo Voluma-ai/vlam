@@ -11,13 +11,15 @@ export interface SplatDataLoadOptions extends SplatInputOptions {
 }
 
 /**
- * Fetches and decodes a splat scene (`.sog`, `.ply`, `.spz`, `.splat` or
- * `.ksplat`) in a Web Worker, so
+ * Fetches and decodes a splat scene (`.sog`, `.ply`, `.spz`, `.splat`,
+ * `.ksplat`, or whole-file `.rad`) in a Web Worker, so
  * even multi-million-splat decodes never block the main thread. The
  * decoded arrays are transferred back, not copied.
  *
  * Whole-file convenience over {@link ChunkLoader}; use `ChunkLoader`
- * directly when loading many chunks or when cancellation is needed.
+ * directly when loading many chunks. Pass `options.signal` to cancel a load.
+ * RAD datasets referencing external `.radc` chunks require `StreamedSplatMesh`
+ * from `@voluma/vlam/streaming`.
  *
  * @param input - Capture URL; its extension selects the parser unless an
  * explicit `format` option is provided.
@@ -48,9 +50,11 @@ export async function loadSplatData(
  * - in a Web Worker, without uploading it anywhere. The file's bytes are read
  * worker-side and the decoded arrays are transferred back, not copied.
  *
- * Only self-contained files are supported: `.ply`, `.spz`, `.splat`, `.ksplat`
- * and bundled `.sog`. An unbundled SOG directory needs sibling fetches, so it
- * must be served over HTTP and loaded with {@link loadSplatData}.
+ * Only self-contained files are supported: `.ply`, `.spz`, `.splat`, `.ksplat`,
+ * bundled `.sog`, and whole-file `.rad`. An unbundled SOG directory needs
+ * sibling fetches, so it must be served over HTTP and loaded with
+ * {@link loadSplatData}. RAD datasets with external `.radc` chunks require
+ * `StreamedSplatMesh` from `@voluma/vlam/streaming`.
  *
  * @param file - The file; its name selects the parser unless an explicit
  * `format` option is provided.

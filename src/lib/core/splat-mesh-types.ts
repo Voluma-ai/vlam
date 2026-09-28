@@ -207,7 +207,7 @@ export interface SplatMeshOptions {
   sortMetric?: SplatSortMetric;
   /**
    * Render-quality policy. `balanced` rejects negligible projected
-   * contributions while preserving source SH; it is the desktop default.
+   * contributions while preserving source SH; it is an explicit opt-in.
    * `smooth` additionally suppresses default SH for fill-constrained devices.
    *
    * The default is device-aware: `smooth` on mobile and fill-constrained
@@ -447,7 +447,7 @@ export interface SplatUpdateOptions {
 
 /**
  * Read-only GPU-facing view of a mesh's current active pool. It is consumed by
- * the M15.4 unified gather path; streamed meshes expose their current LOD cut
+ * the unified gather path; streamed meshes expose their current LOD cut
  * through the same view because they inherit {@link SplatMesh}.
  *
  * @experimental May change in a minor release.

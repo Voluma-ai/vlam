@@ -102,7 +102,6 @@ export interface UnifiedSplatPickResult extends SplatPickResult {
 /**
  * Construction settings shared by every source in a unified renderer.
  *
- * @experimental May change in a minor release.
  */
 export interface UnifiedSplatMeshOptions {
   /** Vertex projection by default, or an injected experimental projector. */
@@ -178,7 +177,6 @@ export function supportsUnifiedSplatMesh(renderer: object): boolean {
  *
  * WebGPU only. Prefer {@link supportsUnifiedSplatMesh} before construction.
  *
- * @experimental May change in a minor release.
  */
 export class UnifiedSplatMesh extends THREE.Mesh {
   private readonly workBuffer: WorkBuffer;

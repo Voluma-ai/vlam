@@ -206,20 +206,20 @@ must be verified on the target headset first.
  camera: it has no single frustum to unproject the encoded depth through.
  Pass one eye (`renderer.xr.getCamera().cameras[i]`) with `ndc` in that eye's
  viewport.
-- **No XR input.** Controllers, hand tracking and Vision Pro's pinch/gaze
-  `transient-pointer` model are not wired up; the scope here is viewing. See
-  locomotion below for what that means in the demo.
+- **Library XR input is application-owned.** The [VR interaction example](../site/examples/in-vr.md)
+  adds controller teleport and snap turns with three.js. Hand tracking and
+  Vision Pro's pinch/gaze `transient-pointer` model are outside that example.
 - **No `immersive-ar` passthrough.** Splats compositing over passthrough video
   needs alpha-blend environment handling and a transparent clear path; not
   attempted.
-- **No locomotion in the demo.** It parents the camera to an XR rig on
-  `sessionstart` so you enter VR where the 2D view was standing (three derives
- the head pose from the camera's *parent*, so without a rig you would land at
- the reference-space origin, usually inside the capture), but desktop
- controls idle during the session. Teleport and snap turn are future work.
-- **Multiview (`OVR_multiview2`)** is not supported by three's WebGPURenderer
- WebGL2 backend; stereo renders in two passes. Multiview would halve
- vertex/draw cost (not fill), so it is a future item, not a blocker.
+- **The main demo remains view-only.** It parents the camera to an XR rig on
+  `sessionstart` so the headset starts at the desktop view. The separate
+  [VR interaction example](../site/examples/in-vr.md) demonstrates controller
+  teleport and snap turns.
+- **Multiview (`OVR_multiview2`)** has an opt-in path in three.js r186's
+  WebGL XR manager when the device supports it; its WebGPU XR path still
+  disables multiview. VLAM has not validated splat rendering, sorting, or
+  picking on that path, so multiview support is not claimed.
 - Testing without hardware: Meta's Immersive Web Emulator exercises the session
  lifecycle and the ArrayCamera path. `src/lib/__tests__/xr-view.test.ts`,
   `splat-mesh.xr.test.ts`, `streamed-splat-mesh.xr.test.ts` and

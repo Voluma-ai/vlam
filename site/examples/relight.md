@@ -30,7 +30,7 @@ live in the per-splat vertex hook.
 Each frame, before the splat draw:
 
 1. Light a proxy mesh into an RGBA target (RGB = multiplier, A = coverage).
-2. Hand that texture to `splats.setRelighting({ map })`.
+2. Attach the texture with `attachRelighting(splats, { map })`.
 3. Then `splats.update` and the main render, as usual.
 
 Clear the target to **white, alpha 0**. A black clear pulls dark outlines
@@ -82,8 +82,8 @@ direction }` for a Lambert boost on top, and keep `direction` pointed at the
 sun as it moves. RGB can go above 1, which is why the target is `HalfFloatType`.
 
 `blend`, `brightness`, `background`, and `softness` are live uniforms. Changing
-the map texture identity rebuilds once. Pass `null` to `setRelighting` to turn
-it off.
+the map texture identity rebuilds once. Call the returned attachment's
+`dispose()` method to remove the relighting effect.
 
 ## Getting it to look right
 

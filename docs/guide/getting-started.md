@@ -13,7 +13,7 @@ under [`samples/`](https://github.com/Voluma-ai/vlam/tree/main/docs/guide/sample
 npm install @voluma/vlam three
 ```
 
-`three` is a peer dependency (`>= 0.185.0`).
+`three` is a peer dependency (`>= 0.186.0`).
 
 To develop against a checkout instead, `npm link ../vlam` works, with the
 usual caveat: make sure your bundler resolves exactly one copy of `three`.

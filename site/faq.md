@@ -14,8 +14,9 @@ Folders: streamed **SOG**, **LCC** / **LCC2**, **RAD**.
 
 The server hosting the file has to allow cross-origin requests
 (`Access-Control-Allow-Origin`), and for streamed formats also allow the
-`Range` header and expose `Content-Range`. Your browser blocks the read
-otherwise, nothing the viewer can work around.
+`Range` header. A streamed endpoint must answer byte requests with `206 Partial
+Content`; exposing `Content-Range` also lets VLAM validate the returned offset.
+Without that exposure, VLAM accepts a response of exactly the requested length.
 
 Download the file and <a href="/demo/" target="_self">drop it into the demo</a> instead.
 

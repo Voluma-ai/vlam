@@ -602,7 +602,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   /** Active-list version with a post-render notification queued. */
   private renderedActiveListQueuedVersion = -1;
   private sortStrategyValue: SplatSortStrategy;
-  private sortStrategyRevision = 0;
   private readonly sortMetric: SplatSortMetric;
   private performanceProfileValue: SplatPerformanceProfile;
   /** Gaussian cutoff radius in σ; baked into the material graph. */
@@ -1035,9 +1034,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (this.storageModeValue === 'render-only' && strategy === 'worker') {
       throw new Error('SplatMesh.setSortStrategy: worker sorting requires editable CPU storage.');
     }
-    const revision = ++this.sortStrategyRevision;
     if (this.disposed || strategy === this.sortStrategyValue) return;
-    if (this.disposed || revision !== this.sortStrategyRevision) return;
     this.invalidateWorkerPublications();
     const wasCpu = this.usesCpuDrawList();
     this.setComputeProjectionActive(false);
@@ -1668,6 +1665,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * Call {@link update} first for streamed sources so the active list reflects
    * the current LOD cut. Consumers must treat the returned GPU resources as
    * read-only; range lifecycle remains owned by this mesh.
+   *
+   * @experimental The raw GPU resource layout may change in a minor release.
    */
   getUnifiedSourceView(): UnifiedSourceView {
     this.updateWorldMatrix(true, false);
