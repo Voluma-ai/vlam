@@ -28,6 +28,7 @@ import type { WebGLRenderer } from 'three';
 import { uniform } from 'three/tsl';
 import type { SplatData } from './splat-data';
 import { experiments } from '../internal/experiments';
+import { splatCenterUploadData, writeSplatColors } from './splat-center-storage';
 import { type SplatOrientation, yUpTransformForFormat } from './orientation';
 import type { SplatModifier } from './splat-modifier';
 import type { SplatSorter } from './sorter';
@@ -1275,13 +1276,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    */
   private writeSplatRows(destination: number, data: SplatData): void {
     const { centers, colors, covarianceA, covarianceB } = this.backing;
-    colors.set(data.colors, destination * 4);
-    // Editable pools retain this integer image as an alias of center backing;
-    // reuse it rather than allocate a view for every sparse frontier write.
-    const packedCenters =
-      this.centersTexture.format === THREE.RGBAIntegerFormat
-        ? (this.centersTexture.image.data as Uint32Array)
-        : null;
+    writeSplatColors(this.centersTexture, colors, destination, data.colors, data.count);
     // Everything loop-invariant is hoisted into locals, including the two
     // optional arrays. `data` reaches here from several construction sites with
     // different shapes (sliced chunks, worker paging plans, whole SplatData), so
@@ -1303,13 +1298,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       centers[p + 0] = positions[p3 + 0] as number;
       centers[p + 1] = positions[p3 + 1] as number;
       centers[p + 2] = positions[p3 + 2] as number;
-      if (packedCenters) {
-        packedCenters[p + 3] =
-          (colors[p] as number) |
-          ((colors[p + 1] as number) << 8) |
-          ((colors[p + 2] as number) << 16) |
-          ((colors[p + 3] as number) << 24);
-      }
       covarianceA[p + 0] = covariances[p6 + 0] as number;
       covarianceA[p + 1] = covariances[p6 + 1] as number;
       covarianceA[p + 2] = covariances[p6 + 2] as number;
@@ -3158,30 +3146,15 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     snapshot: WorkerPublicationSnapshot,
   ): void {
     const floatType = this.poolFloatTextures === 'float16' ? THREE.HalfFloatType : THREE.FloatType;
-    const packedCenters = this.centersTexture.format === THREE.RGBAIntegerFormat;
     for (const row of snapshot.coreRows) {
-      if (packedCenters) {
-        this.uploadCapturedRow(renderer, row.start, row.count, THREE.RGBAIntegerFormat, 4, [
-          {
-            key: 'centers',
-            texture: this.centersTexture,
-            data: new Uint32Array(row.centers.buffer, row.centers.byteOffset, row.centers.length),
-            type: THREE.UnsignedIntType,
-          },
-        ]);
-      }
-      this.uploadCapturedRow(renderer, row.start, row.count, THREE.RGBAFormat, 4, [
-        ...(packedCenters
-          ? []
-          : [
-              {
-                key: 'centers',
-                texture: this.dataTextures[0] as THREE.DataTexture,
-                data: row.centers,
-                type: floatType,
-                encodeHalf: this.poolFloatTextures === 'float16',
-              },
-            ]),
+      this.uploadCapturedRow(renderer, row.start, row.count, 4, [
+        {
+          key: 'centers',
+          texture: this.centersTexture,
+          data: splatCenterUploadData(this.centersTexture, row.centers),
+          type: this.centersTexture.type,
+          encodeHalf: this.poolFloatTextures === 'float16',
+        },
         {
           key: 'colors',
           texture: this.dataTextures[1] as THREE.DataTexture,
@@ -3207,7 +3180,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           renderer,
           row.start,
           row.count,
-          THREE.RGBAIntegerFormat,
           4,
           this.shPackedTextures.map((texture, group) => ({
             key: `shPacked${group}`,
@@ -3222,7 +3194,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       const channel = this.channels.get(name);
       if (!channel) continue;
       for (const row of rows) {
-        this.uploadCapturedRow(renderer, row.start, row.count, THREE.RedFormat, 1, [
+        this.uploadCapturedRow(renderer, row.start, row.count, 1, [
           {
             key: `channel:${name}`,
             texture: channel.texture,
@@ -3238,7 +3210,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     renderer: THREE.WebGPURenderer,
     start: number,
     count: number,
-    format: THREE.PixelFormat,
     components: number,
     entries: {
       key: string;
@@ -3261,7 +3232,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         stagingData,
         width,
         count,
-        format,
+        texture.format,
         type,
         components,
       );
@@ -3486,29 +3457,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       const rows = mergeUploadRows(this.pendingUploadRows);
       const floatType =
         this.poolFloatTextures === 'float16' ? THREE.HalfFloatType : THREE.FloatType;
-      const packedCenters = this.centersTexture.format === THREE.RGBAIntegerFormat;
-      if (packedCenters) {
-        this.uploadRows(renderer, rows, THREE.RGBAIntegerFormat, 4, [
-          {
-            key: 'centers',
-            texture: this.centersTexture,
-            data: this.centersTexture.image.data as Uint32Array,
-            type: THREE.UnsignedIntType,
-          },
-        ]);
-      }
-      this.uploadRows(renderer, rows, THREE.RGBAFormat, 4, [
-        ...(packedCenters
-          ? []
-          : [
-              {
-                key: 'centers',
-                texture: this.dataTextures[0] as THREE.DataTexture,
-                data: this.backing.centers,
-                type: floatType,
-                encodeHalf: this.poolFloatTextures === 'float16',
-              },
-            ]),
+      this.uploadRows(renderer, rows, 4, [
+        {
+          key: 'centers',
+          texture: this.centersTexture,
+          data: splatCenterUploadData(this.centersTexture, this.backing.centers),
+          type: this.centersTexture.type,
+          encodeHalf: this.poolFloatTextures === 'float16',
+        },
         {
           key: 'colors',
           texture: this.dataTextures[1] as THREE.DataTexture,
@@ -3535,7 +3491,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         this.uploadRows(
           renderer,
           rows,
-          THREE.RGBAIntegerFormat,
           4,
           this.shPackedTextures.map((texture, group) => ({
             key: `shPacked${group}`,
@@ -3551,7 +3506,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     for (const [name, channel] of this.channels.entries()) {
       if (channel.pendingRows.length === 0) continue;
       const rows = mergeUploadRows(channel.pendingRows);
-      this.uploadRows(renderer, rows, THREE.RedFormat, 1, [
+      this.uploadRows(renderer, rows, 1, [
         {
           key: `channel:${name}`,
           texture: channel.texture,
@@ -3589,7 +3544,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private uploadRows(
     renderer: THREE.WebGPURenderer,
     rows: readonly UploadRowSpan[],
-    format: THREE.PixelFormat,
     components: number,
     entries: {
       key: string;
@@ -3618,7 +3572,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           stagingData,
           width,
           region.count,
-          format,
+          texture.format,
           type,
           components,
         );
@@ -3661,7 +3615,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     data: Float32Array | Uint8Array | Uint32Array | Uint16Array,
     width: number,
     height: number,
-    format: THREE.PixelFormat,
+    format: THREE.AnyPixelFormat,
     type: THREE.TextureDataType,
     components: number,
   ): THREE.DataTexture {
@@ -3694,7 +3648,15 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       stagingData = new Float32Array(bucketSamples);
     }
     stagingData.set(data);
-    const texture = new THREE.DataTexture(stagingData, width, bucketHeight, format, type);
+    // These are uncompressed pool/channel DataTextures; three's base Texture
+    // type also permits compressed formats, which this staging path never uses.
+    const texture = new THREE.DataTexture(
+      stagingData,
+      width,
+      bucketHeight,
+      format as THREE.PixelFormat,
+      type,
+    );
     // An integer texture cannot be filtered; a staging texture that says
     // otherwise is rejected when its GPU descriptor is built.
     if (format === THREE.RGBAIntegerFormat) {

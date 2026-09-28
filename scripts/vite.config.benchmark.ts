@@ -39,6 +39,15 @@ export default defineConfig({
   resolve: {
     dedupe: ['three'],
     alias: [
+      // Only this benchmark build can select the packed storage and shader readers.
+      {
+        find: /^.*\/splat-center-storage(?:\.ts)?$/,
+        replacement: resolve(root, 'benchmarks/experiments/packed-center-storage.ts'),
+      },
+      {
+        find: /^.*\/splat-texture-read(?:\.ts)?$/,
+        replacement: resolve(root, 'benchmarks/experiments/packed-texture-read.ts'),
+      },
       ...(process.env.VLAM_SPARK_VERSION === '2.1.0'
         ? [
             {
@@ -51,7 +60,7 @@ export default defineConfig({
         // Imports are relative in the library and viewer; an absolute-file
         // alias alone misses them before Vite resolves the importer path.
         find: /^.*\/experiments(?:\.ts)?$/,
-        replacement: resolve(root, 'src/lib/internal/experiments.benchmark.ts'),
+        replacement: resolve(root, 'benchmarks/experiments/config.ts'),
       },
     ],
   },

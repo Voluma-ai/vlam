@@ -56,6 +56,11 @@ function verifyStableDynamicImports(): Plugin {
       }
       for (const output of Object.values(bundle)) {
         if (output.type !== 'chunk') continue;
+        for (const id of Object.keys(output.modules)) {
+          if (id.replace(/\\/g, '/').includes('/benchmarks/experiments/')) {
+            this.error(`Benchmark-only module entered the library build: ${id}`);
+          }
+        }
         const adapter = output.code.match(syntheticNamespaceAdapter)?.[0];
         if (adapter) {
           this.error(

@@ -13,7 +13,7 @@
  * envelope into a private pool. The rest is internal.
  */
 import * as THREE from 'three/webgpu';
-import { experiments } from '../internal/experiments';
+import { createSplatCenterTexture } from './splat-center-storage';
 import { dataTexturesUploaded, releaseDataTextureMirrors } from './data-texture-mirror';
 
 /**
@@ -237,14 +237,7 @@ export class SplatPool {
     const covarianceAImage: Float32Array | Uint16Array =
       this.floatTextures === 'float16' ? new Uint16Array(texelCount * 4) : this.backing.covarianceA;
 
-    this.centersTexture =
-      experiments.packedCenterColors && this.floatTextures === 'float32'
-        ? createIntegerDataTexture(
-            new Uint32Array(this.backing.centers.buffer),
-            this.width,
-            this.rows,
-          )
-        : createDataTexture(centersImage, this.width, this.rows, floatType);
+    this.centersTexture = createSplatCenterTexture(centersImage, this.width, this.rows, floatType);
     this.colorsTexture = createDataTexture(
       this.backing.colors,
       this.width,

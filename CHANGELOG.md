@@ -31,6 +31,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- Moved packed-center/color storage and shader readers into benchmark-only
+  modules. Published renderer paths use ordinary float center textures without
+  packed-center experiment switches.
+
 - Standalone RAD fragment culling is opt-in through `material.alphaTest`
   (default `0`). The viewer enables the cutoff only during WebXR presentation
   and restores the previous threshold on exit, preserving non-XR blending.

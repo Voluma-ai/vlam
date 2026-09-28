@@ -15,7 +15,7 @@
  * Internal. Nothing here is exported from `index.ts`.
  */
 import * as THREE from 'three/webgpu';
-import { decodeSplatCenter, decodeSplatColor } from './splat-texture-read';
+import { readSplatMaterialInputs } from './splat-texture-read';
 import {
   Discard,
   Fn,
@@ -411,16 +411,15 @@ export function applySplatMaterialGraph(
   // evaluated with the local view direction (Kerbl et al. convention,
   // coefficients read from the SOG palette) - is added to the base color.
   const cachedColor = mode === 'display' ? inputs.shFinalColor : undefined;
-  const centerSample = textureLoad(textures.centersTexture, splatTexel).toVar();
-  const baseColor = (
-    cachedColor
-      ? textureLoad(cachedColor, splatTexel)
-      : textures.centersTexture.format === THREE.RGBAIntegerFormat
-        ? decodeSplatColor(centerSample)
-        : textureLoad(textures.colorsTexture, splatTexel)
-  ).toVar();
+  const attributes = readSplatMaterialInputs(
+    textures.centersTexture,
+    textures.colorsTexture,
+    splatTexel,
+    cachedColor,
+  );
+  const baseColor = attributes.color.toVar();
   /** The splat's center as stored in the pool - its own source's data frame. */
-  const poolCenter = decodeSplatCenter(textures.centersTexture, centerSample);
+  const poolCenter = attributes.center;
   // Per-source placement is resolved here, ahead of everything else, so the
   // rest of the graph - modifier stack included - sees the splat where it
   // visually is. In a `MergedSplatMesh` the pool frame is an internal storage

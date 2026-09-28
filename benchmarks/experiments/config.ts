@@ -1,9 +1,12 @@
-import type { ExperimentConfiguration } from './experiments';
+import type { ExperimentConfiguration } from '../../src/lib/internal/experiments';
 
 declare const __VLAM_EXPERIMENT__: string;
 
 /** Benchmark-server replacement for the library's disabled controls. */
-export const experiments: ExperimentConfiguration = {
+export const experiments: ExperimentConfiguration & {
+  packedCenterColors: boolean;
+  unifiedPackedColorReuse: boolean;
+} = {
   initialPoolUpload:
     __VLAM_EXPERIMENT__ === 'skip-empty' ||
     __VLAM_EXPERIMENT__ === 'rad-chunk-pages' ||

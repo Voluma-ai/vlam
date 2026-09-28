@@ -1,5 +1,4 @@
-import { decodeSplatCenter, decodeSplatColor, readSplatCenter } from '../core/splat-texture-read';
-import { experiments } from '../internal/experiments';
+import { readSplatGatherInputs } from '../core/splat-texture-read';
 import * as THREE from 'three/webgpu';
 import {
   Fn,
@@ -179,13 +178,8 @@ export class WorkBufferGather {
           poolIndex.mod(int(dataTextureWidth)),
           poolIndex.div(int(dataTextureWidth)),
         );
-        const packedCenterColor =
-          experiments.unifiedPackedColorReuse && centersTexture.format === THREE.RGBAIntegerFormat
-            ? textureLoad(centersTexture, texel).toVar()
-            : null;
-        const localCenter = packedCenterColor
-          ? decodeSplatCenter(centersTexture, packedCenterColor)
-          : readSplatCenter(centersTexture, texel);
+        const attributes = readSplatGatherInputs(centersTexture, colorsTexture, texel);
+        const localCenter = attributes.center;
         const target = instanceIndex.add(this.targetOffset.toUint());
         const inputA = textureLoad(covarianceATexture, texel);
         const inputB = textureLoad(covarianceBTexture, texel);
@@ -194,9 +188,7 @@ export class WorkBufferGather {
           vec3(inputA.y, inputA.w, inputB.x),
           vec3(inputA.z, inputB.x, inputB.y),
         );
-        const baseColor = packedCenterColor
-          ? decodeSplatColor(packedCenterColor)
-          : textureLoad(colorsTexture, texel);
+        const baseColor = attributes.color;
         const colorAfterSh =
           sh === null
             ? baseColor
