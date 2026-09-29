@@ -301,5 +301,4 @@ describe('WebGpuSortScheduler', () => {
     scheduler.markAccepted(1488);
     expect(scheduler.shouldSubmit(pose(2), accepted, 1, 1504)).toBe(true);
   });
-
 });
