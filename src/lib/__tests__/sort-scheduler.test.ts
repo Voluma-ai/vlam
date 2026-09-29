@@ -1,7 +1,9 @@
 import * as THREE from 'three/webgpu';
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_ADAPTIVE_SORT_INTERVAL_MS,
   WebGpuSortScheduler,
+  adaptiveSortIntervalMs,
   automaticSortIntervalMs,
   validateSortIntervalMs,
 } from '../core/sort-scheduler';
@@ -214,5 +216,89 @@ describe('WebGpuSortScheduler', () => {
     acceptedFixed.copy(pose(1));
     expect(fixed.shouldSubmit(pose(2), acceptedFixed, 1, 24)).toBe(false);
     expect(fixed.shouldSubmit(pose(3), acceptedFixed, 1, 25)).toBe(true);
+  });
+
+  it('never stretches automatic cadence past one sort per second', () => {
+    expect(adaptiveSortIntervalMs(0, 16, 0, 0)).toBe(0);
+    expect(adaptiveSortIntervalMs(33, 16, 0, 0)).toBe(33);
+    expect(adaptiveSortIntervalMs(33, 33, 0, 0)).toBe(MAX_ADAPTIVE_SORT_INTERVAL_MS);
+    expect(adaptiveSortIntervalMs(33, 16, 500, 100)).toBe(MAX_ADAPTIVE_SORT_INTERVAL_MS);
+    const blended = adaptiveSortIntervalMs(33, 26.5, 0, 0);
+    expect(blended).toBeGreaterThan(33);
+    expect(blended).toBeLessThan(MAX_ADAPTIVE_SORT_INTERVAL_MS);
+  });
+
+  it('backs off camera-only sorts after a hitch', () => {
+    const scheduler = new WebGpuSortScheduler(undefined, true);
+    const accepted = pose(0);
+    scheduler.beginSubmissionFrame(1, 0);
+    expect(scheduler.shouldSubmit(pose(1), accepted, 1_000_000, 0)).toBe(true);
+    scheduler.markAccepted(0);
+    accepted.copy(pose(1));
+
+    scheduler.beginSubmissionFrame(2, 16);
+    scheduler.beginSubmissionFrame(3, 16 + 60);
+    expect(scheduler.shouldSubmit(pose(2), accepted, 1_000_000, 16 + 60 + 10)).toBe(false);
+    expect(
+      scheduler.shouldSubmit(pose(2), accepted, 1_000_000, 16 + 60 + MAX_ADAPTIVE_SORT_INTERVAL_MS),
+    ).toBe(true);
+  });
+
+  it('publishes the final settled pose immediately during hitch backoff', () => {
+    const scheduler = new WebGpuSortScheduler(undefined, true);
+    const accepted = pose(0);
+    scheduler.beginSubmissionFrame(1, 0);
+    expect(scheduler.shouldSubmit(pose(1), accepted, 1_000_000, 0)).toBe(true);
+    scheduler.markAccepted(0);
+    accepted.copy(pose(1));
+
+    scheduler.beginSubmissionFrame(2, 16);
+    expect(scheduler.shouldSubmit(pose(2), accepted, 1_000_000, 16)).toBe(false);
+
+    scheduler.beginSubmissionFrame(3, 80);
+    const still = pose(2);
+    expect(scheduler.shouldSubmit(still, accepted, 1_000_000, 80)).toBe(true);
+    expect(
+      scheduler.shouldSubmit(still, accepted, 1_000_000, 80 + MAX_ADAPTIVE_SORT_INTERVAL_MS),
+    ).toBe(true);
+  });
+
+  it('keeps an explicit interval override during a hitch', () => {
+    const scheduler = new WebGpuSortScheduler(25, true);
+    const accepted = pose(0);
+    scheduler.beginSubmissionFrame(1, 0);
+    expect(scheduler.shouldSubmit(pose(1), accepted, 1_000_000, 0)).toBe(true);
+    scheduler.markAccepted(0);
+    accepted.copy(pose(1));
+
+    scheduler.beginSubmissionFrame(2, 16);
+    scheduler.beginSubmissionFrame(3, 80);
+    expect(scheduler.shouldSubmit(pose(2), accepted, 1_000_000, 80)).toBe(true);
+  });
+  it.each(['invalidateContent', 'invalidate'] as const)(
+    'bypasses hitch backoff for %s even with a stationary camera',
+    (invalidate) => {
+      const scheduler = new WebGpuSortScheduler(undefined, true);
+      const accepted = pose(0);
+      scheduler.beginSubmissionFrame(1, 0);
+      scheduler.markAccepted(0);
+      scheduler.beginSubmissionFrame(2, 80);
+      scheduler[invalidate]();
+      expect(scheduler.shouldSubmit(accepted, accepted, 1_000_000, 80)).toBe(true);
+    },
+  );
+
+  it('returns to the normal cadence after healthy frames recover', () => {
+    const scheduler = new WebGpuSortScheduler();
+    const accepted = pose(0);
+    scheduler.beginSubmissionFrame(1, 0);
+    scheduler.markAccepted(0);
+    scheduler.beginSubmissionFrame(2, 80);
+    expect(scheduler.shouldSubmit(pose(1), accepted, 1, 80)).toBe(false);
+    for (let frame = 3; frame <= 90; frame++) {
+      scheduler.beginSubmissionFrame(frame, 80 + (frame - 2) * 16);
+    }
+    scheduler.markAccepted(1488);
+    expect(scheduler.shouldSubmit(pose(2), accepted, 1, 1504)).toBe(true);
   });
 });

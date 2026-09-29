@@ -8,6 +8,20 @@ const MOBILE_ROTATION_EPSILON = 1e-3;
 const MOBILE_POSITION_EPSILON = 1e-3;
 const FALLBACK_HOLD_FRAMES = 2;
 const FALLBACK_HOLD_MS = 32;
+const FRAME_EMA_ALPHA = 0.2;
+const MIN_FRAME_SAMPLE_MS = 4;
+const MAX_FRAME_SAMPLE_MS = 5000;
+/** Default EMA assumes a 60 Hz frame so tests that never sample stay healthy. */
+const DEFAULT_FRAME_INTERVAL_EMA_MS = 1000 / 60;
+
+/** Slowest automatic cadence: at least one sort per second while the view is dirty. */
+export const MAX_ADAPTIVE_SORT_INTERVAL_MS = 1000;
+/** Frames at or below this stay on the count/device automatic interval. */
+export const SORT_HEALTHY_FRAME_MS = 20;
+/** Frames at or above this stretch cadence all the way to {@link MAX_ADAPTIVE_SORT_INTERVAL_MS}. */
+export const SORT_STRESSED_FRAME_MS = 33;
+/** A single frame this long starts a 1 s sort cooldown. */
+export const SORT_HITCH_FRAME_MS = 50;
 
 export type SortSubmissionAction = 'none' | 'submitted' | 'coalesced' | 'suppressed';
 export type SortSubmissionTracking = 'pending' | 'gpu-completion' | 'render-ack-fallback';
@@ -49,6 +63,30 @@ export function automaticSortIntervalMs(activeCount: number, isMobile = false): 
 }
 
 /**
+ * Stretches the automatic sort interval when recent frames are already long.
+ *
+ * GPU radix/counting is queued (`renderer.compute`), not CPU-awaited, but it
+ * still shares the WebGPU queue with the splat draw, so a scheduled sort can
+ * hitch that one frame. Backing off toward 1 s after a hitch is what stops a
+ * hitch every vsync; {@link MAX_ADAPTIVE_SORT_INTERVAL_MS} keeps a dirty view
+ * from going longer than one second without a sort. An explicit
+ * `sortIntervalMs` override is not passed through here.
+ */
+export function adaptiveSortIntervalMs(
+  baseIntervalMs: number,
+  frameIntervalEma: number,
+  hitchCooldownUntil: number,
+  now: number,
+): number {
+  if (now < hitchCooldownUntil) return MAX_ADAPTIVE_SORT_INTERVAL_MS;
+  if (frameIntervalEma <= SORT_HEALTHY_FRAME_MS) return baseIntervalMs;
+  if (frameIntervalEma >= SORT_STRESSED_FRAME_MS) return MAX_ADAPTIVE_SORT_INTERVAL_MS;
+  const t =
+    (frameIntervalEma - SORT_HEALTHY_FRAME_MS) / (SORT_STRESSED_FRAME_MS - SORT_HEALTHY_FRAME_MS);
+  return baseIntervalMs + t * (MAX_ADAPTIVE_SORT_INTERVAL_MS - baseIntervalMs);
+}
+
+/**
  * Gates WebGPU sort submissions while retaining content swaps and the
  * final camera pose. Accepted-sort state is committed separately so sorter
  * backpressure never causes a request to be forgotten.
@@ -77,6 +115,9 @@ export class WebGpuSortScheduler {
   private submissionFallbackReleaseFrame = -1;
   private submissionFallbackReleaseAt = -Infinity;
   private deferredSubmission = false;
+  private lastBeginAt = Number.NEGATIVE_INFINITY;
+  private frameIntervalEma = DEFAULT_FRAME_INTERVAL_EMA_MS;
+  private hitchCooldownUntil = Number.NEGATIVE_INFINITY;
 
   constructor(sortIntervalMs?: number, isMobile = false) {
     this.sortIntervalMs = validateSortIntervalMs(sortIntervalMs);
@@ -137,6 +178,7 @@ export class WebGpuSortScheduler {
 
   /** Starts a render frame and reports whether a previous sort still holds the gate. */
   beginSubmissionFrame(frame: number, now: number): boolean {
+    this.noteFrameDuration(now);
     this.submissionActionValue = 'none';
     if (!this.submissionInFlight) return false;
     if (this.submissionAwaitingRender) return false;
@@ -163,7 +205,12 @@ export class WebGpuSortScheduler {
     if (needsResubmission) this.deferredSubmission = true;
   }
 
-  /** Assigns a serial to an accepted sort; GPU work is acknowledged later, never awaited here. */
+  /**
+   * Assigns a serial to an accepted sort. GPU work is queued, never awaited
+   * here: {@link acknowledgeSubmission} watches `onSubmittedWorkDone` only to
+   * release this gate so a second radix pass cannot stack on the same order
+   * buffer.
+   */
   markSubmission(frame: number, inputCount: number): void {
     this.submissionSerialValue++;
     this.submissionFrameValue = frame;
@@ -225,6 +272,25 @@ export class WebGpuSortScheduler {
     return { acceptedCount: this.acceptedCount, lastAcceptedAt: this.lastAcceptedAt };
   }
 
+  private noteFrameDuration(now: number): void {
+    if (Number.isFinite(this.lastBeginAt)) {
+      const delta = now - this.lastBeginAt;
+      if (delta >= MIN_FRAME_SAMPLE_MS && delta <= MAX_FRAME_SAMPLE_MS) {
+        this.frameIntervalEma += FRAME_EMA_ALPHA * (delta - this.frameIntervalEma);
+        if (delta >= SORT_HITCH_FRAME_MS) {
+          this.hitchCooldownUntil = now + MAX_ADAPTIVE_SORT_INTERVAL_MS;
+        }
+      }
+    }
+    this.lastBeginAt = now;
+  }
+
+  private resolveInterval(activeCount: number, now: number): number {
+    const base = this.sortIntervalMs ?? automaticSortIntervalMs(activeCount, this.isMobile);
+    if (this.sortIntervalMs !== undefined) return base;
+    return adaptiveSortIntervalMs(base, this.frameIntervalEma, this.hitchCooldownUntil, now);
+  }
+
   private armFallback(frame: number, now: number, serial: number): void {
     if (serial !== this.submissionSerialValue) return;
     this.submissionTrackingValue = 'render-ack-fallback';
@@ -258,7 +324,10 @@ export class WebGpuSortScheduler {
     }
     this.previousModelView.copy(modelView);
 
-    const interval = this.sortIntervalMs ?? automaticSortIntervalMs(activeCount, this.isMobile);
+    const interval = this.resolveInterval(activeCount, now);
+    const due = interval === 0 || now - this.lastAcceptedAt >= interval;
+    // A new active list or a secondary view invalidates the existing order.
+    // Backoff is safe only for camera motion over unchanged draw contents.
     if (this.forcePending) return true;
     if (modelView.equals(lastAcceptedModelView)) return false;
     if (settled) return true;
@@ -269,7 +338,7 @@ export class WebGpuSortScheduler {
     ) {
       return false;
     }
-    return interval === 0 || now - this.lastAcceptedAt >= interval;
+    return due;
   }
 
   private isWithinMobilePoseTolerance(current: THREE.Matrix4, accepted: THREE.Matrix4): boolean {

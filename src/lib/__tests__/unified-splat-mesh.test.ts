@@ -328,6 +328,34 @@ describe('UnifiedSplatMesh', () => {
     mesh.dispose();
   });
 
+  it('toggles modifier caching on a registered source without re-adding it', () => {
+    const renderer = mockRenderer();
+    const mesh = source();
+    mesh.modifiers = [() => ({ visible: bool(true) })];
+    const unified = new UnifiedSplatMesh(renderer, 1);
+    unified.addSource(mesh);
+    const gather = gatherSpies(unified)[0]!.gather;
+    const camera = new THREE.PerspectiveCamera();
+
+    unified.update(camera);
+    unified.update(camera);
+    expect(gather).toHaveBeenCalledTimes(2);
+
+    expect(unified.setSourceCacheModifiers(mesh, true)).toBe(true);
+    unified.update(camera);
+    expect(gather).toHaveBeenCalledTimes(2);
+
+    expect(unified.setSourceCacheModifiers(mesh, false)).toBe(true);
+    unified.update(camera);
+    expect(gather).toHaveBeenCalledTimes(3);
+
+    const unregistered = source();
+    expect(unified.setSourceCacheModifiers(unregistered, true)).toBe(false);
+    unregistered.dispose();
+    unified.dispose();
+    mesh.dispose();
+  });
+
   it('caches opted-in modifiers until the host invalidates their source', () => {
     const renderer = mockRenderer();
     const mesh = source();
@@ -349,6 +377,72 @@ describe('UnifiedSplatMesh', () => {
     unregistered.dispose();
 
     unified.dispose();
+    mesh.dispose();
+  });
+
+  it('re-gathers cached modifiers after transform, active-list, and uniform invalidation', () => {
+    const renderer = mockRenderer();
+    const mesh = source();
+    mesh.modifiers = [() => ({ visible: bool(true) })];
+    const unified = new UnifiedSplatMesh(renderer, 1);
+    unified.addSource(mesh, { cacheModifiers: true });
+    const gather = gatherSpies(unified)[0]!.gather;
+    const camera = new THREE.PerspectiveCamera();
+
+    unified.update(camera);
+    expect(gather).toHaveBeenCalledOnce();
+
+    mesh.position.x = 2;
+    mesh.updateMatrixWorld(true);
+    unified.update(camera);
+    expect(gather).toHaveBeenCalledTimes(2);
+
+    (
+      mesh as unknown as { replaceActiveIndices: (indices: Uint32Array) => number }
+    ).replaceActiveIndices(new Uint32Array([0]));
+    unified.update(camera);
+    expect(gather).toHaveBeenCalledTimes(3);
+
+    expect(unified.invalidateSource(mesh)).toBe(true);
+    unified.update(camera);
+    expect(gather).toHaveBeenCalledTimes(4);
+
+    unified.dispose();
+    mesh.dispose();
+  });
+
+  it('reuses cached modifiers while orbiting without SH and re-gathers when SH moves', () => {
+    const renderer = mockRenderer();
+    const clip = source();
+    clip.modifiers = [() => ({ visible: bool(true) })];
+    const sh = source({ sh: true });
+    sh.modifiers = [() => ({ visible: bool(true) })];
+    const unified = new UnifiedSplatMesh(renderer, 2);
+    unified.addSource(clip, { cacheModifiers: true });
+    unified.addSource(sh, { cacheModifiers: true });
+    const [clipGather, shGather] = gatherSpies(unified);
+    const camera = new THREE.PerspectiveCamera();
+
+    unified.update(camera);
+    camera.position.x = 3;
+    unified.update(camera);
+    expect(clipGather!.gather).toHaveBeenCalledOnce();
+    expect(shGather!.gather).toHaveBeenCalledTimes(2);
+
+    unified.dispose();
+    clip.dispose();
+    sh.dispose();
+  });
+
+  it('clears cached modifier gathers on dispose', () => {
+    const renderer = mockRenderer();
+    const mesh = source();
+    mesh.modifiers = [() => ({ visible: bool(true) })];
+    const unified = new UnifiedSplatMesh(renderer, 1);
+    unified.addSource(mesh, { cacheModifiers: true });
+    unified.update(new THREE.PerspectiveCamera());
+    unified.dispose();
+    expect(() => unified.setSourceCacheModifiers(mesh, false)).toThrow(/after dispose/);
     mesh.dispose();
   });
 
@@ -732,6 +826,33 @@ describe('UnifiedSplatMesh', () => {
       expect(sort).toHaveBeenCalledTimes(3);
       unified.dispose();
       mesh.dispose();
+    });
+
+    it('sorts changed work-buffer contents immediately during hitch backoff', () => {
+      const now = vi.spyOn(performance, 'now').mockReturnValue(0);
+      const renderer = mockRenderer();
+      const first = source();
+      const second = source();
+      const unified = new UnifiedSplatMesh(renderer, 2);
+      const camera = new THREE.PerspectiveCamera();
+      try {
+        unified.addSource(first);
+        unified.addSource(second);
+        const sort = sorterSpy(unified);
+        unified.update(camera);
+        expect(sort).toHaveBeenCalledTimes(1);
+        now.mockReturnValue(80);
+        unified.removeSource(first);
+        unified.update(camera);
+        expect(sort).toHaveBeenCalledTimes(2);
+        expect(sort.mock.calls[1]?.[1]).toBe(1);
+        expect((unified.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(1);
+      } finally {
+        unified.dispose();
+        first.dispose();
+        second.dispose();
+        now.mockRestore();
+      }
     });
 
     it('does not re-sort on a depth-of-field change', () => {

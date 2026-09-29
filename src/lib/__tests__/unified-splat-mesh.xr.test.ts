@@ -72,16 +72,26 @@ describe('UnifiedSplatMesh under XR presentation', () => {
       expect(sort).toHaveBeenCalledTimes(1);
       // Three's inherited draw callback still types the renderer as WebGL-only.
       unified.onAfterRender(renderer as unknown as WebGLRenderer, new THREE.Scene(), camera);
-      now = 100;
+      // Advance like a healthy XR vsync. Gaps ≥50 ms look like hitches and
+      // stretch automatic cadence, which is not what this jitter check covers.
+      now = 16;
       head.position.x += 0.0002;
       head.updateMatrix();
       unified.update(camera);
-      now = 200;
+      now = 32;
+      head.position.x += 0.0002;
+      head.updateMatrix();
+      unified.update(camera);
+      now = 48;
+      head.position.x += 0.0002;
+      head.updateMatrix();
+      unified.update(camera);
+      now = 64;
       head.position.x += 0.0002;
       head.updateMatrix();
       unified.update(camera);
       expect(sort).toHaveBeenCalledTimes(1);
-      now = 300;
+      now = 80;
       head.position.x += 0.05;
       head.updateMatrix();
       unified.update(camera);
