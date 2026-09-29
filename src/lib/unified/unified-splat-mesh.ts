@@ -43,6 +43,8 @@ interface SourceRecord {
   lastGather: {
     activeCount: number;
     contentRevision: number;
+    /** Streamed LOD / slot replacement; not always identical to contentRevision. */
+    activeListVersion: number;
     offset: number;
     opacity: number;
     matrixWorld: THREE.Matrix4;
@@ -555,6 +557,24 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     return true;
   }
 
+  /**
+   * Opts a registered source into or out of {@link UnifiedSplatSourceOptions.cacheModifiers}.
+   *
+   * Enabling keeps the current gather until the next invalidation. Disabling
+   * clears it so live uniforms (lights, fog, camera-dependent edits) re-gather
+   * on the following {@link update}. Returns `false` when the source is not
+   * registered.
+   */
+  setSourceCacheModifiers(source: SplatMesh, cacheModifiers: boolean): boolean {
+    this.assertNotDisposed('setSourceCacheModifiers');
+    const record = this.sources.find((candidate) => candidate.source === source);
+    if (!record) return false;
+    if (record.cacheModifiers === cacheModifiers) return true;
+    record.cacheModifiers = cacheModifiers;
+    if (!cacheModifiers) record.lastGather = null;
+    return true;
+  }
+
   /** Number of whole sources omitted in the most recent update due to capacity. */
   get droppedSourceCount(): number {
     return this.overflowedSourceCount;
@@ -903,6 +923,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         ownedSameSlice &&
         last.activeCount === view.activeCount &&
         last.contentRevision === view.contentRevision &&
+        last.activeListVersion === view.activeListVersion &&
         last.offset === sliceOffset &&
         last.opacity === effectiveOpacity &&
         last.matrixWorld.equals(view.matrixWorld);
@@ -934,6 +955,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
           record.lastGather = {
             activeCount: view.activeCount,
             contentRevision: view.contentRevision,
+            activeListVersion: view.activeListVersion,
             offset: sliceOffset,
             opacity: effectiveOpacity,
             matrixWorld: view.matrixWorld.clone(),
@@ -942,6 +964,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         } else {
           record.lastGather.activeCount = view.activeCount;
           record.lastGather.contentRevision = view.contentRevision;
+          record.lastGather.activeListVersion = view.activeListVersion;
           record.lastGather.offset = sliceOffset;
           record.lastGather.opacity = effectiveOpacity;
           record.lastGather.matrixWorld.copy(view.matrixWorld);

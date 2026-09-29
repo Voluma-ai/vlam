@@ -394,6 +394,13 @@ export class RadixSorter implements SplatSorter {
     }
     this.stages[0]!.count = activeCount;
     this.stages[this.stages.length - 1]!.count = activeCount;
+    // Queues the radix passes and returns. The CPU does not wait on the GPU;
+    // the sort scheduler's in-flight gate uses `onSubmittedWorkDone` only so a
+    // second pass cannot rewrite the same order buffer. The hitch is still
+    // real: these compute passes share the WebGPU queue with the splat draw,
+    // so a scheduled sort can lengthen that one presented frame. Cadence
+    // (including FPS backoff) is what stops a hitch every vsync; a single-queue
+    // renderer cannot overlap radix with the draw of the same order buffer.
     this.renderer.compute(this.stages);
     // Key/value ping-pong, histogram, scan sums and masks are all written and
     // read entirely on the GPU - at 4 B per splat of capacity each, their JS

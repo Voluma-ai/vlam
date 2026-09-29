@@ -21,9 +21,18 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- `UnifiedSplatMesh.setSourceCacheModifiers()` so hosts can opt a live source
+  into gather reuse for camera-independent modifiers without removing it.
+  Cached gathers also follow streamed `activeListVersion` so slot reuse cannot
+  keep a stale modifier result.
+
 - Migration guide for 0.x API renames, package subpaths, renderer setup, strategies, relighting, orientation, and device defaults.
 
 ### Changed
+
+- Automatic WebGPU sort cadence temporarily backs off during slow frames.
+  Content invalidations, foreign-view restoration, and the final settled camera
+  pose still sort immediately so changed geometry never uses a stale order.
 
 - Moved packed-center/color storage and shader readers into benchmark-only
   modules. Published renderer paths use ordinary float center textures without
