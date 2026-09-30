@@ -21,6 +21,7 @@ export {
   SplatLoadError,
   isAbortError,
   type SplatProgressCallback,
+  type SplatLoadStatus,
   type SplatFormat,
   type SplatDataFormat,
   type StreamedSplatFormat,

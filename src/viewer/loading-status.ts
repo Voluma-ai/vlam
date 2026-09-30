@@ -1,3 +1,4 @@
+import type { SplatLoadStatus } from '../lib/loaders';
 /**
  * Copy for the demo's loading overlay and status pill.
  *
@@ -39,18 +40,26 @@ export function loadingPercent(progress: LoadingBytes | null): number | null {
 }
 
 /** Bottom-left overlay while a scene is still fetching or decoding. */
-export function loadingOverlayText(title: string, progress: LoadingBytes | null): string {
+export function loadingOverlayText(
+  title: string,
+  progress: LoadingBytes | null,
+  status?: SplatLoadStatus,
+): string {
+  if (status === 'decoding') return `Decoding ${title}…`;
+  if (status === 'reading-and-decoding') return `Reading and decoding ${title}…`;
   const percent = loadingPercent(progress);
   if (percent === null) {
     if (progress && progress.loaded > 0) return `Loading ${title}… ${formatBytes(progress.loaded)}`;
     return `Loading ${title}…`;
   }
-  if (percent >= 100) return `Decoding ${title}…`;
+  if (percent >= 100 && status === undefined) return `Decoding ${title}…`;
   return `Loading ${title}… ${percent}%`;
 }
 
 /** Top-right status pill: percent + bytes, or a spinner line. */
-export function loadingPill(progress: LoadingBytes | null): LoadingPill {
+export function loadingPill(progress: LoadingBytes | null, status?: SplatLoadStatus): LoadingPill {
+  if (status === 'decoding') return { text: 'Decoding…', fraction: null };
+  if (status === 'reading-and-decoding') return { text: 'Reading and decoding…', fraction: null };
   const percent = loadingPercent(progress);
   if (percent === null || !progress) {
     if (progress && progress.loaded > 0) {
@@ -58,7 +67,7 @@ export function loadingPill(progress: LoadingBytes | null): LoadingPill {
     }
     return { text: 'Loading…', fraction: null };
   }
-  if (percent >= 100) return { text: 'Decoding…', fraction: 1 };
+  if (percent >= 100 && status === undefined) return { text: 'Decoding…', fraction: 1 };
   return {
     text: `${percent}% · ${formatBytes(progress.loaded)} / ${formatBytes(progress.total)}`,
     fraction: percent / 100,

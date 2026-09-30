@@ -1,3 +1,5 @@
+import { PaintGestures, type PaintGesture } from './paint-gesture';
+import type { SplatLoadStatus } from '../lib/loaders';
 import * as THREE from 'three/webgpu';
 import { installRadSelectionSnapshot, snapshotVlamRadSelection } from './rad-selection-snapshot';
 import { context, screenUV, texture as tslTexture, workingToColorSpace } from 'three/tsl';
@@ -1953,6 +1955,7 @@ async function main(): Promise<void> {
    * the whole thing is null for a format that cannot report at all - both mean
    * "show the spinner without a bar".
    */
+  let loadingStatus: SplatLoadStatus | undefined;
   let loadingProgress: { loaded: number; total: number } | null = null;
   /** Worker streaming faults are terminal and surfaced only once per scene. */
   let reportedStreamingError: SplatLoadError | null = null;
@@ -2025,6 +2028,7 @@ async function main(): Promise<void> {
   let separateTool: SeparateTool | null = null;
   /** Which click tool is armed; see the tool picker in the bottom chrome. */
   let pointerTool: ViewerTool = 'none';
+  let invalidatePaintGesture = (): void => {};
   /** Where a tool hangs its own controls, once the picker has mounted. */
   let toolSlot: HTMLElement | null = null;
   /** Updates scene-kind-specific tool options once the picker exists. */
@@ -2614,14 +2618,15 @@ async function main(): Promise<void> {
       return;
     }
     if (loadingTitle !== null) {
-      if (chrome.overlay) overlay.textContent = loadingOverlayText(loadingTitle, loadingProgress);
+      if (chrome.overlay)
+        overlay.textContent = loadingOverlayText(loadingTitle, loadingProgress, loadingStatus);
       // The pill carries the activity; the overlay line carries the name. A
       // multi-gigabyte drop spends ~15 s here, which needs a real bar rather
       // than a spinner that says only "not frozen".
       if (chrome.status && status && statusText) {
         status.classList.add('visible');
         status.classList.remove('error');
-        const pill = loadingPill(loadingProgress);
+        const pill = loadingPill(loadingProgress, loadingStatus);
         statusText.textContent = pill.text;
         if (pill.fraction !== null) {
           status.classList.add('progress');
@@ -2693,6 +2698,11 @@ async function main(): Promise<void> {
    * overlay ticker used to start only *after* `loadInitialScene` resolved, so a
    * 650 MB `.ply` sat on "Loading…" for the entire download.
    */
+  const noteLoadStatus = (status: SplatLoadStatus): void => {
+    loadingStatus = status;
+    if (!renderer.xr.isPresenting) refreshOverlay();
+  };
+
   const noteLoadProgress = (loaded: number, total: number): void => {
     loadingProgress = { loaded, total };
     if (!renderer.xr.isPresenting) refreshOverlay();
@@ -3017,6 +3027,7 @@ async function main(): Promise<void> {
       lastPickedPoint = null;
       benchmarkGroundY = null;
     }
+    invalidatePaintGesture();
     splats = next.mesh;
     // Resolve again at mount: HD/SD may have changed while the scene loaded.
     // Mount synchronously so subsequent toggles target this mesh immediately.
@@ -3242,6 +3253,7 @@ async function main(): Promise<void> {
     syncSeparateTool();
     loadingTitle = null;
     loadingProgress = null;
+    loadingStatus = undefined;
     if (
       next.mesh instanceof StreamedSplatMesh &&
       next.mesh.radStrategy === 'page-table' &&
@@ -3369,6 +3381,7 @@ async function main(): Promise<void> {
     if (splats instanceof StreamedSplatMesh && mode === 'paint') {
       wireStreamedPaint(splats);
     } else {
+      invalidatePaintGesture();
       paintTool = null;
       attachEffects(splats);
     }
@@ -3406,6 +3419,7 @@ async function main(): Promise<void> {
     localPickClearedChrome = true;
     parkedEffect = null;
     effectMode = null;
+    invalidatePaintGesture();
     paintTool = null;
     pointerTool = 'none';
     useUrlRelightProxy = false;
@@ -3434,6 +3448,7 @@ async function main(): Promise<void> {
     // stays interactive for another pick until then.
     loadingTitle = file.name;
     loadingProgress = null;
+    loadingStatus = undefined;
     refreshOverlay();
 
     // A single `.rad` streams rather than decoding whole: its LOD tree can be
@@ -3442,6 +3457,9 @@ async function main(): Promise<void> {
     // copied - the same in-place read a dropped folder gets.
     if (file.name.toLowerCase().endsWith('.rad')) {
       void loadLocalRad(file, {
+        onStatus: (status) => {
+          if (sequence === dropSequence) noteLoadStatus(status);
+        },
         format: 'rad',
         deviceProfile,
         ...(pinnedBudget === undefined ? {} : { budget: pinnedBudget }),
@@ -3466,6 +3484,7 @@ async function main(): Promise<void> {
           if (sequence !== dropSequence) return;
           loadingTitle = null;
           loadingProgress = null;
+          loadingStatus = undefined;
           refreshOverlay();
           const info = describeLoadError(error, file.name);
           showError({ title: info.title, message: info.message });
@@ -3475,6 +3494,9 @@ async function main(): Promise<void> {
     }
 
     void loadSplatDataFile(file, {
+      onStatus: (status) => {
+        if (sequence === dropSequence) noteLoadStatus(status);
+      },
       onProgress: (loaded, total) => {
         // A superseded drop must not drive the bar for the one that replaced it.
         if (sequence === dropSequence) noteLoadProgress(loaded, total);
@@ -3491,6 +3513,7 @@ async function main(): Promise<void> {
         if (sequence !== dropSequence) return;
         loadingTitle = null;
         loadingProgress = null;
+        loadingStatus = undefined;
         refreshOverlay();
         const info = describeLoadError(error, file.name);
         showError({ title: info.title, message: info.message });
@@ -3510,6 +3533,9 @@ async function main(): Promise<void> {
     // A local folder streams exactly like a served one - the mesh reads
     // ranges out of the files in place, so nothing is copied or uploaded.
     void StreamedSplatMesh.loadLocal(files, {
+      onStatus: (status) => {
+        if (sequence === dropSequence) noteLoadStatus(status);
+      },
       deviceProfile,
       environmentEnabled: params.get('env') !== '0',
       // Keep the explicit query opt-out effective now that streamed formats
@@ -3639,6 +3665,9 @@ async function main(): Promise<void> {
         loadingTitle = sceneLabel(DEFAULT_SCENE);
         refreshOverlay();
         const data = await loadSplatData(resolveSceneUrl(DEFAULT_SCENE), {
+          onStatus: (status) => {
+            if (!dropMounted) noteLoadStatus(status);
+          },
           onProgress: (loaded, total) => {
             if (!dropMounted) noteLoadProgress(loaded, total);
           },
@@ -3665,6 +3694,9 @@ async function main(): Promise<void> {
       // `?scene=` can point at a scene as big as any drop, so it reports the
       // download the same way.
       const data = await loadSplatData(resolveSceneUrl(sceneName), {
+        onStatus: (status) => {
+          if (!dropMounted) noteLoadStatus(status);
+        },
         onProgress: (loaded, total) => {
           if (!dropMounted) noteLoadProgress(loaded, total);
         },
@@ -3692,6 +3724,9 @@ async function main(): Promise<void> {
     // has to opt out of SH itself - it exists to cut exactly this cost.
     const shBands = requestedShBands() ?? (perfMode.enabled ? 0 : undefined);
     const mesh = await StreamedSplatMesh.load(resolveSceneUrl(sceneName), {
+      onStatus: (status) => {
+        if (!dropMounted) noteLoadStatus(status);
+      },
       budget: pinnedBudget,
       deviceProfile,
       ...(budgetCap === undefined ? {} : { budgetCap }),
@@ -3888,27 +3923,21 @@ async function main(): Promise<void> {
 
   // Paint stroke vs camera: the first point classifies hit/orbit. A hit then
   // records pointer samples and commits one batched, immutable stroke on up.
-  let sprayPointerId: number | null = null;
-  let pendingPaintClassifyId: number | null = null;
-  let pendingPaintReleased = false;
-  const sprayClient = new THREE.Vector2();
-  const strokeClients: THREE.Vector2[] = [];
+  const paintGestures = new PaintGestures<SplatMesh, PaintTool>();
+  invalidatePaintGesture = () => paintGestures.cancel();
   let paintCommitPending = false;
+  const ownsPaintGesture = (gesture: PaintGesture<SplatMesh, PaintTool>): boolean =>
+    paintGestures.owns(gesture) &&
+    splats === gesture.source &&
+    paintTool === gesture.tool &&
+    pointerTool === 'paint';
 
-  const discardSpray = (pointerId?: number): void => {
-    if (pointerId !== undefined && pointerId !== sprayPointerId) return;
-    sprayPointerId = null;
-    strokeClients.length = 0;
-  };
-
-  const commitPaintStroke = (): void => {
-    if (sprayPointerId === null || paintCommitPending || strokeClients.length === 0) return;
-    const sourceMesh = splats;
-    const targetTool = paintTool;
-    const samples = decimatePointerSamples(strokeClients, paintBrushSettings.radiusPx * 0.35).slice(
-      0,
-      512,
-    );
+  const commitPaintStroke = (gesture: PaintGesture<SplatMesh, PaintTool>): void => {
+    if (!ownsPaintGesture(gesture) || paintCommitPending || gesture.samples.length === 0) return;
+    const samples = decimatePointerSamples(
+      gesture.samples,
+      paintBrushSettings.radiusPx * 0.35,
+    ).slice(0, 512);
     const ndcs = samples.map((sample) => eventNdc({ clientX: sample.x, clientY: sample.y }));
     const cameraSnapshot = camera.clone();
     const drawingSize = renderer.getDrawingBufferSize(new THREE.Vector2());
@@ -3918,88 +3947,68 @@ async function main(): Promise<void> {
       depth: paintBrushSettings.depth,
       footprint: paintBrushSettings.footprint,
     } as const;
-    discardSpray();
-    if (!targetTool || ndcs.length === 0) return;
     paintCommitPending = true;
-    void sourceMesh
+    void gesture.source
       .pickMany(ndcs, cameraSnapshot, renderer, { alphaThreshold: 0.1 })
       .then((hits) => {
-        if (splats !== sourceMesh || paintTool !== targetTool || pointerTool !== 'paint') return;
+        if (!ownsPaintGesture(gesture)) return;
         const stroke = buildDepthPickedBrushStroke(hits, cameraSnapshot, drawingSize.y, radiusPx);
         const lastHit = [...hits].reverse().find((hit) => hit !== null);
         if (lastHit) lastPickedPoint = lastHit.point.clone();
-        if (stroke.paths.length > 0) targetTool.paintStroke(stroke, settings);
+        if (stroke.paths.length > 0) gesture.tool.paintStroke(stroke, settings);
       })
       .catch(() => {
         /* an abandoned brush readback is a clean no-op */
       })
       .finally(() => {
+        if (paintGestures.owns(gesture)) paintGestures.cancel();
         paintCommitPending = false;
       });
   };
 
   renderer.domElement.addEventListener('pointerdown', (e) => {
-    // `gizmoDragging`: this listener is registered after the separation gizmo's,
-    // so it still fires on a handle grab - without the guard the classify pick
-    // below would spray paint through the drag.
-    if (e.button !== 0 || !paintTool || !mounted || gizmoDragging) return;
+    if (e.button !== 0 || pointerTool !== 'paint' || !paintTool || !mounted || gizmoDragging)
+      return;
     if (paintCommitPending) {
-      if (renderer.domElement.hasPointerCapture(e.pointerId)) {
+      if (renderer.domElement.hasPointerCapture(e.pointerId))
         renderer.domElement.releasePointerCapture(e.pointerId);
-      }
       return;
     }
-    const pointerId = e.pointerId;
-    sprayClient.set(e.clientX, e.clientY);
-    pendingPaintClassifyId = pointerId;
-    pendingPaintReleased = false;
-    const sourceMesh = splats;
-    const targetTool = paintTool;
-    const firstClient = sprayClient.clone();
-    void sourceMesh
+    const gesture = paintGestures.begin(e.pointerId, splats, paintTool, e.clientX, e.clientY);
+    const handToCamera = (): void => {
+      if (!ownsPaintGesture(gesture)) return;
+      paintGestures.cancel();
+      if (gesture.released) return;
+      dragPointerId = gesture.pointerId;
+      dragButton = 0;
+      lastDragPointer.copy(gesture.samples[gesture.samples.length - 1]!);
+    };
+    void gesture.source
       .pick(eventNdc(e), camera, renderer)
       .then((hit) => {
-        if (pendingPaintClassifyId !== pointerId) return;
-        pendingPaintClassifyId = null;
-        if (!targetTool || paintTool !== targetTool || splats !== sourceMesh) return;
-        if (hit) {
-          sprayPointerId = pointerId;
-          strokeClients.length = 0;
-          strokeClients.push(firstClient);
-          if (!sprayClient.equals(firstClient)) strokeClients.push(sprayClient.clone());
-          if (pendingPaintReleased) commitPaintStroke();
-        } else if (!pendingPaintReleased) {
-          // Miss: hand the remainder of the press to camera controls.
-          dragPointerId = pointerId;
-          dragButton = 0;
-          lastDragPointer.copy(sprayClient);
+        if (!ownsPaintGesture(gesture)) return;
+        if (!hit) {
+          handToCamera();
+          return;
         }
+        gesture.classified = true;
+        if (gesture.released) commitPaintStroke(gesture);
       })
-      .catch(() => {
-        if (pendingPaintClassifyId !== pointerId) return;
-        pendingPaintClassifyId = null;
-        if (pendingPaintReleased) return;
-        dragPointerId = pointerId;
-        dragButton = 0;
-        lastDragPointer.copy(sprayClient);
-      });
+      .catch(handToCamera);
   });
   renderer.domElement.addEventListener('pointermove', (e) => {
-    if (e.pointerId !== sprayPointerId && e.pointerId !== pendingPaintClassifyId) return;
-    sprayClient.set(e.clientX, e.clientY);
-    if (e.pointerId === sprayPointerId) strokeClients.push(sprayClient.clone());
+    paintGestures.move(e.pointerId, e.clientX, e.clientY);
   });
   renderer.domElement.addEventListener('pointerup', (e) => {
-    if (e.pointerId === pendingPaintClassifyId) {
-      pendingPaintReleased = true;
-      return;
-    }
-    if (e.pointerId === sprayPointerId) commitPaintStroke();
+    const gesture = paintGestures.current;
+    if (gesture?.pointerId !== e.pointerId) return;
+    paintGestures.move(e.pointerId, e.clientX, e.clientY);
+    gesture.released = true;
+    if (gesture.classified) commitPaintStroke(gesture);
   });
   const cancelPaintPointer = (e: PointerEvent): void => {
-    if (e.type === 'lostpointercapture' && pendingPaintReleased) return;
-    if (e.pointerId === pendingPaintClassifyId) pendingPaintClassifyId = null;
-    discardSpray(e.pointerId);
+    if (e.type === 'lostpointercapture' && paintGestures.current?.released) return;
+    paintGestures.cancel(e.pointerId);
   };
   renderer.domElement.addEventListener('pointercancel', cancelPaintPointer);
   renderer.domElement.addEventListener('lostpointercapture', cancelPaintPointer);
@@ -4117,6 +4126,7 @@ async function main(): Promise<void> {
 
   /** Arms one click tool and tears down whatever the last one left on screen. */
   const setPointerTool = (tool: ViewerTool): void => {
+    invalidatePaintGesture();
     pointerTool = tool;
     paintCursor.hidden = tool !== 'paint';
     if (tool !== 'annotate') clearAnnotations();
@@ -4677,6 +4687,7 @@ async function main(): Promise<void> {
           awaitingFirstRadDisplay = false;
           loadingTitle = null;
           loadingProgress = null;
+          loadingStatus = undefined;
           if (!presenting) refreshOverlay();
         }
       }

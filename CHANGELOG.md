@@ -21,6 +21,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- Custom streamed dataset loading via `StreamedSplatMesh.loadSource`, with
+  explicit format and borrowed/owned source lifetime control.
+- Per-load `onStatus` stages alongside byte progress, including local read
+  completion and worker message routing.
+- Exact affine `SdfShape.transform` support and matching selection previews,
+  including shear and reflection, with atomic shape validation.
+
 - `UnifiedSplatMesh.setSourceCacheModifiers()` so hosts can opt a live source
   into gather reuse for camera-independent modifiers without removing it.
   Cached gathers also follow streamed `activeListVersion` so slot reuse cannot
@@ -38,6 +45,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - Migration guide for 0.x API renames, package subpaths, renderer setup, strategies, relighting, orientation, and device defaults.
 
 ### Changed
+
+- **Breaking:** `buildRadScene` now accepts `RadSceneOptions` instead of
+  positional request/SH/budget/strategy controls; defaults are unchanged.
+  See the migration guide for the argument mapping.
+- Dataset size probes accept an optional abort signal. Streamed loaders forward
+  cancellation and authentication to classic LCC sidecars and RAD bootstrap.
 
 - Snapshot streamed LOD cameras with copy instead of cloning the scene graph
   every frame.
@@ -65,6 +78,24 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - Gate tagged npm publication on preflight, the CI-equivalent secret scan, and packed-package import checks.
 
 ### Fixed
+
+- Drain pending standalone GPU sorts when unified rendering takes over, so
+  streamed LOD refinement cannot stall waiting for a hidden source to draw.
+
+- Asynchronous pick compilation no longer installs cropped display uniforms;
+  rendering state is restored on success, failure, and disposal. Multi-row
+  picks also account for WebGPU readback row padding.
+- Unified picking follows whole-source capacity admission, source opacity, and
+  registration identity across asynchronous readback.
+- Paint gestures retain their own samples and mesh identity; stale callbacks
+  cannot take over a newer gesture using the same pointer ID.
+- Invalid persistent strokes are rejected before history mutation, including
+  when no chunks are resident.
+- Abort/dispose settles loads while the lazy worker import is pending. Rejected
+  HTTP responses cancel unread bodies, and SOG decoding releases partially
+  acquired decoder, image, and GPU resources.
+- Replaced obsolete WebGL2 troubleshooting guidance with the atomic snapshot
+  publication contract.
 
 - Start watching the first unified GPU sort even while `instanceCount` is 0, so
   hosts that skip a zero-instance draw still publish the ordered cut. An empty

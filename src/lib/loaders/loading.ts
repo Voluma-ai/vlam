@@ -66,6 +66,9 @@ export function createProgressThrottle(
   };
 }
 
+/** Work currently performed by one load; promise settlement reports completion. */
+export type SplatLoadStatus = 'initializing' | 'reading' | 'reading-and-decoding' | 'decoding';
+
 /**
  * Options for decoding a local file.
  *
@@ -83,6 +86,8 @@ export interface SplatDataFileLoadOptions {
    * goes; the whole-buffer formats have nothing to report until they are done.
    */
   onProgress?: SplatProgressCallback;
+  /** Reports work stages, without implying decoded or rendered readiness percentages. */
+  onStatus?: (status: SplatLoadStatus) => void;
 }
 
 /** Shared URL, cancellation, and request options for package loaders. */
@@ -95,6 +100,8 @@ export interface SplatInputOptions {
    * throttled to whole read windows rather than every byte.
    */
   onProgress?: SplatProgressCallback;
+  /** Reports work stages, without implying decoded or rendered readiness percentages. */
+  onStatus?: (status: SplatLoadStatus) => void;
 }
 
 /** The stage at which a splat load failed. */

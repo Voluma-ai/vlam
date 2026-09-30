@@ -230,6 +230,7 @@ describe('SplatMesh.pick', () => {
     camera.updateMatrixWorld(true);
     const renderer = createMockRenderer(200, 100);
     const viewport = (mesh as unknown as { viewport: { value: THREE.Vector2 } }).viewport;
+    viewport.value.set(200, 100);
     const viewportDuringRender: number[][] = [];
     const packed = packNormalizedDepth(0.5);
     (renderer as unknown as { _setPixel: (rgba: number[]) => void })._setPixel([
@@ -288,6 +289,7 @@ describe('SplatMesh.pick', () => {
       return new Uint8Array([0, 0, 0, 0]);
     });
 
+    (mesh as unknown as { viewport: { value: THREE.Vector2 } }).viewport.value.set(200, 100);
     const pendingPick = mesh.pick(new THREE.Vector2(0, 0), camera, renderer);
     await vi.waitFor(() => expect(renderer.readRenderTargetPixelsAsync).toHaveBeenCalledOnce());
 
@@ -301,6 +303,49 @@ describe('SplatMesh.pick', () => {
 
     release();
     await expect(pendingPick).resolves.toBeNull();
+  });
+
+  it('preserves the latest display state across deferred compilation and its rejection', async () => {
+    const mesh = createMesh();
+    const camera = new THREE.PerspectiveCamera(60, 2, 0.1, 100);
+    const renderer = createMockRenderer();
+    const uniforms = mesh as unknown as {
+      viewport: { value: THREE.Vector2 };
+      focal: { value: THREE.Vector2 };
+    };
+    uniforms.viewport.value.set(200, 100);
+    let release!: () => void;
+    vi.mocked(renderer.compileAsync).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const pending = mesh.pick(new THREE.Vector2(), camera, renderer);
+    await vi.waitFor(() => expect(renderer.compileAsync).toHaveBeenCalledOnce());
+    expect(uniforms.viewport.value.toArray()).toEqual([200, 100]);
+    // A normal frame updates display state while compilation is outstanding.
+    uniforms.viewport.value.set(640, 480);
+    uniforms.focal.value.set(317, 239);
+    renderer.setClearColor(0xff0000, 0.4);
+    vi.mocked(renderer.render).mockImplementationOnce(() => {
+      expect(uniforms.viewport.value.toArray()).toEqual([1, 1]);
+    });
+    release();
+    await pending;
+    expect(uniforms.viewport.value.toArray()).toEqual([640, 480]);
+    expect(uniforms.focal.value.toArray()).toEqual([317, 239]);
+    expect(renderer.getClearAlpha()).toBe(0.4);
+
+    const other = createMesh();
+    const otherView = (other as unknown as { viewport: { value: THREE.Vector2 } }).viewport.value;
+    otherView.set(320, 240);
+    vi.mocked(renderer.compileAsync).mockRejectedValueOnce(new Error('compile failed'));
+    await expect(other.pick(new THREE.Vector2(), camera, renderer)).rejects.toThrow(
+      'compile failed',
+    );
+    expect(otherView.toArray()).toEqual([320, 240]);
+    await expect(other.pick(new THREE.Vector2(), camera, renderer)).resolves.toBeNull();
   });
 
   it('serializes concurrent pick requests', async () => {
@@ -360,6 +405,29 @@ describe('SplatMesh.pick', () => {
     const target = renderer.renderLog[0] as { target: THREE.RenderTarget };
     expect(target.target.width).toBe(101);
     expect(target.target.height).toBe(1);
+  });
+
+  it('decodes padded WebGPU rows in a multi-row pick readback', async () => {
+    const mesh = createMesh();
+    const camera = new THREE.PerspectiveCamera(60, 2, 0.1, 100);
+    camera.position.z = 5;
+    camera.updateMatrixWorld(true);
+    const renderer = createMockRenderer(200, 100);
+    const packed = packNormalizedDepth(normalizeViewDepth(5, camera.near, camera.far));
+    vi.mocked(renderer.readRenderTargetPixelsAsync).mockImplementationOnce(async () => {
+      const pixels = new Uint8Array(256 + 4);
+      pixels.set([packed.r, packed.g, packed.b, 255], 0);
+      pixels.set([packed.r, packed.g, packed.b, 255], 256);
+      return pixels;
+    });
+    const results = await mesh.pickMany(
+      [new THREE.Vector2(0, 0), new THREE.Vector2(0, 0.02)],
+      camera,
+      renderer,
+    );
+    expect(results.every((hit) => hit !== null)).toBe(true);
+    expect(results[1]!.point.z).toBeCloseTo(0, 3);
+    expect(results[1]!.point.y).toBeGreaterThan(results[0]!.point.y);
   });
 
   it('returns null after dispose and disposes pick resources', async () => {

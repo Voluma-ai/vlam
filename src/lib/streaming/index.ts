@@ -13,6 +13,7 @@
 export {
   StreamedSplatMesh,
   type StreamedSplatMeshOptions,
+  type StreamedSplatSourceLoadOptions,
   type InitialRevealState,
   type PersistentChannelOptions,
   type StreamedSplatPerformanceEvent,
@@ -50,6 +51,7 @@ export {
   SplatLoadError,
   isAbortError,
   type SplatProgressCallback,
+  type SplatLoadStatus,
   type StreamedSplatFormat,
   type SplatRequestOptions,
   type SplatLoadPhase,

@@ -1,3 +1,5 @@
+import { isAbortError } from '../../loaders/loading';
+import { discardResponseBody } from '../../loaders/worker-fetch';
 import * as THREE from 'three/webgpu';
 import { LodScheduler } from '../../streaming/lod-scheduler';
 import type { LodLeaf, LodManifest, LodRange } from '../../streaming/lod-manifest';
@@ -86,6 +88,7 @@ export async function buildLccScene(
   source: SplatDatasetSource,
   options: LccSceneOptions,
 ): Promise<StreamedScene> {
+  options.signal?.throwIfAborted();
   const manifest = parseLccManifest(json);
   const require = (name: string): string => {
     const url = source.resolve(name);
@@ -255,7 +258,7 @@ export async function buildLccScene(
     }
   }
 
-  const environmentCount = await environmentSplatCount(source, manifest);
+  const environmentCount = await environmentSplatCount(source, manifest, options.signal);
   let environment: { readonly file: number } | undefined;
   if (environmentCount > 0 && environmentUrl !== null) {
     const stride = environmentStride(manifest);
@@ -304,7 +307,7 @@ export async function buildLccScene(
     bounds: sceneBounds(manifest),
   };
 
-  const collisionUrl = await resolveCollisionLci(source);
+  const collisionUrl = await resolveCollisionLci(source, options.signal);
 
   return {
     // Classic LCC cells are broad XY tiles. Keep their priority independent of
@@ -357,9 +360,14 @@ export async function buildLccScene(
  * probed via {@link SplatDatasetSource.size} - missing is fine, same as
  * `environment.bin`.
  */
-async function resolveCollisionLci(source: SplatDatasetSource): Promise<string | null> {
+async function resolveCollisionLci(
+  source: SplatDatasetSource,
+  signal?: AbortSignal,
+): Promise<string | null> {
   for (const name of ['collision.lci', 'Collision.lci'] as const) {
-    const size = await source.size(name);
+    signal?.throwIfAborted();
+    const size = await source.size(name, { signal });
+    signal?.throwIfAborted();
     if (size !== null && Number.isSafeInteger(size) && size > 0) {
       return source.resolve(name);
     }
@@ -432,8 +440,11 @@ function assertIndexMatchesManifest(index: LccIndexCell[], manifest: LccManifest
 async function environmentSplatCount(
   source: SplatDatasetSource,
   manifest: LccManifest,
+  signal?: AbortSignal,
 ): Promise<number> {
-  const size = await source.size('environment.bin');
+  signal?.throwIfAborted();
+  const size = await source.size('environment.bin', { signal });
+  signal?.throwIfAborted();
   if (size === null || !Number.isSafeInteger(size) || size <= 0) return 0;
   const stride = environmentStride(manifest);
   if (size % stride !== 0) {
@@ -453,9 +464,11 @@ async function fetchBytes(
   try {
     response = await fetch(url, toRequestInit(options.request, options.signal));
   } catch (error) {
+    if (isAbortError(error)) throw error;
     throw toSplatLoadError(error, { phase, url });
   }
   if (!response.ok) {
+    await discardResponseBody(response);
     throw toSplatLoadError(new Error(`Failed to load ${url}: HTTP ${response.status}`), {
       phase,
       url,

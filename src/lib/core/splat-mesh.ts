@@ -561,6 +561,22 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       this.refreshProjectionUniforms(camera, renderer);
     },
     setView: (camera, width, height) => this.writeViewUniforms(camera, width, height),
+    captureView: () => {
+      const viewport = this.viewport.value.clone();
+      const focal = this.focal.value.clone();
+      const margin = this.frustumMargin.value.clone();
+      const position = this.localCameraPosition.value.clone();
+      const projection = this.shViewProjection.value.clone();
+      const limit = this.pixelScaleLimit.value;
+      return () => {
+        this.viewport.value.copy(viewport);
+        this.focal.value.copy(focal);
+        this.frustumMargin.value.copy(margin);
+        this.localCameraPosition.value.copy(position);
+        this.shViewProjection.value.copy(projection);
+        this.pixelScaleLimit.value = limit;
+      };
+    },
     applyPickGraph: (material) => {
       const inputs = this.graphInputs(this.materialInputs.textures, this.materialInputs.sh);
       if (this.computeProjectionActive || this.unifiedPickVisibility !== null) {
@@ -2167,10 +2183,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // meshes keep the previous `instanceCount` / GPU `sourceIndex` until that
     // matching sort can run, so a compact or `StaticLodSplatMesh` cut cannot
     // draw the new list through the previous permutation.
+    // Unified ownership can hide this mesh before its standalone draw. Drain
+    // that sort through the queue fence even though onAfterRender will not run.
+    const unifiedSource = this.unifiedPickVisibility !== null;
+    if (options.sort === false && unifiedSource) this.acknowledgeSortSubmission(renderer);
     const sortHold =
-      options.sort !== false &&
+      (options.sort !== false || unifiedSource) &&
       this.sortScheduler.beginSubmissionFrame(sortFrameNumber, performance.now());
-    if (sortHold) {
+    if (options.sort !== false && sortHold) {
       const contentNeedsSort =
         this.sortScheduler.hasPendingForce() ||
         this.activeListVersion !== this.sortedActiveListVersion ||
@@ -2726,12 +2746,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     await queue.onSubmittedWorkDone();
   }
 
-  /**
-   * Marks the first successful draw. The lazy pick pipeline is compiled before
-   * mirrors drop: three captures storage binding arrays during material
-   * compilation, and an empty post-release array can poison SwiftShader.
-   */
-  override onAfterRender(renderer: WebGLRenderer, _scene: THREE.Scene, camera: THREE.Camera): void {
+  private acknowledgeSortSubmission(renderer: THREE.WebGPURenderer | WebGLRenderer): void {
     if (this.sortScheduler.hasSubmissionAwaitingRender()) {
       const queue = (
         renderer as unknown as {
@@ -2748,6 +2763,15 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       }
       this.sortScheduler.acknowledgeSubmission(this.sortFrameNumber, performance.now(), completion);
     }
+  }
+
+  /**
+   * Marks the first successful draw. The lazy pick pipeline is compiled before
+   * mirrors drop: three captures storage binding arrays during material
+   * compilation, and an empty post-release array can poison SwiftShader.
+   */
+  override onAfterRender(renderer: WebGLRenderer, _scene: THREE.Scene, camera: THREE.Camera): void {
+    this.acknowledgeSortSubmission(renderer);
     const activeListVersion = this.activeListVersion;
     if (
       !this.disposed &&

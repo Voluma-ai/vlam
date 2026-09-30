@@ -66,3 +66,11 @@ describe('loadingPill', () => {
     });
   });
 });
+
+it('uses explicit decoding status even when the download length is unknown', () => {
+  expect(loadingOverlayText('scene', { loaded: 2048, total: 0 }, 'decoding')).toBe(
+    'Decoding scene…',
+  );
+  expect(loadingPill(null, 'reading-and-decoding').text).toBe('Reading and decoding…');
+  expect(loadingPill({ loaded: 10, total: 10 }, 'reading').text).not.toContain('Decoding');
+});

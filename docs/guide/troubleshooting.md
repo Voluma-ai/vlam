@@ -215,18 +215,16 @@ immediately after construction. Full list of fallback differences:
 **Symptom.** On the WebGL2 fallback, a streamed LCC / Streamed SOG / RAD scene
 flickers or pops while the camera moves. Stationary views look correct.
 
-**Cause.** The WebGL2 path sorts on a CPU worker rather than on the GPU, and
-its cadence against streaming residency changes is the known weak point.
-Tracked as [ROADMAP L5](../../ROADMAP.md).
+**Publication contract.** WebGL2 streaming publishes a matching draw list,
+sort order, and resident data snapshot together. While the CPU worker prepares
+a new sort, the previous complete snapshot remains visible. Streaming is
+supported on the WebGL2 fallback; it does not require a static-scene workaround.
 
-**Status.** The logic-level races behind this (sorted-permutation draw-list
-patching, `activePrefix` sort spans, stationary-camera swap re-sort, order
-upload ranges) have been fixed and are pinned by deterministic tests. Visual
-confirmation in a real WebGL2 browser is **still pending**, so the item is not
-closed and residual flicker is possible.
-
-**Workaround.** WebGPU is the supported path for streamed formats. Where
-WebGPU is unavailable, a static `SplatMesh` (non-streamed) is unaffected.
+A delayed refinement during camera motion can reflect the worker's sorting
+cadence. Persistent flicker, mismatched splats, or a broken stationary view are
+bugs: report the format, browser/GPU, budget, and a reproducible camera path.
+See the [backend scope](../capabilities.md#webgl2-scope-statement) for actual
+fallback limitations.
 
 ## The scene looks too soft, or too spiky
 

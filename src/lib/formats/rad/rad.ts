@@ -1,3 +1,4 @@
+import { discardResponseBody } from '../../loaders/worker-fetch';
 import * as THREE from 'three/webgpu';
 import type { LodRun } from '../../streaming/lod-scheduler';
 import type {
@@ -36,6 +37,20 @@ import { RadFoveatedSource } from './rad-foveated-source';
 /** Chunks fetched ahead of the resident frontier to keep the pipeline full. */
 const PREFETCH_AHEAD = 6;
 
+/** Controls for RAD bootstrap and LOD selection. */
+export interface RadSceneOptions extends LodSourceOptions {
+  /** Fetch settings for the header and bootstrap chunk. */
+  request?: SplatRequestOptions;
+  /** Cancels bootstrap network and decode work. */
+  signal?: AbortSignal;
+  /** Zero declines SH; nonzero retains all available bands. Default 3. */
+  maxShBands?: 0 | 1 | 2 | 3;
+  /** Allow the existing finest-level budget lift. Default true. */
+  budgetLifts?: boolean;
+  /** Force page-table selection, or retain the automatic policy. */
+  radStrategy?: 'auto' | 'page-table';
+}
+
 /**
  * Builds a streamed scene from a single-file `.rad`. Fetches the header and
  * chunk table, then decodes chunk 0 (the coarsest whole-scene overview) to
@@ -60,16 +75,14 @@ const PREFETCH_AHEAD = 6;
  */
 export async function buildRadScene(
   source: SplatDatasetSource,
-  options: LodSourceOptions,
-  request?: SplatRequestOptions,
-  maxShBands: 0 | 1 | 2 | 3 = 3,
-  budgetLifts = true,
-  radStrategy: 'auto' | 'page-table' = 'auto',
+  options: RadSceneOptions,
 ): Promise<StreamedScene> {
+  const { request, signal, maxShBands = 3, budgetLifts = true, radStrategy = 'auto' } = options;
+  signal?.throwIfAborted();
   if (radStrategy !== 'auto' && radStrategy !== 'page-table') {
     throw new RangeError(`buildRadScene: invalid radStrategy ${JSON.stringify(radStrategy)}.`);
   }
-  const { meta, chunksStart } = await fetchRadHeader(source.manifestUrl, request);
+  const { meta, chunksStart } = await fetchRadHeader(source.manifestUrl, request, signal);
   const chunkSize = meta.chunkSize ?? meta.count;
   const numChunks = meta.chunks.length;
   if (numChunks === 0) throw new Error('RAD file has no chunks.');
@@ -144,9 +157,13 @@ export async function buildRadScene(
           chunksStart + chunk0Range.offset,
           chunk0Range.bytes,
           request,
+          false,
+          signal,
         )
-      : await fetchWhole(chunkUrls[0]!, request);
+      : await fetchWhole(chunkUrls[0]!, request, signal);
+  signal?.throwIfAborted();
   const chunk0Data = await parseRadChunkStreaming(chunk0Buffer, undefined, undefined, !foveate);
+  signal?.throwIfAborted();
   // Later chunks must pack their SH against the same scene range chunk 0
   // established - the pool adopts one range for the whole scene. The codebook
   // (clustered SH) lives only in chunk 0 and rides along the same way.
@@ -552,18 +569,20 @@ function countSplats(runs: readonly LodRun[]): number {
 async function fetchRadHeader(
   url: string,
   request?: SplatRequestOptions,
+  signal?: AbortSignal,
 ): Promise<{ meta: RadMeta; chunksStart: number }> {
   // One speculative read covers the header for any realistic chunk count; a
   // pathologically long table (very large scene) triggers one exact refetch.
   const PROBE = 262_144;
-  let buffer = await fetchRange(url, 0, PROBE, request, true);
+  let buffer = await fetchRange(url, 0, PROBE, request, true, signal);
   const view = new DataView(buffer);
   if (view.byteLength >= 8) {
     const length = view.getUint32(4, true);
     if (8 + length > buffer.byteLength) {
-      buffer = await fetchRange(url, 0, 8 + length, request);
+      buffer = await fetchRange(url, 0, 8 + length, request, false, signal);
     }
   }
+  signal?.throwIfAborted();
   return parseRadHeaderMeta(buffer);
 }
 
@@ -578,13 +597,16 @@ async function fetchRange(
   length: number,
   request?: SplatRequestOptions,
   allowShort = false,
+  signal?: AbortSignal,
 ): Promise<ArrayBuffer> {
-  const init = toRequestInit(request);
+  signal?.throwIfAborted();
+  const init = toRequestInit(request, signal);
   const response = await fetch(url, {
     ...init,
     headers: { ...(request?.headers ?? {}), Range: `bytes=${start}-${start + length - 1}` },
   });
   if (!response.ok) {
+    await discardResponseBody(response);
     throw new Error(`Failed to load ${url}: HTTP ${response.status}`);
   }
   // The header probe (`allowShort`) tolerates a `200` - a `--rad-chunked` set's
@@ -592,12 +614,14 @@ async function fetchRange(
   // Range. Chunk-*data* reads stay strict: a single-file `.rad` that answers
   // `200` would download the whole capture, so it is rejected.
   if (response.status !== 206 && !(allowShort && response.status === 200)) {
+    await discardResponseBody(response);
     throw new Error(
       `${url} ignored a Range request (HTTP ${response.status}); single-file .rad streaming ` +
         'needs a server that answers 206 Partial Content.',
     );
   }
   const buffer = await response.arrayBuffer();
+  signal?.throwIfAborted();
   if (!allowShort && buffer.byteLength !== length) {
     throw new Error(`${url} returned ${buffer.byteLength} bytes for a ${length}-byte range.`);
   }
@@ -606,8 +630,16 @@ async function fetchRange(
 
 /** Fetches a whole file (an external `.radc` chunk, or a small chunked-set
  * `.rad` header served without range support). */
-async function fetchWhole(url: string, request?: SplatRequestOptions): Promise<ArrayBuffer> {
-  const response = await fetch(url, toRequestInit(request));
-  if (!response.ok) throw new Error(`Failed to load ${url}: HTTP ${response.status}`);
+async function fetchWhole(
+  url: string,
+  request?: SplatRequestOptions,
+  signal?: AbortSignal,
+): Promise<ArrayBuffer> {
+  signal?.throwIfAborted();
+  const response = await fetch(url, toRequestInit(request, signal));
+  if (!response.ok) {
+    await discardResponseBody(response);
+    throw new Error(`Failed to load ${url}: HTTP ${response.status}`);
+  }
   return response.arrayBuffer();
 }

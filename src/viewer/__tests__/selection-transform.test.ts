@@ -14,7 +14,6 @@ import {
  */
 
 type Vec3 = [number, number, number];
-type Quat = [number, number, number, number];
 
 /** A column-major affine 4×4 from a basis and a translation. */
 function matrix(basis: readonly number[], translation: Vec3): number[] {
@@ -87,19 +86,6 @@ function transformPoint(m: Mat4Elements, p: Vec3): Vec3 {
   ];
 }
 
-/** Rotates `v` by the quaternion `q` (the standard `v + 2q_v × (q_v × v + wv)`). */
-function applyQuaternion(q: Quat, v: Vec3): Vec3 {
-  const [x, y, z, w] = q;
-  const tx = 2 * (y * v[2] - z * v[1]);
-  const ty = 2 * (z * v[0] - x * v[2]);
-  const tz = 2 * (x * v[1] - y * v[0]);
-  return [
-    v[0] + w * tx + (y * tz - z * ty),
-    v[1] + w * ty + (z * tx - x * tz),
-    v[2] + w * tz + (x * ty - y * tx),
-  ];
-}
-
 function expectVectorClose(actual: readonly number[], expected: readonly number[]): void {
   for (let i = 0; i < expected.length; i++) {
     expect(actual[i]).toBeCloseTo(expected[i] as number, 10);
@@ -131,126 +117,37 @@ describe('clampVolumeScale', () => {
 });
 
 describe('meshLocalSdfShape', () => {
-  it('passes a translated axis-aligned box through an identity mesh unchanged', () => {
-    const shape = meshLocalSdfShape(
-      'box',
-      compose([1, 2, 3], [0.5, 2, 4]),
-      matrix(IDENTITY_BASIS, [0, 0, 0]),
-    );
-    expect(shape).not.toBeNull();
-    expectVectorClose(shape!.center, [1, 2, 3]);
-    expectVectorClose(shape!.rotation, [0, 0, 0, 1]);
-    expectVectorClose(shape!.halfExtents!, [0.5, 2, 4]);
-  });
-
-  it('reproduces every box corner exactly under rotated mesh and volume', () => {
-    // The strong one: a rotated, anisotropically scaled volume inside a rotated
-    // mesh. Each unit corner mapped through V then M⁻¹ must land exactly on
-    // `center + R(rotation) · (±halfExtents)` - which is what the shader tests.
-    // Catches a transposed rotation, a swapped multiplication order, or a
-    // mis-signed quaternion, none of which the simpler cases would show.
-    const volume = composeFull([3, -1, 2], [0.3, 1, -0.7], 0.9, [2, 0.4, 1.5]);
-    const mesh = composeFull([-2, 5, 1], [1, 0.2, 0.4], -1.1, [0.75, 0.75, 0.75]);
-    const shape = meshLocalSdfShape('box', volume, mesh);
-    expect(shape).not.toBeNull();
-
-    const meshInverse = invertForTest(mesh);
-    for (const corner of [
-      [1, 1, 1],
-      [1, 1, -1],
-      [1, -1, 1],
-      [1, -1, -1],
-      [-1, 1, 1],
-      [-1, 1, -1],
-      [-1, -1, 1],
-      [-1, -1, -1],
-    ] as Vec3[]) {
-      const meshLocal = transformPoint(meshInverse, transformPoint(volume, corner));
-      const half = shape!.halfExtents!;
-      const offset = applyQuaternion(shape!.rotation as Quat, [
-        corner[0] * half[0],
-        corner[1] * half[1],
-        corner[2] * half[2],
-      ]);
-      expectVectorClose(meshLocal, [
-        shape!.center[0] + offset[0],
-        shape!.center[1] + offset[1],
-        shape!.center[2] + offset[2],
-      ]);
-    }
-  });
-
-  it('maps the center through a pure mesh rotation', () => {
-    // The y-down flip the demo applies to several formats: π about X.
-    const mesh = matrix(rotationBasis([1, 0, 0], Math.PI), [0, 0, 0]);
-    const shape = meshLocalSdfShape('box', compose([1, 2, 3], [1, 1, 1]), mesh);
-    expect(shape).not.toBeNull();
-    expectVectorClose(shape!.center, [1, -2, -3]);
-    // Compare rotations by their action, never componentwise: q and −q are the
-    // same rotation and the decomposition may return either.
-    expectVectorClose(applyQuaternion(shape!.rotation as Quat, [0, 1, 0]), [0, -1, 0]);
-    expectVectorClose(shape!.halfExtents!, [1, 1, 1]);
-  });
-
-  it('divides through a uniformly scaled mesh', () => {
-    const shape = meshLocalSdfShape(
-      'box',
-      compose([4, 8, 2], [3, 6, 1.5]),
-      compose([0, 0, 0], [2, 2, 2]),
-    );
-    expect(shape).not.toBeNull();
-    expectVectorClose(shape!.center, [2, 4, 1]);
-    expectVectorClose(shape!.halfExtents!, [1.5, 3, 0.75]);
-  });
-
-  it('collapses an anisotropic sphere to a volume-preserving radius', () => {
-    const shape = meshLocalSdfShape(
-      'sphere',
-      compose([0, 0, 0], [1, 2, 4]),
-      matrix(IDENTITY_BASIS, [0, 0, 0]),
-    );
-    expect(shape).not.toBeNull();
-    expect(shape!.radius).toBeCloseTo(2, 10); // cbrt(1 · 2 · 4)
-    expect(shape!.halfExtents).toBeUndefined();
-    expect(shape!.height).toBeUndefined();
-  });
-
-  it('keeps a cylinder height exact and collapses only its cross-section', () => {
-    const shape = meshLocalSdfShape(
-      'cylinder',
-      compose([0, 0, 0], [1, 3, 4]),
-      matrix(IDENTITY_BASIS, [0, 0, 0]),
-    );
-    expect(shape).not.toBeNull();
-    expect(shape!.radius).toBeCloseTo(2, 10); // sqrt(1 · 4)
-    expect(shape!.height).toBeCloseTo(6, 10); // 2 · 3, exact
-  });
-
-  it('returns null for a singular mesh matrix rather than NaN dimensions', () => {
-    const flattened = matrix([1, 0, 0, 0, 1, 0, 0, 0, 0], [0, 0, 0]);
-    expect(meshLocalSdfShape('box', compose([0, 0, 0], [1, 1, 1]), flattened)).toBeNull();
-  });
-
-  it('returns null when either matrix is non-finite', () => {
+  it.each(['box', 'sphere', 'cylinder'] as const)(
+    'preserves %s placement through nonuniform mesh scale',
+    (kind) => {
+      const volume = composeFull([3, -1, 2], [0.3, 1, -0.7], 0.9, [2, 0.4, 1.5]);
+      const mesh = composeFull([-2, 5, 1], [1, 0.2, 0.4], -1.1, [-0.75, 2, 0.4]);
+      const shape = meshLocalSdfShape(kind, volume, mesh)!;
+      const inverse = invertForTest(mesh);
+      for (const point of [
+        [0, 0, 0],
+        [1, 1, 1],
+        [-1, 0, 1],
+        [0, 1, 0],
+      ] as Vec3[]) {
+        expectVectorClose(
+          transformPoint(shape.transform, point),
+          transformPoint(inverse, transformPoint(volume, point)),
+        );
+      }
+      expect(shape).toMatchObject(unitVolumeDimensions(kind));
+    },
+  );
+  it('rejects singular, non-affine and nonfinite placements', () => {
     const identity = matrix(IDENTITY_BASIS, [0, 0, 0]);
-    const broken = matrix(IDENTITY_BASIS, [Number.NaN, 0, 0]);
-    expect(meshLocalSdfShape('box', broken, identity)).toBeNull();
-    expect(meshLocalSdfShape('box', identity, broken)).toBeNull();
-  });
-
-  it('reports positive dimensions and a unit quaternion for a mirrored mesh', () => {
-    // A mirrored matrix decomposes with one negative scale component so the
-    // residual basis stays a proper rotation; the dimensions must not inherit
-    // that sign, or `setShapes` throws.
-    const shape = meshLocalSdfShape(
-      'box',
-      compose([0, 0, 0], [1, 1, 1]),
-      compose([0, 0, 0], [1, 1, -1]),
-    );
-    expect(shape).not.toBeNull();
-    for (const extent of shape!.halfExtents!) expect(extent).toBeGreaterThan(0);
-    const [x, y, z, w] = shape!.rotation;
-    expect(Math.hypot(x, y, z, w)).toBeCloseTo(1, 10);
+    const singular = compose([0, 0, 0], [0, 1, 1]);
+    const nonfinite = compose([NaN, 0, 0], [1, 1, 1]);
+    const perspective = identity.slice();
+    perspective[3] = 1;
+    for (const invalid of [singular, nonfinite, perspective]) {
+      expect(meshLocalSdfShape('box', invalid, identity)).toBeNull();
+      expect(meshLocalSdfShape('box', identity, invalid)).toBeNull();
+    }
   });
 });
 

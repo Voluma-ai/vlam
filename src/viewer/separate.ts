@@ -334,12 +334,6 @@ export function createSeparateTool(context: SeparateToolContext): SeparateTool {
     // the modifier stack - mapping by the placement too would double-count it.
     // `selectionWorldMatrix` stays the CPU volume's frame (it maps
     // `SplatData.positions`, which are unplaced).
-    //
-    // `meshLocalSdfShape` documents where this preview is exact and where it
-    // only approximates: a box is exact, while a squashed sphere or cylinder
-    // selects an ellipsoid the SDF has no way to draw and falls back to a
-    // volume-preserving radius. The selection itself is exact for every
-    // placement - it uses the matrix directly.
     mesh.updateWorldMatrix(true, false);
     volumeAnchor.updateMatrix();
     const shape = meshLocalSdfShape(kind, volumeAnchor.matrix.elements, mesh.matrixWorld.elements);
@@ -347,7 +341,15 @@ export function createSeparateTool(context: SeparateToolContext): SeparateTool {
     // rather than hand `setShapes` values it throws on: this runs inside the
     // gizmo's pointermove, and a throw there would strand the drag.
     if (shape) {
-      sdf.setShapes([{ ...shape, color: PREVIEW_COLOR, mode: 'tint', strength: 0.6 }]);
+      sdf.setShapes([
+        {
+          ...shape,
+          transform: new THREE.Matrix4().fromArray(shape.transform),
+          color: PREVIEW_COLOR,
+          mode: 'tint',
+          strength: 0.6,
+        },
+      ]);
     }
   };
 

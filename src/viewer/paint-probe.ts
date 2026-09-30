@@ -7,6 +7,8 @@ import {
   type BrushStrokeSelectionOptions,
 } from '../lib/selection';
 import { createPaintTool } from './paint';
+import { sdfEffects } from '../lib/effects';
+import { createSelectionVolume } from '../lib/selection';
 
 const requested = new URLSearchParams(location.search).get('backend') ?? 'webgpu';
 if (requested !== 'webgpu' && requested !== 'webgl2') {
@@ -91,6 +93,16 @@ async function compileFor(renderTarget: THREE.RenderTarget | null): Promise<void
   }
 }
 
+async function readPixels(): Promise<Uint8Array> {
+  const pixels = (await renderer.readRenderTargetPixelsAsync(target, 0, 0, 96, 96)) as Uint8Array;
+  // WebGPU aligns all but the final row to 256 bytes; WebGL2 is tightly packed.
+  const rowBytes = actual === 'webgpu' ? 512 : 384;
+  const packed = new Uint8Array(96 * 96 * 4);
+  for (let row = 0; row < 96; row++)
+    packed.set(pixels.subarray(row * rowBytes, row * rowBytes + 384), row * 384);
+  return packed;
+}
+
 async function draw(): Promise<Uint8Array> {
   mesh.update(camera, renderer);
   renderer.setRenderTarget(target);
@@ -101,7 +113,7 @@ async function draw(): Promise<Uint8Array> {
   renderer.clear();
   renderer.render(scene, camera);
   // The unsigned-byte target guarantees this narrower runtime array type.
-  return (await renderer.readRenderTargetPixelsAsync(target, 0, 0, 96, 96)) as Uint8Array;
+  return readPixels();
 }
 
 function changedPixels(before: Uint8Array, after: Uint8Array): number {
@@ -122,6 +134,12 @@ for (let i = 0; i < 4; i++) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 const before = await draw();
+const batchPicks = await mesh.pickMany(
+  [new THREE.Vector2(0, 0), new THREE.Vector2(0, 2 / 96)],
+  camera,
+  renderer,
+);
+
 const modes = {
   surfaceCenter: selectBrushStrokeInData(data, stroke, {
     depth: 'surface',
@@ -154,6 +172,74 @@ for (
 }
 const center = (48 * 96 + 48) * 4;
 
+// Compare exact affine tinting with an independently CPU-selected color reference.
+const affinePreviews: { kind: string; maxDifference: number; selected: number }[] = [];
+const captures = document.createElement('div');
+captures.id = 'affine-captures';
+document.body.append(captures);
+async function previewPixels(preview: SplatMesh): Promise<Uint8Array> {
+  const previewScene = new THREE.Scene();
+  previewScene.add(preview);
+  preview.rotation.copy(mesh.rotation);
+  preview.scale.copy(mesh.scale);
+  renderer.setRenderTarget(target);
+  for (let frame = 0; frame < 100; frame++) {
+    preview.update(camera, renderer);
+    if (frame === 0) await renderer.compileAsync(previewScene, camera);
+    renderer.clear();
+    renderer.render(previewScene, camera);
+    const pixels = await readPixels();
+    if (frame >= 3 && pixels.some((value, index) => index % 4 === 0 && value > 80)) return pixels;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(
+    `Preview did not publish visible pixels: ${(preview.geometry as THREE.InstancedBufferGeometry).instanceCount} instances.`,
+  );
+}
+for (const kind of ['sphere', 'box', 'cylinder'] as const) {
+  const transform = new THREE.Matrix4().set(0.2, 0.1, 0, 0, 0, 1, 0.2, 0, 0, 0, -1, 0, 0, 0, 0, 1);
+  const shape = { kind, transform, radius: 1, height: 2, halfExtents: [1, 1, 1] as const };
+  const selection = createSelectionVolume(shape);
+  const colors = data.colors.slice();
+  let selected = 0;
+  for (let i = 0; i < data.count; i++) {
+    if (
+      selection.containsPoint(
+        data.positions[i * 3]!,
+        data.positions[i * 3 + 1]!,
+        data.positions[i * 3 + 2]!,
+      )
+    ) {
+      colors.set([255, 0, 255], i * 4);
+      selected++;
+    }
+  }
+  const reference = new SplatMesh({ ...data, colors });
+  const preview = new SplatMesh(data);
+  preview.modifiers = [
+    sdfEffects([{ ...shape, mode: 'tint', color: [1, 0, 1] }], { maxShapes: 1 }).modifier,
+  ];
+  const expected = await previewPixels(reference);
+  const actualPixels = await previewPixels(preview);
+  let maxDifference = 0;
+  for (let i = 0; i < expected.length; i++)
+    maxDifference = Math.max(maxDifference, Math.abs(expected[i]! - actualPixels[i]!));
+  affinePreviews.push({ kind, maxDifference, selected });
+  const image = document.createElement('canvas');
+  image.width = image.height = 96;
+  // Display the compared RGB independently of the offscreen target's alpha.
+  const capture = new Uint8ClampedArray(actualPixels);
+  for (let i = 3; i < capture.length; i += 4) capture[i] = 255;
+  image
+    .getContext('2d', { willReadFrequently: true })!
+    .putImageData(new ImageData(capture, 96, 96), 0, 0);
+  image.dataset.pixels = JSON.stringify(Array.from(capture));
+  image.title = kind;
+  captures.append(image);
+  reference.dispose();
+  preview.dispose();
+}
+
 // The readbacks above already synchronize the pixels under test. Do not await
 // the whole device queue here: Linux SwiftShader can leave that promise pending
 // during Dawn teardown, which would prevent the probe from publishing a result.
@@ -164,6 +250,8 @@ renderer.render(scene, camera);
 
 output.textContent = JSON.stringify({
   backend: actual,
+  affinePreviews,
+  batchPicks: batchPicks.map((hit) => hit?.point.toArray() ?? null),
   paintedMode: paintOptions,
   modes,
   changedPixels: changedPixels(before, after),

@@ -11,6 +11,7 @@ import {
   toSplatLoadError,
   type ChunkFileFormat,
   type SplatProgressCallback,
+  type SplatLoadStatus,
 } from './loading';
 
 /**
@@ -24,8 +25,8 @@ import {
  * is actually requested, so the decode still happens off the main thread.
  */
 
-serveLoadRequests((message, signal, onProgress) =>
-  load(message.source, message.format, signal, onProgress),
+serveLoadRequests((message, signal, onProgress, onStatus) =>
+  load(message.source, message.format, signal, onProgress, onStatus),
 );
 
 async function load(
@@ -33,12 +34,18 @@ async function load(
   format: ChunkFileFormat,
   signal: AbortSignal,
   onProgress?: SplatProgressCallback,
+  onStatus?: (status: SplatLoadStatus) => void,
 ): Promise<SplatData> {
   const label = source.from === 'url' ? source.url : source.file.name;
+  signal.throwIfAborted();
+  onStatus?.('reading');
   const buffer =
     source.from === 'url'
       ? await fetchBuffer(source.url, source.request, signal, onProgress)
       : await readWholeFile(source.file);
+  signal.throwIfAborted();
+  if (source.from === 'file') onProgress?.(source.file.size, source.file.size);
+  onStatus?.('decoding');
   try {
     switch (format) {
       // Not awaited, matching the streaming worker's `rad` case: an async

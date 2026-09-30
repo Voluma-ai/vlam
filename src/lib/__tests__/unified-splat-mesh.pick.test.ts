@@ -241,3 +241,56 @@ describe('UnifiedSplatMesh.pick (E6)', () => {
     mesh.dispose();
   });
 });
+
+describe('unified pick admission and registration lifetime', () => {
+  it('excludes overflow and zero-opacity sources and scales fractional thresholds', async () => {
+    const renderer = mockRenderer(),
+      camera = makeCamera();
+    const a = source(),
+      b = source();
+    const unified = new UnifiedSplatMesh(renderer, 1);
+    unified.addSource(a, { opacity: 0.25 });
+    unified.addSource(b);
+    const hit = { point: new THREE.Vector3(), distance: 1 };
+    const pa = vi.spyOn(a, 'pick').mockResolvedValue(hit);
+    const pb = vi.spyOn(b, 'pick').mockResolvedValue(hit);
+    expect((await unified.pick(new THREE.Vector2(), camera))?.source).toBe(a);
+    expect(pa).toHaveBeenLastCalledWith(expect.anything(), camera, renderer, {
+      alphaThreshold: 0.4,
+    });
+    expect(pb).not.toHaveBeenCalled();
+    unified.setSourceOpacity(a, 0);
+    expect(await unified.pick(new THREE.Vector2(), camera)).toBeNull();
+    unified.setSourceVisible(a, false);
+    expect((await unified.pick(new THREE.Vector2(), camera))?.source).toBe(b);
+    unified.dispose();
+    a.dispose();
+    b.dispose();
+  });
+  it.each(['reregister', 'opacity'] as const)(
+    'discards a pending hit after %s changes',
+    async (change) => {
+      const renderer = mockRenderer(),
+        camera = makeCamera(),
+        a = source();
+      const unified = new UnifiedSplatMesh(renderer, 1);
+      unified.addSource(a);
+      let resolve!: (hit: { point: THREE.Vector3; distance: number }) => void;
+      vi.spyOn(a, 'pick').mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            resolve = done;
+          }),
+      );
+      const pending = unified.pick(new THREE.Vector2(), camera);
+      if (change === 'reregister') {
+        unified.removeSource(a);
+        unified.addSource(a);
+      } else unified.setSourceOpacity(a, 0.5);
+      resolve({ point: new THREE.Vector3(), distance: 1 });
+      expect(await pending).toBeNull();
+      unified.dispose();
+      a.dispose();
+    },
+  );
+});

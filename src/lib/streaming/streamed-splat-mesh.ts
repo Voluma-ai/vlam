@@ -1,3 +1,5 @@
+import type { SplatLoadStatus } from '../loaders/loading';
+import { validateBrushStroke } from '../selection/brush-stroke';
 import type { Lcc2QualityPolicy } from '../formats/lcc/lcc2';
 import {
   abortReason,
@@ -61,6 +63,7 @@ import {
 } from '../core/splat-budget';
 import { resolveXrView } from '../core/xr-view';
 import { ChunkLoader } from '../loaders/chunk-loader';
+import { discardResponseBody } from '../loaders/worker-fetch';
 import { yUpTransformForFormat } from '../core/orientation';
 import {
   FRONTIER_FOVEATION_DEFAULTS,
@@ -379,6 +382,8 @@ export type InitialRevealState =
 
 /** Options for {@link StreamedSplatMesh.load}. */
 export interface StreamedSplatMeshOptions extends SplatMeshOptions {
+  /** Reports bootstrap load work only; background LOD changes use the mesh's streaming state. */
+  onStatus?: (status: SplatLoadStatus) => void;
   /** Active-splat budget. Defaults to {@link resolveSplatBudget}. */
   budget?: number;
   /**
@@ -742,6 +747,17 @@ interface PersistentChannel {
   warned: boolean;
 }
 
+/** Opens a URL-resolving dataset with explicit format and resource ownership. */
+export interface StreamedSplatSourceLoadOptions extends Omit<
+  StreamedSplatMeshOptions,
+  'format' | 'baseUrl'
+> {
+  /** Dataset format; custom sources do not use URL extension inference. */
+  format: Exclude<StreamedSplatFormat, 'auto'>;
+  /** Borrowed by default. Owned sources are released on failure or mesh disposal. */
+  sourceOwnership?: 'borrowed' | 'owned';
+}
+
 /**
  * Streams a large splat scene - a Streamed SOG dataset (`lod-meta.json`), or
  * an XGRIDS `.lcc2` or `.lcc` (manifest v3–v5) dataset - into the pool of a
@@ -846,7 +862,7 @@ export class StreamedSplatMesh extends SplatMesh {
    * URLs are revoked on {@link dispose} rather than leaking for the document's
    * lifetime. Undefined for every network-loaded mesh.
    */
-  private localSource: SplatDatasetSource | undefined;
+  private ownedSource: SplatDatasetSource | undefined;
   /** Scene-wide chunk-cache ceiling, when the host shares one. */
   private readonly cacheBudget: ChunkCacheBudget | undefined;
   private cacheBudgetHandle: ChunkCacheHandle | undefined;
@@ -1290,12 +1306,11 @@ export class StreamedSplatMesh extends SplatMesh {
             : extension === '.rad'
               ? 'rad'
               : 'streamed-sog';
-    return StreamedSplatMesh.fromSource(
-      httpDatasetSource(absoluteUrl, options.request),
+    return StreamedSplatMesh.loadSource(httpDatasetSource(absoluteUrl, options.request), {
+      ...options,
       format,
-      options,
-      absoluteUrl,
-    );
+      sourceOwnership: 'owned',
+    });
   }
 
   /**
@@ -1330,22 +1345,53 @@ export class StreamedSplatMesh extends SplatMesh {
             cause: error,
           });
     }
+    return StreamedSplatMesh.loadDataset(
+      dataset.source,
+      {
+        ...options,
+        format: dataset.format,
+        sourceOwnership: 'owned',
+      },
+      dataset.name,
+    );
+  }
+
+  /**
+   * Opens a custom dataset whose URLs remain fetchable by the chunk workers.
+   * Borrowed sources remain the caller's responsibility for the mesh's lifetime.
+   * Owned sources are released exactly once on rejection or mesh disposal.
+   */
+  static async loadSource(
+    source: SplatDatasetSource,
+    options: StreamedSplatSourceLoadOptions,
+  ): Promise<StreamedSplatMesh> {
+    return StreamedSplatMesh.loadDataset(source, options);
+  }
+
+  private static async loadDataset(
+    source: SplatDatasetSource,
+    options: StreamedSplatSourceLoadOptions,
+    sourceLabel?: string,
+  ): Promise<StreamedSplatMesh> {
+    let transferred = false;
     try {
-      const mesh = await StreamedSplatMesh.fromSource(
-        dataset.source,
-        dataset.format,
-        options,
-        dataset.name,
-      );
-      // Hand ownership to the mesh rather than disposing here: a streamed mesh
-      // keeps fetching chunk URLs for its whole life, so revoking now would
-      // break it. Without this the blob URLs (and the `File` blobs they pin)
-      // stayed registered for the document's lifetime - `dispose` was reachable
-      // only from the catch below, i.e. only when the load *failed*.
-      mesh.localSource = dataset.source;
+      options.signal?.throwIfAborted();
+      if (!['rad', 'lcc', 'lcc2', 'streamed-sog'].includes(options.format)) {
+        throw new RangeError('StreamedSplatMesh.loadSource requires an explicit streamed format.');
+      }
+      options.onStatus?.('initializing');
+      const mesh = await StreamedSplatMesh.fromSource(source, options.format, options, sourceLabel);
+      if (options.sourceOwnership === 'owned') {
+        mesh.ownedSource = source;
+        transferred = true;
+      }
+      if (options.signal?.aborted) {
+        mesh.dispose();
+        options.signal.throwIfAborted();
+      }
       return mesh;
     } catch (error) {
-      dataset.source.dispose(); // release the blob URLs this drop created
+      if (options.sourceOwnership === 'owned' && !transferred) source.dispose();
       throw error;
     }
   }
@@ -1444,14 +1490,16 @@ export class StreamedSplatMesh extends SplatMesh {
         // resolved value decides how much of it to keep. Passing it is what lets
         // the `smooth` profile (and an explicit `shBands: 0`) decline SH on a
         // `.rad` at all - without it the file's bands were adopted wholesale.
-        scene = await buildRadScene(
-          source,
-          sourceOptions,
-          options.request,
-          shBands,
+        signal?.throwIfAborted();
+        options.onStatus?.('reading-and-decoding');
+        scene = await buildRadScene(source, {
+          ...sourceOptions,
+          request: options.request,
+          signal,
+          maxShBands: shBands,
           budgetLifts,
           radStrategy,
-        );
+        });
       } catch (error) {
         if (isAbortError(error)) throw error;
         throw toSplatLoadError(error, { phase: 'manifest', url: source.manifestUrl });
@@ -1459,6 +1507,8 @@ export class StreamedSplatMesh extends SplatMesh {
     } else {
       let response: Response;
       try {
+        options.onStatus?.('reading');
+        signal?.throwIfAborted();
         response = await fetch(source.manifestUrl, toRequestInit(options.request, signal));
       } catch (error) {
         // A raw fetch TypeError (network/CORS) must not escape unwrapped.
@@ -1466,6 +1516,7 @@ export class StreamedSplatMesh extends SplatMesh {
         throw toSplatLoadError(error, { phase: 'fetch', url: source.manifestUrl });
       }
       if (!response.ok) {
+        await discardResponseBody(response);
         throw toSplatLoadError(
           new Error(`Failed to load manifest ${source.manifestUrl}: HTTP ${response.status}`),
           { phase: 'manifest', url: source.manifestUrl, status: response.status },
@@ -1474,6 +1525,8 @@ export class StreamedSplatMesh extends SplatMesh {
       try {
         // `response.json()` is typed `any`; the parsers below validate it.
         const json: unknown = await response.json();
+        signal?.throwIfAborted();
+        options.onStatus?.('reading-and-decoding');
         if (format === 'lcc2') {
           // Import the public format entry rather than an internal chunk. Rollup may
           // represent internal chunks through synthetic namespace exports, which a
@@ -1493,7 +1546,12 @@ export class StreamedSplatMesh extends SplatMesh {
           );
         } else if (format === 'lcc') {
           const { buildLccScene } = await import('../formats/lcc');
-          scene = await buildLccScene(json, source, { ...sourceOptions, shBands });
+          scene = await buildLccScene(json, source, {
+            ...sourceOptions,
+            shBands,
+            request: options.request,
+            signal,
+          });
         } else {
           const { resolvePaletteShBands } = await import('../formats/sog/peek-sog-sh');
           // Streamed SOG's lod-meta.json also omits shN. Peek the first chunk's
@@ -3980,6 +4038,7 @@ export class StreamedSplatMesh extends SplatMesh {
       );
     }
     const snapshot = cloneBrushStroke(stroke);
+    validateBrushStroke(snapshot, options);
     channel.strokes.push({ stroke: snapshot, options: { ...options }, value });
     this.updateWorldMatrix(true, false);
     if (this.frontierWorker) {
@@ -4097,8 +4156,9 @@ export class StreamedSplatMesh extends SplatMesh {
     }
     // Revokes the object URLs a dropped local folder created, and releases the
     // `File` blobs they pin. No-op for a network-loaded mesh.
-    this.localSource?.dispose();
-    this.localSource = undefined;
+    const ownedSource = this.ownedSource;
+    this.ownedSource = undefined;
+    ownedSource?.dispose();
     this.cache.clear();
     this.cacheBytesTotal = 0;
     this.retrying.clear();

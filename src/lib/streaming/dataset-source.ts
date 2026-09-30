@@ -1,5 +1,6 @@
 import {
   SplatLoadError,
+  isAbortError,
   toRequestInit,
   type SplatRequestOptions,
   type StreamedSplatFormat,
@@ -23,8 +24,8 @@ export interface SplatDatasetSource {
   readonly manifestUrl: string;
   /** Fetchable URL for a dataset-relative path, or null when absent. */
   resolve(path: string): string | null;
-  /** Byte length of a file, or null when absent. */
-  size(path: string): Promise<number | null>;
+  /** Byte length of a file, or null when absent. Cancellation rejects with AbortError. */
+  size(path: string, options?: { signal?: AbortSignal }): Promise<number | null>;
   /**
    * The files inside a chunk *directory* (unbundled SOG), as
    * `name → fetchable URL`. Null when the chunk should be fetched by URL
@@ -43,7 +44,7 @@ export function httpDatasetSource(
   return {
     manifestUrl,
     resolve: (path) => new URL(path, manifestUrl).href,
-    size: (path) => probeSize(new URL(path, manifestUrl).href, request),
+    size: (path, options) => probeSize(new URL(path, manifestUrl).href, request, options?.signal),
     directoryFiles: () => null,
     dispose: () => {},
   };
@@ -54,32 +55,43 @@ export function httpDatasetSource(
  * a one-byte ranged `GET` for origins that disallow `HEAD` but do serve
  * ranges. A missing file is not an error - callers treat null as "absent".
  */
-async function probeSize(url: string, request?: SplatRequestOptions): Promise<number | null> {
+async function probeSize(
+  url: string,
+  request?: SplatRequestOptions,
+  signal?: AbortSignal,
+): Promise<number | null> {
+  signal?.throwIfAborted();
   try {
-    const response = await fetch(url, { ...toRequestInit(request), method: 'HEAD' });
+    const response = await fetch(url, { ...toRequestInit(request, signal), method: 'HEAD' });
     await cancelBody(response);
+    signal?.throwIfAborted();
     if (response.ok) {
       const length = response.headers.get('content-length');
       if (length !== null) return saneSize(Number(length));
     } else if (response.status === 404) {
       return null;
     }
-  } catch {
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (isAbortError(error)) throw error;
     // Fall through to the ranged GET below.
   }
   try {
     const response = await fetch(url, {
-      ...toRequestInit(request),
+      ...toRequestInit(request, signal),
       headers: { ...(request?.headers ?? {}), Range: 'bytes=0-0' },
     });
     await cancelBody(response);
+    signal?.throwIfAborted();
     // A plain 200 means the server ignored the Range header - the body would
     // have been the whole file, and Content-Range is absent; treat the size
     // as unknown rather than misreading a full response as a probe.
     if (response.status !== 206) return null;
     const total = response.headers.get('content-range')?.split('/')[1];
     return total === undefined || total === '*' ? null : saneSize(Number(total));
-  } catch {
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (isAbortError(error)) throw error;
     return null;
   }
 }
@@ -176,7 +188,10 @@ export function createLocalDataset(files: ReadonlyMap<string, File>): LocalDatas
   const source: SplatDatasetSource = {
     manifestUrl: urlFor(manifest.path) as string,
     resolve: (path) => urlFor(root + normalize(path)),
-    size: (path) => Promise.resolve(files.get(root + normalize(path))?.size ?? null),
+    size: async (path, options) => {
+      options?.signal?.throwIfAborted();
+      return files.get(root + normalize(path))?.size ?? null;
+    },
     directoryFiles: (path) => {
       // An unbundled SOG chunk is a folder of images the worker fetches by
       // name; hand it the whole folder rather than a URL to resolve against.

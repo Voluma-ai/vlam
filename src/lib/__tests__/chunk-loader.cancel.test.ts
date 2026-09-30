@@ -91,6 +91,26 @@ describe('ChunkLoader cancellation and dispose', () => {
     return { loader: l, worker: currentWorker };
   };
 
+  it('isolates status callbacks and ignores them after abort or success', async () => {
+    const { loader, worker } = make();
+    const a = vi.fn(),
+      b = vi.fn(),
+      controller = new AbortController();
+    const first = loader.load('https://x.test/a.ply', { onStatus: a, signal: controller.signal });
+    const firstError = first.catch((error: unknown) => error);
+    const second = loader.load('https://x.test/b.ply', { onStatus: b });
+    worker.emit({ type: 'status', id: 0, status: 'reading' });
+    worker.emit({ type: 'status', id: 1, status: 'decoding' });
+    controller.abort();
+    worker.emit({ type: 'status', id: 0, status: 'decoding' });
+    worker.emitSuccess(1);
+    worker.emit({ type: 'status', id: 1, status: 'reading' });
+    await firstError;
+    await second;
+    expect(a.mock.calls.flat()).toEqual(['initializing', 'reading']);
+    expect(b.mock.calls.flat()).toEqual(['initializing', 'decoding']);
+  });
+
   it('rejects with AbortError immediately on abort, before any worker reply', async () => {
     const { loader } = make();
     const controller = new AbortController();

@@ -21,6 +21,7 @@ import {
   type SplatInputOptions,
   type SplatDataFormat,
   type SplatProgressCallback,
+  type SplatLoadStatus,
 } from './loading';
 // Inlined worker (blob URL): survives library bundling in any consumer
 // setup, unlike an asset file referenced via `new URL(...)`.
@@ -56,6 +57,7 @@ class WorkerClient {
       reject: (error: Error) => void;
       removeAbortListener?: () => void;
       onProgress?: SplatProgressCallback;
+      onStatus?: (status: SplatLoadStatus) => void;
     }
   >();
   private disposed = false;
@@ -75,6 +77,10 @@ class WorkerClient {
         if (event.data.type === 'result') this.ownedPlyFiles.delete(event.data.id);
         const request = this.pending.get(event.data.id);
         if (!request) return;
+        if (event.data.type === 'status') {
+          request.onStatus?.(event.data.status);
+          return;
+        }
         if (event.data.type === 'progress') {
           // Progress does not settle the request; the result still follows.
           request.onProgress?.(event.data.loaded, event.data.total);
@@ -109,6 +115,7 @@ class WorkerClient {
     message: Omit<Extract<LoadWorkerRequest, { type: 'load' }>, 'id'>,
     signal: AbortSignal | undefined,
     onProgress?: SplatProgressCallback,
+    onStatus?: (status: SplatLoadStatus) => void,
   ): Promise<SplatData> {
     if (this.disposed) return Promise.reject(createAbortError('ChunkLoader has been disposed.'));
     if (signal?.aborted) return Promise.reject(createAbortError('Chunk load was cancelled.'));
@@ -123,7 +130,7 @@ class WorkerClient {
         : undefined;
     if (resourceId) this.ownedPlyFiles.set(id, resourceId);
     const promise = new Promise<SplatData>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, ...(onProgress ? { onProgress } : {}) });
+      this.pending.set(id, { resolve, reject, onProgress, onStatus });
     });
     if (signal) {
       // Settle immediately on abort rather than waiting for the worker's
@@ -230,6 +237,7 @@ export class ChunkLoader {
   private oneShot: Promise<WorkerClient> | null = null;
   /** The constructed one-shot client, so `dispose` does not have to await. */
   private oneShotClient: WorkerClient | null = null;
+  private readonly waitingForWorker = new Set<() => void>();
   private disposed = false;
 
   constructor() {
@@ -301,6 +309,7 @@ export class ChunkLoader {
       options.files,
       options.sog,
       options.onProgress,
+      options.onStatus,
     );
     return withSourceFormat(data, format);
   }
@@ -336,6 +345,7 @@ export class ChunkLoader {
       undefined,
       undefined,
       options.onProgress,
+      options.onStatus,
     );
     return withSourceFormat(data, format);
   }
@@ -350,6 +360,7 @@ export class ChunkLoader {
     files?: Readonly<Record<string, string>>,
     sog?: SogShPackingOptions,
     onProgress?: SplatProgressCallback,
+    onStatus?: (status: SplatLoadStatus) => void,
   ): Promise<SplatData> {
     if (this.disposed) return Promise.reject(createAbortError('ChunkLoader has been disposed.'));
     if (signal?.aborted) return Promise.reject(createAbortError('Chunk load was cancelled.'));
@@ -363,20 +374,49 @@ export class ChunkLoader {
       ...(sog ? { sog } : {}),
       ...(files ? { files } : {}),
       ...(onProgress ? { progress: true } : {}),
+      ...(onStatus ? { status: true } : {}),
     };
 
+    onStatus?.('initializing');
+    if (signal?.aborted || this.disposed)
+      return Promise.reject(createAbortError('Chunk load was cancelled.'));
     const client = this.clientFor(format);
     // Deliberately not `async`: for a streaming format the client is already
     // there, and the request must reach the worker in the same task the caller
     // made it - a chunk scheduler that posts and then aborts within one frame
     // depends on that ordering. Only the one-shot path, which cannot avoid
     // awaiting its chunk, defers.
-    if (!(client instanceof Promise)) return client.request(message, signal, onProgress);
-    return client.then((resolved) => {
-      // Re-checked because disposal or abort may have happened while the
-      // one-shot chunk was in flight, before any listener was registered.
-      if (this.disposed) throw createAbortError('ChunkLoader has been disposed.');
-      return resolved.request(message, signal, onProgress);
+    if (!(client instanceof Promise)) return client.request(message, signal, onProgress, onStatus);
+    return new Promise<SplatData>((resolve, reject) => {
+      let waiting = true;
+      const cleanup = () => {
+        waiting = false;
+        signal?.removeEventListener('abort', cancel);
+        this.waitingForWorker.delete(cancel);
+      };
+      const cancel = () => {
+        if (!waiting) return;
+        cleanup();
+        reject(
+          createAbortError(
+            this.disposed ? 'ChunkLoader has been disposed.' : 'Chunk load was cancelled.',
+          ),
+        );
+      };
+      this.waitingForWorker.add(cancel);
+      signal?.addEventListener('abort', cancel, { once: true });
+      void client.then(
+        (resolved) => {
+          if (!waiting) return;
+          cleanup();
+          resolved.request(message, signal, onProgress, onStatus).then(resolve, reject);
+        },
+        (error: unknown) => {
+          if (!waiting) return;
+          cleanup();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        },
+      );
     });
   }
 
@@ -417,6 +457,7 @@ export class ChunkLoader {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    for (const cancel of this.waitingForWorker) cancel();
     this.streaming.dispose();
     // A one-shot worker still being imported is terminated in `clientFor`,
     // which sees `disposed` when it finally constructs it.

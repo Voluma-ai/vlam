@@ -15,7 +15,7 @@ export {
   type RadMeta,
   type RadTree,
 } from './parse-rad';
-export { buildRadScene, RadLodSource } from './rad';
+export { buildRadScene, RadLodSource, type RadSceneOptions } from './rad';
 // Names what `ChunkLoader.load`'s `rad` option takes, so a host that wraps the
 // chunk-range path can type it. Mirrors `LccChunkParams` on `@voluma/vlam/formats/lcc`.
 export type { RadChunkRangeRequest } from '../../loaders/load-worker-protocol';

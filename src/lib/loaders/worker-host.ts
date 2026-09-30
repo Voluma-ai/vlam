@@ -18,6 +18,7 @@ import {
   serializeSplatLoadError,
   toSplatLoadError,
   type SplatProgressCallback,
+  type SplatLoadStatus,
 } from './loading';
 
 /** Decodes one request. Rejections are serialized back to the client. */
@@ -25,6 +26,7 @@ export type LoadHandler = (
   message: Extract<LoadWorkerRequest, { type: 'load' }>,
   signal: AbortSignal,
   onProgress: SplatProgressCallback | undefined,
+  onStatus: ((status: SplatLoadStatus) => void) | undefined,
 ) => Promise<SplatData | RemotePlyResult>;
 
 /**
@@ -50,14 +52,40 @@ export function serveLoadRequests(load: LoadHandler): void {
     // Names the input in any failure: the URL for a fetch, the file name for a
     // local file (which has no URL to report).
     const label = message.source.from === 'url' ? message.source.url : message.source.file.name;
+    let latestProgress: readonly [number, number] | undefined;
+    let sentProgress: readonly [number, number] | undefined;
+    const reportProgress = (loaded: number, total: number): void => {
+      if (controller.signal.aborted || !controllers.has(message.id)) return;
+      sentProgress = [loaded, total];
+      const update: LoadWorkerResponse = { type: 'progress', id: message.id, loaded, total };
+      worker.postMessage(update);
+    };
+    const throttledProgress = createProgressThrottle(reportProgress);
     const onProgress = message.progress
-      ? createProgressThrottle((loaded, total) => {
-          const update: LoadWorkerResponse = { type: 'progress', id: message.id, loaded, total };
-          worker.postMessage(update);
-        })
+      ? (loaded: number, total: number) => {
+          latestProgress = [loaded, total];
+          throttledProgress(loaded, total);
+        }
       : undefined;
+    const flushProgress = (): void => {
+      if (
+        latestProgress &&
+        (latestProgress[0] !== sentProgress?.[0] || latestProgress[1] !== sentProgress?.[1])
+      ) {
+        reportProgress(...latestProgress);
+      }
+    };
+    const onStatus = (status: SplatLoadStatus): void => {
+      if (status === 'decoding') flushProgress();
+      if (!message.status) return;
+      if (controller.signal.aborted || !controllers.has(message.id)) return;
+      const update: LoadWorkerResponse = { type: 'status', id: message.id, status };
+      worker.postMessage(update);
+    };
     try {
-      const output = await load(message, controller.signal, onProgress);
+      const output = await load(message, controller.signal, onProgress, onStatus);
+      controller.signal.throwIfAborted();
+      flushProgress();
       const data = 'data' in output ? output.data : output;
       const metrics = 'data' in output ? output.metrics : undefined;
       const transfers = [data.positions.buffer, data.colors.buffer, data.covariances.buffer];

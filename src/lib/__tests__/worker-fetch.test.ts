@@ -175,3 +175,27 @@ it('unlocks a body reader after an abort without replacing the AbortError', asyn
     vi.unstubAllGlobals();
   }
 });
+
+describe('rejected response cleanup', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it.each([200, 403, 206])(
+    'cancels the unread body of a rejected %i range response',
+    async (status) => {
+      const cancel = vi.fn();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response(new ReadableStream({ cancel }), {
+              status,
+              headers: { 'Content-Range': 'invalid' },
+            }),
+        ),
+      );
+      await expect(
+        fetchRange('https://scene.test/data.bin', 4, 4, undefined, signal),
+      ).rejects.toMatchObject({ phase: 'fetch', status });
+      expect(cancel).toHaveBeenCalledOnce();
+    },
+  );
+});
