@@ -148,10 +148,18 @@ Short reference snippets from `docs/guide/samples/`, mostly exported functions r
 <<< ../../docs/guide/samples/loading-errors.ts
 :::
 
+::: details loading-status.ts, `onStatus` stages next to byte progress
+<<< ../../docs/guide/samples/loading-status.ts
+:::
+
 ### Streaming
 
 ::: details streaming-basic.ts, `StreamedSplatMesh.load`
 <<< ../../docs/guide/samples/streaming-basic.ts
+:::
+
+::: details streaming-source.ts, `loadSource` with borrowed custom datasets
+<<< ../../docs/guide/samples/streaming-source.ts
 :::
 
 ::: details streaming-governor.ts, shared `BudgetGovernor`
@@ -170,6 +178,10 @@ Short reference snippets from `docs/guide/samples/`, mostly exported functions r
 
 ::: details effects-presets.ts, `@voluma/vlam/effects` presets
 <<< ../../docs/guide/samples/effects-presets.ts
+:::
+
+::: details effects-affine.ts, exact affine `SdfShape.transform`
+<<< ../../docs/guide/samples/effects-affine.ts
 :::
 
 ::: details effects-slots.ts, stacked `ModifierSlots`
