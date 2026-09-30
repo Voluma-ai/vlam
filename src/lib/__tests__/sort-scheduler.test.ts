@@ -256,12 +256,7 @@ describe('WebGpuSortScheduler', () => {
     scheduler.beginSubmissionFrame(3, 16 + 49);
     expect(scheduler.shouldSubmit(pose(2), accepted, 5_000_000, 16 + 49 + 400)).toBe(false);
     expect(
-      scheduler.shouldSubmit(
-        pose(2),
-        accepted,
-        5_000_000,
-        16 + 49 + MAX_ADAPTIVE_SORT_INTERVAL_MS,
-      ),
+      scheduler.shouldSubmit(pose(2), accepted, 5_000_000, 16 + 49 + MAX_ADAPTIVE_SORT_INTERVAL_MS),
     ).toBe(true);
   });
 

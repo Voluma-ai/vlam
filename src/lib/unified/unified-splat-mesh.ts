@@ -651,7 +651,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     if (!record) return false;
     const cacheModifiers = policy.cacheModifiers === true;
     const shColorRefresh = cacheModifiers && policy.shColorRefresh === true;
-    if (record.cacheModifiers === cacheModifiers && record.shColorRefresh === shColorRefresh) return true;
+    if (record.cacheModifiers === cacheModifiers && record.shColorRefresh === shColorRefresh)
+      return true;
     record.cacheModifiers = cacheModifiers;
     record.shColorRefresh = shColorRefresh;
     record.lastGather = null;
@@ -816,20 +817,22 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     const publication = this.readyPublication;
     const geometry = this.geometry as THREE.InstancedBufferGeometry;
     const instanceCount = geometry.instanceCount;
-    const sourcesMatch = publication !== null && publication.every((entry) => {
-      const record = this.sources.find((candidate) => candidate.source === entry.source);
-      const view = record?.view;
-      if (!record?.visible || view === null || view === undefined) return false;
-      return (
-        view.contentRevision === entry.contentRevision &&
-        view.activeListVersion === entry.activeListVersion &&
-        view.graphRevision === entry.graphRevision &&
-        view.activeCount === entry.activeCount &&
-        view.matrixWorld.equals(entry.matrixWorld) &&
-        record.offset === entry.offset &&
-        record.opacity * view.revealMultiplier === entry.effectiveOpacity
-      );
-    });
+    const sourcesMatch =
+      publication !== null &&
+      publication.every((entry) => {
+        const record = this.sources.find((candidate) => candidate.source === entry.source);
+        const view = record?.view;
+        if (!record?.visible || view === null || view === undefined) return false;
+        return (
+          view.contentRevision === entry.contentRevision &&
+          view.activeListVersion === entry.activeListVersion &&
+          view.graphRevision === entry.graphRevision &&
+          view.activeCount === entry.activeCount &&
+          view.matrixWorld.equals(entry.matrixWorld) &&
+          record.offset === entry.offset &&
+          record.opacity * view.revealMultiplier === entry.effectiveOpacity
+        );
+      });
     const expectedInstanceCount = this.computeProjectionActive
       ? this.workBuffer.capacity
       : this.previousAdmittedTotal;
@@ -1336,7 +1339,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         !view.matrixWorld.equals(entry.matrixWorld) ||
         record.offset !== entry.offset ||
         record.opacity * view.revealMultiplier !== entry.effectiveOpacity
-      ) return false;
+      )
+        return false;
     }
     const instanceCount = (this.geometry as THREE.InstancedBufferGeometry).instanceCount;
     return this.computeProjectionActive

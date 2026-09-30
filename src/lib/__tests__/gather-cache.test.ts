@@ -52,7 +52,9 @@ describe('gather cache signatures', () => {
   });
 
   it('reuses geometry when only the camera position used for SH changes', () => {
-    const first = view({ sh: { mode: 'palette', bands: 1, paletteTexture: new THREE.DataTexture() } });
+    const first = view({
+      sh: { mode: 'palette', bands: 1, paletteTexture: new THREE.DataTexture() },
+    });
     const cache = createGatherCache(first, 0, 1);
     first.localCameraPosition.value.set(2, 0, 0);
     expect(gatherGeometryMatches(cache, first, 0, true, 1)).toBe(true);

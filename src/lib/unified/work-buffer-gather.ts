@@ -389,11 +389,7 @@ export class WorkBufferGather {
    * without spherical harmonics throw: there is no camera-dependent color to
    * refresh.
    */
-  gatherColors(
-    renderer: THREE.WebGPURenderer,
-    activeCount: number,
-    targetOffset: number,
-  ): void {
+  gatherColors(renderer: THREE.WebGPURenderer, activeCount: number, targetOffset: number): void {
     if (!this.colorPass) {
       throw new Error('WorkBufferGather: color refresh requires spherical harmonics.');
     }
