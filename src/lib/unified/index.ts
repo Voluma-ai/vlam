@@ -12,6 +12,7 @@ export {
   supportsUnifiedSplatMesh,
   type UnifiedSplatPickResult,
   type UnifiedSplatMeshOptions,
+  type UnifiedSplatPrepareStage,
   type UnifiedSplatSourceOptions,
 } from './unified-splat-mesh';
 export {

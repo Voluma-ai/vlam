@@ -20,8 +20,12 @@ export const MAX_ADAPTIVE_SORT_INTERVAL_MS = 1000;
 export const SORT_HEALTHY_FRAME_MS = 20;
 /** Frames at or above this stretch cadence all the way to {@link MAX_ADAPTIVE_SORT_INTERVAL_MS}. */
 export const SORT_STRESSED_FRAME_MS = 33;
-/** A single frame this long starts a 1 s sort cooldown. */
-export const SORT_HITCH_FRAME_MS = 50;
+/**
+ * A single frame this long starts a 1 s sort cooldown.
+ * Chromium often reports a triple-vsync stall as ~49.9 ms, which missed the
+ * previous 50 ms gate and kept scheduling radix into the hitch.
+ */
+export const SORT_HITCH_FRAME_MS = 48;
 
 export type SortSubmissionAction = 'none' | 'submitted' | 'coalesced' | 'suppressed';
 export type SortSubmissionTracking = 'pending' | 'gpu-completion' | 'render-ack-fallback';

@@ -455,7 +455,12 @@ describe('classic fetch ranking helpers', () => {
 
 type Internals = {
   cache: Map<number, { data: SplatData; bytes: number; lastUsed: number }>;
-  fetching: Map<number, { kind: string }>;
+  fetching: Map<
+    number,
+    { kind: string; controller: AbortController; classicWant?: ClassicFetchWant }
+  >;
+  maxInflight: number;
+  flushClassicFetches: (pending: Map<number, ClassicFetchWant>, lodBaseDistance: number) => void;
   reschedule: (camera: THREE.PerspectiveCamera, now: number) => unknown;
   requestChunk: (file: number, kind: string) => void;
   resident: Map<string, { run: LodRun }>;
@@ -478,10 +483,11 @@ function internals(mesh: StreamedSplatMesh): Internals {
 const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 100);
 camera.updateMatrixWorld(true);
 
-function makeMesh(desired: LodRun[], coarsest: LodRun[]): StreamedSplatMesh {
+function makeMesh(desired: LodRun[], coarsest: LodRun[], desktopLcc2 = false): StreamedSplatMesh {
   const scene = {
     source: {
       budget: 4 * WIDTH,
+      ...(desktopLcc2 ? { lcc2QualityState: { profile: 'desktop' } } : {}),
       lodBaseDistance: 10,
       lodMultiplier: 2,
       computeDesiredRuns: () => desired,
@@ -512,6 +518,61 @@ describe('StreamedSplatMesh near-first classic path', () => {
     for (const m of meshes) m.dispose();
     meshes.length = 0;
   });
+
+  it.each([true, false])(
+    'refreshes an active startup fetch rank only for desktop LCC2: %s',
+    (desktop) => {
+      const m = makeMesh([], [], desktop);
+      meshes.push(m);
+      const inner = internals(m);
+      vi.spyOn(inner, 'maxInflight', 'get').mockReturnValue(1);
+      const controller = new AbortController();
+      inner.fetching.set(10, {
+        kind: 'base',
+        controller,
+        classicWant: want({
+          kind: 'base',
+          phase: 'background',
+          distance: 2,
+          level: 0,
+          inView: true,
+          groupClass: 2,
+        }),
+      });
+      const pending = new Map<number, ClassicFetchWant>([
+        [
+          10,
+          want({
+            kind: 'priority',
+            phase: 'finest-target',
+            distance: 2,
+            level: 0,
+            inView: true,
+            screenImportance: 2,
+          }),
+        ],
+        [
+          11,
+          want({
+            kind: 'priority',
+            phase: 'finest-target',
+            distance: 20,
+            level: 0,
+            inView: true,
+            screenImportance: 20,
+          }),
+        ],
+      ]);
+      inner.flushClassicFetches(pending, 10);
+      // Do not abort a useful near decode merely because it began during the
+      // frozen coverage hold. Other format policies retain their previous ranks.
+      expect(controller.signal.aborted).toBe(!desktop);
+      expect(inner.fetching.get(10)?.kind).toBe('base');
+      expect(inner.fetching.get(10)?.classicWant?.phase).toBe(
+        desktop ? 'finest-target' : 'background',
+      );
+    },
+  );
 
   it('requests near finest as priority before far desired cuts', () => {
     const nearFine = run({ file: 10, level: 0, leafStart: 0, leafEnd: 1, distance: 0 });

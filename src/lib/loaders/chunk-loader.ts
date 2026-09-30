@@ -4,6 +4,7 @@ import type {
   LoadWorkerResponse,
   LoadWorkerSource,
   RadChunkRangeRequest,
+  SogShPackingOptions,
 } from './load-worker-protocol';
 import type { LccChunkParams } from '../formats/lcc/parse-lcc';
 import {
@@ -277,7 +278,7 @@ export class ChunkLoader {
       format?: SplatFormat | 'lcc-bin' | 'rad-chunk';
       lcc?: LccChunkParams;
       rad?: RadChunkRangeRequest;
-      sog?: { packShBands: 1 | 2 | 3 };
+      sog?: SogShPackingOptions;
       files?: Readonly<Record<string, string>>;
     } = {},
   ): Promise<SplatData> {
@@ -347,7 +348,7 @@ export class ChunkLoader {
     lcc?: LccChunkParams,
     rad?: RadChunkRangeRequest,
     files?: Readonly<Record<string, string>>,
-    sog?: { packShBands: 1 | 2 | 3 },
+    sog?: SogShPackingOptions,
     onProgress?: SplatProgressCallback,
   ): Promise<SplatData> {
     if (this.disposed) return Promise.reject(createAbortError('ChunkLoader has been disposed.'));

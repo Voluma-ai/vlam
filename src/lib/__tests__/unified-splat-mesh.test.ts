@@ -53,15 +53,45 @@ function mockRenderer(extras: Record<string, unknown> = {}): THREE.WebGPURendere
   } as unknown as THREE.WebGPURenderer;
 }
 
+function pendingGpuCompletion(): {
+  renderer: THREE.WebGPURenderer;
+  resolve: () => void;
+} {
+  let resolve = (): void => {};
+  const completion = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return {
+    renderer: mockRenderer({
+      backend: {
+        isWebGPUBackend: true,
+        device: {
+          queue: {
+            onSubmittedWorkDone: () => completion,
+          },
+        },
+      },
+    }),
+    resolve,
+  };
+}
+
 function gatherSpies(unified: UnifiedSplatMesh) {
   const records = (
     unified as unknown as {
-      sources: Array<{ source: SplatMesh; gather: { gather: (...args: unknown[]) => void } }>;
+      sources: Array<{
+        source: SplatMesh;
+        gather: {
+          gather: (...args: unknown[]) => void;
+          gatherColors: (...args: unknown[]) => void;
+        };
+      }>;
     }
   ).sources;
   return records.map((record) => ({
     source: record.source,
     gather: vi.spyOn(record.gather, 'gather'),
+    gatherColors: vi.spyOn(record.gather, 'gatherColors'),
   }));
 }
 
@@ -190,6 +220,105 @@ describe('UnifiedSplatMesh', () => {
     unified.dispose();
     first.dispose();
     second.dispose();
+  });
+
+  it('does not draw identity order while the first GPU sort is in flight', async () => {
+    const { renderer, resolve } = pendingGpuCompletion();
+    const first = source();
+    const second = source();
+    const unified = new UnifiedSplatMesh(renderer, 4);
+    unified.addSource(first);
+    unified.addSource(second);
+    const camera = new THREE.PerspectiveCamera();
+    const scene = new THREE.Scene();
+
+    unified.update(camera);
+    expect((unified.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(0);
+    unified.update(camera);
+    expect((unified.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(0);
+
+    unified.onAfterRender(renderer as never, scene, camera);
+    resolve();
+    await Promise.resolve();
+    unified.update(camera);
+    expect((unified.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(2);
+
+    unified.dispose();
+    first.dispose();
+    second.dispose();
+  });
+
+  it('draws a new LOD cut on the same ordered GPU queue after the first sort', async () => {
+    const { renderer, resolve } = pendingGpuCompletion();
+    const first = source();
+    const second = source();
+    const unified = new UnifiedSplatMesh(renderer, 4);
+    const camera = new THREE.PerspectiveCamera();
+    const scene = new THREE.Scene();
+    unified.addSource(first);
+
+    unified.update(camera);
+    expect((unified.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(0);
+    unified.onAfterRender(renderer as never, scene, camera);
+    resolve();
+    await Promise.resolve();
+    unified.update(camera);
+    expect((unified.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(1);
+
+    // A streamed LOD replacement changes the gathered layout while the camera
+    // moves. Its compute sort precedes this frame's draw on the WebGPU queue.
+    unified.addSource(second);
+    unified.update(camera);
+    expect(unified.performanceTimings.sortSubmitted).toBe(true);
+    expect((unified.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(2);
+
+    unified.dispose();
+    first.dispose();
+    second.dispose();
+  });
+
+  it('keeps the last ordered count while a camera-only GPU sort is in flight', async () => {
+    let completion: Promise<void> = Promise.resolve();
+    let resolveCurrent = (): void => {};
+    const renderer = mockRenderer({
+      backend: {
+        isWebGPUBackend: true,
+        device: {
+          queue: {
+            onSubmittedWorkDone: () => completion,
+          },
+        },
+      },
+    });
+    const mesh = source();
+    const unified = new UnifiedSplatMesh(renderer, 1);
+    unified.addSource(mesh);
+    const scene = new THREE.Scene();
+    const firstCamera = new THREE.PerspectiveCamera();
+    firstCamera.position.set(0, 0, 1);
+    firstCamera.updateMatrixWorld(true);
+
+    completion = new Promise<void>((done) => {
+      resolveCurrent = done;
+    });
+    unified.update(firstCamera);
+    expect((unified.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(0);
+    unified.onAfterRender(renderer as never, scene, firstCamera);
+    resolveCurrent();
+    await Promise.resolve();
+    unified.update(firstCamera);
+    expect((unified.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(1);
+
+    const movingCamera = new THREE.PerspectiveCamera();
+    movingCamera.position.set(2, 0, 1);
+    movingCamera.updateMatrixWorld(true);
+    completion = new Promise<void>(() => {});
+    unified.update(movingCamera);
+    expect(unified.performanceTimings.sortSubmitted).toBe(true);
+    expect((unified.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(1);
+
+    unified.dispose();
+    mesh.dispose();
   });
 
   it('keeps source picking aligned with unified visibility and restores it on removal', () => {
@@ -411,15 +540,15 @@ describe('UnifiedSplatMesh', () => {
     mesh.dispose();
   });
 
-  it('reuses cached modifiers while orbiting without SH and re-gathers when SH moves', () => {
+  it('reuses cached modifiers while orbiting without SH and refreshes SH color only', () => {
     const renderer = mockRenderer();
     const clip = source();
     clip.modifiers = [() => ({ visible: bool(true) })];
     const sh = source({ sh: true });
     sh.modifiers = [() => ({ visible: bool(true) })];
     const unified = new UnifiedSplatMesh(renderer, 2);
-    unified.addSource(clip, { cacheModifiers: true });
-    unified.addSource(sh, { cacheModifiers: true });
+    unified.addSource(clip, { cacheModifiers: true, shColorRefresh: true });
+    unified.addSource(sh, { cacheModifiers: true, shColorRefresh: true });
     const [clipGather, shGather] = gatherSpies(unified);
     const camera = new THREE.PerspectiveCamera();
 
@@ -427,11 +556,37 @@ describe('UnifiedSplatMesh', () => {
     camera.position.x = 3;
     unified.update(camera);
     expect(clipGather!.gather).toHaveBeenCalledOnce();
-    expect(shGather!.gather).toHaveBeenCalledTimes(2);
+    expect(clipGather!.gatherColors).not.toHaveBeenCalled();
+    expect(shGather!.gather).toHaveBeenCalledOnce();
+    expect(shGather!.gatherColors).toHaveBeenCalledOnce();
+
+    camera.lookAt(1, 0, 0);
+    unified.update(camera);
+    expect(shGather!.gather).toHaveBeenCalledOnce();
+    expect(shGather!.gatherColors).toHaveBeenCalledOnce();
 
     unified.dispose();
     clip.dispose();
     sh.dispose();
+  });
+
+  it('re-gathers cached SH sources on camera motion unless color refresh is opted in', () => {
+    const renderer = mockRenderer();
+    const mesh = source({ sh: true });
+    mesh.modifiers = [() => ({ visible: bool(true) })];
+    const unified = new UnifiedSplatMesh(renderer, 1);
+    unified.addSource(mesh, { cacheModifiers: true });
+    const [spy] = gatherSpies(unified);
+    const camera = new THREE.PerspectiveCamera();
+
+    unified.update(camera);
+    camera.position.x = 3;
+    unified.update(camera);
+    expect(spy!.gather).toHaveBeenCalledTimes(2);
+    expect(spy!.gatherColors).not.toHaveBeenCalled();
+
+    unified.dispose();
+    mesh.dispose();
   });
 
   it('clears cached modifier gathers on dispose', () => {
@@ -707,6 +862,172 @@ describe('UnifiedSplatMesh', () => {
       unified.dispose();
       mesh.dispose();
     });
+
+    it('acknowledges replaced source active lists through the resolved XR camera', async () => {
+      const eye = new THREE.PerspectiveCamera();
+      eye.viewport = new THREE.Vector4(0, 0, 400, 600);
+      const head = new THREE.ArrayCamera([eye]);
+      const renderer = mockRenderer({
+        xr: { enabled: true, isPresenting: true, cameraAutoUpdate: false, getCamera: () => head },
+        backend: {
+          isWebGPUBackend: true,
+          device: { queue: { onSubmittedWorkDone: () => Promise.resolve() } },
+        },
+      });
+      const mesh = new SplatMesh({ capacity: 4096 }, { lodAlpha: true });
+      const chunk: SplatData = {
+        count: 1,
+        positions: new Float32Array([0, 0, 0]),
+        colors: new Uint8Array([255, 0, 0, 127]),
+        covariances: new Float32Array([1, 0, 0, 1, 0, 1]),
+      };
+      mesh.appendRange(chunk);
+      const unified = new UnifiedSplatMesh(renderer, 4096);
+      unified.addSource(mesh);
+      const notify = vi.spyOn(mesh, 'notifyUnifiedPublication');
+      const camera = new THREE.PerspectiveCamera();
+      const scene = new THREE.Scene();
+
+      unified.update(camera);
+      unified.onAfterRender(renderer as never, scene, head);
+      await Promise.resolve();
+      unified.update(camera);
+      unified.onAfterRender(renderer as never, scene, new THREE.PerspectiveCamera());
+      await Promise.resolve();
+      expect(notify).not.toHaveBeenCalled();
+      unified.onAfterRender(renderer as never, scene, head);
+      await Promise.resolve();
+      expect(notify).toHaveBeenCalledOnce();
+      expect(unified.getDrawPublicationSnapshot().ready).toBe(true);
+
+      mesh.appendRange(chunk);
+      const replacementVersion = mesh.getUnifiedSourceView().activeListVersion;
+      unified.update(camera);
+      unified.onAfterRender(renderer as never, scene, head);
+      await Promise.resolve();
+      expect(notify).toHaveBeenCalledTimes(2);
+      expect(notify).toHaveBeenLastCalledWith(replacementVersion);
+      expect(unified.getDrawPublicationSnapshot()).toMatchObject({ ready: true, activeCount: 2 });
+
+      unified.dispose();
+      mesh.dispose();
+    });
+
+    it('does not acknowledge a secondary view through the primary XR camera', async () => {
+      const eye = new THREE.PerspectiveCamera();
+      eye.viewport = new THREE.Vector4(0, 0, 400, 600);
+      const head = new THREE.ArrayCamera([eye]);
+      const renderer = mockRenderer({
+        xr: { enabled: true, isPresenting: true, cameraAutoUpdate: false, getCamera: () => head },
+        getRenderTarget: () => null,
+        setRenderTarget: vi.fn(),
+        render: vi.fn(),
+      });
+      const mesh = source();
+      const unified = new UnifiedSplatMesh(renderer, 1);
+      unified.addSource(mesh);
+      const notify = vi.spyOn(mesh, 'notifyUnifiedPublication');
+      const camera = new THREE.PerspectiveCamera();
+      const scene = new THREE.Scene();
+
+      unified.update(camera);
+      unified.renderView(new THREE.PerspectiveCamera(), renderer);
+      // Three substitutes the XR head even for a secondary draw to its output
+      // target. Camera identity alone cannot make that a primary publication.
+      unified.onAfterRender(renderer as never, scene, head);
+      await Promise.resolve();
+      expect(notify).not.toHaveBeenCalled();
+      expect(unified.getDrawPublicationSnapshot().ready).toBe(false);
+
+      unified.update(camera);
+      unified.onAfterRender(renderer as never, scene, head);
+      await Promise.resolve();
+      expect(notify).toHaveBeenCalledOnce();
+      expect(unified.getDrawPublicationSnapshot().ready).toBe(true);
+
+      unified.dispose();
+      mesh.dispose();
+    });
+
+    it('restores the application publication camera after leaving XR', async () => {
+      const eye = new THREE.PerspectiveCamera();
+      eye.viewport = new THREE.Vector4(0, 0, 400, 600);
+      const head = new THREE.ArrayCamera([eye]);
+      const xr = {
+        enabled: true,
+        isPresenting: true,
+        cameraAutoUpdate: false,
+        getCamera: () => head,
+      };
+      const renderer = mockRenderer({
+        xr,
+        backend: {
+          isWebGPUBackend: true,
+          device: { queue: { onSubmittedWorkDone: () => Promise.resolve() } },
+        },
+      });
+      const mesh = source();
+      const unified = new UnifiedSplatMesh(renderer, 1);
+      unified.addSource(mesh);
+      const notify = vi.spyOn(mesh, 'notifyUnifiedPublication');
+      const camera = new THREE.PerspectiveCamera();
+      const scene = new THREE.Scene();
+
+      unified.update(camera);
+      unified.onAfterRender(renderer as never, scene, head);
+      await Promise.resolve();
+      unified.update(camera);
+      unified.onAfterRender(renderer as never, scene, head);
+      await Promise.resolve();
+      expect(notify).toHaveBeenCalledOnce();
+
+      xr.isPresenting = false;
+      unified.invalidateSource(mesh);
+      unified.update(camera);
+      unified.onAfterRender(renderer as never, scene, head);
+      await Promise.resolve();
+      expect(notify).toHaveBeenCalledOnce();
+      unified.onAfterRender(renderer as never, scene, camera);
+      await Promise.resolve();
+      expect(notify).toHaveBeenCalledTimes(2);
+      expect(unified.getDrawPublicationSnapshot().ready).toBe(true);
+
+      unified.dispose();
+      mesh.dispose();
+    });
+
+    it.each([
+      { enabled: false, isPresenting: true },
+      { enabled: true, isPresenting: false },
+    ])(
+      'rejects the XR camera when enabled=$enabled and presenting=$isPresenting',
+      async (state) => {
+        const eye = new THREE.PerspectiveCamera();
+        eye.viewport = new THREE.Vector4(0, 0, 400, 600);
+        const head = new THREE.ArrayCamera([eye]);
+        const renderer = mockRenderer({
+          xr: { ...state, cameraAutoUpdate: false, getCamera: () => head },
+        });
+        const mesh = source();
+        const unified = new UnifiedSplatMesh(renderer, 1);
+        unified.addSource(mesh);
+        const notify = vi.spyOn(mesh, 'notifyUnifiedPublication');
+        const camera = new THREE.PerspectiveCamera();
+        const scene = new THREE.Scene();
+
+        unified.update(camera);
+        unified.onAfterRender(renderer as never, scene, head);
+        await Promise.resolve();
+        expect(notify).not.toHaveBeenCalled();
+        unified.onAfterRender(renderer as never, scene, camera);
+        await Promise.resolve();
+        expect(notify).toHaveBeenCalledOnce();
+        expect(unified.getDrawPublicationSnapshot().ready).toBe(true);
+
+        unified.dispose();
+        mesh.dispose();
+      },
+    );
 
     it('skips the sorter dispatch for a stationary camera with unchanged content', () => {
       const renderer = mockRenderer();

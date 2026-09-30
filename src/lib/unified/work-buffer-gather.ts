@@ -118,6 +118,11 @@ export class WorkBufferGather {
   private readonly cameraViewMatrix = uniform(new THREE.Matrix4());
   private readonly opacity = uniform(1);
   private readonly pass: THREE.ComputeNode;
+  /**
+   * SH-only color write used when cached modifier geometry is still valid.
+   * Null when the source has no spherical harmonics.
+   */
+  private readonly colorPass: THREE.ComputeNode | null;
 
   constructor(options: {
     capacity: number;
@@ -302,6 +307,45 @@ export class WorkBufferGather {
         outputIsotropicScreenRadius.element(target).assign(resolvedIsotropicScreenRadius);
       });
     })().compute(sourceCapacity, [256]);
+    if (sh === null) {
+      this.colorPass = null;
+    } else {
+      const sphericalHarmonics = sh;
+      this.colorPass = Fn(() => {
+        If(float(instanceIndex).lessThan(this.activeCount), () => {
+          const poolIndex = int(source.element(instanceIndex));
+          const texel = ivec2(
+            poolIndex.mod(int(dataTextureWidth)),
+            poolIndex.div(int(dataTextureWidth)),
+          );
+          const attributes = readSplatGatherInputs(centersTexture, colorsTexture, texel);
+          const localCenter = attributes.center;
+          const target = instanceIndex.add(this.targetOffset.toUint());
+          const baseColor = attributes.color;
+          const colorAfterSh = vec4(
+            baseColor.rgb
+              .add(
+                evaluateSplatSh(
+                  sphericalHarmonics,
+                  { covarianceBTexture },
+                  texel,
+                  localCenter.sub(localCameraPosition).normalize(),
+                ),
+              )
+              .clamp(0.0, 1.0),
+            baseColor.a,
+          );
+          const resolvedColor = options.srgbOutput
+            ? colorAfterSh
+            : asNode<'vec4'>(colorSpaceToWorking(colorAfterSh, THREE.SRGBColorSpace));
+          // `clip` can lower alpha at the SDF falloff edge. The color-only pass
+          // must preserve the full gather's visibility result, including RAD's
+          // encoded LOD alpha, while refreshing only the camera-dependent RGB.
+          const cachedAlpha = outputColor.element(target).a;
+          outputColor.element(target).assign(vec4(resolvedColor.rgb, cachedAlpha));
+        });
+      })().compute(sourceCapacity, [256]);
+    }
   }
 
   /** Gathers a source's active pool slots into a contiguous work-buffer range. */
@@ -338,6 +382,32 @@ export class WorkBufferGather {
   }
 
   /**
+   * Refreshes view-dependent SH color in an existing gathered range.
+   *
+   * Leaves world centers, covariance, and cached modifier visibility untouched.
+   * Callers must have previously {@link gather}ed the same slice. Sources
+   * without spherical harmonics throw: there is no camera-dependent color to
+   * refresh.
+   */
+  gatherColors(
+    renderer: THREE.WebGPURenderer,
+    activeCount: number,
+    targetOffset: number,
+  ): void {
+    if (!this.colorPass) {
+      throw new Error('WorkBufferGather: color refresh requires spherical harmonics.');
+    }
+    if (activeCount < 0 || targetOffset < 0 || targetOffset + activeCount > this.capacity) {
+      throw new Error('WorkBufferGather: requested range exceeds work-buffer capacity.');
+    }
+    this.activeCount.value = activeCount;
+    this.targetOffset.value = targetOffset;
+    this.colorPass.count = activeCount;
+    renderer.compute(this.colorPass);
+    this.workBuffer.releaseCpuMirrors(renderer);
+  }
+
+  /**
    * Compiles this gather's compute pipeline without gathering anything.
    *
    * WebGPU compiles a compute pipeline lazily, at its first dispatch - not when
@@ -360,6 +430,10 @@ export class WorkBufferGather {
     this.targetOffset.value = this.capacity;
     this.pass.count = 1;
     await renderer.computeAsync(this.pass);
+    if (this.colorPass) {
+      this.colorPass.count = 1;
+      await renderer.computeAsync(this.colorPass);
+    }
     // Leave nothing that a later reuse check could mistake for real state.
     this.activeCount.value = 0;
     this.targetOffset.value = 0;
@@ -371,5 +445,6 @@ export class WorkBufferGather {
   /** Releases the gather pipeline. The owner releases the storage attribute. */
   dispose(): void {
     this.pass.dispose();
+    this.colorPass?.dispose();
   }
 }

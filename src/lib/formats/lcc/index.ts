@@ -15,7 +15,12 @@ export {
   type LccChunkParams,
 } from './parse-lcc';
 export { buildLccScene, type LccSceneOptions } from './lcc';
-export { buildLcc2Scene } from './lcc2';
+export {
+  buildLcc2Scene,
+  type Lcc2QualityPolicy,
+  type Lcc2SelectionState,
+  type Lcc2SceneOptions,
+} from './lcc2';
 export { createLcc2ToThreeMatrix, applyLcc2ToThreeTransform } from './lcc2-transform';
 export { loadCollisionMeshTiles, type CollisionMeshTile } from './collision-mesh';
 export { parseMeshPly, type TriangleMeshData } from './parse-mesh-ply';

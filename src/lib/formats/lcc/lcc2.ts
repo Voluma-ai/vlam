@@ -27,10 +27,40 @@ import { warn } from '../../core/logging';
  * is used, and their capture data is never redistributed.
  */
 
+/** Optional host quality policy for desktop LCC2; other formats keep their own ladder. */
+export interface Lcc2QualityPolicy {
+  /** Use a budget-derived base split and scene-scaled adaptive detail distances. */
+  readonly quality: 'desktop';
+}
+
+/** Read-only manifest selection diagnostics, before fetch/staging/publication. */
+export interface Lcc2SelectionState {
+  readonly profile: 'desktop' | 'distance';
+  readonly totalLevels: number;
+  readonly baseDepth: number | null;
+  readonly budget: number;
+  readonly manifestNodeDepthCounts: Readonly<Record<number, number>>;
+  readonly desired: readonly (LodRun & { readonly depth: number })[];
+}
+
+/** LCC2-specific options for manifest selection without changing persisted scene data. */
+export interface Lcc2SceneOptions extends LodSourceOptions {
+  readonly lcc2Policy?: Lcc2QualityPolicy;
+}
+
 /** Out-of-frustum nodes act this many times farther away (see LodScheduler). */
 const FRUSTUM_PENALTY = 3;
 /** Frustum test margin, as a fraction of each node's own size. */
 const FRUSTUM_MARGIN = 0.1;
+// Match Voluma's Spark LCC2 loading hints: expand around the view while moving,
+// but keep actual visibility separate so preloading cannot displace on-screen detail.
+const DESKTOP_LOAD_MARGIN = 8;
+const DESKTOP_LOAD_MARGIN_SCENE_FACTOR = 0.03;
+const DESKTOP_MOVING_LOAD_MARGIN = 24;
+const DESKTOP_MOVING_LOAD_MARGIN_SCENE_FACTOR = 0.08;
+const DESKTOP_MOVEMENT_GRACE_MS = 1500;
+const DESKTOP_MOVEMENT_DISTANCE_SQ = 0.08 ** 2;
+const DESKTOP_MOVEMENT_DIRECTION_DOT = 0.9995;
 /** Hysteresis dead-band around each LOD distance threshold. */
 const THRESHOLD_MARGIN = 0.1;
 /** Minimum time a cell must hold a level before changing again, ms. */
@@ -86,7 +116,7 @@ interface RawManifest {
 export function buildLcc2Scene(
   json: unknown,
   dataset: SplatDatasetSource,
-  options: LodSourceOptions,
+  options: Lcc2SceneOptions,
   shBands: 0 | 1 | 2 | 3 = 0,
 ): StreamedScene {
   const raw = json as RawManifest;
@@ -135,7 +165,14 @@ export function buildLcc2Scene(
 
   const rootChildren = Object.values(raw.root.child ?? {}).map((child) => build(child, 1));
 
-  const source = new OctreeLodSource(nodes, rootChildren, cellNodes, raw.totalLevels - 1, options);
+  const source = new OctreeLodSource(
+    nodes,
+    rootChildren,
+    cellNodes,
+    raw.totalLevels - 1,
+    options,
+    boxFromRaw(raw.root.boundingBox).getSize(new THREE.Vector3()).length(),
+  );
   const pinnedFiles = new Set<number>(rootChildren.map((i) => (nodes[i] as OctNode).file));
 
   // The environment tile (root `data.env`) is an always-resident background -
@@ -258,6 +295,25 @@ class OctreeLodSource implements LodSource {
   /** Index into {@link rootChildren} of the subtree containing each cell. */
   private readonly cellRootChild: Uint32Array;
 
+  private lastDesiredRuns: LodRun[] = [];
+  private lastSelectionAt = -Infinity;
+  private lastSelectionBudget = -1;
+  private readonly lastSelectionCamera = new THREE.Vector3(Infinity, Infinity, Infinity);
+  private readonly lastSelectionForward = new THREE.Vector3(Infinity, Infinity, Infinity);
+  private readonly lastSelectionFrustum = new Float64Array(24);
+  private lastSelectionBaseDistance = -1;
+  private lastSelectionMultiplier = -1;
+  private lastSelectionLoadMargin = -1;
+  private loadFrustumMargin = 0;
+  private movementGraceUntil = -Infinity;
+  private readonly movementCamera = new THREE.Vector3(Infinity, Infinity, Infinity);
+  private readonly movementForward = new THREE.Vector3(Infinity, Infinity, Infinity);
+  private readonly qualityPolicy: Lcc2QualityPolicy | undefined;
+  private readonly sceneDiagonal: number;
+  private poolCapacitySlots = Infinity;
+  private poolRowWidth = 1;
+  private readonly scratchCenter = new THREE.Vector3();
+
   private readonly scratchBox = new THREE.Box3();
   private readonly scratchSize = new THREE.Vector3();
 
@@ -266,8 +322,11 @@ class OctreeLodSource implements LodSource {
     rootChildren: number[],
     cellNodes: number[],
     coarsest: number,
-    options: LodSourceOptions,
+    options: Lcc2SceneOptions,
+    sceneDiagonal: number,
   ) {
+    this.qualityPolicy = options.lcc2Policy;
+    this.sceneDiagonal = sceneDiagonal;
     this.nodes = nodes;
     this.rootChildren = rootChildren;
     this.cellNodes = cellNodes;
@@ -290,9 +349,69 @@ class OctreeLodSource implements LodSource {
     });
   }
 
-  computeDesiredRuns(cameraLocal: THREE.Vector3, frustum: THREE.Frustum, now: number): LodRun[] {
-    const cellDistance = this.updateCellLevels(cameraLocal, frustum, now);
+  /** Bounds desktop cuts by actual row allocations without changing the authored budget. */
+  setPoolCapacity(capacitySlots: number, rowWidth: number): void {
+    if (!this.qualityPolicy) return;
+    if (this.poolCapacitySlots === capacitySlots && this.poolRowWidth === rowWidth) return;
+    this.poolCapacitySlots = capacitySlots;
+    this.poolRowWidth = rowWidth;
+    this.lastSelectionAt = -Infinity;
+  }
 
+  computeDesiredRuns(
+    cameraLocal: THREE.Vector3,
+    frustum: THREE.Frustum,
+    now: number,
+    cameraForward?: THREE.Vector3,
+    onTiming?: (stage: 'levelUpdate' | 'budgetSelect' | 'collectCut', durationMs: number) => void,
+  ): LodRun[] {
+    this.updateLoadFrustumMargin(cameraLocal, now, cameraForward);
+    const sameFrustum = frustum.planes.every((plane, index) => {
+      const offset = index * 4;
+      return (
+        this.lastSelectionFrustum[offset] === plane.normal.x &&
+        this.lastSelectionFrustum[offset + 1] === plane.normal.y &&
+        this.lastSelectionFrustum[offset + 2] === plane.normal.z &&
+        this.lastSelectionFrustum[offset + 3] === plane.constant
+      );
+    });
+    const sameForward = cameraForward
+      ? this.lastSelectionForward.equals(cameraForward)
+      : this.lastSelectionForward.x === Infinity;
+    // Chunk arrival changes readiness, not this manifest's desired cut. Keep
+    // unfinished staging's selection while the pose/policy are unchanged;
+    // re-evaluate at the dwell deadline so pending distance changes still land.
+    if (
+      this.lastSelectionCamera.equals(cameraLocal) &&
+      sameForward &&
+      sameFrustum &&
+      this.lastSelectionBudget === this.budget &&
+      this.lastSelectionBaseDistance === this.lodBaseDistance &&
+      this.lastSelectionMultiplier === this.lodMultiplier &&
+      this.lastSelectionLoadMargin === this.loadFrustumMargin &&
+      now - this.lastSelectionAt < DWELL_MS
+    ) {
+      return this.lastDesiredRuns;
+    }
+    this.lastSelectionCamera.copy(cameraLocal);
+    if (cameraForward) this.lastSelectionForward.copy(cameraForward);
+    else this.lastSelectionForward.set(Infinity, Infinity, Infinity);
+    frustum.planes.forEach((plane, index) => {
+      this.lastSelectionFrustum.set(
+        [plane.normal.x, plane.normal.y, plane.normal.z, plane.constant],
+        index * 4,
+      );
+    });
+    this.lastSelectionBudget = this.budget;
+    this.lastSelectionBaseDistance = this.lodBaseDistance;
+    this.lastSelectionMultiplier = this.lodMultiplier;
+    this.lastSelectionLoadMargin = this.loadFrustumMargin;
+    this.lastSelectionAt = now;
+    const levelUpdateStartedAt = onTiming ? performance.now() : 0;
+    const cellDistance = this.updateCellLevels(cameraLocal, frustum, now);
+    if (onTiming) onTiming('levelUpdate', performance.now() - levelUpdateStartedAt);
+
+    const budgetSelectStartedAt = onTiming ? performance.now() : 0;
     // resolved[] starts from the dwelled per-cell levels, then is
     // budget-adjusted; keeping the dwelled base separate (like the SOG
     // scheduler's level/resolved split) prevents budget changes from
@@ -304,19 +423,42 @@ class OctreeLodSource implements LodSource {
     // loops O(cells² · depth) on heavily over-budget scenes.
     const contributions = this.rootChildren.map((index) => this.subtreeCutTotal(index, resolved));
     let total = contributions.reduce((sum, count) => sum + count, 0);
+    const slotContributions = Number.isFinite(this.poolCapacitySlots)
+      ? this.rootChildren.map((index) => this.subtreeCutTotal(index, resolved, this.poolRowWidth))
+      : undefined;
+    let totalSlots = slotContributions?.reduce((sum, count) => sum + count, 0) ?? 0;
+    const overLimit = (): boolean => total > this.budget || totalSlots > this.poolCapacitySlots;
     const adjust = (cell: number, delta: number): void => {
       resolved[cell] = (resolved[cell] as number) + delta;
       const r = this.cellRootChild[cell] as number;
       const next = this.subtreeCutTotal(this.rootChildren[r] as number, resolved);
       total += next - (contributions[r] as number);
       contributions[r] = next;
+      if (slotContributions) {
+        const slots = this.subtreeCutTotal(this.rootChildren[r] as number, resolved, this.poolRowWidth);
+        totalSlots += slots - (slotContributions[r] as number);
+        slotContributions[r] = slots;
+      }
     };
 
+    const visible = this.qualityPolicy
+      ? this.cellNodes.map((_, cell) => this.cellIntersectsFrustum(frustum, cell))
+      : undefined;
+    const priorityDistance = this.cellNodes.map((index, cell) => {
+      const distance = cellDistance[cell] as number;
+      if (!this.qualityPolicy || !cameraForward) return distance;
+      (this.nodes[index] as OctNode).bounds.getCenter(this.scratchCenter);
+      this.scratchCenter.sub(cameraLocal).normalize();
+      const dot = Math.max(0, this.scratchCenter.dot(cameraForward));
+      return distance * (1 + (1 - dot) * Math.min(1, distance / 12));
+    });
     const byDistanceDesc = [...this.cellNodes.keys()].sort(
-      (a, b) => (cellDistance[b] as number) - (cellDistance[a] as number),
+      (a, b) =>
+        (visible ? Number(visible[a]) - Number(visible[b]) : 0) ||
+        (priorityDistance[b] as number) - (priorityDistance[a] as number),
     );
     // Enforce: coarsen the farthest cells until the cut fits the budget.
-    for (let i = 0; i < byDistanceDesc.length && total > this.budget;) {
+    for (let i = 0; i < byDistanceDesc.length && overLimit();) {
       const c = byDistanceDesc[i] as number;
       if ((resolved[c] as number) < this.coarsest) {
         adjust(c, +1);
@@ -324,27 +466,136 @@ class OctreeLodSource implements LodSource {
         i++;
       }
     }
-    // Fill: spend leftover budget refining the nearest cells, to 85% - the
-    // headroom keeps region-atomic swap transients (old + new runs briefly
-    // co-resident) from pushing the live count past budget on a scene far
-    // larger than the budget.
-    const fillTarget = this.budget * 0.85;
+    // Desktop detail owns the full active budget; hidden replacements have
+    // separate pool checks. Keep the legacy stop threshold on constrained
+    // devices and callers that did not opt into the desktop quality policy.
+    const fillTarget = this.budget * (this.qualityPolicy ? 1 : 0.85);
     for (let i = byDistanceDesc.length - 1; i >= 0 && total < fillTarget;) {
       const c = byDistanceDesc[i] as number;
-      if ((resolved[c] as number) > (this.cellFinestLevel[c] as number)) {
+      const finestWanted = this.qualityPolicy
+        ? (this.cellLevel[c] as number)
+        : (this.cellFinestLevel[c] as number);
+      if ((resolved[c] as number) > finestWanted) {
         adjust(c, -1);
-        if (total > this.budget) {
-          adjust(c, +1); // overshoot; revert and stop
-          break;
+        if (overLimit()) {
+          adjust(c, +1); // Keep coverage before considering another refinement.
+          if (!this.qualityPolicy) break; // Legacy distance selection stops at its first overshoot.
+          i--;
         }
       } else {
         i--;
       }
     }
 
+    if (onTiming) onTiming('budgetSelect', performance.now() - budgetSelectStartedAt);
+    const collectCutStartedAt = onTiming ? performance.now() : 0;
     const runs: LodRun[] = [];
-    this.collectCut(resolved, (index) => runs.push(runFromNode(this.nodes[index] as OctNode)));
+    this.collectCut(resolved, (index) => {
+      const node = this.nodes[index] as OctNode;
+      const distance = node.bounds.distanceToPoint(cameraLocal);
+      node.bounds.getCenter(this.scratchCenter).sub(cameraLocal).normalize();
+      const forwardDot = cameraForward ? Math.max(0, this.scratchCenter.dot(cameraForward)) : 1;
+      // Carry the camera rank through to the shared fetch and staging queues.
+      // A correct cut alone cannot make nearby detail arrive first when its
+      // owners lose their distance/frustum metadata at this boundary.
+      runs.push({
+        ...runFromNode(node),
+        distance,
+        inView: frustum.intersectsBox(node.bounds),
+        screenImportance: distance * (1 + (1 - forwardDot) * Math.min(1, distance / 12)),
+      });
+    });
+    if (onTiming) onTiming('collectCut', performance.now() - collectCutStartedAt);
+    this.lastDesiredRuns = runs;
     return runs;
+  }
+
+  /** Publish available child covers without waiting for every final descendant. */
+  computeStreamingCut(
+    desired: readonly LodRun[],
+    available: (run: LodRun) => boolean,
+    preparing?: (run: LodRun) => boolean,
+  ): { runs: LodRun[]; pending: LodRun[] } {
+    if (!this.qualityPolicy) return { runs: [...desired], pending: [] };
+    const targets = new Set(
+      desired.map((run) => `${run.file}:${run.level}:${run.offset}:${run.count}`),
+    );
+    const rankedRun = (node: OctNode): LodRun => {
+      const owners = desired.filter(
+        (run) => run.leafStart < node.leafEnd && run.leafEnd > node.leafStart,
+      );
+      return {
+        ...runFromNode(node),
+        distance: Math.min(...owners.map((run) => run.distance ?? Infinity)),
+        inView: owners.some((run) => run.inView === true),
+        screenImportance: Math.min(...owners.map((run) => run.screenImportance ?? Infinity)),
+      };
+    };
+    type Cover = { runs: LodRun[]; pending: LodRun[]; ready: boolean };
+    const visit = (index: number): Cover => {
+      const node = this.nodes[index] as OctNode;
+      const run = rankedRun(node);
+      const ready = available(run);
+      if (
+        targets.has(`${run.file}:${run.level}:${run.offset}:${run.count}`) ||
+        node.children.length === 0
+      ) {
+        return { runs: [run], pending: ready ? [] : [run], ready };
+      }
+      if (preparing?.(run)) {
+        // Finish and publish a compatible intermediate already being uploaded.
+        // A finer file arriving mid-upload must not erase that progress and
+        // replace a small near-term swap with a much larger hidden transaction.
+        return { runs: [run], pending: ready ? [] : [run], ready };
+      }
+      const children = node.children.map(visit);
+      if (children.every((child) => child.ready)) {
+        return {
+          runs: children.flatMap((child) => child.runs),
+          pending: children.flatMap((child) => child.pending),
+          ready: true,
+        };
+      }
+      // Only request the next unavailable children of a complete cover. This
+      // bounds each ancestor swap and lets nearby child regions refine on their
+      // own, instead of making the whole root wait for distant final leaves.
+      return {
+        runs: [run],
+        pending: ready
+          ? children.flatMap((child, childIndex) =>
+              child.ready
+                ? child.pending
+                : [rankedRun(this.nodes[node.children[childIndex] as number] as OctNode)],
+            )
+          : [run],
+        ready,
+      };
+    };
+    const covers = this.rootChildren.map(visit);
+    return {
+      runs: covers.flatMap((cover) => cover.runs),
+      pending: covers.flatMap((cover) => cover.pending),
+    };
+  }
+
+  /** Snapshot manifest depths and desired owners without exposing mutable scheduler state. */
+  get lcc2QualityState(): Lcc2SelectionState {
+    const manifestNodeDepthCounts: Record<number, number> = {};
+    for (const node of this.nodes) {
+      const depth = this.coarsest + 1 - node.level;
+      manifestNodeDepthCounts[depth] = (manifestNodeDepthCounts[depth] ?? 0) + 1;
+    }
+    return {
+      profile: this.qualityPolicy ? 'desktop' : 'distance',
+      totalLevels: this.coarsest + 1,
+      baseDepth: this.qualityPolicy ? this.baseDepthForBudget() : null,
+      budget: this.budget,
+      manifestNodeDepthCounts,
+      desired: this.lastDesiredRuns.map((run) => ({
+        ...run,
+        depth: this.coarsest + 1 - run.level,
+      })),
+    };
   }
 
   coarsestRunsFor(from: number, to: number): LodRun[] {
@@ -357,7 +608,9 @@ class OctreeLodSource implements LodSource {
   }
 
   /**
-   * Coarsest root-child runs covering in-view finest cells. An empty frustum
+   * Initial base runs covering in-view finest cells. Desktop quality uses
+   * its budget-derived base depth; legacy distance policy stays coarsest.
+   * An empty frustum
    * falls back to the nearest cell's root child so a skyward start still paints
    * something rather than releasing an empty hold.
    */
@@ -381,10 +634,19 @@ class OctreeLodSource implements LodSource {
       }
     }
     if (!anyInView) picked[this.cellRootChild[nearestCell] as number] = 1;
+    // Spark loads its budget-derived base before revealing the scene. Starting
+    // desktop LCC2 at the shallowest cover instead adds several download/upload
+    // transactions after the camera path has already begun.
+    const baseLevel = this.qualityPolicy
+      ? this.coarsest + 1 - this.baseDepthForBudget()
+      : this.coarsest;
+    const levels = new Int32Array(n).fill(baseLevel);
     const runs: LodRun[] = [];
     for (let r = 0; r < this.rootChildren.length; r++) {
       if (picked[r] !== 1) continue;
-      runs.push(runFromNode(this.nodes[this.rootChildren[r] as number] as OctNode));
+      this.visitCut(this.rootChildren[r] as number, levels, (index) => {
+        runs.push(runFromNode(this.nodes[index] as OctNode));
+      });
     }
     return runs;
   }
@@ -402,11 +664,40 @@ class OctreeLodSource implements LodSource {
     return frustum.intersectsBox(this.expandCellBox(cell));
   }
 
+  /** Widens only desktop loading hints while translation or rotation continues. */
+  private updateLoadFrustumMargin(
+    cameraLocal: THREE.Vector3,
+    now: number,
+    cameraForward?: THREE.Vector3,
+  ): void {
+    if (!this.qualityPolicy) return;
+    const moved =
+      this.movementCamera.x === Infinity ||
+      this.movementCamera.distanceToSquared(cameraLocal) > DESKTOP_MOVEMENT_DISTANCE_SQ ||
+      (cameraForward !== undefined &&
+        (this.movementForward.x === Infinity ||
+          this.movementForward.dot(cameraForward) < DESKTOP_MOVEMENT_DIRECTION_DOT));
+    if (moved) {
+      this.movementCamera.copy(cameraLocal);
+      if (cameraForward) this.movementForward.copy(cameraForward);
+      this.movementGraceUntil = now + DESKTOP_MOVEMENT_GRACE_MS;
+    }
+    const moving = now < this.movementGraceUntil;
+    this.loadFrustumMargin = Math.max(
+      moving ? DESKTOP_MOVING_LOAD_MARGIN : DESKTOP_LOAD_MARGIN,
+      this.sceneDiagonal *
+        (moving ? DESKTOP_MOVING_LOAD_MARGIN_SCENE_FACTOR : DESKTOP_LOAD_MARGIN_SCENE_FACTOR),
+    );
+  }
+
   /** Distance (frustum-penalized) to each finest cell's node bounds. */
   private cellDistanceOf(cameraLocal: THREE.Vector3, frustum: THREE.Frustum, cell: number): number {
     const node = this.nodes[this.cellNodes[cell] as number] as OctNode;
     const d = node.bounds.distanceToPoint(cameraLocal);
-    return this.cellIntersectsFrustum(frustum, cell) ? d : d * FRUSTUM_PENALTY;
+    const inLoadFrustum = this.qualityPolicy
+      ? frustum.intersectsBox(this.expandCellBox(cell).expandByScalar(this.loadFrustumMargin))
+      : this.cellIntersectsFrustum(frustum, cell);
+    return inLoadFrustum ? d : d * FRUSTUM_PENALTY;
   }
 
   /** Advances each cell's dwelled level toward the distance target. */
@@ -416,6 +707,17 @@ class OctreeLodSource implements LodSource {
     now: number,
   ): Float64Array {
     const { lodBaseDistance: base, lodMultiplier: m } = this;
+    const baseDepth = this.qualityPolicy ? this.baseDepthForBudget() : 0;
+    const threshold = (level: number): number => {
+      if (!this.qualityPolicy) return base * m ** level;
+      // Manifest depth grows toward fine detail; VLAM levels grow toward coarse.
+      const depth = this.coarsest + 1 - level;
+      const relative = depth - (baseDepth + 1);
+      if (relative < 0) return Math.max(250, this.sceneDiagonal * 0.6);
+      if (relative === 0) return Math.max(80, this.sceneDiagonal * 0.35);
+      if (relative === 1) return Math.max(55, this.sceneDiagonal * 0.25);
+      return Math.max(35, this.sceneDiagonal * 0.18);
+    };
     const distances = new Float64Array(this.cellNodes.length);
     for (let c = 0; c < this.cellNodes.length; c++) {
       const d = this.cellDistanceOf(cameraLocal, frustum, c);
@@ -425,8 +727,8 @@ class OctreeLodSource implements LodSource {
       let level = Math.min(this.coarsest, Math.max(min, this.cellLevel[c] as number));
       // Dead-band: coarsen only past threshold·(1+margin), refine only
       // within threshold·(1−margin); threshold(L) = base·m^L.
-      while (level < this.coarsest && d > base * m ** level * (1 + THRESHOLD_MARGIN)) level++;
-      while (level > min && d <= base * m ** (level - 1) * (1 - THRESHOLD_MARGIN)) level--;
+      while (level < this.coarsest && d > threshold(level) * (1 + THRESHOLD_MARGIN)) level++;
+      while (level > min && d <= threshold(level - 1) * (1 - THRESHOLD_MARGIN)) level--;
 
       if (
         level !== (this.cellLevel[c] as number) &&
@@ -439,11 +741,31 @@ class OctreeLodSource implements LodSource {
     return distances;
   }
 
+  /** Match the adapter's cumulative half-budget base while leaving the deepest rung adaptive. */
+  private baseDepthForBudget(): number {
+    const totals = new Map<number, number>();
+    for (const node of this.nodes) {
+      const depth = this.coarsest + 1 - node.level;
+      totals.set(depth, (totals.get(depth) ?? 0) + node.count);
+    }
+    const depths = [...totals.keys()].sort((a, b) => a - b);
+    let cumulative = 0;
+    let baseDepth = depths[0] ?? 1;
+    const deepest = depths[depths.length - 1] ?? 1;
+    for (const depth of depths) {
+      if (depth >= deepest) break;
+      cumulative += totals.get(depth) ?? 0;
+      if (cumulative > this.budget * 0.5 && depth > baseDepth) break;
+      baseDepth = depth;
+    }
+    return baseDepth;
+  }
+
   /** Splat total of one subtree's cut for the given per-cell levels. */
-  private subtreeCutTotal(index: number, levels: Int32Array): number {
+  private subtreeCutTotal(index: number, levels: Int32Array, rowWidth = 1): number {
     let total = 0;
     this.visitCut(index, levels, (i) => {
-      total += (this.nodes[i] as OctNode).count;
+      total += Math.ceil((this.nodes[i] as OctNode).count / rowWidth) * rowWidth;
     });
     return total;
   }

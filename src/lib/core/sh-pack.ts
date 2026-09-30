@@ -99,45 +99,74 @@ export function packShCoefficients(
  * read out into splat-major triples and quantized against this chunk's own
  * measured extent. Later chunks may measure a different extent - the pool
  * requantizes any mismatch into the scene's range at append.
+ * `targetRange`, when already locked by the pool, moves that exact second
+ * quantization into the shared palette before expanding its labels.
  */
-export function packPaletteSh(sh: SplatShData, count: number, bands: 1 | 2 | 3): SplatPackedShData {
+export function packPaletteSh(
+  sh: SplatShData,
+  count: number,
+  bands: 1 | 2 | 3,
+  targetRange?: ShRange,
+): SplatPackedShData {
   const want = shCoefficientCount(bands);
-  // The palette stores its own (possibly higher) band count; a lower request is
-  // a prefix of each entry's coefficients, since bands run low-order first.
   const have = shCoefficientCount(sh.bands);
   const width = sh.paletteWidth;
-  const coefficients = new Float32Array(count * want * 3);
+  const readable = Math.min(want, have);
+  const entries = new Map<number, Uint32Array>();
+  let extent = 0;
   for (let i = 0; i < count; i++) {
     const label = sh.labels[i] as number;
-    // SOG centroids layout: entry n, coefficient c at column (n % 64) · have + c,
-    // row ⌊n / 64⌋; R/G/B channels hold that coefficient for the R/G/B SH.
+    if (entries.has(label)) continue;
     const column0 = (label % 64) * have;
     const row = Math.floor(label / 64);
-    // Labels are 16-bit and the parser validates only the labels image, not
-    // the label *values*. An out-of-bounds palette read yields NaN
-    // coefficients, NaN-poisoning this chunk's measured range - and, were it
-    // the scene's first SH chunk, locking a NaN pool range that destroys SH
-    // scene-wide. Throw instead, like the `.rad` label path does.
-    // Check the row extent as well as the linear index: a label whose entry
-    // would wrap past the row's end must fail rather than silently reading
-    // the start of another entry on the next row.
     if (column0 + have > width || (row * width + column0 + have) * 4 > sh.palette.length) {
       throw new Error(`packPaletteSh: splat ${i} has SH label ${label} outside the palette.`);
     }
-    // Read the min(want, have) low-order coefficients; if the caller asked for
-    // more bands than the palette carries, the surplus stays 0 (neutral) so the
-    // packed band count still matches the pool's, rather than a band mismatch
-    // that would drop the SH entirely.
-    const readable = Math.min(want, have);
+    entries.set(label, new Uint32Array(want));
     for (let c = 0; c < readable; c++) {
       const texel = (row * width + column0 + c) * 4;
-      const base = (i * want + c) * 3;
-      coefficients[base] = sh.palette[texel] as number;
-      coefficients[base + 1] = sh.palette[texel + 1] as number;
-      coefficients[base + 2] = sh.palette[texel + 2] as number;
+      extent = Math.max(
+        extent,
+        Math.abs(sh.palette[texel] as number),
+        Math.abs(sh.palette[texel + 1] as number),
+        Math.abs(sh.palette[texel + 2] as number),
+      );
     }
   }
-  return packShCoefficients(coefficients, count, bands);
+  // Measure only referenced entries, just as the former expanded float array
+  // did. Unused palette extremes must not change quantization or visible color.
+  // Pack each shared entry once instead of allocating count * bands * RGB
+  // floats and requantizing identical coefficients for every splat.
+  const sourceRange = symmetricShRange(extent);
+  const convert = targetRange !== undefined && !packedRangesEqual(sourceRange, targetRange);
+  const neutral = packShCoefficient(0, 0, 0, extent);
+  for (const [label, words] of entries) {
+    words.fill(neutral);
+    const column0 = (label % 64) * have;
+    const row = Math.floor(label / 64);
+    for (let c = 0; c < readable; c++) {
+      const texel = (row * width + column0 + c) * 4;
+      words[c] = packShCoefficient(
+        sh.palette[texel] as number,
+        sh.palette[texel + 1] as number,
+        sh.palette[texel + 2] as number,
+        extent,
+      );
+    }
+    // Preserve both quantization steps exactly, including neutral padding.
+    // Converting shared palette words here avoids per-splat range conversion
+    // in the renderer's bounded upload allowance.
+    if (convert) {
+      for (let c = 0; c < want; c++) {
+        words[c] = requantizeShWord(words[c] as number, sourceRange, targetRange);
+      }
+    }
+  }
+  const packed = new Uint32Array(count * want);
+  for (let i = 0; i < count; i++) {
+    packed.set(entries.get(sh.labels[i] as number) as Uint32Array, i * want);
+  }
+  return { bands, packed, range: targetRange ?? sourceRange };
 }
 
 /** The packed word that decodes to 0.0 in every channel under `range`. */
@@ -196,4 +225,26 @@ export function requantizeShWord(word: number, from: ShRange, to: ShRange): numb
     shift += ch === 0 ? 11 : 10;
   }
   return out >>> 0;
+}
+
+/** Shifted channel codes for an exact packed-SH range conversion. */
+export type ShRequantizationLookup = readonly [Uint32Array, Uint32Array, Uint32Array];
+
+/**
+ * Precomputes every 11/10/11 channel code for a fixed pair of chunk/pool ranges.
+ * LCC2 stages many row batches from the same chunk; lookup avoids repeating
+ * range arithmetic and allocating channel arrays for every coefficient.
+ */
+export function createShRequantizationLookup(from: ShRange, to: ShRange): ShRequantizationLookup {
+  const red = new Uint32Array(2048);
+  const green = new Uint32Array(1024);
+  const blue = new Uint32Array(2048);
+  for (let code = 0; code < red.length; code++) {
+    red[code] = requantizeShWord(code, from, to) & 0x7ff;
+    blue[code] = requantizeShWord(code << 21, from, to) & 0xffe00000;
+  }
+  for (let code = 0; code < green.length; code++) {
+    green[code] = requantizeShWord(code << 11, from, to) & 0x1ff800;
+  }
+  return [red, green, blue];
 }

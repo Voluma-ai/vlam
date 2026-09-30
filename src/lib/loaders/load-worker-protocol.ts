@@ -10,6 +10,7 @@
 import type { LccChunkParams } from '../formats/lcc/parse-lcc';
 import type { RemotePlyMetrics } from '../formats/ply/parse-splat-ply-remote';
 import type { RadShCodebook, SplatData } from '../core/splat-data';
+import type { ShRange } from '../core/sh-pack';
 import type { ChunkFileFormat, SerializedSplatLoadError, SplatRequestOptions } from './loading';
 
 /** Where a load's bytes come from. `File` crosses the worker boundary by
@@ -26,6 +27,12 @@ export type LoadWorkerSource =
     }
   | { from: 'file'; file: File };
 
+/** Worker-side palette packing, optionally into an already locked pool range. */
+export interface SogShPackingOptions {
+  packShBands: 1 | 2 | 3;
+  targetRange?: ShRange;
+}
+
 export type LoadWorkerRequest =
   | {
       type: 'load';
@@ -38,7 +45,7 @@ export type LoadWorkerRequest =
       /** Byte range within the single-file `.rad`; required by `rad-chunk`. */
       rad?: RadChunkRangeRequest;
       /** Convert a SOG chunk's palette shN into packed shN at decode (M11). */
-      sog?: { packShBands: 1 | 2 | 3 };
+      sog?: SogShPackingOptions;
       /** A 'directory' chunk's files by name, when it has no directory URL. */
       files?: Readonly<Record<string, string>>;
       /** Report read progress; off unless the caller passed `onProgress`. */

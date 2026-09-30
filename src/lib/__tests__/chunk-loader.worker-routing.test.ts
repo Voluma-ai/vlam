@@ -105,6 +105,18 @@ describe('ChunkLoader routes formats to the right worker', () => {
     expect(workersOfKind('one-shot')).toHaveLength(0);
   });
 
+  it('passes a locked SOG pool range to the streaming worker', async () => {
+    const loader = make();
+    const sog = {
+      packShBands: 3 as const,
+      targetRange: { min: [-1, -2, -3] as const, max: [1, 2, 3] as const },
+    };
+    await loader.load('https://x.test/scene.sog', { sog });
+    expect(workersOfKind('streaming')[0]?.posted).toContainEqual(
+      expect.objectContaining({ format: 'sog', sog }),
+    );
+  });
+
   it('reuses one one-shot worker across concurrent loads', async () => {
     const loader = make();
     await Promise.all([

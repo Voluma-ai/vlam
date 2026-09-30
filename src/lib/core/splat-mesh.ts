@@ -56,7 +56,8 @@ import {
 import {
   neutralShWord as neutralShWordFor,
   packedRangesEqual,
-  requantizeShWord,
+  createShRequantizationLookup,
+  type ShRequantizationLookup,
   type ShRange,
 } from './sh-pack';
 import { UniformGrid } from './splat-query';
@@ -358,6 +359,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private readonly shRange: { min: Vec3Uniform; max: Vec3Uniform };
   /** Set once the first packed-SH chunk has supplied {@link shRange}. */
   private shRangeSet = false;
+  /** The pool range locks once; weak keys let evicted chunk lookups be collected. */
+  private readonly shRequantizationLookups = new WeakMap<ShRange, ShRequantizationLookup>();
   /** Whether SH-less rows were neutral-filled before the scene range locked. */
   private wrotePreLockNeutralSh = false;
 
@@ -1331,11 +1334,18 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       // first chunk) this is a verbatim copy.
       const target = this.currentShRange();
       const requantize = target !== null && !packedRangesEqual(source.range, target);
+      let lookup = requantize ? this.shRequantizationLookups.get(source.range) : undefined;
+      if (requantize && !lookup) {
+        lookup = createShRequantizationLookup(source.range, target);
+        this.shRequantizationLookups.set(source.range, lookup);
+      }
       for (let i = 0; i < data.count; i++) {
         for (let c = 0; c < wanted; c++) {
           const word = source.packed[i * wanted + c] as number;
-          (groups[c >> 2] as Uint32Array)[(destination + i) * 4 + (c & 3)] = requantize
-            ? requantizeShWord(word, source.range, target)
+          (groups[c >> 2] as Uint32Array)[(destination + i) * 4 + (c & 3)] = lookup
+            ? (lookup[0][word & 0x7ff] as number) |
+              (lookup[1][(word >>> 11) & 0x3ff] as number) |
+              (lookup[2][word >>> 21] as number)
             : word;
         }
       }
@@ -1381,7 +1391,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   }
 
   /** The scene's locked packed-SH range as a plain tuple, or null if unset. */
-  private currentShRange(): ShRange | null {
+  protected currentShRange(): ShRange | null {
     if (!this.shRangeSet) return null;
     const { min, max } = this.shRange;
     return {

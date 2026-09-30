@@ -8,6 +8,14 @@ import type { SplatPickOptions, SplatPickResult, UnifiedSourceView } from '../co
 import { isFillConstrainedSplatDevice } from '../core/splat-budget';
 import { WebGpuSortScheduler } from '../core/sort-scheduler';
 import { WorkBuffer, WorkBufferGather } from './work-buffer-gather';
+import {
+  createGatherCache,
+  gatherGeometryMatches,
+  gatherModifiersReusable,
+  gatherShCameraMatches,
+  writeGatherCache,
+  type GatherCacheSnapshot,
+} from './gather-cache';
 import { createWorkBufferMaterial } from './work-buffer-material';
 import type { DisplayColorModifier, FloatUniform, Vec2Uniform } from '../core/splat-mesh-material';
 import { assertStorageBufferFitsDevice } from '../core/webgpu-limits';
@@ -39,18 +47,10 @@ interface SourceRecord {
   visible: boolean;
   /** Whether modifier uniforms are host-invalidated instead of assumed live. */
   cacheModifiers: boolean;
+  /** Refresh SH color without re-running cached modifier geometry. */
+  shColorRefresh: boolean;
   originalVisible: boolean;
-  lastGather: {
-    activeCount: number;
-    contentRevision: number;
-    /** Streamed LOD / slot replacement; not always identical to contentRevision. */
-    activeListVersion: number;
-    offset: number;
-    opacity: number;
-    matrixWorld: THREE.Matrix4;
-    /** Local camera position used by view-dependent SH evaluation. */
-    localCameraPosition: THREE.Vector3;
-  } | null;
+  lastGather: GatherCacheSnapshot | null;
   /** Per-prepare scratch: the source view snapshot for the current frame. */
   view: UnifiedSourceView | null;
   /** Per-prepare scratch: registration index for stable priority ordering. */
@@ -69,6 +69,25 @@ interface LayoutEntry {
 interface UnifiedPublication {
   readonly source: SplatMesh;
   readonly token: number;
+  readonly contentRevision: number;
+  readonly activeListVersion: number;
+  readonly graphRevision: number;
+  readonly offset: number;
+  readonly activeCount: number;
+  readonly effectiveOpacity: number;
+  readonly matrixWorld: THREE.Matrix4;
+}
+
+export interface UnifiedDrawPublicationSnapshot {
+  readonly ready: boolean;
+  readonly publicationRevision: number;
+  readonly renderedPublicationRevision: number;
+  readonly contentRevision: number;
+  readonly orderRevision: number;
+  readonly sourceCount: number;
+  readonly activeCount: number;
+  readonly instanceCount: number;
+  readonly computeProjection: boolean;
 }
 
 /** Registration settings for one source in a {@link UnifiedSplatMesh}. */
@@ -90,6 +109,13 @@ export interface UnifiedSplatSourceOptions {
    * unified work-buffer output stale.
    */
   cacheModifiers?: boolean;
+  /**
+   * When {@link cacheModifiers} is set, refresh only SH color if the camera
+   * moves. Reuses cached SDF visibility, covariance, and world centers.
+   * Defaults to `false` so cached color-writing modifiers keep a full gather.
+   * Hosts should enable this only for visibility-only stacks such as hard clip.
+   */
+  shColorRefresh?: boolean;
 }
 
 /**
@@ -105,7 +131,20 @@ export interface UnifiedSplatPickResult extends SplatPickResult {
  * Construction settings shared by every source in a unified renderer.
  *
  */
+export type UnifiedSplatPrepareStage =
+  | 'setup'
+  | 'sourceUpdate'
+  | 'sourceView'
+  | 'sourceComparison'
+  | 'admission'
+  | 'gather'
+  | 'layout'
+  | 'sortSubmit'
+  | 'publication';
+
 export interface UnifiedSplatMeshOptions {
+  /** Optional synchronous timing sink; omitted in normal rendering. */
+  onPrepareStage?: (stage: UnifiedSplatPrepareStage, durationMs: number) => void;
   /** Vertex projection by default, or an injected experimental projector. */
   projectionStrategy?: SplatProjectionStrategy;
   /**
@@ -142,6 +181,9 @@ export interface UnifiedSplatPerformanceTimings {
   activeCount: number;
   sortSubmitted: boolean;
   gatherDispatches: number;
+  fullGatherDispatches: number;
+  colorGatherDispatches: number;
+  cacheHits: number;
   gatherSlots: number;
   projectionSubmissions: number;
   projectionPasses: number;
@@ -196,6 +238,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   private readonly sorter: SplatSorter;
   private readonly projectedSorter: SplatSorter | null;
   private readonly projectedPipeline: ProjectedSplatPipeline | null;
+  private readonly onPrepareStage: UnifiedSplatMeshOptions['onPrepareStage'];
   private readonly performanceTimingsValue: UnifiedSplatPerformanceTimings = {
     totalMs: 0,
     gatherMs: 0,
@@ -204,6 +247,9 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     activeCount: 0,
     sortSubmitted: false,
     gatherDispatches: 0,
+    fullGatherDispatches: 0,
+    colorGatherDispatches: 0,
+    cacheHits: 0,
     gatherSlots: 0,
     projectionSubmissions: 0,
     projectionPasses: 0,
@@ -249,6 +295,14 @@ export class UnifiedSplatMesh extends THREE.Mesh {
    * shrunk draw range must re-sort (the old permutation indexes past it).
    */
   private previousAdmittedTotal = 0;
+  /**
+   * Last work-buffer count whose GPU order has been allowed to draw. Stays 0
+   * until the first `onSubmittedWorkDone` so the identity fill of `order`
+   * never reaches the canvas.
+   */
+  private orderedDrawCount = 0;
+  /** Count waiting on the in-flight GPU sort, or null. */
+  private pendingOrderedDrawCount: number | null = null;
   private readonly bounds = new THREE.Sphere();
   private readonly focal: Vec2Uniform;
   private readonly viewport: Vec2Uniform;
@@ -277,6 +331,11 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   private readyPublication: readonly UnifiedPublication[] | null = null;
   private queuedPublicationVersion = -1;
   private renderedPublicationVersion = -1;
+  private unifiedContentRevision = 0;
+  private unifiedOrderRevision = 0;
+  private readyPublicationContentRevision = -1;
+  private readyPublicationOrderRevision = -1;
+  private primaryPublicationCamera: THREE.Camera | null = null;
   private disposed = false;
 
   constructor(
@@ -411,6 +470,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.workSourceIndex = new THREE.StorageBufferAttribute(indices, 1);
     this.mirrors = new StorageMirrorReleaser([this.workSourceIndex, this.orderAttribute]);
     this.renderer = renderer;
+    this.onPrepareStage = options.onPrepareStage;
     this.projectedPipeline = projectedPipeline;
     this.computeProjectionActive = projectedPipeline !== null;
     const sortInputs = {
@@ -531,6 +591,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       opacity: options.opacity ?? 1,
       visible: resolvedVisible,
       cacheModifiers: options.cacheModifiers ?? false,
+      shColorRefresh: options.shColorRefresh === true,
       originalVisible: source.visible,
       lastGather: null,
       view: null,
@@ -572,6 +633,28 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     if (record.cacheModifiers === cacheModifiers) return true;
     record.cacheModifiers = cacheModifiers;
     if (!cacheModifiers) record.lastGather = null;
+    return true;
+  }
+
+  /**
+   * Atomically updates the supported cache behavior for an existing source.
+   *
+   * Hosts use this instead of removing and re-adding a source, which would
+   * change its stable sort order, visibility, and pick ownership.
+   */
+  setSourceCachePolicy(
+    source: SplatMesh,
+    policy: Pick<UnifiedSplatSourceOptions, 'cacheModifiers' | 'shColorRefresh'>,
+  ): boolean {
+    this.assertNotDisposed('setSourceCachePolicy');
+    const record = this.sources.find((candidate) => candidate.source === source);
+    if (!record) return false;
+    const cacheModifiers = policy.cacheModifiers === true;
+    const shColorRefresh = cacheModifiers && policy.shColorRefresh === true;
+    if (record.cacheModifiers === cacheModifiers && record.shColorRefresh === shColorRefresh) return true;
+    record.cacheModifiers = cacheModifiers;
+    record.shColorRefresh = shColorRefresh;
+    record.lastGather = null;
     return true;
   }
 
@@ -725,6 +808,56 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   }
 
   /**
+   * Reports whether a primary draw rendered the current gathered content with
+   * its matching sort publication. Positive instanceCount alone is not enough:
+   * compute projection intentionally exposes work-buffer capacity there.
+   */
+  getDrawPublicationSnapshot(): UnifiedDrawPublicationSnapshot {
+    const publication = this.readyPublication;
+    const geometry = this.geometry as THREE.InstancedBufferGeometry;
+    const instanceCount = geometry.instanceCount;
+    const sourcesMatch = publication !== null && publication.every((entry) => {
+      const record = this.sources.find((candidate) => candidate.source === entry.source);
+      const view = record?.view;
+      if (!record?.visible || view === null || view === undefined) return false;
+      return (
+        view.contentRevision === entry.contentRevision &&
+        view.activeListVersion === entry.activeListVersion &&
+        view.graphRevision === entry.graphRevision &&
+        view.activeCount === entry.activeCount &&
+        view.matrixWorld.equals(entry.matrixWorld) &&
+        record.offset === entry.offset &&
+        record.opacity * view.revealMultiplier === entry.effectiveOpacity
+      );
+    });
+    const expectedInstanceCount = this.computeProjectionActive
+      ? this.workBuffer.capacity
+      : this.previousAdmittedTotal;
+    const hasDrawableCount = this.computeProjectionActive
+      ? instanceCount === expectedInstanceCount && this.previousAdmittedTotal > 0
+      : instanceCount === expectedInstanceCount && expectedInstanceCount > 0;
+    const ready =
+      !this.disposed &&
+      publication !== null &&
+      this.readyPublicationVersion === this.renderedPublicationVersion &&
+      this.readyPublicationContentRevision === this.unifiedContentRevision &&
+      this.readyPublicationOrderRevision === this.unifiedOrderRevision &&
+      sourcesMatch &&
+      hasDrawableCount;
+    return {
+      ready,
+      publicationRevision: this.readyPublicationVersion,
+      renderedPublicationRevision: this.renderedPublicationVersion,
+      contentRevision: this.unifiedContentRevision,
+      orderRevision: this.unifiedOrderRevision,
+      sourceCount: publication?.length ?? 0,
+      activeCount: this.previousAdmittedTotal,
+      instanceCount,
+      computeProjection: this.computeProjectionActive,
+    };
+  }
+
+  /**
    * Re-sorts and draws this unified source list for a secondary camera.
    * Mirrors and portals use this instead of rendering the hidden source meshes
    * individually, so their reflection keeps one global transparent order.
@@ -747,6 +880,10 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     // it leaves a foreign order in the shared buffer - invalidate afterwards so
     // the next primary update re-sorts even if its camera has not moved.
     const targetSize = target ? this.secondaryViewSize.set(target.width, target.height) : undefined;
+    // This draw replaces the shared GPU order with a mirror-specific order.
+    // It cannot satisfy primary-view readiness.
+    this.readyPublicationVersion = -1;
+    this.readyPublication = null;
     this.prepare(camera, targetSize, true);
     const previousTarget = renderer.getRenderTarget();
     try {
@@ -767,12 +904,16 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     forceSort = false,
   ): void {
     const prepareStartedAt = performance.now();
+    const onPrepareStage = this.onPrepareStage;
     const refinementFrame = forceSort ? this.refinementFrameNumber : ++this.refinementFrameNumber;
     const holdForRefinementSort =
       !forceSort && this.sortScheduler.beginSubmissionFrame(refinementFrame, prepareStartedAt);
     let gatherMs = 0;
     let sortSubmitted = false;
     let gatherDispatches = 0;
+    let fullGatherDispatches = 0;
+    let colorGatherDispatches = 0;
+    let cacheHits = 0;
     const projectionSubmissionsBefore = this.projectedPipeline?.projectionDispatches ?? 0;
     const sortSubmissionsBefore =
       (this.sorter.submissionCount ?? 0) + (this.projectedSorter?.submissionCount ?? 0);
@@ -791,6 +932,14 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     // the application camera would order the scene from wherever that camera
     // was left standing.
     const xrView = targetSize ? null : resolveXrView(camera, this.renderer);
+    // Three replaces the application camera with its XR head for immersive
+    // output draws. A forced secondary preparation cannot acknowledge primary
+    // content, even when Three substitutes that same head for its callback.
+    this.primaryPublicationCamera = forceSort
+      ? null
+      : this.renderer.xr?.enabled === true && xrView !== null
+        ? xrView.head
+        : camera;
     this.sortScheduler.setXrJitterTolerance(xrView !== null);
     this.setComputeProjectionActive(
       this.projectedPipeline !== null && this.renderer.xr?.isPresenting !== true,
@@ -809,14 +958,29 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     const focalX = projection[0] ?? 0;
     const focalY = projection[5] ?? 0;
     this.focal.value.set((focalX * viewport.x) / 2, (focalY * viewport.y) / 2);
+    if (onPrepareStage) {
+      const endedAt = performance.now();
+      onPrepareStage('setup', endedAt - prepareStartedAt);
+    }
     const updated = this.candidateScratch;
     updated.length = 0;
     for (let i = 0; i < this.sources.length; i++) {
       const record = this.sources[i] as SourceRecord;
       // Children take the application camera: they resolve the XR view for
       // themselves, and a streamed source needs it for LOD scheduling.
+      const sourceUpdateStartedAt = onPrepareStage ? performance.now() : 0;
       record.source.update(camera, this.renderer, { sort: false });
+      if (onPrepareStage) {
+        const endedAt = performance.now();
+        onPrepareStage('sourceUpdate', endedAt - sourceUpdateStartedAt);
+      }
+      const sourceViewStartedAt = onPrepareStage ? performance.now() : 0;
       const view = record.source.getUnifiedSourceView();
+      if (onPrepareStage) {
+        const endedAt = performance.now();
+        onPrepareStage('sourceView', endedAt - sourceViewStartedAt);
+      }
+      const comparisonStartedAt = onPrepareStage ? performance.now() : 0;
       if (
         record.view === null ||
         record.view.activeCount !== view.activeCount ||
@@ -826,6 +990,10 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         !record.view.matrixWorld.equals(view.matrixWorld)
       ) {
         contentChanged = true;
+      }
+      if (onPrepareStage) {
+        const endedAt = performance.now();
+        onPrepareStage('sourceComparison', endedAt - comparisonStartedAt);
       }
       if (holdForRefinementSort) continue;
       record.view = view;
@@ -839,6 +1007,9 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       this.performanceTimingsValue.sortSubmitMs = 0;
       this.performanceTimingsValue.sortSubmitted = false;
       this.performanceTimingsValue.gatherDispatches = 0;
+      this.performanceTimingsValue.fullGatherDispatches = 0;
+      this.performanceTimingsValue.colorGatherDispatches = 0;
+      this.performanceTimingsValue.cacheHits = 0;
       this.performanceTimingsValue.gatherSlots = this.previousAdmittedTotal;
       this.performanceTimingsValue.projectionSubmissions = 0;
       this.performanceTimingsValue.projectionPasses = 0;
@@ -856,6 +1027,11 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       this.performanceTimingsValue.sortInputCount = submission.inputCount;
       return;
     }
+    if (!this.sortScheduler.hasSubmissionInFlight() && this.pendingOrderedDrawCount !== null) {
+      this.orderedDrawCount = this.pendingOrderedDrawCount;
+      this.pendingOrderedDrawCount = null;
+    }
+    const admissionStartedAt = onPrepareStage ? performance.now() : 0;
     // Overflow is deterministic and region-safe: preserve whole sources rather
     // than gathering a prefix of a streamed cut. Higher priority wins; matching
     // priorities retain registration order.
@@ -903,11 +1079,13 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       this.bounds.union(view.worldBounds);
       offset += view.activeCount;
     }
+    if (onPrepareStage) onPrepareStage('admission', performance.now() - admissionStartedAt);
 
     // Geometry under the draw order changed (layout, active cut, transform,
-    // opacity, content revision). Camera-only SH / modifier color refreshes
-    // re-gather the *same* world centers and must not force a sort.
+    // opacity, content revision). Camera-only SH color refreshes reuse cached
+    // SDF / covariance and must not force a sort.
     let geometryInvalidated = false;
+    const gatherStartedAt = onPrepareStage ? performance.now() : 0;
     for (const record of admitted) {
       const view = record.view as UnifiedSourceView;
       const sliceOffset = record.offset;
@@ -920,27 +1098,36 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       const effectiveOpacity = record.opacity * view.revealMultiplier;
       const geometryMatches =
         last !== null &&
-        ownedSameSlice &&
-        last.activeCount === view.activeCount &&
-        last.contentRevision === view.contentRevision &&
-        last.activeListVersion === view.activeListVersion &&
-        last.offset === sliceOffset &&
-        last.opacity === effectiveOpacity &&
-        last.matrixWorld.equals(view.matrixWorld);
+        gatherGeometryMatches(last, view, sliceOffset, ownedSameSlice, effectiveOpacity);
+      const modifiersReusable = gatherModifiersReusable(view, record.cacheModifiers);
+      const shCameraMatches = last !== null && gatherShCameraMatches(last, view);
       const reusable =
         geometryMatches &&
-        // SH depends on camera position, not orientation. A stationary camera
-        // can reuse the resolved colors instead of re-running a full-source
-        // gather every frame; camera motion invalidates only SH-bearing slices.
-        (view.sh === null || last.localCameraPosition.equals(view.localCameraPosition.value)) &&
-        (view.modifiers.length === 0 || record.cacheModifiers) &&
+        shCameraMatches &&
+        modifiersReusable &&
         // Belt-and-braces: a placed pool's splats move without its own
         // `matrixWorld` changing, so a cached gather would go stale silently.
         // `addSource` already rejects these.
         !view.hasSourcePlacement;
-      if (!reusable) {
-        gatherDispatches++;
-        const gatherStartedAt = performance.now();
+      if (reusable) {
+        cacheHits++;
+        continue;
+      }
+      gatherDispatches++;
+      const gatherStartedAt = performance.now();
+      const colorOnly =
+        geometryMatches &&
+        modifiersReusable &&
+        record.shColorRefresh &&
+        !view.hasSourcePlacement &&
+        view.sh !== null &&
+        last !== null &&
+        !shCameraMatches;
+      if (colorOnly) {
+        colorGatherDispatches++;
+        record.gather.gatherColors(this.renderer, view.activeCount, sliceOffset);
+      } else {
+        fullGatherDispatches++;
         record.gather.gather(
           this.renderer,
           view.activeCount,
@@ -949,31 +1136,22 @@ export class UnifiedSplatMesh extends THREE.Mesh {
           viewCamera.matrixWorldInverse,
           effectiveOpacity,
         );
-        gatherMs += performance.now() - gatherStartedAt;
         if (!geometryMatches) geometryInvalidated = true;
-        if (record.lastGather === null) {
-          record.lastGather = {
-            activeCount: view.activeCount,
-            contentRevision: view.contentRevision,
-            activeListVersion: view.activeListVersion,
-            offset: sliceOffset,
-            opacity: effectiveOpacity,
-            matrixWorld: view.matrixWorld.clone(),
-            localCameraPosition: view.localCameraPosition.value.clone(),
-          };
-        } else {
-          record.lastGather.activeCount = view.activeCount;
-          record.lastGather.contentRevision = view.contentRevision;
-          record.lastGather.activeListVersion = view.activeListVersion;
-          record.lastGather.offset = sliceOffset;
-          record.lastGather.opacity = effectiveOpacity;
-          record.lastGather.matrixWorld.copy(view.matrixWorld);
-          record.lastGather.localCameraPosition.copy(view.localCameraPosition.value);
-        }
       }
+      gatherMs += performance.now() - gatherStartedAt;
+      if (record.lastGather === null) {
+        record.lastGather = createGatherCache(view, sliceOffset, effectiveOpacity);
+      } else {
+        writeGatherCache(record.lastGather, view, sliceOffset, effectiveOpacity);
+      }
+    }
+    if (onPrepareStage) {
+      const endedAt = performance.now();
+      onPrepareStage('gather', endedAt - gatherStartedAt);
     }
 
     // Commit ownership only after every gather for this preparation has run.
+    const layoutStartedAt = onPrepareStage ? performance.now() : 0;
     let layoutChanged =
       admitted.length !== this.previousLayout.length || offset !== this.previousAdmittedTotal;
     this.previousAdmittedTotal = offset;
@@ -1001,11 +1179,17 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       for (const entry of this.previousLayout) this.previousLayoutBySource.set(entry.source, entry);
     }
 
+    if (geometryInvalidated || layoutChanged) this.unifiedContentRevision++;
+
     // Work-buffer *geometry* moved underneath the current draw order: the next
     // sort must run whatever the camera did. Camera-driven SH/modifier color
     // refreshes re-gather without geometryInvalidated and deliberately skip
     // this. DoF is a live draw uniform and reaches neither branch.
     if (geometryInvalidated || layoutChanged) this.sortScheduler.invalidateContent();
+    if (onPrepareStage) {
+      const endedAt = performance.now();
+      onPrepareStage('layout', endedAt - layoutStartedAt);
+    }
 
     let sortReady = offset === 0;
     const sortStartedAt = performance.now();
@@ -1053,23 +1237,51 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       }
     }
     const sortSubmitMs = performance.now() - sortStartedAt;
+    if (onPrepareStage) {
+      const endedAt = performance.now();
+      onPrepareStage('sortSubmit', endedAt - sortStartedAt);
+    }
     if (sortSubmitted && !forceSort) this.sortScheduler.markSubmission(refinementFrame, offset);
     const projectionSubmissionsAfter = this.projectedPipeline?.projectionDispatches ?? 0;
     const sortSubmissionsAfter =
       (this.sorter.submissionCount ?? 0) + (this.projectedSorter?.submissionCount ?? 0);
+    const publicationStartedAt = onPrepareStage ? performance.now() : 0;
     if (sortReady && offset > 0) {
+      if (sortSubmitted) this.unifiedOrderRevision++;
       this.readyPublicationVersion = ++this.unifiedPublicationVersion;
-      this.readyPublication = admitted.map((record) => ({
-        source: record.source,
-        token: (record.view as UnifiedSourceView).activeListVersion,
-      }));
+      this.readyPublicationContentRevision = this.unifiedContentRevision;
+      this.readyPublicationOrderRevision = this.unifiedOrderRevision;
+      this.readyPublication = admitted.map((record) => {
+        const view = record.view as UnifiedSourceView;
+        return {
+          source: record.source,
+          token: view.activeListVersion,
+          contentRevision: view.contentRevision,
+          activeListVersion: view.activeListVersion,
+          graphRevision: view.graphRevision,
+          offset: record.offset,
+          activeCount: view.activeCount,
+          effectiveOpacity: record.opacity * view.revealMultiplier,
+          matrixWorld: view.matrixWorld.clone(),
+        };
+      });
     } else if (geometryInvalidated || layoutChanged || offset === 0) {
       this.readyPublicationVersion = -1;
       this.readyPublication = null;
+      this.readyPublicationContentRevision = -1;
+      this.readyPublicationOrderRevision = -1;
     }
-    (this.geometry as THREE.InstancedBufferGeometry).instanceCount = this.computeProjectionActive
-      ? this.workBuffer.capacity
-      : offset;
+    this.publishOrderedInstanceCount(
+      offset,
+      geometryInvalidated,
+      layoutChanged,
+      sortSubmitted,
+      forceSort,
+    );
+    if (onPrepareStage) {
+      const endedAt = performance.now();
+      onPrepareStage('publication', endedAt - publicationStartedAt);
+    }
     // Both are uploaded by the first frame's gather/sort dispatches, and neither
     // is ever read back - see the field comment. The work buffer's own mirrors
     // are released by `WorkBufferGather.gather`.
@@ -1081,6 +1293,9 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.performanceTimingsValue.activeCount = offset;
     this.performanceTimingsValue.sortSubmitted = sortSubmitted;
     this.performanceTimingsValue.gatherDispatches = gatherDispatches;
+    this.performanceTimingsValue.fullGatherDispatches = fullGatherDispatches;
+    this.performanceTimingsValue.colorGatherDispatches = colorGatherDispatches;
+    this.performanceTimingsValue.cacheHits = cacheHits;
     this.performanceTimingsValue.gatherSlots = offset;
     this.performanceTimingsValue.projectionSubmissions = Math.max(
       0,
@@ -1105,6 +1320,28 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.performanceTimingsValue.sortTracking = submission.tracking;
     this.performanceTimingsValue.sortAcknowledgementMs = submission.acknowledgementMs;
     this.performanceTimingsValue.sortInputCount = submission.inputCount;
+  }
+
+  private publicationCanDraw(publication: readonly UnifiedPublication[]): boolean {
+    if (publication.length === 0) return false;
+    for (const entry of publication) {
+      const record = this.sources.find((candidate) => candidate.source === entry.source);
+      const view = record?.view;
+      if (!record?.visible || view === null || view === undefined) return false;
+      if (
+        view.contentRevision !== entry.contentRevision ||
+        view.activeListVersion !== entry.activeListVersion ||
+        view.graphRevision !== entry.graphRevision ||
+        view.activeCount !== entry.activeCount ||
+        !view.matrixWorld.equals(entry.matrixWorld) ||
+        record.offset !== entry.offset ||
+        record.opacity * view.revealMultiplier !== entry.effectiveOpacity
+      ) return false;
+    }
+    const instanceCount = (this.geometry as THREE.InstancedBufferGeometry).instanceCount;
+    return this.computeProjectionActive
+      ? instanceCount === this.workBuffer.capacity && this.previousAdmittedTotal > 0
+      : instanceCount === this.previousAdmittedTotal && this.previousAdmittedTotal > 0;
   }
 
   override onAfterRender(
@@ -1136,10 +1373,14 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     const publication = this.readyPublication;
     if (
       this.disposed ||
+      _camera !== this.primaryPublicationCamera ||
       version < 0 ||
       publication === null ||
       this.renderedPublicationVersion === version ||
-      this.queuedPublicationVersion === version
+      this.queuedPublicationVersion === version ||
+      !this.publicationCanDraw(publication) ||
+      this.readyPublicationContentRevision !== this.unifiedContentRevision ||
+      this.readyPublicationOrderRevision !== this.unifiedOrderRevision
     )
       return;
     this.queuedPublicationVersion = version;
@@ -1160,6 +1401,9 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.unifiedContentRevision++;
+    this.readyPublicationVersion = -1;
+    this.readyPublication = null;
     // THREE.Mesh has no dispose method. Release our owned resources below;
     // throwing here leaves the host without a rebuilt globally sorted draw.
     for (const record of this.sources) {
@@ -1194,6 +1438,65 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       this.workSourceIndex,
       this.orderAttribute,
     ]);
+  }
+
+  private hasGpuCompletionQueue(): boolean {
+    const queue = (
+      this.renderer.backend as unknown as {
+        device?: { queue?: { onSubmittedWorkDone?: () => Promise<void> } };
+      }
+    ).device?.queue;
+    return typeof queue?.onSubmittedWorkDone === 'function';
+  }
+
+  /**
+   * Draw through a GPU-sorted order, not the identity fill of `order`.
+   * Hosts without `onSubmittedWorkDone` (unit mocks) still publish `offset`
+   * on the submitting frame so tests that run a single `update()` stay valid.
+   */
+  private publishOrderedInstanceCount(
+    offset: number,
+    geometryInvalidated: boolean,
+    layoutChanged: boolean,
+    sortSubmitted: boolean,
+    forceSort: boolean,
+  ): void {
+    if (sortSubmitted && this.hasGpuCompletionQueue() && !forceSort) {
+      this.pendingOrderedDrawCount = offset;
+    }
+    const geometry = this.geometry as THREE.InstancedBufferGeometry;
+    if (this.computeProjectionActive) {
+      geometry.instanceCount = this.workBuffer.capacity;
+      return;
+    }
+    if (offset === 0) {
+      this.orderedDrawCount = 0;
+      this.pendingOrderedDrawCount = null;
+      geometry.instanceCount = 0;
+      return;
+    }
+    const waitForGpuSort =
+      !forceSort && this.hasGpuCompletionQueue() && this.sortScheduler.hasSubmissionInFlight();
+    if (waitForGpuSort) {
+      // Compute dispatches are submitted before the render pass on the same
+      // WebGPU queue. Once a first order exists, a newly submitted GPU sort
+      // can draw its replacement cut in that same frame. Hiding it until the
+      // completion callback blanks every LOD swap during camera motion.
+      if (sortSubmitted && this.orderedDrawCount > 0 && this.sorter.kind !== 'worker') {
+        geometry.instanceCount = offset;
+        return;
+      }
+      // The first sort still waits for a completed order. If another pass
+      // owns the buffer, changed content cannot draw through its old order.
+      geometry.instanceCount =
+        geometryInvalidated || layoutChanged || this.orderedDrawCount === 0
+          ? 0
+          : this.orderedDrawCount;
+      return;
+    }
+    this.orderedDrawCount = offset;
+    this.pendingOrderedDrawCount = null;
+    geometry.instanceCount = offset;
   }
 
   private setComputeProjectionActive(active: boolean): void {

@@ -36,7 +36,11 @@ export type {
   RadChunkRangeRequest,
   LoadWorkerResponse,
 } from './load-worker-protocol';
-import type { LoadWorkerSource, RadChunkRangeRequest } from './load-worker-protocol';
+import type {
+  LoadWorkerSource,
+  RadChunkRangeRequest,
+  SogShPackingOptions,
+} from './load-worker-protocol';
 
 serveLoadRequests((message, signal, onProgress) =>
   load(
@@ -59,7 +63,7 @@ async function load(
   lcc?: LccChunkParams,
   rad?: RadChunkRangeRequest,
   files?: Readonly<Record<string, string>>,
-  sog?: { packShBands: 1 | 2 | 3 },
+  sog?: SogShPackingOptions,
   resourceId?: string,
   onProgress?: SplatProgressCallback,
 ): Promise<SplatData | RemotePlyResult> {
@@ -69,7 +73,7 @@ async function load(
       ...(source.request ? { request: source.request } : {}),
       ...(files ? { files } : {}),
     });
-    return sog ? packSogShN(data, sog.packShBands) : data;
+    return sog ? packSogShN(data, sog) : data;
   }
   if (format === 'lcc-bin') {
     if (source.from !== 'url') throw new Error('LCC chunks must be loaded from a URL.');
@@ -119,7 +123,7 @@ async function load(
         return parseSplatPly(buffer);
       case 'sog': {
         const data = await parseSog(buffer, { signal });
-        return sog ? packSogShN(data, sog.packShBands) : data;
+        return sog ? packSogShN(data, sog) : data;
       }
       case 'rad':
         return parseRad(buffer);
@@ -140,9 +144,9 @@ async function load(
  * returned unchanged - the pool neutral-fills those splats. Runs in the worker,
  * off the main thread.
  */
-function packSogShN(data: SplatData, bands: 1 | 2 | 3): SplatData {
+function packSogShN(data: SplatData, options: SogShPackingOptions): SplatData {
   if (!data.sh) return data;
-  const shPacked = packPaletteSh(data.sh, data.count, bands);
+  const shPacked = packPaletteSh(data.sh, data.count, options.packShBands, options.targetRange);
   const { sh: _dropped, ...rest } = data;
   return { ...rest, shPacked };
 }

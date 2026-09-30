@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createShRequantizationLookup,
   packPaletteSh,
   packShCoefficients,
   packedRangesEqual,
@@ -91,6 +92,65 @@ describe('packPaletteSh', () => {
     }
   });
 
+  it.each([1, 2, 3] as const)(
+    'preserves exact band-%i words without measuring unused palette entries',
+    (bands) => {
+      const entries = [
+        Array.from({ length: 8 }, (_, c) => [0.125 * c, -0.3 * c, 0.2 * c]),
+        Array.from({ length: 8 }, (_, c) => [-0.7 * c, 0.4 * c, 0.6 * c]),
+        Array.from({ length: 8 }, () => [1000, -1000, 1000]), // unused
+      ];
+      const labels = [1, 1, 0, 1, 0];
+      const sh = paletteSource(2, entries, labels);
+      const words = shCoefficientCount(bands);
+      const expanded = new Float32Array(labels.length * words * 3);
+      labels.forEach((label, i) => {
+        for (let c = 0; c < Math.min(words, 8); c++) {
+          expanded.set(entries[label]![c]!, (i * words + c) * 3);
+        }
+      });
+      expect(packPaletteSh(sh, labels.length, bands)).toEqual(
+        packShCoefficients(expanded, labels.length, bands),
+      );
+    },
+  );
+
+  it.each([1, 2, 3] as const)(
+    'preconverts band-%i palette words exactly into the pool range',
+    (bands) => {
+      const sh = paletteSource(
+        1,
+        [
+          [
+            [0.5, -0.5, 1],
+            [-1, 0.25, -0.75],
+            [0.1, -0.2, 0.3],
+          ],
+          [
+            [-2, 1.5, 0],
+            [0, -1.25, 2],
+            [1, 1, -1],
+          ],
+        ],
+        [1, 0, 1, 1, 0],
+      );
+      const original = packPaletteSh(sh, 5, bands);
+      const ranges: ShRange[] = [
+        { min: [-1, -0.25, -3], max: [1, 2, 0.5] },
+        { min: [0, 0, 0], max: [0, 0, 0] },
+        original.range,
+      ];
+      for (const range of ranges) {
+        const preconverted = packPaletteSh(sh, 5, bands, range);
+        expect(preconverted.range).toEqual(range);
+        const expected = packedRangesEqual(original.range, range)
+          ? original.packed
+          : original.packed.map((word) => requantizeShWord(word, original.range, range));
+        expect(preconverted.packed).toEqual(expected);
+      }
+    },
+  );
+
   it('throws on a label outside the palette instead of NaN-poisoning the range', () => {
     // Labels are 16-bit and the parser validates only the labels image, not
     // the values. Reading past the palette yields NaN coefficients, and a NaN
@@ -145,5 +205,24 @@ describe('packedRangesEqual', () => {
     const a: ShRange = { min: [-1, -2, -3], max: [1, 2, 3] };
     expect(packedRangesEqual(a, { min: [-1, -2, -3], max: [1, 2, 3] })).toBe(true);
     expect(packedRangesEqual(a, { min: [-1, -2, -3], max: [1, 2, 3.5] })).toBe(false);
+  });
+});
+
+describe('createShRequantizationLookup', () => {
+  it.each([
+    { min: [-1, -2, -3] as const, max: [1, 2, 3] as const },
+    { min: [0.125, -4.25, 7] as const, max: [0.875, 2.75, 7] as const },
+    { min: [0, 0, 0] as const, max: [0, 0, 0] as const },
+  ])('matches scalar requantization for every channel code, including clipping: %j', (to) => {
+    const from: ShRange = { min: [-2.3, -3.75, 0] as const, max: [5.1, 1.25, 0] as const };
+    const lookup = createShRequantizationLookup(from, to);
+    for (let code = 0; code < 2048; code++) {
+      // Exercise all channel codes, signed high bits, and mixed input words.
+      const word = (code | ((code & 0x3ff) << 11) | ((2047 - code) << 21)) >>> 0;
+      const converted =
+        (lookup[0][word & 0x7ff]! | lookup[1][(word >>> 11) & 0x3ff]! | lookup[2][word >>> 21]!) >>>
+        0;
+      expect(converted).toBe(requantizeShWord(word, from, to));
+    }
   });
 });
