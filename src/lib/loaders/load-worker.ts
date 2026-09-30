@@ -14,6 +14,7 @@ import {
   toSplatLoadError,
   type ChunkFileFormat,
   type SplatProgressCallback,
+  type SplatLoadStatus,
 } from './loading';
 
 /**
@@ -42,7 +43,7 @@ import type {
   SogShPackingOptions,
 } from './load-worker-protocol';
 
-serveLoadRequests((message, signal, onProgress) =>
+serveLoadRequests((message, signal, onProgress, onStatus) =>
   load(
     message.source,
     message.format,
@@ -53,6 +54,7 @@ serveLoadRequests((message, signal, onProgress) =>
     message.sog,
     message.resourceId,
     onProgress,
+    onStatus,
   ),
 );
 
@@ -66,8 +68,11 @@ async function load(
   sog?: SogShPackingOptions,
   resourceId?: string,
   onProgress?: SplatProgressCallback,
+  onStatus?: (status: SplatLoadStatus) => void,
 ): Promise<SplatData | RemotePlyResult> {
+  signal.throwIfAborted();
   if (source.from === 'url' && source.kind === 'directory') {
+    onStatus?.('reading-and-decoding');
     const data = await parseSogDirectory(source.url, {
       signal,
       ...(source.request ? { request: source.request } : {}),
@@ -78,17 +83,18 @@ async function load(
   if (format === 'lcc-bin') {
     if (source.from !== 'url') throw new Error('LCC chunks must be loaded from a URL.');
     if (!lcc) throw new Error('LCC chunk request is missing its byte range.');
-    return loadLccChunk(source, lcc, signal);
+    return loadLccChunk(source, lcc, signal, onStatus);
   }
   if (format === 'rad-chunk') {
     if (source.from !== 'url') throw new Error('RAD chunks must be loaded from a URL.');
     if (!rad) throw new Error('RAD chunk request is missing its byte range.');
-    return loadRadChunk(source, rad, signal);
+    return loadRadChunk(source, rad, signal, onStatus);
   }
   const label = source.from === 'url' ? source.url : source.file.name;
   // A local PLY is streamed: a raw 3DGS export can run past the 2 GiB a
   // browser will read in one piece, and its records are fixed-stride.
   if (source.from === 'file' && format === 'ply') {
+    onStatus?.('reading-and-decoding');
     try {
       return await parseSplatPlyFile(source.file, {
         signal,
@@ -100,6 +106,7 @@ async function load(
     }
   }
   if (source.from === 'url' && format === 'ply' && experiments.remotePly !== 'buffered') {
+    onStatus?.('reading-and-decoding');
     const response = await fetchWholeResponse(source.url, source.request, signal);
     try {
       return await parseSplatPlyRemote(response, {
@@ -113,10 +120,15 @@ async function load(
       throw toSplatLoadError(error, { phase: 'decode', url: label });
     }
   }
+  signal.throwIfAborted();
+  onStatus?.('reading');
   const buffer =
     source.from === 'url'
       ? await fetchBuffer(source.url, source.request, signal, onProgress)
       : await readWholeFile(source.file);
+  signal.throwIfAborted();
+  if (source.from === 'file') onProgress?.(source.file.size, source.file.size);
+  onStatus?.('decoding');
   try {
     switch (format) {
       case 'ply':
@@ -162,7 +174,9 @@ async function loadLccChunk(
   source: Extract<LoadWorkerSource, { from: 'url' }>,
   lcc: LccChunkParams,
   signal: AbortSignal,
+  onStatus?: (status: SplatLoadStatus) => void,
 ): Promise<SplatData> {
+  onStatus?.('reading');
   const url = stripFragment(source.url);
   const sh = lcc.sh?.source === 'sidecar' ? lcc.sh : undefined;
   const [buffer, shBuffer] = await Promise.all([
@@ -174,6 +188,8 @@ async function loadLccChunk(
         fetchRange(sh.url, lcc.start * 2, lcc.length * 2, source.request, signal),
   ]);
   try {
+    signal.throwIfAborted();
+    onStatus?.('decoding');
     return await parseLccChunk(buffer, lcc, shBuffer, signal);
   } catch (error) {
     if (isAbortError(error)) throw error;
@@ -190,15 +206,20 @@ async function loadRadChunk(
   source: Extract<LoadWorkerSource, { from: 'url' }>,
   rad: RadChunkRangeRequest,
   signal: AbortSignal,
+  onStatus?: (status: SplatLoadStatus) => void,
 ): Promise<SplatData> {
+  onStatus?.('reading');
   const url = stripFragment(source.url);
   // A single-file `.rad` chunk is a byte range; an external `.radc` file is
   // fetched whole (its own CDN-cacheable object).
+  signal.throwIfAborted();
   const buffer =
     rad.start !== undefined && rad.length !== undefined
       ? await fetchRange(url, rad.start, rad.length, source.request, signal)
       : await fetchBuffer(url, source.request, signal);
   try {
+    signal.throwIfAborted();
+    onStatus?.('decoding');
     return await parseRadChunkStreaming(buffer, rad.shCodebook, rad.shExtent, rad.reorder ?? true);
   } catch (error) {
     if (isAbortError(error)) throw error;

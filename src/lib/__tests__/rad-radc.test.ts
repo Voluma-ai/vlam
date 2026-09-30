@@ -222,6 +222,33 @@ describe('buildRadScene prefix-vs-foveated choice', () => {
 
   const options = { lodBaseDistance: 10, lodMultiplier: 2 };
 
+  it.each([1, 2])('stops bootstrap on abort during request %i', async (abortRequest) => {
+    stubScene();
+    const originalFetch = globalThis.fetch;
+    const controller = new AbortController();
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls++;
+        expect(init?.signal).toBe(controller.signal);
+        if (calls === abortRequest) {
+          controller.abort();
+          throw new DOMException('aborted', 'AbortError');
+        }
+        return originalFetch(url, init);
+      }),
+    );
+    await expect(
+      buildRadScene(httpDatasetSource('http://host/scene.rad'), {
+        ...options,
+        budget: 4,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(calls).toBe(abortRequest);
+  });
+
   it('takes the prefix reader when the lifted budget holds every leaf', async () => {
     // Desktop: `liftBudgetToFinestLevel` raises a moderate capture's budget to
     // its leaf count, so the prefix reader reaches full resolution everywhere -
@@ -241,14 +268,11 @@ describe('buildRadScene prefix-vs-foveated choice', () => {
 
   it('forces the page-table reader for a fitting capture when requested', async () => {
     stubScene();
-    const scene = await buildRadScene(
-      httpDatasetSource('http://host/scene.rad'),
-      { ...options, budget: 4 },
-      undefined,
-      3,
-      true,
-      'page-table',
-    );
+    const scene = await buildRadScene(httpDatasetSource('http://host/scene.rad'), {
+      ...options,
+      budget: 4,
+      radStrategy: 'page-table',
+    });
     expect(scene.foveation).toBeDefined();
   });
 
@@ -284,13 +308,11 @@ describe('buildRadScene prefix-vs-foveated choice', () => {
     // would put every such mesh back on the camera-independent prefix reader,
     // which is the multi-mesh version of the same blur.
     stubScene();
-    const scene = await buildRadScene(
-      httpDatasetSource('http://host/scene.rad'),
-      { ...options, budget: 4 },
-      undefined,
-      3,
-      false,
-    );
+    const scene = await buildRadScene(httpDatasetSource('http://host/scene.rad'), {
+      ...options,
+      budget: 4,
+      budgetLifts: false,
+    });
     expect(scene.foveation).toBeDefined();
   });
 });

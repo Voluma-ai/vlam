@@ -411,14 +411,14 @@ async function decodeWebpViaGpu(
     colorSpaceConversion: 'none',
     premultiplyAlpha: 'none',
   });
-  const texture = context.createTexture();
-  const framebuffer = context.createFramebuffer();
-  if (!texture || !framebuffer) {
-    bitmap.close();
-    throw new Error('Could not allocate a WebGL texture for SOG WebP decoding.');
-  }
-
+  let texture: WebGLTexture | null = null;
+  let framebuffer: WebGLFramebuffer | null = null;
   try {
+    texture = context.createTexture();
+    framebuffer = context.createFramebuffer();
+    if (!texture || !framebuffer) {
+      throw new Error('Could not allocate a WebGL texture for SOG WebP decoding.');
+    }
     context.bindTexture(context.TEXTURE_2D, texture);
     context.pixelStorei(context.UNPACK_FLIP_Y_WEBGL, false);
     context.pixelStorei(context.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
@@ -482,14 +482,20 @@ async function decodeWebp(bytes: Uint8Array): Promise<DecodedImage> {
       type: 'image/webp',
       colorSpaceConversion: 'none',
     });
-    const { image } = await decoder.decode();
-    const width = image.codedWidth;
-    const height = image.codedHeight;
-    const data = new Uint8Array(width * height * 4);
-    await image.copyTo(data, { format: 'RGBA' });
-    image.close();
-    decoder.close();
-    return { width, height, data };
+    try {
+      const { image } = await decoder.decode();
+      try {
+        const width = image.codedWidth;
+        const height = image.codedHeight;
+        const data = new Uint8Array(width * height * 4);
+        await image.copyTo(data, { format: 'RGBA' });
+        return { width, height, data };
+      } finally {
+        image.close();
+      }
+    } finally {
+      decoder.close();
+    }
   }
 
   // Fallback: canvas readback. The premultiply round-trip can cost ±1 bit
@@ -502,15 +508,18 @@ async function decodeWebp(bytes: Uint8Array): Promise<DecodedImage> {
     premultiplyAlpha: 'none',
     colorSpaceConversion: 'none',
   });
-  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error('Could not create a 2D canvas context.');
-  context.drawImage(bitmap, 0, 0);
-  const imageData = context.getImageData(0, 0, bitmap.width, bitmap.height);
-  bitmap.close();
-  return {
-    width: imageData.width,
-    height: imageData.height,
-    data: new Uint8Array(imageData.data.buffer),
-  };
+  try {
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Could not create a 2D canvas context.');
+    context.drawImage(bitmap, 0, 0);
+    const imageData = context.getImageData(0, 0, bitmap.width, bitmap.height);
+    return {
+      width: imageData.width,
+      height: imageData.height,
+      data: new Uint8Array(imageData.data.buffer),
+    };
+  } finally {
+    bitmap.close();
+  }
 }

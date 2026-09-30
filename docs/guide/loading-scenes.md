@@ -119,11 +119,33 @@ export async function loadWithFeedback(url: string): Promise<SplatMesh | null> {
 
 ## Progress
 
-`onProgress(loaded, total)` reports bytes as they are read, a determinate
-progress bar for downloads and file reads. It is throttled to ~10/s in the
-worker, always starts at 0, and always ends exactly at `total`. Two spinner
-cases: a format that must be decoded whole reports only on completion, and
-`total` is 0 when the response carries no `Content-Length`.
+`onProgress(loaded, total)` reports bytes read, throttled to roughly 10 updates
+per second in the worker. `total` is 0 when the length is unknown. Local
+whole-file reads report their complete byte count before decoding; byte
+completion does not mean the load has finished.
+
+Use `onStatus` for the current operation, independently of byte progress:
+
+```ts
+import { loadSplatData } from '@voluma/vlam/loaders';
+
+const data = await loadSplatData('/capture.splat', {
+  onStatus: (status) => {
+    // initializing | reading | reading-and-decoding | decoding
+    statusLabel.textContent = status;
+  },
+  onProgress: (loaded, total) => {
+    progressLabel.textContent = total > 0 ? `${loaded} / ${total}` : `${loaded} bytes`;
+  },
+});
+```
+
+<!-- full file: docs/guide/samples/loading-status.ts -->
+
+`SplatLoadStatus` is exported from `/loaders` and `/streaming`. Status and
+progress callbacks belong to that load and stop after settlement. The returned
+promise signals completion; the mesh's existing reveal state signals rendering
+readiness. Streamed status covers initial loading, not later background LOD work.
 
 ## Cancellation
 

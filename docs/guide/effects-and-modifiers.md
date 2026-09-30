@@ -49,10 +49,33 @@ standalone model-view matrix.
 
 <!-- full file: docs/guide/samples/effects-presets.ts -->
 
-`sdfEffects` shapes are `sphere` or `box`; modes are `tint`, `desaturate`,
+`sdfEffects` shapes are `sphere`, `box`, or `cylinder`; modes are `tint`, `desaturate`,
 `hide`, and `rim`, with per-shape `color`, `falloff`, `invert`, and
 `strength`. All presets are worked examples of the public hook, not a
 framework, read their source as starting points.
+
+For an affine selection preview, supply `transform`, mapping shape-local
+coordinates into mesh-local coordinates. It preserves nonuniform scale, shear,
+and reflection without approximating them as a radius or decomposed rotation:
+
+```ts
+import * as THREE from 'three/webgpu';
+import { sdfEffects } from '@voluma/vlam/effects';
+
+const transform = new THREE.Matrix4().makeScale(2, 1, 0.5);
+const preview = sdfEffects([
+  { kind: 'sphere', mode: 'tint', transform, radius: 1, color: [1, 0, 1] },
+]);
+```
+
+<!-- full file: docs/guide/samples/effects-affine.ts -->
+
+Do not combine `transform` with `center` or `rotation`. Matrices must be finite,
+affine, and invertible. `setShapes` snapshots matrices and validates every
+accepted shape before changing uniforms; a rejected update preserves the previous
+shapes. Radius, half-extents, cylinder height, and falloff are measured in
+shape-local units. Zero falloff includes the hard boundary (`distance <= 0`).
+Changing shapes within the configured capacity remains a uniform-only update.
 
 ## Stacking effects: `ModifierSlots`
 

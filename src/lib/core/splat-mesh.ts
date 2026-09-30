@@ -561,6 +561,22 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       this.refreshProjectionUniforms(camera, renderer);
     },
     setView: (camera, width, height) => this.writeViewUniforms(camera, width, height),
+    captureView: () => {
+      const viewport = this.viewport.value.clone();
+      const focal = this.focal.value.clone();
+      const margin = this.frustumMargin.value.clone();
+      const position = this.localCameraPosition.value.clone();
+      const projection = this.shViewProjection.value.clone();
+      const limit = this.pixelScaleLimit.value;
+      return () => {
+        this.viewport.value.copy(viewport);
+        this.focal.value.copy(focal);
+        this.frustumMargin.value.copy(margin);
+        this.localCameraPosition.value.copy(position);
+        this.shViewProjection.value.copy(projection);
+        this.pixelScaleLimit.value = limit;
+      };
+    },
     applyPickGraph: (material) => {
       const inputs = this.graphInputs(this.materialInputs.textures, this.materialInputs.sh);
       if (this.computeProjectionActive || this.unifiedPickVisibility !== null) {

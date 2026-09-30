@@ -136,23 +136,8 @@ function prepareBrushSelection(
   options: BrushStrokeSelectionOptions,
   worldMatrix?: THREE.Matrix4,
 ): PreparedBrushSelection {
+  validateBrushStroke(stroke, options);
   const depth = options.depth ?? 'surface';
-  if (depth === 'surface' && stroke.viewMatrix === undefined) {
-    throw new Error('selectBrushStrokeInData: surface mode requires stroke.viewMatrix.');
-  }
-  for (const path of stroke.paths) {
-    for (const sample of path) {
-      finiteNonNegative(sample.radius, 'sample radius');
-      if (
-        !Number.isFinite(sample.point.x) ||
-        !Number.isFinite(sample.point.y) ||
-        !Number.isFinite(sample.point.z) ||
-        (sample.viewDepth !== undefined && !Number.isFinite(sample.viewDepth))
-      ) {
-        throw new Error('selectBrushStrokeInData: stroke samples must be finite.');
-      }
-    }
-  }
   const matrix = worldMatrix ?? new THREE.Matrix4();
   const linear = linearTransform(matrix);
   const footprint = options.footprint ?? 'center';
@@ -468,4 +453,30 @@ function covarianceSupport(
     ly * (c01 * lx + c11 * ly + c12 * lz) +
     lz * (c02 * lx + c12 * ly + c22 * lz);
   return sigma * Math.sqrt(Math.max(0, variance));
+}
+
+/** Validates a stroke before any persistent edit is recorded. Internal. */
+export function validateBrushStroke(
+  stroke: BrushStroke,
+  options: BrushStrokeSelectionOptions,
+): void {
+  const depth = options.depth ?? 'surface';
+  if (depth === 'surface' && stroke.viewMatrix === undefined) {
+    throw new Error('selectBrushStrokeInData: surface mode requires stroke.viewMatrix.');
+  }
+  for (const path of stroke.paths) {
+    for (const sample of path) {
+      finiteNonNegative(sample.radius, 'sample radius');
+      if (
+        !Number.isFinite(sample.point.x) ||
+        !Number.isFinite(sample.point.y) ||
+        !Number.isFinite(sample.point.z) ||
+        (sample.viewDepth !== undefined && !Number.isFinite(sample.viewDepth))
+      ) {
+        throw new Error('selectBrushStrokeInData: stroke samples must be finite.');
+      }
+    }
+  }
+  finiteNonNegative(options.footprintSigma ?? 3, 'footprintSigma');
+  finiteNonNegative(options.surfaceDepthFraction ?? 0.35, 'surfaceDepthFraction');
 }

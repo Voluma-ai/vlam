@@ -229,6 +229,22 @@ describe('StreamedSplatMesh persistent channels (M7.6)', () => {
     expect(channelValues(m, 'mask', 0, 6)).toEqual([255, 255, 255, 255, 0, 0]);
   });
 
+  it('rejects invalid strokes before recording them, even without resident chunks', () => {
+    for (const pageTable of [false, true]) {
+      const m = pageTable ? makePageTableMesh() : makeStreamedMesh();
+      meshes.push(m);
+      m.definePersistentChannel('mask', { type: 'byte' });
+      expect(() => m.paintPersistent('mask', new THREE.Vector3(), -1, 7)).toThrow();
+      expect(() => m.paintPersistentStroke('mask', { paths: [] }, { depth: 'surface' }, 7)).toThrow(
+        /viewMatrix/,
+      );
+      expect(() => m.paintPersistent('mask', new THREE.Vector3(), 1, 7)).not.toThrow();
+      // Read the history only through this narrow test adapter.
+      const history = m as unknown as { persistentChannels: Map<string, { strokes: unknown[] }> };
+      expect(history.persistentChannels.get('mask')!.strokes).toHaveLength(1);
+    }
+  });
+
   it('replays a geometric stroke onto a newly resident LOD representation', () => {
     const m = mesh();
     const inner = internals(m);
@@ -249,6 +265,7 @@ describe('StreamedSplatMesh persistent channels (M7.6)', () => {
     // A different file models a fine/coarse replacement with different stable
     // IDs but geometry in the same painted region.
     inner.cache.set(1, { data: makeChunk(10), bytes: 0, lastUsed: 1 });
+    expect(() => m.paintPersistent('mask', new THREE.Vector3(), -1, 9)).toThrow();
     inner.appendRun(run(1, 0, 10), 1);
     expect(channelValues(m, 'mask', 0, 5)).toEqual([7, 7, 7, 0, 0]);
   });
@@ -295,7 +312,9 @@ describe('StreamedSplatMesh persistent channels (M7.6)', () => {
       });
     };
 
+    expect(() => m.paintPersistent('mask', new THREE.Vector3(), -1, 9)).toThrow();
     apply([0, 1, 2, 3], 1);
+    expect(() => m.paintPersistentStroke('mask', { paths: [] }, { depth: 'surface' }, 9)).toThrow();
     // A replacement can be staged behind the currently drawn prefix. Paint
     // both representations so it cannot appear unpainted when later published.
     apply([4, 5, 6, 7], 2, 0, 4, 4);

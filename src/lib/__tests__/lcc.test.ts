@@ -1,3 +1,4 @@
+import { StreamedSplatMesh } from '../streaming/streamed-splat-mesh';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { buildLccScene } from '../formats/lcc/lcc';
@@ -497,4 +498,38 @@ describe('buildLccScene', () => {
     // Sizing still reads the manifest - a hair generous, never short.
     expect(scene.maxResidentSplats).toBe(402);
   });
+});
+
+describe('streamed LCC bootstrap request contract', () => {
+  it.each(['index.bin', 'environment.bin'])(
+    'forwards authentication and cancellation through %s',
+    async (abortFile) => {
+      const controller = new AbortController();
+      const request = { headers: { Authorization: 'test-token' }, credentials: 'include' as const };
+      const urls: string[] = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string, init?: RequestInit) => {
+          urls.push(url);
+          expect(init?.signal).toBe(controller.signal);
+          expect(init?.credentials).toBe('include');
+          expect(new Headers(init?.headers).get('Authorization')).toBe('test-token');
+          if (url.endsWith('scene.lcc')) return new Response(JSON.stringify(manifest()));
+          if (url.endsWith(abortFile)) {
+            controller.abort();
+            throw new DOMException('aborted', 'AbortError');
+          }
+          if (url.endsWith('index.bin')) return new Response(indexBin());
+          return new Response(null, { status: 404 });
+        }),
+      );
+      await expect(
+        StreamedSplatMesh.load('https://host.test/scene.lcc', {
+          request,
+          signal: controller.signal,
+        }),
+      ).rejects.toMatchObject({ name: 'AbortError' });
+      expect(urls.at(-1)).toContain(abortFile);
+    },
+  );
 });

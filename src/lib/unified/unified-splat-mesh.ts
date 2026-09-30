@@ -748,27 +748,46 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     options?: SplatPickOptions,
   ): Promise<UnifiedSplatPickResult | null> {
     if (this.disposed) return null;
+    const admitted = this.pickAdmission();
     const candidates = this.sources
-      .filter((record) => record.visible)
-      .map((record) => record.source);
+      .filter((record) => admitted.has(record) && record.opacity > 0)
+      .map((record) => ({ record, opacity: record.opacity }));
     if (candidates.length === 0) return null;
     const hits = await Promise.all(
-      candidates.map(async (source) => {
-        const hit = await source.pick(ndc, camera, this.renderer, options);
-        return hit === null ? null : { source, point: hit.point, distance: hit.distance };
+      candidates.map(async ({ record, opacity }) => {
+        const hit = await record.source.pick(ndc, camera, this.renderer, {
+          ...options,
+          alphaThreshold: (options?.alphaThreshold ?? 0.1) / opacity,
+        });
+        return hit === null ? null : { record, opacity, hit };
       }),
     );
     if (this.disposed) return null;
+    const currentAdmission = this.pickAdmission();
     let best: UnifiedSplatPickResult | null = null;
-    for (const hit of hits) {
-      if (hit === null) continue;
-      // Registration may have changed while the readbacks were in flight;
-      // never attribute a hit to a source no longer picked by this renderer.
-      const record = this.sources.find((entry) => entry.source === hit.source);
-      if (record === undefined || !record.visible) continue;
-      if (best === null || hit.distance < best.distance) best = hit;
+    for (const result of hits) {
+      if (result === null) continue;
+      const { record, opacity, hit } = result;
+      if (
+        !this.sources.includes(record) ||
+        !record.visible ||
+        record.opacity !== opacity ||
+        !currentAdmission.has(record)
+      )
+        continue;
+      if (best === null || hit.distance < best.distance) {
+        best = { source: record.source, point: hit.point, distance: hit.distance };
+      }
     }
     return best;
+  }
+
+  private pickAdmission(): Set<SourceRecord> {
+    return selectAdmittedSources(
+      this.sources,
+      this.workBuffer.capacity,
+      (record) => record.source.getUnifiedSourceView().activeCount,
+    );
   }
 
   /** Unregisters a source and restores its standalone draw visibility. */
@@ -1040,6 +1059,11 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     // priorities retain registration order.
     updated.sort((a, b) => b.priority - a.priority || a.registrationOrder - b.registrationOrder);
 
+    const admittedSet = selectAdmittedSources(
+      updated,
+      this.workBuffer.capacity,
+      (record) => (record.view as UnifiedSourceView).activeCount,
+    );
     this.overflowedSourceCount = 0;
     this.overflowedSplatCount = 0;
     this.bounds.makeEmpty();
@@ -1071,7 +1095,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         record.lastGather = null;
         continue;
       }
-      if (offset + view.activeCount > this.workBuffer.capacity) {
+      if (!admittedSet.has(record)) {
         this.overflowedSourceCount++;
         this.overflowedSplatCount += view.activeCount;
         record.lastGather = null;
@@ -1609,4 +1633,25 @@ function validateContributionCull(value: number | undefined, name: string): numb
     throw new RangeError(`UnifiedSplatMesh ${name} must be a finite number >= 0.`);
   }
   return value;
+}
+
+/** Whole-source admission shared by draws and picks, including before the first update. */
+function selectAdmittedSources(
+  records: readonly SourceRecord[],
+  capacity: number,
+  count: (record: SourceRecord) => number,
+): Set<SourceRecord> {
+  const ordered = records
+    .map((record, index) => ({ record, index }))
+    .sort((a, b) => b.record.priority - a.record.priority || a.index - b.index);
+  const admitted = new Set<SourceRecord>();
+  let used = 0;
+  for (const { record } of ordered) {
+    if (!record.visible) continue;
+    const active = count(record);
+    if (active === 0 || used + active > capacity) continue;
+    admitted.add(record);
+    used += active;
+  }
+  return admitted;
 }

@@ -130,20 +130,18 @@ describe('buildRadScene spherical-harmonics cap', () => {
     stubDataset(true);
     // The regression: the file has SH, the caller does not want it. Before the
     // fix this reported the file's bands and allocated the pool textures anyway.
-    const scene = await buildRadScene(
-      httpDatasetSource('http://host/scene.rad'),
-      SOURCE_OPTIONS,
-      undefined,
-      0,
-    );
+    const scene = await buildRadScene(httpDatasetSource('http://host/scene.rad'), {
+      ...SOURCE_OPTIONS,
+      maxShBands: 0,
+    });
     expect(scene.shBands).toBe(0);
   });
 
   it('reports no bands for a capture without SH, whatever the cap', async () => {
     stubDataset(false);
     const source = httpDatasetSource('http://host/scene.rad');
-    expect((await buildRadScene(source, SOURCE_OPTIONS, undefined, 3)).shBands).toBe(0);
-    expect((await buildRadScene(source, SOURCE_OPTIONS, undefined, 0)).shBands).toBe(0);
+    expect((await buildRadScene(source, { ...SOURCE_OPTIONS, maxShBands: 3 })).shBands).toBe(0);
+    expect((await buildRadScene(source, { ...SOURCE_OPTIONS, maxShBands: 0 })).shBands).toBe(0);
   });
 
   it('treats a non-zero cap as all-or-nothing rather than truncating', async () => {
@@ -154,12 +152,10 @@ describe('buildRadScene spherical-harmonics cap', () => {
     // set of textures and then fill them with neutral words - paying for SH and
     // rendering flat. Keeping the file's bands is the safe reading, and this
     // pins it so a future "clamp" cannot reintroduce the silent-neutral path.
-    const scene = await buildRadScene(
-      httpDatasetSource('http://host/scene.rad'),
-      SOURCE_OPTIONS,
-      undefined,
-      3,
-    );
+    const scene = await buildRadScene(httpDatasetSource('http://host/scene.rad'), {
+      ...SOURCE_OPTIONS,
+      maxShBands: 3,
+    });
     expect(scene.shBands).toBe(1);
   });
 });

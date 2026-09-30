@@ -476,3 +476,85 @@ it('uses only own-property mapped files as the local folder allowlist', async ()
     files[name] = `blob:https://host.example/${name}`;
   expect((await parseSogDirectory('local-folder', { files })).count).toBe(1);
 });
+
+describe('SOG decoder failure cleanup', () => {
+  it.each(['decode', 'copy'] as const)('closes resources when %s fails', async (failure) => {
+    const decoders: ReturnType<typeof vi.fn>[] = [],
+      frames: ReturnType<typeof vi.fn>[] = [];
+    vi.stubGlobal(
+      'ImageDecoder',
+      class {
+        close = vi.fn();
+        constructor() {
+          decoders.push(this.close);
+        }
+        async decode() {
+          if (failure === 'decode') throw new Error('decode failed');
+          const close = vi.fn();
+          frames.push(close);
+          return {
+            image: {
+              codedWidth: 1,
+              codedHeight: 1,
+              close,
+              copyTo: async () => {
+                throw new Error('copy failed');
+              },
+            },
+          };
+        }
+      },
+    );
+    await expect(parseSog(makeBundle(makeMeta(1)))).rejects.toThrow(`${failure} failed`);
+    expect(decoders.length).toBeGreaterThan(0);
+    for (const close of [...decoders, ...frames]) expect(close).toHaveBeenCalledOnce();
+  });
+});
+
+describe('SOG bitmap failure cleanup', () => {
+  it.each(['texture', 'framebuffer', 'canvas', 'readback'] as const)(
+    'releases acquired resources on %s failure',
+    async (failure) => {
+      vi.resetModules();
+      const { parseSog: parseFresh } = await import('../formats/sog/parse-sog');
+      const closes: ReturnType<typeof vi.fn>[] = [];
+      vi.stubGlobal('ImageDecoder', undefined);
+      // Remove the property: the decoder feature check uses `in`.
+      delete (globalThis as { ImageDecoder?: unknown }).ImageDecoder;
+      vi.stubGlobal('createImageBitmap', async () => {
+        const close = vi.fn();
+        closes.push(close);
+        return { width: 1, height: 1, close };
+      });
+      const texture = {},
+        framebuffer = {};
+      const gl = new StubWebGl2Context();
+      vi.spyOn(gl, 'createTexture').mockReturnValue(failure === 'texture' ? null! : texture);
+      vi.spyOn(gl, 'createFramebuffer').mockReturnValue(
+        failure === 'framebuffer' ? null! : framebuffer,
+      );
+      const deleteTexture = vi.spyOn(gl, 'deleteTexture'),
+        deleteFramebuffer = vi.spyOn(gl, 'deleteFramebuffer');
+      vi.stubGlobal(
+        'OffscreenCanvas',
+        class {
+          getContext(kind: string) {
+            if (kind === 'webgl2')
+              return failure === 'texture' || failure === 'framebuffer' ? gl : null;
+            if (failure === 'canvas') return null;
+            return {
+              drawImage() {},
+              getImageData() {
+                throw new Error('readback failed');
+              },
+            };
+          }
+        },
+      );
+      await expect(parseFresh(makeBundle(makeMeta(1)))).rejects.toThrow();
+      for (const close of closes) expect(close).toHaveBeenCalledOnce();
+      if (failure === 'texture') expect(deleteFramebuffer).toHaveBeenCalledWith(framebuffer);
+      if (failure === 'framebuffer') expect(deleteTexture).toHaveBeenCalledWith(texture);
+    },
+  );
+});

@@ -46,47 +46,52 @@ export async function fetchRange(
     if (isAbortError(error)) throw error;
     throw toSplatLoadError(error, { phase: 'fetch', url });
   }
-  if (!response.ok) {
-    throw toSplatLoadError(new Error(`Failed to load ${url}: HTTP ${response.status}`), {
-      phase: 'fetch',
-      url,
-      status: response.status,
-    });
-  }
-  if (response.status !== 206) {
-    throw toSplatLoadError(
-      new Error(
-        `${url} ignored a Range request (HTTP ${response.status}); LCC streaming needs a server that ` +
-          'answers 206 Partial Content.',
-      ),
-      { phase: 'fetch', url, status: response.status },
-    );
-  }
-  const range = response.headers.get('Content-Range');
-  const expectedEnd = start + length - 1;
-  if (range !== null) {
-    // Content-Range is not CORS-safelisted. Existing object-storage deployments
-    // can return a correct 206 while hiding this header from JavaScript, so an
-    // absent header must retain the established exact-body-length fallback.
-    // When visible, validate it strictly to catch shifted proxy responses.
-    const match = range.match(/^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i);
-    if (!match) {
-      throw toSplatLoadError(
-        new Error(`${url} returned an invalid Content-Range header: ${range}.`),
-        { phase: 'fetch', url, status: response.status },
-      );
+  try {
+    if (!response.ok) {
+      throw toSplatLoadError(new Error(`Failed to load ${url}: HTTP ${response.status}`), {
+        phase: 'fetch',
+        url,
+        status: response.status,
+      });
     }
-    const returnedStart = Number(match[1]);
-    const returnedEnd = Number(match[2]);
-    if (returnedStart !== start || returnedEnd !== expectedEnd) {
+    if (response.status !== 206) {
       throw toSplatLoadError(
         new Error(
-          `${url} returned Content-Range bytes ${returnedStart}-${returnedEnd}, expected bytes ` +
-            `${start}-${expectedEnd}.`,
+          `${url} ignored a Range request (HTTP ${response.status}); LCC streaming needs a server that ` +
+            'answers 206 Partial Content.',
         ),
         { phase: 'fetch', url, status: response.status },
       );
     }
+    const range = response.headers.get('Content-Range');
+    const expectedEnd = start + length - 1;
+    if (range !== null) {
+      // Content-Range is not CORS-safelisted. Existing object-storage deployments
+      // can return a correct 206 while hiding this header from JavaScript, so an
+      // absent header must retain the established exact-body-length fallback.
+      // When visible, validate it strictly to catch shifted proxy responses.
+      const match = range.match(/^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i);
+      if (!match) {
+        throw toSplatLoadError(
+          new Error(`${url} returned an invalid Content-Range header: ${range}.`),
+          { phase: 'fetch', url, status: response.status },
+        );
+      }
+      const returnedStart = Number(match[1]);
+      const returnedEnd = Number(match[2]);
+      if (returnedStart !== start || returnedEnd !== expectedEnd) {
+        throw toSplatLoadError(
+          new Error(
+            `${url} returned Content-Range bytes ${returnedStart}-${returnedEnd}, expected bytes ` +
+              `${start}-${expectedEnd}.`,
+          ),
+          { phase: 'fetch', url, status: response.status },
+        );
+      }
+    }
+  } catch (error) {
+    await discardResponseBody(response);
+    throw error;
   }
   let buffer: ArrayBuffer;
   try {
@@ -136,6 +141,7 @@ export async function fetchWholeResponse(
     throw toSplatLoadError(error, { phase: 'fetch', url });
   }
   if (!response.ok) {
+    await discardResponseBody(response);
     throw toSplatLoadError(new Error(`Failed to load ${url}: HTTP ${response.status}`), {
       phase: 'fetch',
       url,
@@ -213,5 +219,14 @@ async function readBodyWithProgress(
       }
     }
     reader.releaseLock();
+  }
+}
+
+/** Stops rejected downloads without replacing their original error. */
+export async function discardResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Cleanup must not obscure the status/range error.
   }
 }

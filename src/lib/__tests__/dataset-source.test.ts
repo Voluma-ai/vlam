@@ -204,3 +204,25 @@ describe('httpDatasetSource', () => {
     ).toBeNull();
   });
 });
+
+describe('dataset size cancellation', () => {
+  it.each(['HEAD', 'GET'])(
+    'preserves AbortError during %s without starting another request',
+    async (method) => {
+      const controller = new AbortController();
+      const fetchMock = vi.fn(async (_url: string, init?: RequestInit): Promise<Response> => {
+        if (method === 'GET' && init?.method === 'HEAD') return new Response(null, { status: 405 });
+        expect(init?.signal).toBe(controller.signal);
+        controller.abort();
+        throw new DOMException('cancelled', 'AbortError');
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      await expect(
+        httpDatasetSource('https://scene.test/a.lcc').size('index.bin', {
+          signal: controller.signal,
+        }),
+      ).rejects.toMatchObject({ name: 'AbortError' });
+      expect(fetchMock).toHaveBeenCalledTimes(method === 'HEAD' ? 1 : 2);
+    },
+  );
+});

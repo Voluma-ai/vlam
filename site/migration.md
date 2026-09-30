@@ -1,7 +1,42 @@
 # Migrating toward VLAM! 1.0
 
-This guide covers API changes already shipped during the 0.x series. Keep the
+This guide covers 0.x API changes, including the unreleased changes identified below. Keep the
 exact package version pinned until 1.0 is released.
+
+## Unreleased: RAD options and loading integration
+
+`buildRadScene` from `@voluma/vlam/formats/rad` replaces positional controls
+with one `RadSceneOptions` object extending `LodSourceOptions`:
+
+```ts
+// Before:
+// buildRadScene(source, lodOptions, request, maxShBands, budgetLifts, radStrategy)
+// After:
+buildRadScene(source, {
+  ...lodOptions,
+  request,
+  signal,
+  maxShBands,
+  budgetLifts,
+  radStrategy,
+});
+```
+
+Defaults remain `maxShBands: 3`, `budgetLifts: true`, and `radStrategy: 'auto'`.
+Move the old second argument into the object along with the old positional
+controls; `signal` is newly supported. `StreamedSplatMesh.load` callers need no
+signature change.
+
+Custom sources can use `StreamedSplatMesh.loadSource` with an explicit format.
+Its default ownership is borrowed; opt into `sourceOwnership: 'owned'` to have
+VLAM dispose the source on failure or mesh disposal. Source `size` implementations
+now accept an optional `{ signal }` and must preserve cancellation.
+
+Use optional `onStatus` for loading labels instead of inferring decoding from
+byte counts. Promise settlement still signals completion, while reveal state
+continues to describe rendering readiness. For exact affine SDF previews, use
+`SdfShape.transform` instead of approximating scale with radius; do not combine
+it with `center` or `rotation`.
 
 ## Names and package entries
 

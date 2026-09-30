@@ -11,7 +11,12 @@ import type { LccChunkParams } from '../formats/lcc/parse-lcc';
 import type { RemotePlyMetrics } from '../formats/ply/parse-splat-ply-remote';
 import type { RadShCodebook, SplatData } from '../core/splat-data';
 import type { ShRange } from '../core/sh-pack';
-import type { ChunkFileFormat, SerializedSplatLoadError, SplatRequestOptions } from './loading';
+import type {
+  ChunkFileFormat,
+  SerializedSplatLoadError,
+  SplatRequestOptions,
+  SplatLoadStatus,
+} from './loading';
 
 /** Where a load's bytes come from. `File` crosses the worker boundary by
  * structured clone, so a local file is read (and decoded) in the worker. */
@@ -50,6 +55,8 @@ export type LoadWorkerRequest =
       files?: Readonly<Record<string, string>>;
       /** Report read progress; off unless the caller passed `onProgress`. */
       progress?: boolean;
+      /** Report work stages for this request. */
+      status?: boolean;
       /** Opaque host-owned OPFS file name for exact remote PLY SH. */
       resourceId?: string;
     }
@@ -76,4 +83,5 @@ export interface RadChunkRangeRequest {
 export type LoadWorkerResponse =
   | { type: 'result'; id: number; ok: true; data: SplatData; metrics?: RemotePlyMetrics }
   | { type: 'result'; id: number; ok: false; error: SerializedSplatLoadError; cancelled: boolean }
-  | { type: 'progress'; id: number; loaded: number; total: number };
+  | { type: 'progress'; id: number; loaded: number; total: number }
+  | { type: 'status'; id: number; status: SplatLoadStatus };

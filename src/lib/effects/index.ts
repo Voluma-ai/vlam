@@ -69,6 +69,11 @@ export type SdfMode = 'tint' | 'desaturate' | 'hide' | 'rim';
 
 /** One SDF shape in a {@link sdfEffects} list. All spaces are mesh-local. */
 export interface SdfShape {
+  /**
+   * Shape-local → mesh-local affine placement. Mutually exclusive with center/rotation.
+   * Must be finite and invertible; setShapes snapshots it, so later edits require setShapes.
+   */
+  transform?: THREE.Matrix4;
   kind: SdfShapeKind;
   /** Shape center, mesh-local. Default `[0, 0, 0]`. */
   center?: readonly [number, number, number];
@@ -93,7 +98,7 @@ export interface SdfShape {
   rotation?: readonly [number, number, number, number];
   /** Effect color (tint/rim). Default white. */
   color?: readonly [number, number, number];
-  /** Soft-edge width in world units; 0 is a hard edge. Default `0`. */
+  /** Soft-edge width in shape-local units; 0 is a hard edge. Default `0`. */
   falloff?: number;
   /** Invert the test - affect the outside of the shape instead. */
   invert?: boolean;
@@ -131,7 +136,7 @@ export interface SdfEffect {
 }
 
 /** vec4 slots per shape in the uniform array (see the packing below). */
-const SHAPE_STRIDE = 5;
+const SHAPE_STRIDE = 6;
 const MODE_INDEX: Record<SdfMode, number> = { tint: 0, desaturate: 1, hide: 2, rim: 3 };
 
 // Shared defaults so a per-frame `setShapes` on sparse shape literals does not
@@ -184,10 +189,47 @@ export function sdfEffects(
           `extra shapes are ignored. Raise maxShapes if you need more.`,
       );
     }
+    const inverseMaps: THREE.Matrix4[] = [];
     // Validate before touching any slot, so a bad list never leaves the
     // uniform array half-updated.
     for (let i = 0; i < n; i++) {
       const s = shapes[i] as SdfShape;
+      if (s.transform !== undefined) {
+        if (s.center !== undefined || s.rotation !== undefined) {
+          throw new Error(
+            'sdfEffects.setShapes: transform cannot be combined with center or rotation.',
+          );
+        }
+        const e = s.transform.elements;
+        const determinant = s.transform.determinant();
+        if (
+          !e.every(Number.isFinite) ||
+          e[3] !== 0 ||
+          e[7] !== 0 ||
+          e[11] !== 0 ||
+          e[15] !== 1 ||
+          !Number.isFinite(determinant) ||
+          determinant === 0
+        ) {
+          throw new Error('sdfEffects.setShapes: transform must be finite, affine and invertible.');
+        }
+        const inverse = s.transform.clone().invert();
+        if (!inverse.elements.every(Number.isFinite)) {
+          throw new Error('sdfEffects.setShapes: transform inverse must be finite.');
+        }
+        inverseMaps.push(inverse);
+      } else {
+        // Match the old conjugate-quaternion expression, including non-unit inputs.
+        const [x, y, z, w] = s.rotation ?? DEFAULT_ROTATION;
+        const inverse = new THREE.Matrix4().makeRotationFromQuaternion(
+          new THREE.Quaternion(-x, -y, -z, w),
+        );
+        const center = new THREE.Vector3(...(s.center ?? DEFAULT_CENTER))
+          .applyMatrix4(inverse)
+          .negate();
+        inverse.setPosition(center);
+        inverseMaps.push(inverse);
+      }
       if (s.kind === 'box') {
         const he = s.halfExtents;
         if (!he || !(he[0] > 0) || !(he[1] > 0) || !(he[2] > 0)) {
@@ -211,27 +253,27 @@ export function sdfEffects(
     for (let i = 0; i < n; i++) {
       const s = shapes[i] as SdfShape;
       const b = i * SHAPE_STRIDE;
-      const c = s.center ?? DEFAULT_CENTER;
       const col = s.color ?? DEFAULT_COLOR;
-      const rot = s.rotation ?? DEFAULT_ROTATION;
       const kindIndex = s.kind === 'box' ? 1 : s.kind === 'cylinder' ? 2 : 0;
-      (slots[b + 0] as THREE.Vector4).set(c[0], c[1], c[2], kindIndex);
+      const e = (inverseMaps[i] as THREE.Matrix4).elements;
+      for (let row = 0; row < 3; row++) {
+        (slots[b + row] as THREE.Vector4).set(e[row]!, e[row + 4]!, e[row + 8]!, e[row + 12]!);
+      }
       if (s.kind === 'box') {
         const he = s.halfExtents as readonly [number, number, number];
-        (slots[b + 1] as THREE.Vector4).set(he[0], he[1], he[2], s.falloff ?? 0);
+        (slots[b + 3] as THREE.Vector4).set(he[0], he[1], he[2], s.falloff ?? 0);
       } else if (s.kind === 'cylinder') {
-        (slots[b + 1] as THREE.Vector4).set(
+        (slots[b + 3] as THREE.Vector4).set(
           s.radius as number,
           (s.height as number) / 2,
           0,
           s.falloff ?? 0,
         );
       } else {
-        (slots[b + 1] as THREE.Vector4).set(s.radius as number, 0, 0, s.falloff ?? 0);
+        (slots[b + 3] as THREE.Vector4).set(s.radius as number, 0, 0, s.falloff ?? 0);
       }
-      (slots[b + 2] as THREE.Vector4).set(col[0], col[1], col[2], MODE_INDEX[s.mode]);
-      (slots[b + 3] as THREE.Vector4).set(rot[0], rot[1], rot[2], rot[3]);
-      (slots[b + 4] as THREE.Vector4).set(s.invert ? 1 : 0, s.strength ?? 1, 0, 0);
+      (slots[b + 4] as THREE.Vector4).set(col[0], col[1], col[2], MODE_INDEX[s.mode]);
+      (slots[b + 5] as THREE.Vector4).set(kindIndex, s.invert ? 1 : 0, s.strength ?? 1, 0);
     }
     count.value = n;
   };
@@ -260,23 +302,17 @@ export function sdfEffects(
       const s3 = el(3);
       const s4 = el(4);
 
-      const center = s0.xyz;
-      const kind = s0.w; // 0 sphere · 1 box · 2 cylinder (stored as a float index)
-      const size = s1.xyz;
-      const falloff = s1.w.max(1e-4);
-      const shapeColor = s2.xyz;
-      const mode = s2.w;
-      const invert = s4.x; // 0 · 1 flag
-      const strength = s4.y;
-      // Slots past the live count contribute nothing.
+      const s5 = el(5);
+      const kind = s5.x;
+      const size = s3.xyz;
+      const falloff = s3.w.max(1e-4);
+      const shapeColor = s4.xyz;
+      const mode = s4.w;
+      const invert = s5.y;
+      const strength = s5.z;
       const gate = int(k).lessThan(count).select(float(1), float(0));
-
-      // Sample point in shape-local space: R⁻¹·(p − center). The sphere/box
-      // and invert choices blend with `mix` on their 0/1 flags rather than a
-      // `select`: three.js miscompiles a ConditionalNode whose branches carry
-      // large sub-expressions (the box SDF) here, silently zeroing the result.
-      const rel = p.sub(center);
-      const pl = rotateByQuatConj(s3, rel);
+      const point = vec4(p, 1);
+      const pl = vec3(s0.dot(point), s1.dot(point), s2.dot(point));
       const dSphere = pl.length().sub(size.x);
       const dBox = sdBox(pl, size);
       const dCylinder = sdCappedCylinder(pl, size.x, size.y);
@@ -288,12 +324,19 @@ export function sdfEffects(
 
       // Inside coverage (1 within, fading out over `falloff`); rim coverage
       // peaks on the surface. Both scaled by strength and the live-slot gate.
-      const insideCov = float(1)
-        .sub(smoothstep(0, falloff, d))
+      const soft = s3.w.greaterThan(0).select(float(1), float(0));
+      const insideCov = mix(
+        d.lessThanEqual(0).select(float(1), float(0)),
+        float(1).sub(smoothstep(0, falloff, d)),
+        soft,
+      )
         .mul(strength)
         .mul(gate);
-      const rimCov = float(1)
-        .sub(smoothstep(0, falloff, d.abs()))
+      const rimCov = mix(
+        d.equal(0).select(float(1), float(0)),
+        float(1).sub(smoothstep(0, falloff, d.abs())),
+        soft,
+      )
         .mul(strength)
         .mul(gate);
 
@@ -335,14 +378,6 @@ function sdCappedCylinder(p: Node<'vec3'>, r: Node<'float'>, h: Node<'float'>): 
   const outside = vec2(dr.max(0), dy.max(0)).length();
   const inside = dr.max(dy).min(0);
   return asNode<'float'>(outside.add(inside));
-}
-
-/** Rotates `v` by the conjugate of quaternion `q` (xyzw): R⁻¹·v. */
-function rotateByQuatConj(q: Node<'vec4'>, v: Node<'vec3'>): Node<'vec3'> {
-  const u = q.xyz;
-  const s = q.w;
-  const t = u.cross(v).mul(2);
-  return asNode<'vec3'>(v.sub(t.mul(s)).add(u.cross(t)));
 }
 
 // --- Reference presets (M7.5) ----------------------------------------------

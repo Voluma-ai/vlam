@@ -53,6 +53,8 @@ export interface SplatPickHost {
    * after the crop and restore the canvas-sized values before returning.
    */
   setView(camera: THREE.Camera, width: number, height: number): void;
+  /** Captures the live display uniforms; restoration does not recompute a stale camera. */
+  captureView(): () => void;
   /** Builds the pick-mode TSL graph onto a freshly created material. */
   applyPickGraph(material: THREE.NodeMaterial): void;
 }
@@ -203,16 +205,6 @@ export class SplatPicker {
       );
     }
 
-    this.host.updateWorldMatrix();
-    // Match the state `update()` establishes: appended-but-unflushed rows must
-    // reach the GPU, and an existing sorter's draw list must be refreshed for
-    // the current active set - or the pick pass rasterizes stale pool data
-    // (garbage centers, or "ghost" splats from a just-removed range still in
-    // the GPU-sorted order). The pick pass itself is depth-tested, so it does
-    // not need a *sorted* order - only a valid one - hence no sorter is
-    // created here when none exists yet (the identity draw list is valid).
-    this.host.prepare(camera, renderer);
-
     const width = Math.max(1, Math.floor(viewport.x));
     const height = Math.max(1, Math.floor(viewport.y));
     const pixels = ndcs.map((ndc) => ({
@@ -236,7 +228,6 @@ export class SplatPicker {
     // Quad extent is `pixelOffset * 2 / viewport`, so the viewport must match
     // the bounded pick target. Focal follows the cropped projection at this size
     // and matches the canvas-pixel covariance the display pass used.
-    this.host.setView(pickCamera, targetWidth, targetHeight);
 
     const near = 'near' in camera && typeof camera.near === 'number' ? camera.near : 0.1;
     const far = 'far' in camera && typeof camera.far === 'number' ? camera.far : 1000;
@@ -245,6 +236,23 @@ export class SplatPicker {
     this.alphaThreshold.value =
       options?.alphaThreshold !== undefined ? options.alphaThreshold : 0.1;
 
+    // Normal render() creates a pipeline synchronously but leaves its WebGPU
+    // validation popErrorScope promise untracked. If the host disposes the
+    // renderer after this awaited pick, a slow backend can reject that orphaned
+    // promise as "Instance dropped". Compile once through three's awaited path.
+    try {
+      await this.compilePipeline(renderer, pickTarget, pickCamera, renderer.getRenderTarget());
+    } catch (error) {
+      if (this.host.isDisposed()) return misses();
+      throw error;
+    }
+    if (this.host.isDisposed()) return misses();
+
+    // A graph rebuild during compilation replaced the proxy/bindings.
+    if (pickProxy !== this.proxy || this.compiledMaterialVersion !== this.material?.version) {
+      return this.runMany(ndcs, camera, renderer, viewport, options);
+    }
+    const restoreView = this.host.captureView();
     const mesh = this.host.mesh;
     const previousTarget = renderer.getRenderTarget();
     const previousScissorTest = renderer.getScissorTest();
@@ -260,22 +268,19 @@ export class SplatPicker {
     pickTarget.viewport.set(0, 0, targetWidth, targetHeight);
     pickTarget.scissor.set(0, 0, targetWidth, targetHeight);
 
-    // Normal render() creates a pipeline synchronously but leaves its WebGPU
-    // validation popErrorScope promise untracked. If the host disposes the
-    // renderer after this awaited pick, a slow backend can reject that orphaned
-    // promise as "Instance dropped". Compile once through three's awaited path.
-    try {
-      await this.compilePipeline(renderer, pickTarget, pickCamera, previousTarget);
-    } catch (error) {
-      if (this.host.isDisposed()) return misses();
-      throw error;
-    }
-    if (this.host.isDisposed()) return misses();
-
     // Start readback while the target is bound, but restore shared renderer
     // state synchronously. Awaiting while mutated would corrupt normal frames.
     const readback = (() => {
       try {
+        // No shared view state survives an asynchronous yield. Preparation may
+        // publish newer rows/counts, so refresh the proxy only after it runs.
+        this.host.updateWorldMatrix();
+        this.host.prepare(camera, renderer);
+        this.ensureResources(camera, targetWidth, targetHeight);
+        pickProxy.matrix.copy(mesh.matrixWorld);
+        pickProxy.matrixWorld.copy(mesh.matrixWorld);
+        pickProxy.visible = this.host.getPickVisible();
+        this.host.setView(pickCamera, targetWidth, targetHeight);
         renderer.setRenderTarget(pickTarget);
         renderer.setScissorTest(false);
         renderer.setClearColor(0x000000, 0);
@@ -287,7 +292,7 @@ export class SplatPicker {
         renderer.render(this.scene, pickCamera);
         return renderer.readRenderTargetPixelsAsync(pickTarget, 0, 0, targetWidth, targetHeight);
       } finally {
-        this.host.setView(camera, width, height);
+        restoreView();
         renderer.setRenderTarget(previousTarget);
         renderer.setScissorTest(previousScissorTest);
         renderer.setClearColor(this.savedClearColor, previousClearAlpha);
@@ -308,10 +313,17 @@ export class SplatPicker {
     }
     if (this.host.isDisposed()) return misses();
 
+    // three.js WebGPU readbacks pad each row to a 256-byte boundary. The
+    // final row has no padding; WebGL2 readbacks are tightly packed.
+    const packedRowBytes = targetWidth * 4;
+    const rowBytes =
+      rgba.length === packedRowBytes * targetHeight
+        ? packedRowBytes
+        : Math.ceil(packedRowBytes / 256) * 256;
     return ndcs.map((ndc, index) => {
       const pixel = pixels[index] as { x: number; y: number };
       if (pixel.x < 0 || pixel.y < 0 || pixel.x >= width || pixel.y >= height) return null;
-      const offset = ((pixel.y - y0) * targetWidth + pixel.x - x0) * 4;
+      const offset = (pixel.y - y0) * rowBytes + (pixel.x - x0) * 4;
       const r = rgba[offset] as number;
       const g = rgba[offset + 1] as number;
       const b = rgba[offset + 2] as number;

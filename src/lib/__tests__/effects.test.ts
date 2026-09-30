@@ -1,3 +1,5 @@
+import * as THREE from 'three/webgpu';
+import { createSelectionVolume } from '../selection';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   sdfEffects,
@@ -56,14 +58,8 @@ describe('effects module (M7.4 / M7.5)', () => {
     ).not.toThrow();
   });
 
-  // vec4 slots per shape in the packed uniform array (SHAPE_STRIDE in
-  // effects.ts). Layout per shape, asserted below:
-  //   slot 0: center.xyz, w = kind index (0 sphere · 1 box · 2 cylinder)
-  //   slot 1: size.xyz (radius,0,0 | halfExtents | radius,halfHeight,0), w = falloff
-  //   slot 2: color.xyz, w = mode index (tint 0 · desaturate 1 · hide 2 · rim 3)
-  //   slot 3: rotation quaternion xyzw
-  //   slot 4: x = invert flag, y = strength, zw unused (0)
-  const STRIDE = 5;
+  // Three inverse-affine rows, dimensions/falloff, color/mode, kind/invert/strength.
+  const STRIDE = 6;
 
   it('allocates maxShapes × stride vec4 slots', () => {
     const fx = sdfEffects([], { maxShapes: 4 });
@@ -86,11 +82,12 @@ describe('effects module (M7.4 / M7.5)', () => {
       },
     ]);
     const s = fx._uniforms.slots;
-    expect(s[0]!.toArray()).toEqual([1, 2, 3, 0]); // center + sphere flag
-    expect(s[1]!.toArray()).toEqual([0.5, 0, 0, 0.25]); // radius + falloff
-    expect(s[2]!.toArray()).toEqual([0.1, 0.2, 0.3, 0]); // color + mode 'tint'
-    expect(s[3]!.toArray()).toEqual([0, 0, 0, 1]); // default identity rotation
-    expect(s[4]!.toArray()).toEqual([1, 0.75, 0, 0]); // invert + strength
+    expect(s[0]!.toArray()).toEqual([1, 0, 0, -1]);
+    expect(s[1]!.toArray()).toEqual([0, 1, 0, -2]);
+    expect(s[2]!.toArray()).toEqual([0, 0, 1, -3]);
+    expect(s[3]!.toArray()).toEqual([0.5, 0, 0, 0.25]); // radius + falloff
+    expect(s[4]!.toArray()).toEqual([0.1, 0.2, 0.3, 0]); // color + mode 'tint'
+    expect(s[5]!.toArray()).toEqual([0, 1, 0.75, 0]); // invert + strength
     expect(fx._uniforms.count.value).toBe(1);
   });
 
@@ -110,11 +107,21 @@ describe('effects module (M7.4 / M7.5)', () => {
     ]);
     const s = fx._uniforms.slots;
     const b = 1 * STRIDE;
-    expect(s[b + 0]!.toArray()).toEqual([-1, 0, 4, 1]); // center + box flag
-    expect(s[b + 1]!.toArray()).toEqual([0.5, 1.5, 2.5, 0.05]); // halfExtents + falloff
-    expect(s[b + 2]!.toArray()).toEqual([1, 0, 1, 2]); // color + mode 'hide'
-    expect(s[b + 3]!.toArray()).toEqual([0.1, 0.2, 0.3, 0.9]); // quaternion xyzw
-    expect(s[b + 4]!.toArray()).toEqual([0, 1, 0, 0]); // defaults: no invert, strength 1
+    const sample = new THREE.Vector4(2, -1, 5, 1);
+    const actual = new THREE.Vector3(
+      s[b]!.dot(sample),
+      s[b + 1]!.dot(sample),
+      s[b + 2]!.dot(sample),
+    );
+    // Independent expression used by the legacy shader, including non-unit q.
+    const v = new THREE.Vector3(3, -1, 1);
+    const u = new THREE.Vector3(0.1, 0.2, 0.3);
+    const t = u.clone().cross(v).multiplyScalar(2);
+    const expected = v.clone().addScaledVector(t, -0.9).add(u.clone().cross(t));
+    expect(actual.distanceTo(expected)).toBeLessThan(1e-12);
+    expect(s[b + 3]!.toArray()).toEqual([0.5, 1.5, 2.5, 0.05]); // halfExtents + falloff
+    expect(s[b + 4]!.toArray()).toEqual([1, 0, 1, 2]); // color + mode 'hide'
+    expect(s[b + 5]!.toArray()).toEqual([1, 0, 1, 0]); // defaults: no invert, strength 1
     expect(fx._uniforms.count.value).toBe(2);
   });
 
@@ -126,7 +133,7 @@ describe('effects module (M7.4 / M7.5)', () => {
       { kind: 'sphere', radius: 1, mode: 'hide' },
       { kind: 'sphere', radius: 1, mode: 'rim' },
     ]);
-    const modes = [0, 1, 2, 3].map((i) => fx._uniforms.slots[i * STRIDE + 2]!.w);
+    const modes = [0, 1, 2, 3].map((i) => fx._uniforms.slots[i * STRIDE + 4]!.w);
     expect(modes).toEqual([0, 1, 2, 3]);
   });
 
@@ -134,11 +141,10 @@ describe('effects module (M7.4 / M7.5)', () => {
     const fx = sdfEffects([], { maxShapes: 2 });
     fx.setShapes([{ kind: 'sphere', radius: 2, mode: 'rim' }]);
     const s = fx._uniforms.slots;
-    expect(s[0]!.toArray()).toEqual([0, 0, 0, 0]); // center defaults to origin
-    expect(s[1]!.toArray()).toEqual([2, 0, 0, 0]); // falloff defaults to 0
-    expect(s[2]!.toArray()).toEqual([1, 1, 1, 3]); // color defaults to white
-    expect(s[3]!.toArray()).toEqual([0, 0, 0, 1]); // identity rotation
-    expect(s[4]!.toArray()).toEqual([0, 1, 0, 0]); // invert 0, strength 1
+    expect(s[0]!.toArray()).toEqual([1, 0, 0, -0]);
+    expect(s[3]!.toArray()).toEqual([2, 0, 0, 0]); // falloff defaults to 0
+    expect(s[4]!.toArray()).toEqual([1, 1, 1, 3]); // color defaults to white
+    expect(s[5]!.toArray()).toEqual([0, 0, 1, 0]); // invert 0, strength 1
   });
 
   it('throws on a sphere without a positive radius', () => {
@@ -174,12 +180,12 @@ describe('effects module (M7.4 / M7.5)', () => {
       },
     ]);
     const s = fx._uniforms.slots;
-    expect(s[0]!.toArray()).toEqual([0, 2, 0, 2]); // center + cylinder index
+    expect(s[1]!.toArray()).toEqual([0, 1, 0, -2]);
     // The shader wants a half-height (sdCappedCylinder), the API takes a full
     // height - the halving happens here, so it must be asserted here.
-    expect(s[1]!.toArray()).toEqual([0.5, 1.5, 0, 0.2]);
-    expect(s[2]!.toArray()).toEqual([0, 1, 0, 3]); // color + mode 'rim'
-    expect(s[3]!.toArray()).toEqual([0, 0.7071, 0, 0.7071]);
+    expect(s[3]!.toArray()).toEqual([0.5, 1.5, 0, 0.2]);
+    expect(s[4]!.toArray()).toEqual([0, 1, 0, 3]); // color + mode 'rim'
+    expect(s[5]!.x).toBe(2);
     expect(fx._uniforms.count.value).toBe(1);
   });
 
@@ -205,7 +211,7 @@ describe('effects module (M7.4 / M7.5)', () => {
       { kind: 'box', halfExtents: [1, 1, 1], mode: 'tint' },
       { kind: 'cylinder', radius: 1, height: 2, mode: 'tint' },
     ]);
-    const kinds = [0, 1, 2].map((i) => fx._uniforms.slots[i * STRIDE]!.w);
+    const kinds = [0, 1, 2].map((i) => fx._uniforms.slots[i * STRIDE + 5]!.x);
     expect(kinds).toEqual([0, 1, 2]);
   });
 
@@ -219,7 +225,7 @@ describe('effects module (M7.4 / M7.5)', () => {
       ]),
     ).toThrow(/shape 1/);
     // The failed call must not have half-updated the uniform state.
-    expect(fx._uniforms.slots[0]!.toArray()).toEqual([9, 9, 9, 0]);
+    expect(fx._uniforms.slots[0]!.toArray()).toEqual([1, 0, 0, -9]);
     expect(fx._uniforms.count.value).toBe(1);
   });
 
@@ -275,4 +281,58 @@ describe('effects module (M7.4 / M7.5)', () => {
     const neg = worldWarpPreset({ intensity: -3 });
     expect(neg.intensity.value).toBe(-1);
   });
+});
+
+describe('affine SDF placement', () => {
+  it.each(['sphere', 'box', 'cylinder'] as const)(
+    'matches CPU %s membership through shear and reflection',
+    (kind) => {
+      const transform = new THREE.Matrix4().set(
+        -2,
+        0.7,
+        0,
+        3,
+        0,
+        0.4,
+        0.2,
+        -1,
+        0,
+        0,
+        1.5,
+        2,
+        0,
+        0,
+        0,
+        1,
+      );
+      const shape = { kind, transform, radius: 1, height: 2, halfExtents: [1, 1, 1] as const };
+      const volume = createSelectionVolume(shape);
+      const fx = sdfEffects([{ ...shape, mode: 'tint' }]);
+      const rows = fx._uniforms.slots;
+      for (let x = -2; x <= 6; x += 0.3)
+        for (let y = -3; y <= 2; y += 0.3) {
+          const p = new THREE.Vector4(x, y, 2.4, 1);
+          const q = new THREE.Vector3(rows[0]!.dot(p), rows[1]!.dot(p), rows[2]!.dot(p));
+          const inside =
+            kind === 'sphere'
+              ? q.length() <= 1
+              : kind === 'box'
+                ? Math.max(Math.abs(q.x), Math.abs(q.y), Math.abs(q.z)) <= 1
+                : Math.hypot(q.x, q.z) <= 1 && Math.abs(q.y) <= 1;
+          expect(inside).toBe(volume.containsPoint(x, y, 2.4));
+        }
+      const before = rows.map((v) => v.toArray());
+      transform.identity();
+      expect(rows.map((v) => v.toArray())).toEqual(before);
+      expect(() => fx.setShapes([{ ...shape, center: [0, 0, 0], mode: 'tint' }])).toThrow(
+        /combined/,
+      );
+      expect(() =>
+        fx.setShapes([
+          { ...shape, transform: new THREE.Matrix4().makeScale(0, 1, 1), mode: 'tint' },
+        ]),
+      ).toThrow(/invertible/);
+      expect(rows.map((v) => v.toArray())).toEqual(before);
+    },
+  );
 });

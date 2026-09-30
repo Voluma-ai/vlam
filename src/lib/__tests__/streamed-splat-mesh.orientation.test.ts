@@ -1,3 +1,4 @@
+import { httpDatasetSource } from '../streaming/dataset-source';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { StreamedSplatMesh } from '../streaming/streamed-splat-mesh';
@@ -103,4 +104,33 @@ describe('StreamedSplatMesh orientation', () => {
     expectMatrix(mesh, identity);
     mesh.dispose();
   });
+});
+
+describe('custom dataset source ownership', () => {
+  it.each(['borrowed', 'owned'] as const)(
+    'honors %s ownership on success, failure and abort',
+    async (sourceOwnership) => {
+      for (const outcome of ['success', 'failure', 'abort'] as const) {
+        stubManifest(outcome === 'failure' ? {} : sogManifest());
+        const source = httpDatasetSource('https://x.test/custom-manifest');
+        const dispose = vi.spyOn(source, 'dispose');
+        const controller = new AbortController();
+        if (outcome === 'abort') controller.abort();
+        const pending = StreamedSplatMesh.loadSource(source, {
+          format: 'streamed-sog',
+          sourceOwnership,
+          budget: 10,
+          shBands: 0,
+          signal: controller.signal,
+        });
+        if (outcome === 'success') {
+          const mesh = await pending;
+          expect(dispose).not.toHaveBeenCalled();
+          mesh.dispose();
+          mesh.dispose();
+        } else await expect(pending).rejects.toBeDefined();
+        expect(dispose).toHaveBeenCalledTimes(sourceOwnership === 'owned' ? 1 : 0);
+      }
+    },
+  );
 });

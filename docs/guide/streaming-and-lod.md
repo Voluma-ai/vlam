@@ -43,6 +43,39 @@ uses every band the capture carries, including a peeked SOG / `.lcc2`
 roughly unit-scale scenes, so tune it for captures spanning hundreds of
 units.
 
+## Custom dataset sources
+
+`StreamedSplatMesh.loadSource(source, options)` accepts a `SplatDatasetSource`.
+`StreamedSplatSourceLoadOptions` requires an explicit `format` (`streamed-sog`,
+`lcc`, `lcc2`, or `rad`) and retains the streaming options above, except
+`baseUrl`: the source already resolves its own URLs. Those URLs must remain
+fetchable by the chunk workers.
+
+```ts
+import { StreamedSplatMesh, type SplatDatasetSource } from '@voluma/vlam/streaming';
+
+export function openSource(source: SplatDatasetSource, signal: AbortSignal) {
+  return StreamedSplatMesh.loadSource(source, {
+    format: 'rad',
+    sourceOwnership: 'borrowed',
+    signal,
+    budget: 2_000_000,
+  });
+}
+```
+
+<!-- full file: docs/guide/samples/streaming-source.ts -->
+
+Ownership defaults to `borrowed`: the caller keeps the source alive until mesh
+disposal and releases it afterward, including after a failed load. With `owned`,
+VLAM calls `source.dispose()` exactly once on load failure or mesh disposal.
+URL and folder loaders use this same path with owned sources.
+
+Custom `size(path, { signal }?)` implementations should reject cancellation with
+`AbortError`; return `null` for unavailable sizes, not cancellation. The HTTP
+source forwards the signal through HEAD and fallback range probes. `request`
+headers and credentials also reach classic LCC sidecars and RAD bootstrap data.
+
 ## Budgets and `setBudget`
 
 The budget is the maximum number of **active** (resident, drawn) splats. It
