@@ -5076,18 +5076,22 @@ export class StreamedSplatMesh extends SplatMesh {
   /** Reserve the decoded environment's rows for desktop LCC2 selection, even while hidden. */
   private syncDesktopLcc2EnvironmentCapacity(): void {
     if (!this.desktopLcc2Quality || this.envFile === undefined) return;
-    const environmentCount = this.envHandle !== undefined
-      ? this.envSplatCount
-      : this.envEnabled && !this.envUnfit
-        ? this.cache.get(this.envFile)?.data.count
-        : undefined;
+    const environmentCount =
+      this.envHandle !== undefined
+        ? this.envSplatCount
+        : this.envEnabled && !this.envUnfit
+          ? this.cache.get(this.envFile)?.data.count
+          : undefined;
     if (environmentCount === undefined) {
       this.scene.source.setPoolCapacity?.(Infinity, DATA_TEXTURE_WIDTH);
       return;
     }
     const environmentSlots = this.rowAlignedSplats(environmentCount);
     const minimumCover = this.scene.source.coarsestRunsFor(0, Number.MAX_SAFE_INTEGER);
-    const minimumSlots = minimumCover.reduce((sum, run) => sum + this.rowAlignedSplats(run.count), 0);
+    const minimumSlots = minimumCover.reduce(
+      (sum, run) => sum + this.rowAlignedSplats(run.count),
+      0,
+    );
     if (this.envHandle === undefined && environmentSlots + minimumSlots > this.capacity) {
       // An environment that fits alone can still leave no complete main cover.
       // Skip it instead of keeping the invisible startup hold pending forever.
@@ -5102,14 +5106,24 @@ export class StreamedSplatMesh extends SplatMesh {
   /** Keep the frozen startup region, but fall back when its base cannot coexist with the environment. */
   private fitDesktopLcc2CoverageToEnvironment(): void {
     if (
-      !this.desktopLcc2Quality || this.initialRevealHold !== 'hold-coverage' ||
-      !this.frozenCriticalRuns || this.envFile === undefined || this.envUnfit
-    ) return;
-    const environmentCount = this.envHandle !== undefined
-      ? this.envSplatCount
-      : this.envEnabled ? this.cache.get(this.envFile)?.data.count : undefined;
+      !this.desktopLcc2Quality ||
+      this.initialRevealHold !== 'hold-coverage' ||
+      !this.frozenCriticalRuns ||
+      this.envFile === undefined ||
+      this.envUnfit
+    )
+      return;
+    const environmentCount =
+      this.envHandle !== undefined
+        ? this.envSplatCount
+        : this.envEnabled
+          ? this.cache.get(this.envFile)?.data.count
+          : undefined;
     if (environmentCount === undefined) return;
-    const coverageSlots = this.frozenCriticalRuns.reduce((sum, run) => sum + this.rowAlignedSplats(run.count), 0);
+    const coverageSlots = this.frozenCriticalRuns.reduce(
+      (sum, run) => sum + this.rowAlignedSplats(run.count),
+      0,
+    );
     if (coverageSlots + this.rowAlignedSplats(environmentCount) <= this.capacity) return;
     const fallback = new Map<string, LodRun>();
     for (const run of this.frozenCriticalRuns) {

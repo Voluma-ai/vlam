@@ -165,21 +165,39 @@ describe('OctreeLodSource budget fill', () => {
 describe('OctreeLodSource legacy fill threshold', () => {
   it.each([true, false])('keeps the 85% stop threshold without desktop policy: %s', (desktop) => {
     const bounds = { min: [-1, -1, -21], max: [1, 1, -20] };
-    const child = Object.fromEntries(Array.from({ length: 10 }, (_, file) => [file, {
-      boundingBox: bounds,
-      data: { '3dgs': { name: file, start: 0, count: 85_000 } },
-      child: { '0': {
-        boundingBox: bounds,
-        data: { '3dgs': { name: file + 10, start: 0, count: 100_000 } },
-      } },
-    }]));
-    const scene = buildLcc2Scene({
-      version: '0.0.2', totalLevels: 2, lodSplats: [1_000_000, 850_000],
-      root: { boundingBox: bounds, splatFiles: Array.from({ length: 20 }, (_, file) => `${file}.sog`), child },
-    }, dataset(), {
-      ...OPTIONS, budget: 1_000_000,
-      ...(desktop ? { lcc2Policy: { quality: 'desktop' as const } } : {}),
-    });
+    const child = Object.fromEntries(
+      Array.from({ length: 10 }, (_, file) => [
+        file,
+        {
+          boundingBox: bounds,
+          data: { '3dgs': { name: file, start: 0, count: 85_000 } },
+          child: {
+            '0': {
+              boundingBox: bounds,
+              data: { '3dgs': { name: file + 10, start: 0, count: 100_000 } },
+            },
+          },
+        },
+      ]),
+    );
+    const scene = buildLcc2Scene(
+      {
+        version: '0.0.2',
+        totalLevels: 2,
+        lodSplats: [1_000_000, 850_000],
+        root: {
+          boundingBox: bounds,
+          splatFiles: Array.from({ length: 20 }, (_, file) => `${file}.sog`),
+          child,
+        },
+      },
+      dataset(),
+      {
+        ...OPTIONS,
+        budget: 1_000_000,
+        ...(desktop ? { lcc2Policy: { quality: 'desktop' as const } } : {}),
+      },
+    );
     const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 100);
     const runs = scene.source.computeDesiredRuns(camera.position, frustumOf(camera), 1000);
     expect(runs.reduce((sum, run) => sum + run.count, 0)).toBe(desktop ? 1_000_000 : 850_000);
@@ -318,17 +336,35 @@ describe('OctreeLodSource desktop quality policy', () => {
 describe('OctreeLodSource desktop pool capacity', () => {
   it.each([2048, 4096, Infinity])('accounts for every padded owner row: %s slots', (capacity) => {
     const bounds = { min: [-1, -1, -9], max: [1, 1, -7] };
-    const scene = buildLcc2Scene({
-      version: '0.0.2', totalLevels: 2, lodSplats: [2000, 300],
-      root: { boundingBox: bounds, splatFiles: ['coarse.sog', 'fine.sog'], child: {
-        '0': { boundingBox: bounds, data: { '3dgs': { name: 0, start: 0, count: 300 } }, child: {
-          '0': { boundingBox: bounds, data: { '3dgs': { name: 1, start: 0, count: 1000 } } },
-          '1': { boundingBox: bounds, data: { '3dgs': { name: 1, start: 1000, count: 1000 } } },
-        } },
-      } },
-    }, dataset(), { ...OPTIONS, budget: 5000, lcc2Policy: { quality: 'desktop' } });
+    const scene = buildLcc2Scene(
+      {
+        version: '0.0.2',
+        totalLevels: 2,
+        lodSplats: [2000, 300],
+        root: {
+          boundingBox: bounds,
+          splatFiles: ['coarse.sog', 'fine.sog'],
+          child: {
+            '0': {
+              boundingBox: bounds,
+              data: { '3dgs': { name: 0, start: 0, count: 300 } },
+              child: {
+                '0': { boundingBox: bounds, data: { '3dgs': { name: 1, start: 0, count: 1000 } } },
+                '1': {
+                  boundingBox: bounds,
+                  data: { '3dgs': { name: 1, start: 1000, count: 1000 } },
+                },
+              },
+            },
+          },
+        },
+      },
+      dataset(),
+      { ...OPTIONS, budget: 5000, lcc2Policy: { quality: 'desktop' } },
+    );
     const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 100);
-    const select = (time: number) => scene.source.computeDesiredRuns(camera.position, frustumOf(camera), time);
+    const select = (time: number) =>
+      scene.source.computeDesiredRuns(camera.position, frustumOf(camera), time);
     expect(select(1000).map((run) => run.file)).toEqual([1, 1]);
     scene.source.setPoolCapacity!(capacity, 2048);
     // The capacity change invalidates the cached selection inside its dwell window.

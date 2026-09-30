@@ -24,7 +24,7 @@ export interface LodSource {
   lodBaseDistance: number;
   /** Distance ratio between successive LOD levels. */
   lodMultiplier: number;
-  /** Optional row-allocation ceiling, separate from the host's active-splat budget. */
+  /** Optional row-allocation ceiling, separate from the host's active-splat budget. @internal */
   setPoolCapacity?(capacitySlots: number, rowWidth: number): void;
   /** The runs that should be resident for the given camera. */
   computeDesiredRuns(

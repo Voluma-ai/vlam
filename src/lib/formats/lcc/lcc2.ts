@@ -435,7 +435,11 @@ class OctreeLodSource implements LodSource {
       total += next - (contributions[r] as number);
       contributions[r] = next;
       if (slotContributions) {
-        const slots = this.subtreeCutTotal(this.rootChildren[r] as number, resolved, this.poolRowWidth);
+        const slots = this.subtreeCutTotal(
+          this.rootChildren[r] as number,
+          resolved,
+          this.poolRowWidth,
+        );
         totalSlots += slots - (slotContributions[r] as number);
         slotContributions[r] = slots;
       }
