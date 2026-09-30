@@ -11,7 +11,7 @@ interface SplatMeshInternals {
   rebuildActiveList(): void;
   requestSortIfNeeded(camera: THREE.Camera, renderer: THREE.WebGPURenderer): void;
   noteRenderer(renderer: THREE.WebGPURenderer): void;
-  sortScheduler: { submissionDiagnostics(): { action: string } };
+  sortScheduler: { submissionDiagnostics(): { action: string }; hasSubmissionInFlight(): boolean };
   sourceIndexAttribute: THREE.BufferAttribute;
 }
 
@@ -159,6 +159,38 @@ describe('SplatMesh sort scheduling', () => {
     internals(mesh).rebuildActiveList();
     internals(mesh).requestSortIfNeeded(cameraAt(1), renderer(true));
     expect(sort).toHaveBeenCalledTimes(2);
+  });
+
+  it('releases a standalone sort when unified takes over before the source draws', async () => {
+    const { mesh, sort } = meshWithSorter();
+    const gpu = pendingGpuCompletion();
+    const camera = perspectiveAt(0);
+    mesh.update(camera, gpu.renderer);
+    expect(internals(mesh).sortScheduler.hasSubmissionInFlight()).toBe(true);
+    mesh.setUnifiedPickVisibility(true);
+    mesh.visible = false;
+    mesh.update(camera, gpu.renderer, { sort: false });
+    expect(internals(mesh).sortScheduler.hasSubmissionInFlight()).toBe(true);
+    gpu.resolve();
+    await Promise.resolve();
+    expect(internals(mesh).sortScheduler.hasSubmissionInFlight()).toBe(false);
+    expect(sort).toHaveBeenCalledTimes(1);
+  });
+
+  it('advances the fallback sort gate for unified sources without a queue fence', () => {
+    const { mesh, sort } = meshWithSorter();
+    const gpuRenderer = rendererWithPendingGpu();
+    delete (gpuRenderer.backend as unknown as { device?: unknown }).device;
+    const now = vi.spyOn(performance, 'now').mockReturnValue(0);
+    const camera = perspectiveAt(0);
+    mesh.update(camera, gpuRenderer);
+    mesh.setUnifiedPickVisibility(true);
+    mesh.visible = false;
+    mesh.update(camera, gpuRenderer, { sort: false });
+    now.mockReturnValue(1000);
+    for (let frame = 0; frame < 5; frame++) mesh.update(camera, gpuRenderer, { sort: false });
+    expect(internals(mesh).sortScheduler.hasSubmissionInFlight()).toBe(false);
+    expect(sort).toHaveBeenCalledTimes(1);
   });
 
   it('holds an in-flight GPU sort across an active-list swap and coalesces', () => {

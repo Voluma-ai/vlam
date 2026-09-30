@@ -79,6 +79,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- Drain pending standalone GPU sorts when unified rendering takes over, so
+  streamed LOD refinement cannot stall waiting for a hidden source to draw.
+
 - Asynchronous pick compilation no longer installs cropped display uniforms;
   rendering state is restored on success, failure, and disposal. Multi-row
   picks also account for WebGPU readback row padding.
