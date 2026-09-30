@@ -244,6 +244,35 @@ describe('WebGpuSortScheduler', () => {
     ).toBe(true);
   });
 
+  it('counts a 49ms frame as a hitch so triple-vsync stalls still back off', () => {
+    const scheduler = new WebGpuSortScheduler();
+    const accepted = pose(0);
+    scheduler.beginSubmissionFrame(1, 0);
+    expect(scheduler.shouldSubmit(pose(1), accepted, 5_000_000, 0)).toBe(true);
+    scheduler.markAccepted(0);
+    accepted.copy(pose(1));
+
+    scheduler.beginSubmissionFrame(2, 16);
+    scheduler.beginSubmissionFrame(3, 16 + 49);
+    expect(scheduler.shouldSubmit(pose(2), accepted, 5_000_000, 16 + 49 + 400)).toBe(false);
+    expect(
+      scheduler.shouldSubmit(pose(2), accepted, 5_000_000, 16 + 49 + MAX_ADAPTIVE_SORT_INTERVAL_MS),
+    ).toBe(true);
+  });
+
+  it('does not start hitch cooldown on a 40ms frame', () => {
+    const scheduler = new WebGpuSortScheduler();
+    const accepted = pose(0);
+    scheduler.beginSubmissionFrame(1, 0);
+    expect(scheduler.shouldSubmit(pose(1), accepted, 5_000_000, 0)).toBe(true);
+    scheduler.markAccepted(0);
+    accepted.copy(pose(1));
+
+    scheduler.beginSubmissionFrame(2, 16);
+    scheduler.beginSubmissionFrame(3, 16 + 40);
+    expect(scheduler.shouldSubmit(pose(2), accepted, 5_000_000, 16 + 40 + 400)).toBe(true);
+  });
+
   it('publishes the final settled pose immediately during hitch backoff', () => {
     const scheduler = new WebGpuSortScheduler(undefined, true);
     const accepted = pose(0);

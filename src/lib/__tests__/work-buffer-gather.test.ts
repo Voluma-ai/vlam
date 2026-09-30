@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { bool } from 'three/tsl';
+import { bool, uniform } from 'three/tsl';
 import { describe, expect, it, vi } from 'vitest';
 import { WorkBuffer, WorkBufferGather } from '../unified/work-buffer-gather';
 import {
@@ -7,6 +7,18 @@ import {
   estimateUnifiedWorkBufferBytes,
   estimateUnifiedWorkBufferPeakBytes,
 } from '../unified/unified-work-buffer';
+
+function packedSh() {
+  return {
+    mode: 'packed' as const,
+    bands: 1 as const,
+    textures: [new THREE.DataTexture(new Uint8Array(4), 1, 1)],
+    range: {
+      min: uniform(new THREE.Vector3(-1, -1, -1)),
+      max: uniform(new THREE.Vector3(1, 1, 1)),
+    },
+  };
+}
 
 function textures(width: number) {
   return {
@@ -189,6 +201,38 @@ describe('WorkBuffer memory accounting', () => {
     // `count` drives the draw and every `storage()` binding; it is a plain
     // property rather than a view over the array, so it must survive intact.
     expect(buffer.centers.count).toBe(capacity + WorkBuffer.SCRATCH_SLOTS);
+  });
+
+  it('refreshes SH color through a separate compute pass', () => {
+    const gather = new WorkBufferGather({
+      capacity: 8,
+      sourceCapacity: 4,
+      sourceIndex: new THREE.StorageBufferAttribute(new Uint32Array(4), 1),
+      ...textures(4),
+      sh: packedSh(),
+    });
+    const compute = vi.fn();
+    const renderer = { compute } as unknown as THREE.WebGPURenderer;
+    gather.gather(renderer, 4, 0, new THREE.Matrix4());
+    const fullPass = compute.mock.calls[0]![0];
+    gather.gatherColors(renderer, 4, 0);
+    expect(compute).toHaveBeenCalledTimes(2);
+    expect(compute.mock.calls[1]![0]).not.toBe(fullPass);
+    expect(compute.mock.calls[1]![0].count).toBe(4);
+    gather.dispose();
+  });
+
+  it('does not offer a color refresh without spherical harmonics', () => {
+    const gather = new WorkBufferGather({
+      capacity: 2,
+      sourceCapacity: 2,
+      sourceIndex: new THREE.StorageBufferAttribute(new Uint32Array(2), 1),
+      ...textures(2),
+    });
+    expect(() =>
+      gather.gatherColors({ compute: vi.fn() } as unknown as THREE.WebGPURenderer, 2, 0),
+    ).toThrow(/spherical harmonics/);
+    gather.dispose();
   });
 
   it('rejects a nonsensical capacity rather than returning NaN', () => {

@@ -26,13 +26,31 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   Cached gathers also follow streamed `activeListVersion` so slot reuse cannot
   keep a stale modifier result.
 
+- `UnifiedSplatMesh` `shColorRefresh` source option. When combined with
+  `cacheModifiers`, a camera-position change refreshes only SH color and
+  reuses cached SDF visibility and covariance. Defaults to `false` so cached
+  color-writing modifiers still full-gather.
+
+- Cached SH gathers refresh only color when the camera moves: clip SDF,
+  covariance, and visibility stay in the work buffer until geometry, the
+  active list, or host-invalidated modifier uniforms change.
+
 - Migration guide for 0.x API renames, package subpaths, renderer setup, strategies, relighting, orientation, and device defaults.
 
 ### Changed
 
+- Snapshot streamed LOD cameras with copy instead of cloning the scene graph
+  every frame.
+
 - Automatic WebGPU sort cadence temporarily backs off during slow frames.
   Content invalidations, foreign-view restoration, and the final settled camera
   pose still sort immediately so changed geometry never uses a stale order.
+  Hitch cooldown now starts at 48 ms so a ~50 ms vsync triple still backs off;
+  the previous 50 ms gate missed 49.9 ms stalls.
+
+- `UnifiedSplatMesh` keeps `instanceCount` at the last GPU-sorted count (0
+  until the first sort completes) while a WebGPU sort is in flight. Identity
+  `order` is no longer drawn on the submitting frame.
 
 - Moved packed-center/color storage and shader readers into benchmark-only
   modules. Published renderer paths use ordinary float center textures without
@@ -47,6 +65,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - Gate tagged npm publication on preflight, the CI-equivalent secret scan, and packed-package import checks.
 
 ### Fixed
+
+- Start watching the first unified GPU sort even while `instanceCount` is 0, so
+  hosts that skip a zero-instance draw still publish the ordered cut. An empty
+  work buffer no longer acknowledges a previous sort, which had armed the
+  in-flight hold and skipped gathering a source that appeared on the next frame.
 
 - Clean up the React example across load failures, cancellation, unmounts, and source changes.
 

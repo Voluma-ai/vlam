@@ -10,4 +10,5 @@ RUN npm ci
 
 COPY . .
 
-CMD ["npm", "run", "test:browser", "--", "--workers=2"]
+# Honor the same SwiftShader worker policy as hosted CI.
+CMD ["npm", "run", "test:browser"]

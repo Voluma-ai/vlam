@@ -1,3 +1,4 @@
+import type { Lcc2QualityPolicy } from '../formats/lcc/lcc2';
 import {
   abortReason,
   buildHoldSwapGroups,
@@ -154,6 +155,12 @@ type RadPublicationDiagnostic = {
 
 const RAD_DIAGNOSTIC_RING_SIZE = 32;
 const RAD_DIAGNOSTIC_SAMPLE_SIZE = 4096;
+/** Bounds hidden LOD replacement preparation on the main thread while camera motion continues. */
+const INTERACTIVE_CLASSIC_STAGE_BUDGET_MS = 3;
+/** Limits any indivisible typed-array conversion inside that time budget. */
+const INTERACTIVE_CLASSIC_STAGE_BATCH_SPLATS = 2048;
+/** Keep each packing batch short enough to re-check the shared preparation deadline. */
+const INTERACTIVE_CLASSIC_STAGE_BATCH_TARGET_MS = 0.5;
 
 /** Vite's `?worker&inline` default export - a Worker subclass constructor. */
 type InlineWorkerCtor = new () => Worker;
@@ -348,7 +355,7 @@ function radChunkResidencyPages(
 /**
  * Read-only startup-hold progress for {@link StreamedSplatMeshOptions.initialReveal}.
  * Exported for hosts that gate visibility on the first useful coverage frame
- * (classic `.lcc` nearby L1 / far coarsest, `.lcc2` in-view coarsest, or an
+ * (classic `.lcc` nearby L1 / far coarsest, `.lcc2` in-view base coverage, or an
  * explicit nearby-L0 hold).
  */
 export type InitialRevealState =
@@ -427,6 +434,8 @@ export interface StreamedSplatMeshOptions extends SplatMeshOptions {
    * number.
    */
   maxBudget?: number;
+  /** Optional format-specific desktop LCC2 detail policy; ignored by other formats. */
+  lcc2Policy?: Lcc2QualityPolicy;
   /**
    * Lets a host that pins {@link budget} and/or {@link maxBudget} still take the
    * finest-level lift for `.rad` strategy selection and pool sizing. Without it,
@@ -670,6 +679,10 @@ export interface StreamedSplatPerformanceEvent {
   uploadMs: number;
   /** CPU submission time for the depth-sort passes. */
   sortSubmitMs: number;
+  /** Main-thread preparation breakdown, populated only when an event listener is attached. */
+  cameraSyncMs?: number;
+  rescheduleMs?: number;
+  baseUpdateMs?: number;
   /** Exact-height staging textures allocated during this update. */
   stagingTextureAllocations: number;
   /** Texture copies submitted this update (core, SH and custom channels). */
@@ -754,6 +767,7 @@ export class StreamedSplatMesh extends SplatMesh {
   private readonly scene: StreamedScene;
   /** Only RAD prefixes need a global publish wave; manifest cuts are region-atomic. */
   private readonly usesRadWave: boolean;
+  private readonly desktopLcc2Quality: boolean;
   private readonly loader = new ChunkLoader();
   /**
    * Cap the *classic* (non-page-table) chunk cache evicts against.
@@ -777,6 +791,32 @@ export class StreamedSplatMesh extends SplatMesh {
   /** Worker-side RAD plan cap; separate default, shared explicit override. */
   private readonly pageTableWriteCap: number;
   private readonly onPerformanceEvent: ((event: StreamedSplatPerformanceEvent) => void) | undefined;
+  private readonly updateStageTimings = {
+    cameraSyncMs: 0,
+    shouldRescheduleMs: 0,
+    rescheduleMs: 0,
+    baseUpdateMs: 0,
+    demandPoseMs: 0,
+    demandStateMs: 0,
+    demandReconcileMs: 0,
+    workerPostMs: 0,
+    diagnosticTraceMs: 0,
+    lcc2LevelUpdateMs: 0,
+    lcc2BudgetSelectMs: 0,
+    lcc2CollectCutMs: 0,
+    diagnosticSnapshotMs: 0,
+    classicCameraSelectMs: 0,
+    classicDesiredBookkeepingMs: 0,
+    classicGroupBuildMs: 0,
+    classicSwapApplyMs: 0,
+    classicFinalizeMs: 0,
+    performanceEventMs: 0,
+    applyGroupMs: 0,
+    substituteCoverageMs: 0,
+    canStageGroupMs: 0,
+    groupFullyStagedMs: 0,
+    stageGroupMs: 0,
+  };
   private compactionCount = 0;
 
   private readonly cache = new Map<number, CachedChunk>();
@@ -1212,6 +1252,10 @@ export class StreamedSplatMesh extends SplatMesh {
   private lastScheduleTime = -Infinity;
   /** Reused leaf-coverage bitmap for {@link substituteCoverage}; grows only. */
   private coverageScratch: Uint8Array | undefined;
+  /** Shared deadline so multiple swap groups use one per-update work allowance. */
+  private interactiveStageDeadline = Number.POSITIVE_INFINITY;
+  private lastClassicProgressAt: number | null = null;
+  private interactiveStageBatchSplats = INTERACTIVE_CLASSIC_STAGE_BATCH_SPLATS;
   private readonly lastCameraPos = new THREE.Vector3(Infinity, Infinity, Infinity);
   private readonly lastCameraQuat = new THREE.Quaternion();
 
@@ -1350,6 +1394,7 @@ export class StreamedSplatMesh extends SplatMesh {
     // live budget is overwritten with the initial value once the scene exists.
     const sourceOptions = {
       budget: ceilingBudget,
+      lcc2Policy: options.lcc2Policy,
       lodBaseDistance: options.lodBaseDistance ?? 10,
       lodMultiplier: options.lodMultiplier ?? 2,
     };
@@ -1676,6 +1721,7 @@ export class StreamedSplatMesh extends SplatMesh {
         : ({ ...options, [splatMeshSourceLabel]: sourceLabel } as SplatMeshOptions);
     super({ capacity }, meshOptions);
     this.scene = scene;
+    this.desktopLcc2Quality = scene.source.lcc2QualityState?.profile === 'desktop';
     this.radChunkResidency = radChunkResidency;
     this.radResidencyRequestedValue = radResidencyRequested ? 'chunk-pages' : 'indexed';
     this.radResidencyFallbackReasonValue = radResidencyFallbackReason;
@@ -3650,6 +3696,10 @@ export class StreamedSplatMesh extends SplatMesh {
     this.pendingWork = true;
   }
 
+  protected override getUpdateTimings() {
+    return { ...super.getUpdateTimings(), ...this.updateStageTimings };
+  }
+
   override update(
     camera: THREE.PerspectiveCamera,
     renderer: THREE.WebGPURenderer,
@@ -3662,7 +3712,29 @@ export class StreamedSplatMesh extends SplatMesh {
     }
     this.radFrame++;
     this.radDiagnosticRenderer = this.onPerformanceEvent ? renderer : null;
+    this.updateStageTimings.demandPoseMs = 0;
+    this.updateStageTimings.demandStateMs = 0;
+    this.updateStageTimings.demandReconcileMs = 0;
+    this.updateStageTimings.workerPostMs = 0;
+    this.updateStageTimings.diagnosticTraceMs = 0;
+    this.updateStageTimings.lcc2LevelUpdateMs = 0;
+    this.updateStageTimings.lcc2BudgetSelectMs = 0;
+    this.updateStageTimings.lcc2CollectCutMs = 0;
+    this.updateStageTimings.diagnosticSnapshotMs = 0;
+    this.updateStageTimings.classicCameraSelectMs = 0;
+    this.updateStageTimings.classicDesiredBookkeepingMs = 0;
+    this.updateStageTimings.classicGroupBuildMs = 0;
+    this.updateStageTimings.classicSwapApplyMs = 0;
+    this.updateStageTimings.classicFinalizeMs = 0;
+    this.updateStageTimings.performanceEventMs = 0;
+    this.updateStageTimings.applyGroupMs = 0;
+    this.updateStageTimings.substituteCoverageMs = 0;
+    this.updateStageTimings.canStageGroupMs = 0;
+    this.updateStageTimings.groupFullyStagedMs = 0;
+    this.updateStageTimings.stageGroupMs = 0;
     const now = performance.now();
+    const measureUpdateStages = this.onPerformanceEvent !== undefined;
+    const cameraSyncStartedAt = measureUpdateStages ? performance.now() : 0;
     camera.updateMatrixWorld();
     this.updateWorldMatrix(true, false);
     // The page-table cut limit is `targetPx / focalY`, and focalY needs the
@@ -3689,12 +3761,22 @@ export class StreamedSplatMesh extends SplatMesh {
       }
     }
     const lodCamera = xrView?.head ?? camera;
-    this.lastLiveCamera = lodCamera.clone();
+    this.captureLiveCamera(lodCamera);
     this.noteRenderer(renderer);
-    const performanceEvent = this.shouldReschedule(lodCamera, now)
-      ? this.reschedule(lodCamera, now)
-      : null;
+    if (measureUpdateStages)
+      this.updateStageTimings.cameraSyncMs = performance.now() - cameraSyncStartedAt;
+    const shouldRescheduleStartedAt = measureUpdateStages ? performance.now() : 0;
+    const shouldReschedule = this.shouldReschedule(lodCamera, now);
+    if (measureUpdateStages)
+      this.updateStageTimings.shouldRescheduleMs = performance.now() - shouldRescheduleStartedAt;
+    const rescheduleStartedAt = measureUpdateStages ? performance.now() : 0;
+    const performanceEvent = shouldReschedule ? this.reschedule(lodCamera, now) : null;
+    if (measureUpdateStages)
+      this.updateStageTimings.rescheduleMs = performance.now() - rescheduleStartedAt;
+    const baseUpdateStartedAt = measureUpdateStages ? performance.now() : 0;
     super.update(camera, renderer, options);
+    if (measureUpdateStages)
+      this.updateStageTimings.baseUpdateMs = performance.now() - baseUpdateStartedAt;
     if (this.onPerformanceEvent) {
       const timings = this.getUpdateTimings();
       const timestamp = performance.now();
@@ -4043,8 +4125,30 @@ export class StreamedSplatMesh extends SplatMesh {
     return _cameraWorldQuat.angleTo(this.lastCameraQuat) > 0.0087; // ~0.5°
   }
 
+  /** Snapshots pose without cloning the scene graph every frame. */
+  private captureLiveCamera(camera: THREE.Camera): THREE.Camera {
+    if (
+      this.lastLiveCamera instanceof THREE.PerspectiveCamera &&
+      camera instanceof THREE.PerspectiveCamera
+    ) {
+      this.lastLiveCamera.copy(camera, false);
+      this.lastLiveCamera.matrixWorld.copy(camera.matrixWorld);
+      this.lastLiveCamera.matrixWorldInverse.copy(camera.matrixWorldInverse);
+      this.lastLiveCamera.projectionMatrix.copy(camera.projectionMatrix);
+      this.lastLiveCamera.projectionMatrixInverse.copy(camera.projectionMatrixInverse);
+      return this.lastLiveCamera;
+    }
+    this.lastLiveCamera = camera.clone();
+    return this.lastLiveCamera;
+  }
+
   private reschedule(camera: THREE.Camera, now: number): StreamedSplatPerformanceEvent | null {
     const startedAt = performance.now();
+    // Selection and swap bookkeeping must not consume the upload allowance.
+    // Start the shared preparation deadline lazily at the first cached batch.
+    this.interactiveStageDeadline = Number.POSITIVE_INFINITY;
+    const measureRescheduleStages = this.onPerformanceEvent !== undefined;
+    const diagnosticSnapshotStartedAt = measureRescheduleStages ? performance.now() : 0;
     // The before-snapshots exist only to diff for the performance event; with
     // no listener installed this per-reschedule allocation work is skipped.
     let before: {
@@ -4056,6 +4160,11 @@ export class StreamedSplatMesh extends SplatMesh {
       for (const [key, entry] of this.resident) before.resident.set(key, entry.run.count);
       for (const [key, entry] of this.staged) before.staged.set(key, entry.uploadedCount);
     }
+    if (measureRescheduleStages) {
+      this.updateStageTimings.diagnosticSnapshotMs =
+        performance.now() - diagnosticSnapshotStartedAt;
+    }
+    const classicCameraSelectStartedAt = measureRescheduleStages ? performance.now() : 0;
     const compactionCountBefore = this.compactionCount;
     const hadPendingWork = this.pendingWork;
     this.pendingWork = false;
@@ -4063,7 +4172,7 @@ export class StreamedSplatMesh extends SplatMesh {
     this.lastScheduleTime = now;
     camera.getWorldPosition(this.lastCameraPos);
     camera.getWorldQuaternion(this.lastCameraQuat);
-    this.lastLiveCamera = camera.clone();
+    this.captureLiveCamera(camera);
     this.refreshStartupMainRadLodHold(camera);
 
     // Camera position and frustum in this mesh's local space.
@@ -4145,12 +4254,26 @@ export class StreamedSplatMesh extends SplatMesh {
     camera.getWorldDirection(_cameraForward).add(this.lastCameraPos);
     this.worldToLocal(_cameraForward);
     _cameraForward.sub(_cameraLocal).normalize();
+    this.syncDesktopLcc2EnvironmentCapacity();
     const scheduledRuns = this.scene.source.computeDesiredRuns(
       _cameraLocal,
       _frustum,
       now,
       _cameraForward,
+      this.onPerformanceEvent !== undefined
+        ? (stage, durationMs) => {
+            if (stage === 'levelUpdate') this.updateStageTimings.lcc2LevelUpdateMs = durationMs;
+            else if (stage === 'budgetSelect')
+              this.updateStageTimings.lcc2BudgetSelectMs = durationMs;
+            else this.updateStageTimings.lcc2CollectCutMs = durationMs;
+          }
+        : undefined,
     );
+    if (measureRescheduleStages) {
+      this.updateStageTimings.classicCameraSelectMs =
+        performance.now() - classicCameraSelectStartedAt;
+    }
+    const classicDesiredBookkeepingStartedAt = measureRescheduleStages ? performance.now() : 0;
     const holdingRuns = this.captureOrContinueInitialReveal(
       scheduledRuns,
       now,
@@ -4164,12 +4287,36 @@ export class StreamedSplatMesh extends SplatMesh {
     // keeps that coverage active while the live cut stages, then replaces it
     // atomically rather than drawing coarse and fine runs together.
     const liveRuns = holdingRuns ?? scheduledRuns;
-    const swapRuns = this.usesRadWave && !holding ? this.captureWaveRuns(liveRuns) : liveRuns;
+    // Preserve the frozen coverage/reveal contract, but use otherwise idle
+    // startup bandwidth to warm desktop LCC2 detail for the real camera pose.
+    // SH chunks should wait for the first coarse upload to lock the pool
+    // range, so their shared palette can be converted in the loading worker.
+    const startupDetailRuns =
+      holding && this.desktopLcc2Quality && (this.shBands === 0 || this.currentShRange() !== null)
+        ? scheduledRuns
+        : [];
+    const streamingCut = !holding
+      ? this.scene.source.computeStreamingCut?.(
+          liveRuns,
+          (run) =>
+            this.cache.has(run.file) ||
+            this.resident.has(runKey(run)) ||
+            this.staged.get(runKey(run))?.uploadedCount === run.count,
+          (run) => this.staged.has(runKey(run)),
+        )
+      : undefined;
+    const swapRuns =
+      this.usesRadWave && !holding
+        ? this.captureWaveRuns(liveRuns)
+        : (streamingCut?.runs ?? liveRuns);
+    const refinementFetches = streamingCut?.pending ?? [];
     const desired = new Map<string, LodRun>();
     const desiredFiles = new Set<number>();
     for (const run of liveRuns) {
       desiredFiles.add(run.file);
     }
+    for (const run of refinementFetches) desiredFiles.add(run.file);
+    for (const run of startupDetailRuns) desiredFiles.add(run.file);
     for (const run of swapRuns) {
       desired.set(runKey(run), run);
       desiredFiles.add(run.file);
@@ -4203,7 +4350,7 @@ export class StreamedSplatMesh extends SplatMesh {
     // livelock under CPU-cache pressure). Fully staged runs may leave the CPU
     // cache: their GPU inactive range already holds the bytes.
     this.neededFiles.clear();
-    for (const run of liveRuns) {
+    for (const run of [...liveRuns, ...refinementFetches, ...startupDetailRuns]) {
       const key = runKey(run);
       if (this.resident.has(key)) continue;
       const staged = this.staged.get(key);
@@ -4233,6 +4380,11 @@ export class StreamedSplatMesh extends SplatMesh {
     const toRemove = holding
       ? []
       : [...this.resident.entries()].filter(([key]) => !desired.has(key));
+    if (measureRescheduleStages) {
+      this.updateStageTimings.classicDesiredBookkeepingMs =
+        performance.now() - classicDesiredBookkeepingStartedAt;
+    }
+    const classicGroupBuildStartedAt = measureRescheduleStages ? performance.now() : 0;
 
     // A region must never render twice (bright flash) or not at all (black
     // hole), so adds and their superseded removals apply together, within
@@ -4249,6 +4401,28 @@ export class StreamedSplatMesh extends SplatMesh {
       : buildSwapGroups(toAdd, toRemove);
     const classicLccGroups = !holding && isClassicLccSwapSet(groups);
     const pendingFetches = new Map<number, ClassicFetchWant>();
+    for (const run of refinementFetches) {
+      if (this.failedFiles.has(run.file) || this.cache.has(run.file)) continue;
+      // This intermediate may unlock a whole ancestor that contains nearby
+      // finest owners already in cache. Rank the dependency with that visible
+      // transaction, otherwise unrelated fine requests can starve its cover.
+      const unlocksFinest = liveRuns.some(
+        (owner) =>
+          owner.level === 0 &&
+          owner.leafStart < run.leafEnd &&
+          owner.leafEnd > run.leafStart &&
+          (this.cache.has(owner.file) ||
+            this.resident.has(runKey(owner)) ||
+            this.staged.get(runKey(owner))?.uploadedCount === owner.count),
+      );
+      enqueueClassicFetch(
+        pendingFetches,
+        run.file,
+        unlocksFinest ? 'finest-target' : 'target',
+        run,
+      );
+      this.pendingWork = true;
+    }
     this.updateEnvironment(now, pendingFetches);
 
     if (!this.usesRadWave && !classicLccGroups && !holding) {
@@ -4271,9 +4445,49 @@ export class StreamedSplatMesh extends SplatMesh {
         [...this.resident.entries()].filter(([key]) => !desired.has(key)),
       );
     }
-    groups.sort((a, b) =>
-      classicLccGroups ? compareClassicSwapGroups(a, b) : groupPriority(a) - groupPriority(b),
-    );
+    const lcc2Groups = 'lcc2QualityState' in this.scene.source;
+    if (lcc2Groups) {
+      // One ancestor replacement can join several siblings in manifest order.
+      // Stage its nearby visible owners first, without publishing an overlap.
+      for (const group of groups) {
+        group.adds.sort(
+          (a, b) =>
+            Number(b.inView === true) - Number(a.inView === true) ||
+            (a.screenImportance ?? Infinity) - (b.screenImportance ?? Infinity) ||
+            (a.distance ?? Infinity) - (b.distance ?? Infinity),
+        );
+      }
+    }
+    const lcc2GroupRank = (group: SwapGroup) => {
+      // Retiring parents retain their old camera rank. Rank LCC2 replacement
+      // transactions by the new owners only, so stale parent metadata cannot
+      // let a background group overtake the current foreground.
+      const owners = group.adds;
+      return {
+        view: owners.some((run) => run.inView === true) ? 0 : 1,
+        importance: Math.min(...owners.map((run) => run.screenImportance ?? Infinity)),
+        distance: Math.min(...owners.map((run) => run.distance ?? Infinity)),
+      };
+    };
+    groups.sort((a, b) => {
+      if (lcc2Groups) {
+        const aa = lcc2GroupRank(a);
+        const bb = lcc2GroupRank(b);
+        return (
+          aa.view - bb.view ||
+          aa.importance - bb.importance ||
+          aa.distance - bb.distance ||
+          a.leafStart - b.leafStart
+        );
+      }
+      return classicLccGroups
+        ? compareClassicSwapGroups(a, b)
+        : groupPriority(a) - groupPriority(b);
+    });
+    if (measureRescheduleStages) {
+      this.updateStageTimings.classicGroupBuildMs = performance.now() - classicGroupBuildStartedAt;
+    }
+    const classicSwapApplyStartedAt = measureRescheduleStages ? performance.now() : 0;
 
     // A `.rad` refinement splits across groups: leaf-interval overlap pairs an
     // octree parent with its children, but `.rad` keys runs by global splat
@@ -4334,11 +4548,31 @@ export class StreamedSplatMesh extends SplatMesh {
           let recoverable = false;
           for (const run of missing) {
             if (this.failedFiles.has(run.file)) continue;
+            // LCC2 publishes an ancestor replacement atomically. A hidden
+            // coarse sibling can therefore block nearby finest detail just as
+            // much as its visible sibling. Rank every missing dependency by
+            // the whole transaction, including owners already in cache.
+            const rank = lcc2Groups ? lcc2GroupRank(group) : null;
+            const fetchRun = rank
+              ? {
+                  ...run,
+                  coverageGroup: group.leafStart,
+                  leafStart: group.leafStart,
+                  leafEnd: group.leafEnd,
+                  distance: rank.distance,
+                  inView: rank.view === 0,
+                  screenImportance: rank.importance,
+                }
+              : run;
             enqueueClassicFetch(
               pendingFetches,
               run.file,
-              classicFetchPhaseForDesired(run, this.scene.source.lodBaseDistance),
-              run,
+              lcc2Groups
+                ? group.adds.some((owner) => owner.level === 0)
+                  ? 'finest-target'
+                  : 'target'
+                : classicFetchPhaseForDesired(run, this.scene.source.lodBaseDistance),
+              fetchRun,
             );
             recoverable = true;
           }
@@ -4351,9 +4585,9 @@ export class StreamedSplatMesh extends SplatMesh {
           if (recoverable) {
             this.pendingWork = true;
           }
-          // During startup, continue into staging so available chunks upload
-          // before every sibling is cached.
-          if (!holding) continue;
+          // Startup and desktop LCC2 can stage cached siblings while the old
+          // cover remains visible. Other classic policies keep their contract.
+          if (!holding && (classicLccGroups || !this.desktopLcc2Quality)) continue;
         }
         if (holding && this.environmentPendingForReveal()) {
           // Keep pool headroom for the env tile; coverage stays cached until it
@@ -4361,7 +4595,10 @@ export class StreamedSplatMesh extends SplatMesh {
           this.pendingWork = true;
           continue;
         }
-        const forceStage = holding || (this.stagedSwapsEnabled && group.addCount > this.appendCap);
+        const forceStage =
+          holding ||
+          (!classicLccGroups && missing.length > 0) ||
+          (this.stagedSwapsEnabled && group.addCount > this.appendCap);
         if (forceStage && this.canStageGroup(group)) {
           const stagedNow = this.stageGroup(group, now, Math.max(0, this.appendCap - appended));
           appended += stagedNow;
@@ -4407,8 +4644,56 @@ export class StreamedSplatMesh extends SplatMesh {
       }
       this.retireHeldTicks = 0;
     }
+    if (measureRescheduleStages) {
+      this.updateStageTimings.classicSwapApplyMs = performance.now() - classicSwapApplyStartedAt;
+    }
+    const classicFinalizeStartedAt = measureRescheduleStages ? performance.now() : 0;
 
+    if (refinementFetches.length > 0 && this.cacheBytesTotal < this.cpuCacheBytes) {
+      // The budgeted final LCC2 cut is current demand, not background speculation.
+      // Load nearby finest owners ahead of intermediate quality rungs, while
+      // the already-published coarse cut continues to provide full coverage.
+      // Otherwise busy intermediate requests leave no spare slots for the very
+      // detail a moving camera needs next, despite a correct desired cut.
+      for (const run of liveRuns) {
+        if (
+          this.failedFiles.has(run.file) ||
+          this.cache.has(run.file) ||
+          this.resident.has(runKey(run)) ||
+          this.staged.get(runKey(run))?.uploadedCount === run.count
+        )
+          continue;
+        enqueueClassicFetch(
+          pendingFetches,
+          run.file,
+          classicFetchPhaseForDesired(run, this.scene.source.lodBaseDistance),
+          run,
+        );
+      }
+    }
     this.flushClassicFetches(pendingFetches, this.scene.source.lodBaseDistance, holding);
+    if (startupDetailRuns.length > 0 && this.cacheBytesTotal < this.cpuCacheBytes) {
+      const prefetches = new Map<number, ClassicFetchWant>();
+      for (const run of startupDetailRuns) {
+        if (
+          pendingFetches.has(run.file) ||
+          this.cache.has(run.file) ||
+          this.failedFiles.has(run.file)
+        )
+          continue;
+        enqueueClassicFetch(prefetches, run.file, 'background', run);
+      }
+      stampClassicFetchGroups(prefetches, this.scene.source.lodBaseDistance);
+      const ordered = [...prefetches.entries()].sort((a, b) =>
+        compareClassicFetches(a[1], b[1], a[0], b[0]),
+      );
+      // Background startup work cannot displace missing frozen coverage.
+      for (const [file, want] of ordered) {
+        want.kind = 'base';
+        want.groupClass = 2;
+        this.requestChunk(file, 'base', want);
+      }
+    }
 
     if (holding) {
       this.finishInitialRevealIfComplete();
@@ -4426,13 +4711,21 @@ export class StreamedSplatMesh extends SplatMesh {
     this.fetchCountsValue.cacheLimitBytes = this.cpuCacheBytes;
     if (this.cacheBytesTotal > this.cpuCacheBytes) this.fetchCountsValue.cacheFull = true;
     this.evictChunks(now);
+    if (measureRescheduleStages) {
+      this.updateStageTimings.classicFinalizeMs = performance.now() - classicFinalizeStartedAt;
+    }
     if (before === null) return null;
-    return this.createPerformanceEvent(
+    const performanceEventStartedAt = measureRescheduleStages ? performance.now() : 0;
+    const performanceEvent = this.createPerformanceEvent(
       before.resident,
       before.staged,
       compactionCountBefore,
       startedAt,
     );
+    if (measureRescheduleStages) {
+      this.updateStageTimings.performanceEventMs = performance.now() - performanceEventStartedAt;
+    }
+    return performanceEvent;
   }
 
   private rowAlignedSplats(count: number): number {
@@ -4606,6 +4899,11 @@ export class StreamedSplatMesh extends SplatMesh {
       this.initialRevealPhase = 'released';
       return;
     }
+    if (this.desktopLcc2Quality) {
+      this.frozenCriticalRuns = coverage;
+      this.fitDesktopLcc2CoverageToEnvironment();
+      coverage = this.frozenCriticalRuns;
+    }
     if (!this.criticalRunsFitCapacity(coverage)) {
       const coarsened = this.coarsenCoverageNearRuns(coverage);
       if (this.criticalRunsFitCapacity(coarsened)) {
@@ -4758,6 +5056,9 @@ export class StreamedSplatMesh extends SplatMesh {
       return null;
     }
 
+    this.fitDesktopLcc2CoverageToEnvironment();
+    if (this.initialRevealPhase !== 'holding' || !this.frozenCriticalRuns) return null;
+
     for (const run of this.frozenCriticalRuns) {
       if (this.failedFiles.has(run.file) && !this.resident.has(runKey(run))) {
         const staged = this.staged.get(runKey(run));
@@ -4770,6 +5071,80 @@ export class StreamedSplatMesh extends SplatMesh {
 
     this.publishInitialRevealProgress(this.frozenCriticalRuns);
     return this.frozenCriticalRuns;
+  }
+
+  /** Reserve the decoded environment's rows for desktop LCC2 selection, even while hidden. */
+  private syncDesktopLcc2EnvironmentCapacity(): void {
+    if (!this.desktopLcc2Quality || this.envFile === undefined) return;
+    const environmentCount =
+      this.envHandle !== undefined
+        ? this.envSplatCount
+        : this.envEnabled && !this.envUnfit
+          ? this.cache.get(this.envFile)?.data.count
+          : undefined;
+    if (environmentCount === undefined) {
+      this.scene.source.setPoolCapacity?.(Infinity, DATA_TEXTURE_WIDTH);
+      return;
+    }
+    const environmentSlots = this.rowAlignedSplats(environmentCount);
+    const minimumCover = this.scene.source.coarsestRunsFor(0, Number.MAX_SAFE_INTEGER);
+    const minimumSlots = minimumCover.reduce(
+      (sum, run) => sum + this.rowAlignedSplats(run.count),
+      0,
+    );
+    if (this.envHandle === undefined && environmentSlots + minimumSlots > this.capacity) {
+      // An environment that fits alone can still leave no complete main cover.
+      // Skip it instead of keeping the invisible startup hold pending forever.
+      this.envUnfit = true;
+      warn('the environment tile leaves no room for desktop LCC2 coverage; it will not be shown.');
+      this.scene.source.setPoolCapacity?.(Infinity, DATA_TEXTURE_WIDTH);
+      return;
+    }
+    this.scene.source.setPoolCapacity?.(this.capacity - environmentSlots, DATA_TEXTURE_WIDTH);
+  }
+
+  /** Keep the frozen startup region, but fall back when its base cannot coexist with the environment. */
+  private fitDesktopLcc2CoverageToEnvironment(): void {
+    if (
+      !this.desktopLcc2Quality ||
+      this.initialRevealHold !== 'hold-coverage' ||
+      !this.frozenCriticalRuns ||
+      this.envFile === undefined ||
+      this.envUnfit
+    )
+      return;
+    const environmentCount =
+      this.envHandle !== undefined
+        ? this.envSplatCount
+        : this.envEnabled
+          ? this.cache.get(this.envFile)?.data.count
+          : undefined;
+    if (environmentCount === undefined) return;
+    const coverageSlots = this.frozenCriticalRuns.reduce(
+      (sum, run) => sum + this.rowAlignedSplats(run.count),
+      0,
+    );
+    if (coverageSlots + this.rowAlignedSplats(environmentCount) <= this.capacity) return;
+    const fallback = new Map<string, LodRun>();
+    for (const run of this.frozenCriticalRuns) {
+      for (const coarse of this.scene.source.coarsestRunsFor(run.leafStart, run.leafEnd)) {
+        fallback.set(runKey(coarse), coarse);
+      }
+    }
+    // Startup is still invisible: reclaim the incompatible base uploads before
+    // the environment takes its rows, preserving all frozen leaf coverage.
+    for (const [key, entry] of this.staged) {
+      if (fallback.has(key)) continue;
+      this.removeRange(entry.handle);
+      this.staged.delete(key);
+    }
+    for (const [key, entry] of this.resident) {
+      if (fallback.has(key)) continue;
+      this.removeRange(entry.handle);
+      this.resident.delete(key);
+    }
+    this.frozenCriticalRuns = [...fallback.values()];
+    this.publishInitialRevealProgress(this.frozenCriticalRuns);
   }
 
   /** After staging/commits, release the hold when every frozen run is resident. */
@@ -5059,7 +5434,14 @@ export class StreamedSplatMesh extends SplatMesh {
   }
 
   private groupFullyStaged(group: SwapGroup): boolean {
-    return group.adds.every((run) => this.staged.get(runKey(run))?.uploadedCount === run.count);
+    const measureGroupState = this.onPerformanceEvent !== undefined;
+    const startedAt = measureGroupState ? performance.now() : 0;
+    const fullyStaged = group.adds.every(
+      (run) => this.staged.get(runKey(run))?.uploadedCount === run.count,
+    );
+    if (measureGroupState)
+      this.updateStageTimings.groupFullyStagedMs += performance.now() - startedAt;
+    return fullyStaged;
   }
 
   /**
@@ -5093,10 +5475,15 @@ export class StreamedSplatMesh extends SplatMesh {
 
   /** Returns whether all new rows can coexist with the currently visible region. */
   private canStageGroup(group: SwapGroup): boolean {
+    const measureStageCapacity = this.onPerformanceEvent !== undefined;
+    const startedAt = measureStageCapacity ? performance.now() : 0;
     const unstaged = group.adds
       .filter((run) => !this.staged.has(runKey(run)))
       .reduce((sum, run) => sum + this.rowAlignedSplats(run.count), 0);
-    return unstaged <= this.freeSplatCapacity;
+    const canStage = unstaged <= this.freeSplatCapacity;
+    if (measureStageCapacity)
+      this.updateStageTimings.canStageGroupMs += performance.now() - startedAt;
+    return canStage;
   }
 
   /**
@@ -5104,9 +5491,18 @@ export class StreamedSplatMesh extends SplatMesh {
    * Skips runs whose chunks are not yet cached so siblings can stage out of order.
    */
   private stageGroup(group: SwapGroup, now: number, allowance: number): number {
-    if (allowance <= 0) return 0;
+    const interactiveClassic = !this.usesRadWave && this.initialRevealPhase === 'released';
+    if (
+      allowance <= 0 ||
+      (interactiveClassic && performance.now() >= this.interactiveStageDeadline)
+    )
+      return 0;
+    const stageAllowance = allowance;
+    const measureStageGroup = this.onPerformanceEvent !== undefined;
+    const stageGroupStartedAt = measureStageGroup ? performance.now() : 0;
     let appended = 0;
     for (const run of group.adds) {
+      if (interactiveClassic && performance.now() >= this.interactiveStageDeadline) break;
       const key = runKey(run);
       const chunk = this.cache.get(run.file);
       if (!chunk) continue;
@@ -5132,29 +5528,119 @@ export class StreamedSplatMesh extends SplatMesh {
       // fully staged, advance to the next one instead of treating its zero
       // remaining count as an exhausted per-frame allowance.
       if (entry.uploadedCount === run.count) continue;
-      const count = Math.min(run.count - entry.uploadedCount, allowance - appended);
-      if (count <= 0) break;
-      this.writeInactiveRange(
-        entry.handle,
-        sliceSplatData(chunk.data, run.offset + entry.uploadedCount, count),
-        entry.uploadedCount,
-      );
-      entry.uploadedCount += count;
-      chunk.lastUsed = now;
-      appended += count;
+      // Finish multiple resumable row batches in one update when packing is cheap.
+      // The old one-batch-per-run loop could take hundreds of frames to refine a
+      // stationary view, even with spare upload allowance and preparation time.
+      while (entry.uploadedCount < run.count && appended < stageAllowance) {
+        const batchStartedAt = interactiveClassic ? performance.now() : 0;
+        if (interactiveClassic) {
+          if (this.interactiveStageDeadline === Number.POSITIVE_INFINITY) {
+            this.interactiveStageDeadline = batchStartedAt + INTERACTIVE_CLASSIC_STAGE_BUDGET_MS;
+          } else if (batchStartedAt >= this.interactiveStageDeadline) {
+            break;
+          }
+        }
+        const batchLimit = interactiveClassic
+          ? Math.min(stageAllowance - appended, this.interactiveStageBatchSplats)
+          : stageAllowance - appended;
+        const count = Math.min(run.count - entry.uploadedCount, batchLimit);
+        this.writeInactiveRange(
+          entry.handle,
+          sliceSplatData(chunk.data, run.offset + entry.uploadedCount, count),
+          entry.uploadedCount,
+        );
+        entry.uploadedCount += count;
+        this.lastClassicProgressAt = performance.now();
+        chunk.lastUsed = now;
+        appended += count;
+        if (interactiveClassic) {
+          const elapsed = Math.max(0.01, performance.now() - batchStartedAt);
+          // Adapt from measured packing cost, with at most a doubling per batch.
+          // Row alignment avoids repeated conversion/copy work on partial rows.
+          const estimate =
+            Math.floor(
+              (count * INTERACTIVE_CLASSIC_STAGE_BATCH_TARGET_MS) / elapsed / DATA_TEXTURE_WIDTH,
+            ) * DATA_TEXTURE_WIDTH;
+          this.interactiveStageBatchSplats = Math.max(
+            DATA_TEXTURE_WIDTH,
+            Math.min(this.appendCap, this.interactiveStageBatchSplats * 2, estimate),
+          );
+        }
+      }
       if (entry.uploadedCount === run.count) {
         this.writeLodLevelChannel(entry.handle, run.level);
         for (const [name, channel] of this.persistentChannels) {
           this.applyPersistentRun(name, channel, run, entry.handle);
         }
       }
-      if (appended >= allowance) break;
+      if (
+        appended >= stageAllowance ||
+        (interactiveClassic && performance.now() >= this.interactiveStageDeadline)
+      )
+        break;
     }
+    if (measureStageGroup)
+      this.updateStageTimings.stageGroupMs += performance.now() - stageGroupStartedAt;
     return appended;
+  }
+
+  /**
+   * Read-only LCC2 owner/depth progress. Rendered owners, convergence and pending
+   * network bytes stay unavailable until the actual draw/fetch boundary supplies
+   * them; neither a RAD frontier flag nor a published active list proves them.
+   */
+  get lcc2QualityState() {
+    const selection = this.scene.source.lcc2QualityState;
+    if (!selection) return null;
+    const desired = selection.desired;
+    const fetched = desired.filter(
+      (run) =>
+        this.cache.has(run.file) ||
+        this.resident.has(runKey(run)) ||
+        this.staged.get(runKey(run))?.uploadedCount === run.count,
+    );
+    const staged = desired.map((run) => ({
+      ...run,
+      uploadedCount: this.resident.has(runKey(run))
+        ? run.count
+        : (this.staged.get(runKey(run))?.uploadedCount ?? 0),
+    }));
+    const published = [...this.resident.values()].map(({ run }) => ({
+      ...run,
+      depth: selection.totalLevels - run.level,
+    }));
+    const missing = fetched.length < desired.length;
+    const incomplete = staged.some((run) => run.uploadedCount < run.count);
+    const requiredCapacity = desired
+      .filter((run) => !this.resident.has(runKey(run)) && !this.staged.has(runKey(run)))
+      .reduce((sum, run) => sum + this.rowAlignedSplats(run.count), 0);
+    return {
+      ...selection,
+      fetched,
+      staged,
+      published,
+      rendered: null,
+      converged: null,
+      pendingBytes: null,
+      blockageReason: this.lodCommitBlockedBySort
+        ? 'sort'
+        : missing
+          ? 'missing-data'
+          : requiredCapacity > this.freeSplatCapacity
+            ? 'capacity'
+            : incomplete
+              ? 'staging'
+              : null,
+      timeSinceProgressMs:
+        this.lastClassicProgressAt === null ? null : performance.now() - this.lastClassicProgressAt,
+      reservedSlots: this.reservedSlots,
+      freeSlots: this.freeSplatCapacity,
+    };
   }
 
   /** Switches a fully staged region from old to new visibility in one tick. */
   private commitStagedGroup(group: SwapGroup): void {
+    this.lastClassicProgressAt = performance.now();
     for (const run of group.adds) {
       const entry = this.staged.get(runKey(run));
       if (!entry || entry.uploadedCount !== run.count) {
@@ -5187,6 +5673,13 @@ export class StreamedSplatMesh extends SplatMesh {
    * removals - the caller defers it and the old runs keep rendering.
    */
   private applyGroup(group: SwapGroup, now: number): boolean {
+    const measureApplyGroup = this.onPerformanceEvent !== undefined;
+    const applyGroupStartedAt = measureApplyGroup ? performance.now() : 0;
+    const finishApplyGroup = (): void => {
+      if (measureApplyGroup) {
+        this.updateStageTimings.applyGroupMs += performance.now() - applyGroupStartedAt;
+      }
+    };
     const rowSplats = (count: number): number =>
       Math.ceil(count / DATA_TEXTURE_WIDTH) * DATA_TEXTURE_WIDTH;
     const ready = (run: LodRun): boolean =>
@@ -5201,11 +5694,17 @@ export class StreamedSplatMesh extends SplatMesh {
     const freed =
       group.removes.reduce((sum, [, entry]) => sum + rowSplats(entry.run.count), 0) +
       partial.reduce((sum, { entry }) => sum + rowSplats(entry.run.count), 0);
-    if (needed > this.freeSplatCapacity + freed) return false;
+    if (needed > this.freeSplatCapacity + freed) {
+      finishApplyGroup();
+      return false;
+    }
     // A camera change can merge staged groups into a transaction that no
     // longer fits beside the old cut. Reclaim partial staging for the direct
     // swap, but retain completed GPU ranges whose CPU chunks may be evicted.
-    if (unstaged.some((run) => !this.cache.has(run.file))) return false;
+    if (unstaged.some((run) => !this.cache.has(run.file))) {
+      finishApplyGroup();
+      return false;
+    }
     for (const { key, entry } of partial) {
       this.removeRange(entry.handle);
       this.staged.delete(key);
@@ -5227,6 +5726,7 @@ export class StreamedSplatMesh extends SplatMesh {
         this.appendRun(run, now);
       }
     }
+    finishApplyGroup();
     return true;
   }
 
@@ -5438,6 +5938,8 @@ export class StreamedSplatMesh extends SplatMesh {
     pendingFetches: Map<number, ClassicFetchWant>,
     holdForFinest: boolean,
   ): void {
+    const measureSubstituteCoverage = this.onPerformanceEvent !== undefined;
+    const substituteCoverageStartedAt = measureSubstituteCoverage ? performance.now() : 0;
     const span = group.leafEnd - group.leafStart;
     // Reused across calls: this runs for every deferred group of every streamed
     // mesh, every reschedule - ~800 times a second on a multi-mesh scene, at
@@ -5534,6 +6036,10 @@ export class StreamedSplatMesh extends SplatMesh {
       }
       offset = gapEnd;
     }
+    if (measureSubstituteCoverage) {
+      this.updateStageTimings.substituteCoverageMs +=
+        performance.now() - substituteCoverageStartedAt;
+    }
   }
 
   /** Issues pending classic-path chunk wants in group-priority order. */
@@ -5547,6 +6053,16 @@ export class StreamedSplatMesh extends SplatMesh {
     const ordered = [...pending.entries()].sort((a, b) =>
       compareClassicFetches(a[1], b[1], a[0], b[0]),
     );
+    if (this.desktopLcc2Quality) {
+      // A startup prefetch can become the current visible target while its
+      // decode is still running. Refresh its rank before preemption, otherwise
+      // another target cancels that useful work because it still looks like
+      // background speculation. Keep the acquired scheduler kind unchanged.
+      for (const [file, want] of ordered) {
+        const active = this.fetching.get(file);
+        if (active?.classicWant) active.classicWant = want;
+      }
+    }
     this.preemptClassicFetches(ordered);
     for (const [file, want] of ordered) this.requestChunk(file, want.kind, want);
   }
@@ -5686,6 +6202,8 @@ export class StreamedSplatMesh extends SplatMesh {
     hadPendingWork = false,
   ): void {
     if (this.pageTableDisposed) return;
+    const measureStages = this.onPerformanceEvent !== undefined;
+    let stageStartedAt = measureStages ? performance.now() : 0;
     let camera: [number, number, number] = [cameraLocal.x, cameraLocal.y, cameraLocal.z];
     let forward: [number, number, number] = [forwardLocal.x, forwardLocal.y, forwardLocal.z];
     this.latestDemandCamera = camera;
@@ -5740,6 +6258,11 @@ export class StreamedSplatMesh extends SplatMesh {
         forward[1] * this.lastPostedForward[1] +
         forward[2] * this.lastPostedForward[2] >=
         Math.cos(Math.PI / 720);
+    if (measureStages) {
+      const endedAt = performance.now();
+      this.updateStageTimings.demandPoseMs = endedAt - stageStartedAt;
+      stageStartedAt = endedAt;
+    }
     // A desk-still XR pose can jitter by millimetres while its exact demand key
     // changes every idle tick. Skip only a settled indexed cut: new data,
     // unfinished refinement, publication, lens changes, and real motion still post.
@@ -5820,6 +6343,12 @@ export class StreamedSplatMesh extends SplatMesh {
       this.cameraEpoch++;
       this.demandNeedsNewRevision = true;
     }
+    if (measureStages) {
+      const endedAt = performance.now();
+      this.updateStageTimings.demandStateMs = endedAt - stageStartedAt;
+      stageStartedAt = endedAt;
+    }
+    const demandReconcileStartedAt = measureStages ? performance.now() : 0;
     if (firstHardRelocation) {
       this.hardRelocationPending = true;
       this.demandDiagnostics.hardRelocationDetectedAt = performance.now();
@@ -5850,6 +6379,8 @@ export class StreamedSplatMesh extends SplatMesh {
     this.reconcileDemand(
       this.demandReadyGeneration === this.demandGeneration && !this.demandNeedsNewRevision,
     );
+    if (measureStages)
+      this.updateStageTimings.demandReconcileMs = performance.now() - demandReconcileStartedAt;
     if (!this.pageTableCachedFiles.has(0)) this.requestChunk(0, 'priority');
     void frustum;
     void now;
@@ -5883,6 +6414,7 @@ export class StreamedSplatMesh extends SplatMesh {
     this.lastPostedLimit = limit;
     const seq = ++this.pageTableSeq;
     this.pageTableActiveSeq = seq;
+    const workerPostStartedAt = measureStages ? performance.now() : 0;
     if (firstHardRelocation) {
       this.replacementAwaitingFirstDemandSeq = seq;
       this.pageTableReplacementSeq = seq;
@@ -5906,6 +6438,11 @@ export class StreamedSplatMesh extends SplatMesh {
         this.pageTableDrawBudget,
       ),
     });
+    if (measureStages) {
+      const endedAt = performance.now();
+      this.updateStageTimings.workerPostMs = endedAt - workerPostStartedAt;
+      stageStartedAt = endedAt;
+    }
     if (this.onPerformanceEvent !== undefined) {
       console.debug(
         '[vlam:rad-reschedule]',
@@ -5923,6 +6460,8 @@ export class StreamedSplatMesh extends SplatMesh {
       generation: this.indexedStagingGeneration ?? this.pageTableDisplayGeneration,
       planReason: this.lastPlanReason,
     });
+    if (measureStages)
+      this.updateStageTimings.diagnosticTraceMs = performance.now() - stageStartedAt;
   }
 
   /**
@@ -6995,11 +7534,16 @@ export class StreamedSplatMesh extends SplatMesh {
         }),
       );
     }
+    const chunkOptions = this.scene.chunkOptions?.[file];
+    const targetRange = this.desktopLcc2Quality && chunkOptions?.sog ? this.currentShRange() : null;
     this.loader
       .load(url, {
         kind: this.scene.chunkKind,
         signal: controller.signal,
-        ...this.scene.chunkOptions?.[file],
+        ...chunkOptions,
+        // Once the coarse chunk locks the scene range, the worker can convert
+        // shared SOG palette entries once instead of each splat during upload.
+        ...(targetRange && chunkOptions?.sog ? { sog: { ...chunkOptions.sog, targetRange } } : {}),
       })
       .then((data) => {
         // A chunk that resolved just before dispose still lands here one

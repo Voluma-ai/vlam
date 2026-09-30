@@ -1,3 +1,4 @@
+import type { Lcc2SelectionState } from '../formats/lcc/lcc2';
 import * as THREE from 'three/webgpu';
 import { LodScheduler, type LodRun } from './lod-scheduler';
 import { parseLodManifest, type LodManifest } from './lod-manifest';
@@ -15,19 +16,30 @@ import type { SplatDatasetSource } from './dataset-source';
  * cut-based LCC2 octree - so {@link StreamedSplatMesh} is format-agnostic.
  */
 export interface LodSource {
+  /** LCC2 manifest selection; absent on other source formats. */
+  readonly lcc2QualityState?: Lcc2SelectionState;
   /** Active-splat budget the returned set stays within. */
   budget: number;
   /** World-unit distance inside which the finest LOD is used. */
   lodBaseDistance: number;
   /** Distance ratio between successive LOD levels. */
   lodMultiplier: number;
+  /** Optional row-allocation ceiling, separate from the host's active-splat budget. @internal */
+  setPoolCapacity?(capacitySlots: number, rowWidth: number): void;
   /** The runs that should be resident for the given camera. */
   computeDesiredRuns(
     cameraLocal: THREE.Vector3,
     frustum: THREE.Frustum,
     now: number,
     cameraForward?: THREE.Vector3,
+    onTiming?: (stage: 'levelUpdate' | 'budgetSelect' | 'collectCut', durationMs: number) => void,
   ): LodRun[];
+  /** Builds a complete intermediate cut and the next missing refinement dependencies. */
+  computeStreamingCut?(
+    desired: readonly LodRun[],
+    available: (run: LodRun) => boolean,
+    preparing?: (run: LodRun) => boolean,
+  ): { runs: LodRun[]; pending: LodRun[] };
   /** Coarsest-level runs covering finest cells `[from, to)` - always-cached
    * substitute coverage while a finer level is fetching. */
   coarsestRunsFor(from: number, to: number): LodRun[];
@@ -43,7 +55,8 @@ export interface LodSource {
    * containing the camera). Used by `.lcc` / `.lcc2` startup
    * `initialReveal: 'hold-coverage'` so the first painted frame has no empty
    * cells. Classic LCC freezes nearby groups at finest+1 and farther in-view
-   * groups at coarsest; `.lcc2` still returns coarsest root-children.
+   * groups at coarsest; desktop `.lcc2` freezes its budget-derived base cut,
+   * while its distance policy returns coarsest root-children.
    * `cameraForward` (mesh-local) lets classic LCC ignore full-Z cells that
    * sit entirely behind the camera plane — their AABBs otherwise hit the
    * frustum from every indoor pose. Optional: sources without coverage groups
