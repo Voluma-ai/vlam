@@ -267,6 +267,30 @@ describe('UnifiedSplatMesh', () => {
     first.dispose();
   });
 
+  it('gathers a newly visible source after an empty frame without a draw callback', () => {
+    const renderer = mockRenderer();
+    const first = source();
+    const unified = new UnifiedSplatMesh(renderer, 4);
+    unified.addSource(first);
+    const camera = new THREE.PerspectiveCamera();
+    unified.update(camera);
+    expect((unified.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(1);
+
+    unified.setSourceVisible(first, false);
+    unified.update(camera);
+    expect((unified.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(0);
+
+    const second = source();
+    unified.addSource(second);
+    unified.update(camera);
+    expect((unified.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(1);
+    expect(unified.droppedSourceCount).toBe(0);
+
+    unified.dispose();
+    first.dispose();
+    second.dispose();
+  });
+
   it('draws a new LOD cut on the same ordered GPU queue after the first sort', async () => {
     const { renderer, resolve } = pendingGpuCompletion();
     const first = source();

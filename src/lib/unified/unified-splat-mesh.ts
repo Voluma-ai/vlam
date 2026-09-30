@@ -1284,8 +1284,10 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     // The first GPU sort hides the identity `order` by keeping instanceCount at
     // 0. Three skips that draw, and frustum culling can skip `onAfterRender`,
     // so the completion watch has to start here or the ordered cut never
-    // publishes.
-    if ((this.geometry as THREE.InstancedBufferGeometry).instanceCount === 0) {
+    // publishes. An empty buffer is also instanceCount 0, but must not
+    // acknowledge a previous sort: that arms the in-flight hold and skips
+    // gathering a source that appears on the next frame.
+    if (sortSubmitted && (this.geometry as THREE.InstancedBufferGeometry).instanceCount === 0) {
       this.acknowledgeSortSubmission();
     }
     if (onPrepareStage) {

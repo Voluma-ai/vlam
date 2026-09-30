@@ -67,7 +67,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 ### Fixed
 
 - Start watching the first unified GPU sort even while `instanceCount` is 0, so
-  hosts that skip a zero-instance draw still publish the ordered cut.
+  hosts that skip a zero-instance draw still publish the ordered cut. An empty
+  work buffer no longer acknowledges a previous sort, which had armed the
+  in-flight hold and skipped gathering a source that appeared on the next frame.
 
 - Clean up the React example across load failures, cancellation, unmounts, and source changes.
 
