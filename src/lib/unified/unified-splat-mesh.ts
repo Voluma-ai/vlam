@@ -1281,6 +1281,13 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       sortSubmitted,
       forceSort,
     );
+    // The first GPU sort hides the identity `order` by keeping instanceCount at
+    // 0. Three skips that draw, and frustum culling can skip `onAfterRender`,
+    // so the completion watch has to start here or the ordered cut never
+    // publishes.
+    if ((this.geometry as THREE.InstancedBufferGeometry).instanceCount === 0) {
+      this.acknowledgeSortSubmission();
+    }
     if (onPrepareStage) {
       const endedAt = performance.now();
       onPrepareStage('publication', endedAt - publicationStartedAt);
@@ -1353,26 +1360,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     _scene: THREE.Scene,
     _camera: THREE.Camera,
   ): void {
-    if (this.sortScheduler.hasSubmissionAwaitingRender()) {
-      const queue = (
-        this.renderer.backend as unknown as {
-          device?: { queue?: { onSubmittedWorkDone?: () => Promise<void> } };
-        }
-      ).device?.queue;
-      let completion: Promise<void> | undefined;
-      if (typeof queue?.onSubmittedWorkDone === 'function') {
-        try {
-          completion = queue.onSubmittedWorkDone();
-        } catch {
-          completion = undefined;
-        }
-      }
-      this.sortScheduler.acknowledgeSubmission(
-        this.refinementFrameNumber,
-        performance.now(),
-        completion,
-      );
-    }
+    this.acknowledgeSortSubmission();
     const version = this.readyPublicationVersion;
     const publication = this.readyPublication;
     if (
@@ -1451,6 +1439,29 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       }
     ).device?.queue;
     return typeof queue?.onSubmittedWorkDone === 'function';
+  }
+
+  /** Starts the GPU-completion watch for a sort that has already been submitted. */
+  private acknowledgeSortSubmission(): void {
+    if (!this.sortScheduler.hasSubmissionAwaitingRender()) return;
+    const queue = (
+      this.renderer.backend as unknown as {
+        device?: { queue?: { onSubmittedWorkDone?: () => Promise<void> } };
+      }
+    ).device?.queue;
+    let completion: Promise<void> | undefined;
+    if (typeof queue?.onSubmittedWorkDone === 'function') {
+      try {
+        completion = queue.onSubmittedWorkDone();
+      } catch {
+        completion = undefined;
+      }
+    }
+    this.sortScheduler.acknowledgeSubmission(
+      this.refinementFrameNumber,
+      performance.now(),
+      completion,
+    );
   }
 
   /**

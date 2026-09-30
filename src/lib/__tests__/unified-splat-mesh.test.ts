@@ -248,6 +248,25 @@ describe('UnifiedSplatMesh', () => {
     second.dispose();
   });
 
+  it('publishes the first GPU-sorted count without a zero-instance draw callback', async () => {
+    const { renderer, resolve } = pendingGpuCompletion();
+    const first = source();
+    const unified = new UnifiedSplatMesh(renderer, 4);
+    unified.addSource(first);
+    const camera = new THREE.PerspectiveCamera();
+
+    unified.update(camera);
+    expect((unified.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(0);
+
+    resolve();
+    await Promise.resolve();
+    unified.update(camera);
+    expect((unified.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(1);
+
+    unified.dispose();
+    first.dispose();
+  });
+
   it('draws a new LOD cut on the same ordered GPU queue after the first sort', async () => {
     const { renderer, resolve } = pendingGpuCompletion();
     const first = source();

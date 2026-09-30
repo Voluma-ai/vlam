@@ -75,6 +75,21 @@
     const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 10);
     camera.position.z = 2;
     const target = new THREE.RenderTarget(64, 64, { type: THREE.UnsignedByteType });
+    const instanceCountOf = (mesh) => mesh.geometry.instanceCount;
+    async function waitForPublishedDraw(draw, mesh) {
+      const deadline = performance.now() + 15_000;
+      // Construction may leave a stale identity count. The first update is
+      // what zeros WebGL worker publication and the first unified GPU sort.
+      draw();
+      while (instanceCountOf(mesh) === 0 && performance.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 16));
+        draw();
+      }
+      if (instanceCountOf(mesh) === 0) {
+        throw new Error('timed out waiting for splat draw publication');
+      }
+      draw();
+    }
     const cases = [
       { name: 'axis' },
       { name: 'rad-whole-zero', radAlpha: 0 },
@@ -173,8 +188,10 @@
           renderer.clear();
           renderer.render(scene, camera);
         };
-        // Let worker/module setup finish before reading deterministic output.
-        for (let i = 0; i < 4; i++) { draw(); await new Promise(r => setTimeout(r, 30)); }
+        // WebGPU unified keeps instanceCount at 0 until the first GPU sort
+        // completes, and WebGL worker publication does the same. Fixed frame
+        // counts miss SwiftShader's first pipeline compile.
+        await waitForPublishedDraw(draw, drawMesh);
         let initialPixels = null, restoredPixels = null, updatedPixels = null;
         if (warp) {
           initialPixels = Array.from(await renderer.readRenderTargetPixelsAsync(target, 0, 0, 64, 64));
@@ -227,13 +244,23 @@
       if (combined) { combined.addSource(left); combined.addSource(right); scene.add(combined); }
       else { scene.add(left); scene.add(right); }
       const capture = async name => {
-        for (let i = 0; i < 4; i++) {
+        const published = () => combined
+          ? instanceCountOf(combined) > 0
+          : scene.children.every((child) => instanceCountOf(child) > 0);
+        const drawMixed = () => {
           renderer.setRenderTarget(target);
           if (combined) combined.update(camera, renderer);
           else { left.update(camera, renderer); right.update(camera, renderer); }
           renderer.clear(); renderer.render(scene, camera);
-          await new Promise(resolve => setTimeout(resolve, 30));
+        };
+        const deadline = performance.now() + 15_000;
+        drawMixed();
+        while (!published() && performance.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 16));
+          drawMixed();
         }
+        if (!published()) throw new Error(`${name}: timed out waiting for splat draw publication`);
+        drawMixed();
         const pixels = Array.from(await renderer.readRenderTargetPixelsAsync(target, 0, 0, 64, 64));
         const ndc = new THREE.Vector3(-0.3, 0, 0).project(camera);
         renderer.setRenderTarget(null);
@@ -262,15 +289,15 @@
         else combined.update(camera, renderer);
         renderer.clear(); renderer.render(scene, camera);
       };
-      draw();
+      await waitForPublishedDraw(draw, mesh);
       pickOwnership.push((await mesh.pick(new THREE.Vector2(), camera, renderer))?.point.toArray() ?? null);
       combined.addSource(mesh);
       scene.add(combined);
-      draw();
+      await waitForPublishedDraw(draw, combined);
       pickOwnership.push((await combined.pick(new THREE.Vector2(), camera))?.point.toArray() ?? null);
       combined.removeSource(mesh);
       scene.remove(combined);
-      draw();
+      await waitForPublishedDraw(draw, mesh);
       pickOwnership.push((await mesh.pick(new THREE.Vector2(), camera, renderer))?.point.toArray() ?? null);
       combined.dispose(); mesh.dispose();
     }

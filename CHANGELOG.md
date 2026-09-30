@@ -66,6 +66,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- Start watching the first unified GPU sort even while `instanceCount` is 0, so
+  hosts that skip a zero-instance draw still publish the ordered cut.
+
 - Clean up the React example across load failures, cancellation, unmounts, and source changes.
 
 - Make the existing VR example use the application camera, handle session errors and teardown, and add floor teleport and snap turns.
