@@ -2196,6 +2196,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         this.activeListVersion !== this.sortedActiveListVersion ||
         this.orderIsForeign;
       this.sortScheduler.markSubmissionSuppressed(contentNeedsSort);
+      if (this.orderIsForeign)
+        this.restorePrimaryOrderWhileHeld(projectionCamera, sortCamera, renderer);
     }
     this.updateTimings.activeListUpdateRanges = this.sourceIndexAttribute.updateRanges.length;
     const projectionSubmissionsBefore = this.projectedPipeline?.projectionDispatches ?? 0;
@@ -2657,6 +2659,36 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (!this.sorter) return false;
     this.sorter.sort(this.currentModelView, this.activeCount, this.boundingSphereLocal);
     return true;
+  }
+
+  /**
+   * A held gate must not leave a secondary view's order under the primary
+   * draw. Like {@link sortForView}, this sort is not a tracked submission, so
+   * the in-flight one still releases the gate and its coalesced work proceeds.
+   * A held draw list is left to that tracked sort to publish.
+   */
+  private restorePrimaryOrderWhileHeld(
+    projectionCamera: THREE.Camera,
+    sortCamera: THREE.Camera,
+    renderer: THREE.WebGPURenderer,
+  ): void {
+    if (this.activeCount === 0 || this.gpuDrawListHeld) return;
+    if (this.computeProjectionActive) {
+      this.prepareProjectedSort(projectionCamera, sortCamera, renderer, true);
+      return;
+    }
+    if (!this.sorter || this.sorter.kind === 'worker') return;
+    this.refreshSortBounds();
+    if (
+      this.sorter.sort(
+        this.currentModelView,
+        this.activeCount,
+        this.boundingSphereLocal,
+        cameraVisibleSortRange(sortCamera, this.sortMetric, this.viewport.value),
+      )
+    ) {
+      this.orderIsForeign = false;
+    }
   }
 
   /** Rebuilds the query grid if the resident set changed since it was built. */

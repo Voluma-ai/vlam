@@ -11,7 +11,10 @@ interface SplatMeshInternals {
   rebuildActiveList(): void;
   requestSortIfNeeded(camera: THREE.Camera, renderer: THREE.WebGPURenderer): void;
   noteRenderer(renderer: THREE.WebGPURenderer): void;
-  sortScheduler: { submissionDiagnostics(): { action: string }; hasSubmissionInFlight(): boolean };
+  sortScheduler: {
+    submissionDiagnostics(): { action: string; serial: number };
+    hasSubmissionInFlight(): boolean;
+  };
   sourceIndexAttribute: THREE.BufferAttribute;
 }
 
@@ -235,6 +238,42 @@ describe('SplatMesh sort scheduling', () => {
     expect((mesh.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(2);
     expect(internals(mesh).sourceIndexAttribute.version).toBe(sourceVersion);
     expect(internals(mesh).activeCount).toBe(1);
+  });
+
+  it('restores the primary order over a secondary view while the gate is held', async () => {
+    const { mesh, sort } = meshWithSorter({ sortIntervalMs: 1000 });
+    const modelViews: THREE.Matrix4[] = [];
+    sort.mockImplementation((modelView: THREE.Matrix4) => {
+      modelViews.push(modelView.clone());
+      return true;
+    });
+    const gpu = pendingGpuCompletion();
+    Object.assign(gpu.renderer, {
+      getRenderTarget: () => null,
+      setRenderTarget: vi.fn(),
+      render: vi.fn(),
+    });
+    const scene = new THREE.Scene();
+    const main = perspectiveAt(0);
+    const mirror = perspectiveAt(3);
+
+    mesh.update(main, gpu.renderer);
+    const serial = internals(mesh).sortScheduler.submissionDiagnostics().serial;
+    mesh.renderView(mirror, gpu.renderer, new THREE.RenderTarget(64, 64));
+    mesh.onAfterRender(gpu.renderer as never, scene, mirror);
+    mesh.update(main, gpu.renderer);
+
+    expect(sort).toHaveBeenCalledTimes(3);
+    const primary = new THREE.Matrix4().multiplyMatrices(main.matrixWorldInverse, mesh.matrixWorld);
+    expect(modelViews[2]!.elements).toEqual(primary.elements);
+    expect(internals(mesh).sortScheduler.submissionDiagnostics().serial).toBe(serial);
+
+    mesh.update(main, gpu.renderer);
+    expect(sort).toHaveBeenCalledTimes(3);
+
+    gpu.resolve();
+    await Promise.resolve();
+    expect(internals(mesh).sortScheduler.hasSubmissionInFlight()).toBe(false);
   });
 
   it('still holds a camera-only sort while a previous GPU sort is in flight', () => {
