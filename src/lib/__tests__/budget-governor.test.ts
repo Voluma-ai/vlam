@@ -244,3 +244,48 @@ describe('BudgetGovernor', () => {
     expect(governor.budgetOf(new FakeMesh(1))).toBeUndefined();
   });
 });
+
+describe('explicit recovery allocations', () => {
+  it('bypasses growth deadband only for an explicit step', () => {
+    const governor = new BudgetGovernor({ totalBudget: 1000 });
+    const a = new FakeMesh(500);
+    const b = new FakeMesh(500);
+    governor.register(a);
+    governor.register(b);
+    governor.setTotalBudget(1100);
+    expect(a.budget).toBe(500);
+    governor.setTotalBudget(1100, { forceGrowth: true });
+    expect(a.budget).toBe(550);
+    expect(b.budget).toBe(550);
+  });
+
+  it('applies reductions before increases regardless of registration order', () => {
+    const governor = new BudgetGovernor({ totalBudget: 1000, hysteresis: 0 });
+    const writes: string[] = [];
+    const a = {
+      budget: 500,
+      setBudget(count: number) {
+        this.budget = count;
+        writes.push('a');
+        return count;
+      },
+    };
+    const b = {
+      budget: 500,
+      setBudget(count: number) {
+        this.budget = count;
+        writes.push('b');
+        return count;
+      },
+    };
+    governor.register(a);
+    governor.register(b);
+    writes.length = 0;
+    governor.setWeights([
+      [a, 3],
+      [b, 1],
+    ]);
+    expect(writes).toEqual(['b', 'a']);
+    expect(a.budget + b.budget).toBe(1000);
+  });
+});

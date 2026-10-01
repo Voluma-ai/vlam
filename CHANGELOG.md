@@ -21,6 +21,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- Opt-in `SceneDrawBudget` admission for complete streamed replacements, with shared
+  pending reservations, coverage-floor reporting, bounded temporary relief and a
+  scene-wide cooperative staging allowance. Existing consumers keep their policy.
+- Explicit governor recovery steps can bypass growth hysteresis while normal
+  camera reweighting retains its deadband; reductions apply before increases.
+
 - Custom streamed dataset loading via `StreamedSplatMesh.loadSource`, with
   explicit format and borrowed/owned source lifetime control.
 - Per-load `onStatus` stages alongside byte progress, including local read

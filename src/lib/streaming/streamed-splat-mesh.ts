@@ -91,6 +91,12 @@ import type {
   ChunkFetchScheduler,
 } from './chunk-fetch-scheduler';
 import type { ChunkCacheBudget, ChunkCacheHandle } from './chunk-cache-budget';
+import type {
+  SceneDrawBudget,
+  SceneDrawSource,
+  SceneDrawReservation,
+  PreparedDrawRelief,
+} from './scene-draw-budget';
 import {
   selectBrushStrokeInData,
   selectBrushStrokeInPoolBacking,
@@ -439,6 +445,8 @@ export interface StreamedSplatMeshOptions extends SplatMeshOptions {
    * number.
    */
   maxBudget?: number;
+  /** Opt-in shared admission at complete publication boundaries; never owns pool storage. */
+  drawBudget?: SceneDrawBudget;
   /** Optional format-specific desktop LCC2 detail policy; ignored by other formats. */
   lcc2Policy?: Lcc2QualityPolicy;
   /**
@@ -794,6 +802,16 @@ export class StreamedSplatMesh extends SplatMesh {
    */
   private cpuCacheBytes: number;
   private budgetValue: number;
+  private readonly sceneDrawSource: SceneDrawSource | undefined;
+  private drawReservation: SceneDrawReservation | null = null;
+  private readonly queuedFrontierPlans: FrontierPlanMessage[] = [];
+  private readonly queuedRadChunks = new Map<number, SplatData>();
+  private drainingRadChunks = false;
+  private retainedDrawRelief = false;
+  private sceneDrawWave = false;
+  private sceneDrawWaveRetainsOld = false;
+  private minimumDrawCoverageValue = 0;
+
   private readonly maximumBudget: number;
   /** Spark's per-mesh `lodScale`; divides the page-table cut limit. */
   private lodScaleValue: number;
@@ -1274,6 +1292,8 @@ export class StreamedSplatMesh extends SplatMesh {
   private interactiveStageBatchSplats = INTERACTIVE_CLASSIC_STAGE_BATCH_SPLATS;
   private readonly lastCameraPos = new THREE.Vector3(Infinity, Infinity, Infinity);
   private readonly lastCameraQuat = new THREE.Quaternion();
+  private readonly lastCameraProjection = new THREE.Matrix4();
+  private readonly lastScheduledWorldMatrix = new THREE.Matrix4();
 
   /**
    * Fetches a scene manifest and prepares a mesh sized to the budget.
@@ -1802,6 +1822,16 @@ export class StreamedSplatMesh extends SplatMesh {
       options.maxBudget === undefined
         ? budget
         : Math.max(budget, resolveSplatBudget(options.maxBudget));
+    this.sceneDrawSource = options.drawBudget?.register({
+      limit: Math.min(capacity, options.budgetCap ?? Infinity),
+      visible: true,
+    });
+    if (this.sceneDrawSource && typeof scene.source.coarsestRunsFor === 'function') {
+      this.minimumDrawCoverageValue = scene.source
+        .coarsestRunsFor(0, Number.MAX_SAFE_INTEGER)
+        .reduce((sum, run) => sum + run.count, 0);
+      this.sceneDrawSource.setCoverageFloor(this.minimumDrawCoverageValue);
+    }
     this.lodScaleValue = validateLodScale(options.lodScale);
     this.stagedSwapsEnabled = options.experimentalStagedSwaps !== false;
     this.neverRetireCoverageEarly = neverRetireCoverageEarly;
@@ -2003,6 +2033,8 @@ export class StreamedSplatMesh extends SplatMesh {
    */
   private syncSlabPages(wanted: number): void {
     if (this.slabCeiling === 0) return;
+    // Pages return unused rows to the existing pool; its GPU buffers and the
+    // mesh capacity remain fixed across activity/recovery target changes.
     const target = Math.max(this.slabPageSplats, Math.min(this.slabCeiling, wanted));
     let slots = this.slabSlots;
 
@@ -2395,6 +2427,8 @@ export class StreamedSplatMesh extends SplatMesh {
   }
 
   private discardIndexedPublication(reason: string): void {
+    this.drawReservation?.cancel();
+    this.drawReservation = null;
     if (this.radChunkResidency) {
       if (this.radChunkPendingGlobals === null && this.radChunkPublishGeneration === null) return;
       this.radChunkHardValidityRevisionValue++;
@@ -2445,6 +2479,12 @@ export class StreamedSplatMesh extends SplatMesh {
   }
 
   protected override onActiveListReady(activeListVersion: number): void {
+    if (this.drawReservation && !this.drawReservation.valid()) {
+      this.discardIndexedPublication('scene-draw-budget-reduced');
+      this.pendingWork = true;
+      this.lastScheduleTime = -Infinity;
+      return;
+    }
     if (this.radChunkResidency) {
       const generation = this.radChunkPublishGeneration;
       if (generation === null || this.pageTableDisposed) return;
@@ -2510,6 +2550,19 @@ export class StreamedSplatMesh extends SplatMesh {
     });
   }
 
+  /** Charges only a current, fully validated worker publication. */
+  private commitDrawReservation(): boolean {
+    if (!this.drawReservation) return true;
+    if (!this.drawReservation.commit()) {
+      this.discardIndexedPublication('scene-draw-budget-reduced');
+      this.pendingWork = true;
+      this.lastScheduleTime = -Infinity;
+      return false;
+    }
+    this.drawReservation = null;
+    return true;
+  }
+
   protected override onActiveListRendered(activeListVersion: number): void {
     if (this.radChunkResidency) {
       const generation = this.radChunkPublishGeneration;
@@ -2536,7 +2589,7 @@ export class StreamedSplatMesh extends SplatMesh {
       }
       if (activeListVersion !== this.radChunkPublishActiveListVersion) return;
       const next = this.radChunkPendingGlobals;
-      if (!next) return;
+      if (!next || !this.commitDrawReservation()) return;
       const pendingSelectionId = this.radChunkPendingSelectionIdValue;
       const pendingDemandRevision = this.radChunkPublishRevision;
       this.renderedGenerationValue = generation;
@@ -2617,7 +2670,7 @@ export class StreamedSplatMesh extends SplatMesh {
     // indices. A superseded snapshot (older `activeListVersion`) releases nothing.
     if (activeListVersion !== this.indexedPublishActiveListVersion) return;
     const next = this.indexedPendingDisplaySlots;
-    if (!next) return;
+    if (!next || !this.commitDrawReservation()) return;
     const revealQuality = this.indexedPendingRevealQuality;
     this.indexedPendingRevealQuality = null;
     this.renderedGenerationValue = generation;
@@ -2804,7 +2857,11 @@ export class StreamedSplatMesh extends SplatMesh {
         }
       } else if (plan.type === 'resizeSafe') this.applyIndexedResizeSafe(plan.capacity);
       else if (plan.type === 'snapshot') this.applyFrontierSnapshot(plan);
-      else this.applyFrontierPlan(plan);
+      else if (this.sceneDrawSource) {
+        // Worker replies do not get independent upload allowances between frames.
+        this.queuedFrontierPlans.push(plan);
+        this.pendingWork = true;
+      } else this.applyFrontierPlan(plan);
     } catch (error) {
       this.failFrontierWorker(error);
     }
@@ -2997,6 +3054,10 @@ export class StreamedSplatMesh extends SplatMesh {
    * instead of clearing the scene or continuously posting to a dead worker.
    */
   private failFrontierWorker(error: unknown): void {
+    this.drawReservation?.cancel();
+    this.drawReservation = null;
+    this.queuedFrontierPlans.length = 0;
+    this.queuedRadChunks.clear();
     if (this.pageTableDisposed || this.streamingErrorValue) return;
     const detail =
       error && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
@@ -3159,6 +3220,15 @@ export class StreamedSplatMesh extends SplatMesh {
    */
   setEnvironmentEnabled(enabled: boolean): void {
     if (this.envFile === undefined || enabled === this.envEnabled) return;
+    const reservation = this.envHandle
+      ? this.sceneDrawSource?.reserve(
+          this.drawCountFromRuns() + (enabled ? this.envSplatCount : -this.envSplatCount),
+        )
+      : undefined;
+    if (this.envHandle && this.sceneDrawSource && (!reservation || !reservation.commit())) {
+      reservation?.cancel();
+      return;
+    }
     this.envEnabled = enabled;
     if (this.envHandle !== undefined) {
       this.setRangeActive(this.envHandle, enabled);
@@ -3167,6 +3237,31 @@ export class StreamedSplatMesh extends SplatMesh {
       this.pendingWork = true;
       this.lastScheduleTime = -Infinity;
     }
+  }
+
+  /** Whether the source has scene admission, independent of pane-local draw masks. */
+  get drawBudgetAdmitted(): boolean {
+    return this.sceneDrawSource?.visible ?? true;
+  }
+
+  /** Acquires scene admission before activating a stored source; split panes use their union. */
+  setDrawVisibility(visible: boolean): boolean {
+    return this.sceneDrawSource?.setVisible(visible) ?? true;
+  }
+
+  private drawCountFromRuns(): number {
+    let count = this.envEnabled && this.envHandle ? this.envSplatCount : 0;
+    for (const entry of this.resident.values()) count += entry.run.count;
+    return count;
+  }
+
+  /** Complete coverage needed by an opted-in host's work buffer, before first publication. */
+  get minimumDrawCoverage(): number {
+    const environment =
+      this.envEnabled && this.envFile !== undefined
+        ? this.envSplatCount || this.cache.get(this.envFile)?.data.count || 0
+        : 0;
+    return this.minimumDrawCoverageValue + environment;
   }
 
   /** The active-splat budget this mesh keeps within. */
@@ -3768,6 +3863,29 @@ export class StreamedSplatMesh extends SplatMesh {
       super.update(camera, renderer, options);
       return;
     }
+    // The host sets product visibility once before update (the union of split panes).
+    for (const [file, data] of this.queuedRadChunks) {
+      if (!this.sceneDrawSource?.canStage()) break;
+      this.queuedRadChunks.delete(file);
+      const started = performance.now();
+      this.drainingRadChunks = true;
+      try {
+        this.forwardChunkToWorker(file, data);
+      } finally {
+        this.drainingRadChunks = false;
+        this.sceneDrawSource.chargeStaging(performance.now() - started);
+      }
+    }
+    if (this.queuedFrontierPlans.length && this.sceneDrawSource?.canStage()) {
+      const started = performance.now();
+      const plan = this.queuedFrontierPlans.shift()!;
+      try {
+        this.applyFrontierPlan(plan);
+      } catch (error) {
+        this.failFrontierWorker(error);
+      }
+      this.sceneDrawSource.chargeStaging(performance.now() - started);
+    }
     this.radFrame++;
     this.radDiagnosticRenderer = this.onPerformanceEvent ? renderer : null;
     this.updateStageTimings.demandPoseMs = 0;
@@ -3824,7 +3942,8 @@ export class StreamedSplatMesh extends SplatMesh {
     if (measureUpdateStages)
       this.updateStageTimings.cameraSyncMs = performance.now() - cameraSyncStartedAt;
     const shouldRescheduleStartedAt = measureUpdateStages ? performance.now() : 0;
-    const shouldReschedule = this.shouldReschedule(lodCamera, now);
+    const shouldReschedule =
+      this.queuedFrontierPlans.length === 0 && this.shouldReschedule(lodCamera, now);
     if (measureUpdateStages)
       this.updateStageTimings.shouldRescheduleMs = performance.now() - shouldRescheduleStartedAt;
     const rescheduleStartedAt = measureUpdateStages ? performance.now() : 0;
@@ -4165,6 +4284,11 @@ export class StreamedSplatMesh extends SplatMesh {
     this.failedFiles.clear();
     this.neededFiles.clear();
     this.persistentChannels.clear();
+    this.drawReservation?.cancel();
+    this.drawReservation = null;
+    this.sceneDrawSource?.dispose();
+    this.queuedFrontierPlans.length = 0;
+    this.queuedRadChunks.clear();
     this.resident.clear();
     this.staged.clear();
     this.pageTableCachedFiles.clear();
@@ -4175,7 +4299,17 @@ export class StreamedSplatMesh extends SplatMesh {
 
   private shouldReschedule(camera: THREE.Camera, now: number): boolean {
     if (this.pendingWork || this.lodCommitBlockedBySort) return true;
-    if (now - this.lastScheduleTime > IDLE_RESCHEDULE_MS) return true;
+    // Opted-in settled sources need no fresh selection for a control-mode switch
+    // with identical rendering inputs. Pending work still wakes selection above.
+    if (!this.sceneDrawSource && now - this.lastScheduleTime > IDLE_RESCHEDULE_MS) return true;
+    // A stationary camera still sees a different LOD/frustum when a source or
+    // its parent moves. update() refreshes matrixWorld before this check.
+    if (
+      this.sceneDrawSource &&
+      (!camera.projectionMatrix.equals(this.lastCameraProjection) ||
+        !this.matrixWorld.equals(this.lastScheduledWorldMatrix))
+    )
+      return true;
 
     camera.getWorldPosition(_cameraWorldPos);
     const radius = this.scene.bounds.getBoundingSphere(_sphere).radius || 1;
@@ -4232,6 +4366,9 @@ export class StreamedSplatMesh extends SplatMesh {
     this.lastScheduleTime = now;
     camera.getWorldPosition(this.lastCameraPos);
     camera.getWorldQuaternion(this.lastCameraQuat);
+    this.lastCameraProjection.copy(camera.projectionMatrix);
+    this.updateWorldMatrix(true, false);
+    this.lastScheduledWorldMatrix.copy(this.matrixWorld);
     this.captureLiveCamera(camera);
     this.refreshStartupMainRadLodHold(camera);
 
@@ -4459,6 +4596,20 @@ export class StreamedSplatMesh extends SplatMesh {
         // cell cannot block reveal behind sibling subchunks still fetching.
         buildHoldSwapGroups(toAdd)
       : buildSwapGroups(toAdd, toRemove);
+    if (this.sceneDrawSource) {
+      const floor = this.scene.source
+        .coarsestRunsFor(0, Number.MAX_SAFE_INTEGER)
+        .reduce((sum, run) => sum + run.count, 0);
+      this.minimumDrawCoverageValue = floor;
+      this.sceneDrawSource.setCoverageFloor(this.minimumDrawCoverage);
+      // Reductions release shared draw allowance before independent refinements.
+      groups.sort(
+        (a, b) =>
+          a.addCount -
+          a.removes.reduce((n, [, e]) => n + e.run.count, 0) -
+          (b.addCount - b.removes.reduce((n, [, e]) => n + e.run.count, 0)),
+      );
+    }
     const classicLccGroups = !holding && isClassicLccSwapSet(groups);
     const pendingFetches = new Map<number, ClassicFetchWant>();
     for (const run of refinementFetches) {
@@ -4656,6 +4807,7 @@ export class StreamedSplatMesh extends SplatMesh {
           continue;
         }
         const forceStage =
+          this.sceneDrawSource !== undefined ||
           holding ||
           (!classicLccGroups && missing.length > 0) ||
           (this.stagedSwapsEnabled && group.addCount > this.appendCap);
@@ -4689,15 +4841,23 @@ export class StreamedSplatMesh extends SplatMesh {
           this.pendingWork = true;
           continue;
         }
-        // Startup hold always stages (above); if staging could not start, keep
-        // pending rather than applying visible coverage while the viewer is gated.
-        if (holding) {
+        // Startup must still stage. After reveal, a complete replacement may
+        // fit only after retiring its old rows. applyGroup preflights storage,
+        // cached data and shared draw admission before touching that coverage;
+        // rejecting admission leaves the old region intact. This pressure path
+        // cannot borrow temporary excess because it cannot retain rollback rows.
+        if (holding || (this.sceneDrawSource && !this.sceneDrawSource.canStage())) {
           this.pendingWork = true;
           continue;
         }
         if (this.deferVisibleLodSwap()) continue;
-        if (!this.applyGroup(group, now)) {
-          this.pendingWork = true; // transient pool pressure; retry next tick
+        const directStartedAt = this.sceneDrawSource ? performance.now() : 0;
+        const applied = this.applyGroup(group, now);
+        // One indivisible region can exceed the time slice; charge its full
+        // cost so later sources wait instead of multiplying the frame's work.
+        this.sceneDrawSource?.chargeStaging(performance.now() - directStartedAt);
+        if (!applied) {
+          this.pendingWork = true; // transient pool/admission pressure; retry next tick
           continue;
         }
         appended += group.addCount;
@@ -5303,7 +5463,15 @@ export class StreamedSplatMesh extends SplatMesh {
     const drawable = live.filter((run) => !run.fetchIntent);
     // Never publish a fetch-only wave: there is no drawable cover to present.
     if (drawable.length === 0) return false;
-    if (this.waveHasPublished && this.radWaveIsRegression(drawable)) return false;
+    if (
+      this.waveHasPublished &&
+      this.radWaveIsRegression(drawable) &&
+      !(
+        this.sceneDrawSource &&
+        this.activeSplatCount > this.budget + (this.envEnabled ? this.envSplatCount : 0)
+      )
+    )
+      return false;
     // Fetch-intent runs are speculative and are excluded from `drawable`, so a
     // prefetch that never lands cannot hold the presented cut hostage. Pressure
     // still provides an escape hatch for both first paint and refinement; the
@@ -5511,25 +5679,101 @@ export class StreamedSplatMesh extends SplatMesh {
    */
   private commitRadWave(ready: readonly SwapGroup[], now: number, force: boolean): void {
     if (this.deferVisibleLodSwap()) return;
-    this.waveHasPublished = true;
-    for (const group of ready) {
-      if (group.adds.length === 0) {
-        this.applyGroup(group, now);
-        continue;
+    if (this.retainedDrawRelief) {
+      this.pendingWork = true;
+      return;
+    }
+    // Prefix parent/child runs do not share a region key. Admit the complete
+    // wave before retiring anything, so blocked growth cannot leave a hole.
+    if (
+      this.sceneDrawSource &&
+      ready.some((group) => group.adds.length > 0 && !this.groupFullyStaged(group))
+    ) {
+      this.pendingWork = true;
+      return;
+    }
+    const nextCount =
+      this.drawCountFromRuns() +
+      ready.reduce(
+        (sum, group) =>
+          sum +
+          group.addCount -
+          group.removes
+            .filter(([key]) => this.resident.has(key))
+            .reduce((n, [, entry]) => n + entry.run.count, 0),
+        0,
+      );
+    const removes = new Map(
+      ready.flatMap((group) => group.removes).filter(([key]) => this.resident.has(key)),
+    );
+    const delta = nextCount - this.drawCountFromRuns();
+    let retained = false;
+    const relief: PreparedDrawRelief | undefined =
+      this.sceneDrawSource && delta > 0 && removes.size > 0
+        ? {
+            reduction: delta,
+            publish: () => {
+              for (const group of ready)
+                for (const run of group.adds) {
+                  const key = runKey(run);
+                  const entry = this.resident.get(key);
+                  if (entry) {
+                    this.removeRange(entry.handle);
+                    this.resident.delete(key);
+                  }
+                }
+              for (const [key, entry] of removes) {
+                this.setRangeActive(entry.handle, true);
+                this.resident.set(key, entry);
+              }
+              retained = false;
+              this.retainedDrawRelief = false;
+              this.pendingWork = true;
+              this.lastScheduleTime = -Infinity;
+              return this.drawCountFromRuns();
+            },
+            release: () => {
+              if (retained) for (const entry of removes.values()) this.removeRange(entry.handle);
+              retained = false;
+              this.retainedDrawRelief = false;
+            },
+          }
+        : undefined;
+    const reservation = this.sceneDrawSource?.reserve(nextCount, relief);
+    if (this.sceneDrawSource && !reservation) {
+      this.pendingWork = true;
+      return;
+    }
+    this.sceneDrawWave = this.sceneDrawSource !== undefined;
+    this.sceneDrawWaveRetainsOld = relief !== undefined;
+    retained = this.sceneDrawWaveRetainsOld;
+    try {
+      this.waveHasPublished = true;
+      for (const group of ready) {
+        if (group.adds.length === 0) {
+          this.applyGroup(group, now);
+          continue;
+        }
+        if (this.groupFullyStaged(group)) {
+          this.commitStagedGroup(group);
+          continue;
+        }
+        if (!force) continue;
+        for (const run of group.adds) {
+          const key = runKey(run);
+          const entry = this.staged.get(key);
+          if (!entry || entry.uploadedCount === run.count) continue;
+          this.removeRange(entry.handle);
+          this.staged.delete(key);
+        }
+        if (!this.applyGroup(group, now)) this.pendingWork = true;
       }
-      if (this.groupFullyStaged(group)) {
-        this.commitStagedGroup(group);
-        continue;
-      }
-      if (!force) continue;
-      for (const run of group.adds) {
-        const key = runKey(run);
-        const entry = this.staged.get(key);
-        if (!entry || entry.uploadedCount === run.count) continue;
-        this.removeRange(entry.handle);
-        this.staged.delete(key);
-      }
-      if (!this.applyGroup(group, now)) this.pendingWork = true;
+      reservation?.commit();
+      this.retainedDrawRelief = retained;
+    } finally {
+      this.sceneDrawWave = false;
+      this.sceneDrawWaveRetainsOld = false;
+      reservation?.cancel();
     }
   }
 
@@ -5551,9 +5795,12 @@ export class StreamedSplatMesh extends SplatMesh {
    * Skips runs whose chunks are not yet cached so siblings can stage out of order.
    */
   private stageGroup(group: SwapGroup, now: number, allowance: number): number {
-    const interactiveClassic = !this.usesRadWave && this.initialRevealPhase === 'released';
+    const interactiveClassic =
+      this.sceneDrawSource !== undefined ||
+      (!this.usesRadWave && this.initialRevealPhase === 'released');
     if (
       allowance <= 0 ||
+      (this.sceneDrawSource && !this.sceneDrawSource.canStage()) ||
       (interactiveClassic && performance.now() >= this.interactiveStageDeadline)
     )
       return 0;
@@ -5562,12 +5809,17 @@ export class StreamedSplatMesh extends SplatMesh {
     const stageGroupStartedAt = measureStageGroup ? performance.now() : 0;
     let appended = 0;
     for (const run of group.adds) {
-      if (interactiveClassic && performance.now() >= this.interactiveStageDeadline) break;
+      if (
+        (this.sceneDrawSource && !this.sceneDrawSource.canStage()) ||
+        (interactiveClassic && performance.now() >= this.interactiveStageDeadline)
+      )
+        break;
       const key = runKey(run);
       const chunk = this.cache.get(run.file);
       if (!chunk) continue;
       let entry = this.staged.get(key);
       if (!entry) {
+        const preparationStartedAt = this.sceneDrawSource ? performance.now() : 0;
         let handle: SplatRange;
         try {
           handle = this.reserveInactiveRange(run.count);
@@ -5583,6 +5835,7 @@ export class StreamedSplatMesh extends SplatMesh {
         }
         entry = { run, handle, uploadedCount: 0 };
         this.staged.set(key, entry);
+        this.sceneDrawSource?.chargeStaging(performance.now() - preparationStartedAt);
       }
       // A swap group can contain several replacement runs. Once one run is
       // fully staged, advance to the next one instead of treating its zero
@@ -5593,6 +5846,7 @@ export class StreamedSplatMesh extends SplatMesh {
       // stationary view, even with spare upload allowance and preparation time.
       while (entry.uploadedCount < run.count && appended < stageAllowance) {
         const batchStartedAt = interactiveClassic ? performance.now() : 0;
+        if (this.sceneDrawSource && !this.sceneDrawSource.canStage()) break;
         if (interactiveClassic) {
           if (this.interactiveStageDeadline === Number.POSITIVE_INFINITY) {
             this.interactiveStageDeadline = batchStartedAt + INTERACTIVE_CLASSIC_STAGE_BUDGET_MS;
@@ -5609,6 +5863,7 @@ export class StreamedSplatMesh extends SplatMesh {
           sliceSplatData(chunk.data, run.offset + entry.uploadedCount, count),
           entry.uploadedCount,
         );
+        this.sceneDrawSource?.chargeStaging(performance.now() - batchStartedAt);
         entry.uploadedCount += count;
         this.lastClassicProgressAt = performance.now();
         chunk.lastUsed = now;
@@ -5700,6 +5955,61 @@ export class StreamedSplatMesh extends SplatMesh {
 
   /** Switches a fully staged region from old to new visibility in one tick. */
   private commitStagedGroup(group: SwapGroup): void {
+    const removes = group.removes.filter(([key]) => this.resident.has(key));
+    const delta = group.addCount - removes.reduce((sum, [, entry]) => sum + entry.run.count, 0);
+    if (this.retainedDrawRelief) {
+      this.pendingWork = true;
+      return;
+    }
+    let retained = false;
+    let released = false;
+    const relief: PreparedDrawRelief | undefined =
+      !this.sceneDrawWave && this.sceneDrawSource && delta > 0 && removes.length > 0
+        ? {
+            reduction: delta,
+            publish: () => {
+              // Old ranges are still complete in storage. Restore them atomically.
+              for (const run of group.adds) {
+                const key = runKey(run);
+                const entry = this.resident.get(key);
+                if (entry) {
+                  this.removeRange(entry.handle);
+                  this.resident.delete(key);
+                }
+              }
+              for (const [key, entry] of removes) {
+                this.setRangeActive(entry.handle, true);
+                this.resident.set(key, entry);
+              }
+              retained = false;
+              this.retainedDrawRelief = false;
+              this.pendingWork = true;
+              this.lastScheduleTime = -Infinity;
+              return this.drawCountFromRuns();
+            },
+            release: () => {
+              released = true;
+              if (retained) for (const [, entry] of removes) this.removeRange(entry.handle);
+              retained = false;
+              this.retainedDrawRelief = false;
+            },
+          }
+        : undefined;
+    const reservation = this.sceneDrawWave
+      ? undefined
+      : this.sceneDrawSource?.reserve(this.drawCountFromRuns() + delta, relief);
+    if (!this.sceneDrawWave && this.sceneDrawSource && !reservation) {
+      this.pendingWork = true;
+      return;
+    }
+    // A temporary reservation retains old storage until its prepared relief is released.
+    if (reservation && !reservation.commit()) {
+      reservation.cancel();
+      this.pendingWork = true;
+      return;
+    }
+    retained = relief !== undefined && !released;
+    this.retainedDrawRelief = retained;
     this.lastClassicProgressAt = performance.now();
     for (const run of group.adds) {
       const entry = this.staged.get(runKey(run));
@@ -5710,7 +6020,8 @@ export class StreamedSplatMesh extends SplatMesh {
 
     for (const [key, entry] of group.removes) {
       if (!this.resident.has(key)) continue;
-      this.removeRange(entry.handle);
+      if (retained || this.sceneDrawWaveRetainsOld) this.setRangeActive(entry.handle, false);
+      else this.removeRange(entry.handle);
       this.resident.delete(key);
     }
     for (const run of group.adds) {
@@ -5733,6 +6044,10 @@ export class StreamedSplatMesh extends SplatMesh {
    * removals - the caller defers it and the old runs keep rendering.
    */
   private applyGroup(group: SwapGroup, now: number): boolean {
+    if (this.retainedDrawRelief) {
+      this.pendingWork = true;
+      return false;
+    }
     const measureApplyGroup = this.onPerformanceEvent !== undefined;
     const applyGroupStartedAt = measureApplyGroup ? performance.now() : 0;
     const finishApplyGroup = (): void => {
@@ -5765,6 +6080,21 @@ export class StreamedSplatMesh extends SplatMesh {
       finishApplyGroup();
       return false;
     }
+    const nextDrawCount =
+      this.drawCountFromRuns() +
+      group.addCount -
+      group.removes
+        .filter(([key]) => this.resident.has(key))
+        .reduce((sum, [, entry]) => sum + entry.run.count, 0);
+    const reservation = this.sceneDrawWave
+      ? undefined
+      : this.sceneDrawSource?.reserve(nextDrawCount);
+    if (!this.sceneDrawWave && this.sceneDrawSource && (!reservation || !reservation.commit())) {
+      reservation?.cancel();
+      this.pendingWork = true;
+      finishApplyGroup();
+      return false;
+    }
     for (const { key, entry } of partial) {
       this.removeRange(entry.handle);
       this.staged.delete(key);
@@ -5772,7 +6102,8 @@ export class StreamedSplatMesh extends SplatMesh {
 
     for (const [key, entry] of group.removes) {
       if (!this.resident.has(key)) continue;
-      this.removeRange(entry.handle);
+      if (this.sceneDrawWaveRetainsOld) this.setRangeActive(entry.handle, false);
+      else this.removeRange(entry.handle);
       this.resident.delete(key);
     }
     for (const run of group.adds) {
@@ -6205,6 +6536,11 @@ export class StreamedSplatMesh extends SplatMesh {
       this.pendingWork = true;
       return;
     }
+    const reservation = this.sceneDrawSource?.reserve(this.drawCountFromRuns() + chunk.data.count);
+    if (this.sceneDrawSource && !reservation) {
+      this.pendingWork = true;
+      return;
+    }
     let handle: SplatRange;
     try {
       handle = this.appendRange(chunk.data);
@@ -6215,9 +6551,16 @@ export class StreamedSplatMesh extends SplatMesh {
       try {
         handle = this.appendRange(chunk.data);
       } catch {
+        reservation?.cancel();
         this.pendingWork = true; // no room this tick; retry next
         return;
       }
+    }
+    if (reservation && !reservation.commit()) {
+      this.removeRange(handle);
+      reservation.cancel();
+      this.pendingWork = true;
+      return;
     }
     this.envHandle = handle;
     this.envSplatCount = chunk.data.count;
@@ -6772,6 +7115,29 @@ export class StreamedSplatMesh extends SplatMesh {
         }),
       );
     }
+    if (presented && this.sceneDrawSource) {
+      const nextCount = chunkPublicationGlobals?.length ?? indexedPublication?.length ?? drawn;
+      if (nextCount > this.pageTableDrawBudget) {
+        this.discardIndexedPublication('draw-budget-reduced');
+        this.pendingWork = true;
+        this.lastScheduleTime = -Infinity;
+        return;
+      }
+      this.drawReservation?.cancel();
+      this.drawReservation = this.sceneDrawSource.reserve(nextCount);
+      if (!this.drawReservation) {
+        // Keep the prepared publication for a later frame; worker slot ownership stays held.
+        this.queuedFrontierPlans.unshift({
+          ...plan,
+          moves: { ...plan.moves, count: 0 },
+          moveSlots: new Uint32Array(),
+          appends: { ...plan.appends, count: 0 },
+          writeSlots: new Uint32Array(),
+        });
+        this.pendingWork = true;
+        return;
+      }
+    }
     if (presented) {
       if (chunkPublicationGlobals && chunkPublicationSlots) {
         const previousVisibleCount = this.pageTableDrawn;
@@ -6856,6 +7222,13 @@ export class StreamedSplatMesh extends SplatMesh {
         this.indexedPublishGeneration = plan.candidateGeneration as number;
         this.indexedPublishRevision = plan.candidateRevision ?? null;
       } else {
+        if (this.drawReservation && !this.drawReservation.commit()) {
+          this.drawReservation.cancel();
+          this.drawReservation = null;
+          this.pendingWork = true;
+          return;
+        }
+        this.drawReservation = null;
         this.setSlabResident(drawn);
         this.pageTableDrawn = drawn;
         this.pageTableDisplayGeneration =
@@ -7341,6 +7714,12 @@ export class StreamedSplatMesh extends SplatMesh {
   private forwardChunkToWorker(file: number, data: SplatData): void {
     const tree = data.radTree;
     if (!tree) return;
+    // Async arrivals always wait for the host frame's shared staging allowance.
+    if (this.sceneDrawSource && !this.drainingRadChunks) {
+      this.queuedRadChunks.set(file, data);
+      this.pendingWork = true;
+      return;
+    }
     if (!this.installRadChunkPage(file, data)) return;
     this.pageTableCachedFiles.add(file);
     this.pageTableHostCacheRevision++;

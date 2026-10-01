@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
+import { SceneDrawBudget } from '../streaming/scene-draw-budget';
 import { StreamedSplatMesh } from '../streaming/streamed-splat-mesh';
 import { buildLcc2Scene } from '../formats/lcc/lcc2';
 import { writeCovariance, type SplatData } from '../core/splat-data';
@@ -47,6 +48,7 @@ type Internals = {
   reschedule: (camera: THREE.Camera, now: number) => unknown;
 };
 
+let sharedAdmission = false;
 const meshes: StreamedSplatMesh[] = [];
 afterEach(() => {
   for (const mesh of meshes) mesh.dispose();
@@ -54,7 +56,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function setup(options: { withEnv?: boolean; enabled?: boolean; desktop?: boolean } = {}) {
+function setup(
+  options: {
+    withEnv?: boolean;
+    enabled?: boolean;
+    desktop?: boolean;
+    drawBudget?: SceneDrawBudget;
+  } = {},
+) {
   const bounds = { min: [-1, -1, -9], max: [1, 1, -7] };
   const node = (file: number, count: number) => ({
     boundingBox: bounds,
@@ -93,8 +102,14 @@ function setup(options: { withEnv?: boolean; enabled?: boolean; desktop?: boolea
       ...(options.desktop === false ? {} : { lcc2Policy: { quality: 'desktop' as const } }),
     },
   );
+  const drawBudget =
+    options.drawBudget ??
+    (sharedAdmission
+      ? new SceneDrawBudget({ budget: CAPACITY, allowTemporaryExcess: false })
+      : undefined);
   const mesh = createStreamedMeshFixture(scene, BUDGET, CAPACITY, {
     initialReveal: 'hold-coverage',
+    drawBudget,
     maxSplatsPerSwap: WIDTH,
     ...(options.enabled === undefined ? {} : { environmentEnabled: options.enabled }),
   });
@@ -121,78 +136,134 @@ function settle(fixture: ReturnType<typeof setup>, from = 1000): void {
   for (let time = from; time < from + 24; time++) fixture.inner.reschedule(fixture.camera, time);
 }
 
-describe('desktop LCC2 environment capacity', () => {
-  it('falls back within the frozen region when the environment decodes after capture', () => {
-    const f = setup();
-    f.inner.reschedule(f.camera, 1000);
-    expect(f.inner.initialRevealPhase).toBe('holding');
-    expect(f.inner.frozenCriticalRuns?.map((run) => run.file)).toEqual([1]);
-    expect(f.inner.staged.size).toBe(0);
+describe.each([false, true])(
+  'desktop LCC2 environment capacity (shared admission: %s)',
+  (shared) => {
+    beforeAll(() => {
+      sharedAdmission = shared;
+    });
+    it('falls back within the frozen region when the environment decodes after capture', () => {
+      const f = setup();
+      f.inner.reschedule(f.camera, 1000);
+      expect(f.inner.initialRevealPhase).toBe('holding');
+      expect(f.inner.frozenCriticalRuns?.map((run) => run.file)).toEqual([1]);
+      expect(f.inner.staged.size).toBe(0);
 
-    f.cache(3, 8.5 * WIDTH); // Nine reserved rows leave three rows for LOD.
-    f.inner.reschedule(f.camera, 1001);
-    expect(f.mesh.initialRevealState.status).toBe('ready');
-    expect([...f.inner.resident.values()].map(({ run }) => run.file)).toEqual([0]);
-    expect(f.mesh.environmentSplatCount).toBe(8.5 * WIDTH);
-    settle(f, 1002);
-    expect(slots(f.scene.source.lcc2QualityState!.desired)).toBeLessThanOrEqual(3 * WIDTH);
-    expect([...f.inner.resident.values()].map(({ run }) => run.file)).toEqual([0]);
-    expect(f.inner.pendingWork).toBe(false);
-    expect(f.mesh.budget).toBe(BUDGET);
-    expect(f.scene.source.budget).toBe(BUDGET);
-  });
-
-  it('fits recaptured coverage beside a hidden but still resident environment', () => {
-    const f = setup();
-    f.cache(3, 8.5 * WIDTH);
-    settle(f);
-    f.mesh.setEnvironmentEnabled(false);
-    f.inner.cache.delete(3); // Resident row ownership survives CPU eviction and hiding.
-    f.mesh.recaptureInitialReveal();
-    settle(f, 2000);
-    expect(f.mesh.initialRevealState.status).toBe('ready');
-    expect(slots(f.scene.source.lcc2QualityState!.desired)).toBeLessThanOrEqual(3 * WIDTH);
-    expect([...f.inner.resident.values()].map(({ run }) => run.file)).toEqual([0]);
-    expect(f.mesh.environmentSplatCount).toBe(8.5 * WIDTH);
-    expect(f.mesh.environmentEnabled).toBe(false);
-    expect(f.mesh.budget).toBe(BUDGET);
-    expect(f.inner.pendingWork).toBe(false);
-  });
-
-  it('publishes fine detail atomically when it fits after retiring its old cover', () => {
-    const f = setup();
-    f.cache(3, 4 * WIDTH); // Final detail fills the eight remaining rows exactly.
-    settle(f);
-    expect(f.mesh.initialRevealState.status).toBe('ready');
-    expect([...f.inner.resident.values()].map(({ run }) => run.file)).toEqual([2]);
-    expect(f.mesh.activeSplatCount).toBe(BUDGET + 4 * WIDTH);
-    expect(f.inner.staged.size).toBe(0);
-    expect(f.inner.pendingWork).toBe(false);
-  });
-
-  it.each([{ withEnv: false }, { enabled: false }, { withEnv: true }])(
-    'preserves detail with absent, disabled or small environments: %j',
-    (options) => {
-      const f = setup(options);
-      f.cache(3, options.enabled === false ? 8.5 * WIDTH : WIDTH);
-      settle(f);
+      f.cache(3, 8.5 * WIDTH); // Nine reserved rows leave three rows for LOD.
+      f.inner.reschedule(f.camera, 1001);
       expect(f.mesh.initialRevealState.status).toBe('ready');
-      expect(f.scene.source.lcc2QualityState!.desired.map((run) => run.file)).toEqual([2]);
-      expect([...f.inner.resident.values()].map(({ run }) => run.file)).toEqual([2]);
+      expect([...f.inner.resident.values()].map(({ run }) => run.file)).toEqual([0]);
+      expect(f.mesh.environmentSplatCount).toBe(8.5 * WIDTH);
+      settle(f, 1002);
+      expect(slots(f.scene.source.lcc2QualityState!.desired)).toBeLessThanOrEqual(3 * WIDTH);
+      expect([...f.inner.resident.values()].map(({ run }) => run.file)).toEqual([0]);
+      expect(f.inner.pendingWork).toBe(false);
       expect(f.mesh.budget).toBe(BUDGET);
       expect(f.scene.source.budget).toBe(BUDGET);
-    },
-  );
+    });
 
-  it('skips an environment that fits alone but cannot coexist with minimum main coverage', () => {
-    const f = setup();
-    f.cache(3, CAPACITY);
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    settle(f);
-    expect(f.mesh.initialRevealState.status).toBe('ready');
-    expect(f.mesh.environmentSplatCount).toBe(0);
-    expect([...f.inner.resident.values()].map(({ run }) => run.file)).toEqual([2]);
-    expect(warning).toHaveBeenCalled();
-    expect(f.inner.pendingWork).toBe(false);
-  });
-});
+    it('fits recaptured coverage beside a hidden but still resident environment', () => {
+      const f = setup();
+      f.cache(3, 8.5 * WIDTH);
+      settle(f);
+      f.mesh.setEnvironmentEnabled(false);
+      f.inner.cache.delete(3); // Resident row ownership survives CPU eviction and hiding.
+      f.mesh.recaptureInitialReveal();
+      settle(f, 2000);
+      expect(f.mesh.initialRevealState.status).toBe('ready');
+      expect(slots(f.scene.source.lcc2QualityState!.desired)).toBeLessThanOrEqual(3 * WIDTH);
+      expect([...f.inner.resident.values()].map(({ run }) => run.file)).toEqual([0]);
+      expect(f.mesh.environmentSplatCount).toBe(8.5 * WIDTH);
+      expect(f.mesh.environmentEnabled).toBe(false);
+      expect(f.mesh.budget).toBe(BUDGET);
+      expect(f.inner.pendingWork).toBe(false);
+    });
+
+    it('publishes fine detail atomically when it fits after retiring its old cover', () => {
+      const f = setup();
+      f.cache(3, 4 * WIDTH); // Final detail fills the eight remaining rows exactly.
+      settle(f);
+      expect(f.mesh.initialRevealState.status).toBe('ready');
+      expect([...f.inner.resident.values()].map(({ run }) => run.file)).toEqual([2]);
+      expect(f.mesh.activeSplatCount).toBe(BUDGET + 4 * WIDTH);
+      expect(f.inner.staged.size).toBe(0);
+      expect(f.inner.pendingWork).toBe(false);
+    });
+
+    it.each([{ withEnv: false }, { enabled: false }, { withEnv: true }])(
+      'preserves detail with absent, disabled or small environments: %j',
+      (options) => {
+        const f = setup(options);
+        f.cache(3, options.enabled === false ? 8.5 * WIDTH : WIDTH);
+        settle(f);
+        expect(f.mesh.initialRevealState.status).toBe('ready');
+        expect(f.scene.source.lcc2QualityState!.desired.map((run) => run.file)).toEqual([2]);
+        expect([...f.inner.resident.values()].map(({ run }) => run.file)).toEqual([2]);
+        expect(f.mesh.budget).toBe(BUDGET);
+        expect(f.scene.source.budget).toBe(BUDGET);
+      },
+    );
+
+    it.runIf(shared)(
+      'retains complete old coverage when a storage-reusing swap exceeds draw admission',
+      () => {
+        const drawBudget = new SceneDrawBudget({ budget: 5 * WIDTH, allowTemporaryExcess: false });
+        const f = setup({ drawBudget });
+        f.cache(3, WIDTH);
+        settle(f);
+        expect([...f.inner.resident.values()].map(({ run }) => run.file)).toEqual([1]);
+        expect(f.mesh.activeSplatCount).toBe(BASE + WIDTH);
+        expect(drawBudget.activeUsage).toBe(BASE + WIDTH);
+        expect(f.inner.pendingWork).toBe(true);
+
+        // Once the scene has room, replacement reuses the old rows without
+        // publishing both cuts or increasing the fixed texture pool.
+        drawBudget.setBudget(CAPACITY);
+        drawBudget.beginFrame();
+        settle(f, 2000);
+        expect([...f.inner.resident.values()].map(({ run }) => run.file)).toEqual([2]);
+        expect(drawBudget.activeUsage).toBe(BUDGET + WIDTH);
+        expect(f.mesh.activeSplatCount).toBe(drawBudget.activeUsage);
+        expect(f.mesh.capacity).toBe(CAPACITY);
+        expect(f.inner.pendingWork).toBe(false);
+      },
+    );
+
+    it.runIf(shared)(
+      'defers a storage-reusing swap when the shared staging slice is exhausted',
+      () => {
+        const drawBudget = new SceneDrawBudget({ budget: CAPACITY, allowTemporaryExcess: false });
+        const f = setup({ drawBudget });
+        f.cache(3, WIDTH);
+        const fine = f.inner.cache.get(2)!;
+        f.inner.cache.delete(2);
+        settle(f);
+        expect([...f.inner.resident.values()].map(({ run }) => run.file)).toEqual([1]);
+        f.inner.cache.set(2, fine);
+        const other = drawBudget.register({ limit: CAPACITY });
+        drawBudget.beginFrame();
+        other.chargeStaging(3);
+        settle(f, 2000);
+        expect([...f.inner.resident.values()].map(({ run }) => run.file)).toEqual([1]);
+        expect(f.mesh.activeSplatCount).toBe(BASE + WIDTH);
+        drawBudget.beginFrame();
+        settle(f, 3000);
+        expect([...f.inner.resident.values()].map(({ run }) => run.file)).toEqual([2]);
+        expect(f.inner.pendingWork).toBe(false);
+        other.dispose();
+      },
+    );
+
+    it('skips an environment that fits alone but cannot coexist with minimum main coverage', () => {
+      const f = setup();
+      f.cache(3, CAPACITY);
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      settle(f);
+      expect(f.mesh.initialRevealState.status).toBe('ready');
+      expect(f.mesh.environmentSplatCount).toBe(0);
+      expect([...f.inner.resident.values()].map(({ run }) => run.file)).toEqual([2]);
+      expect(warning).toHaveBeenCalled();
+      expect(f.inner.pendingWork).toBe(false);
+    });
+  },
+);

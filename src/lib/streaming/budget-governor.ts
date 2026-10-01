@@ -125,11 +125,11 @@ export class BudgetGovernor {
   }
 
   /** Replaces the shared total and reallocates. */
-  setTotalBudget(totalBudget: number): void {
+  setTotalBudget(totalBudget: number, options: { forceGrowth?: boolean } = {}): void {
     const next = resolveSplatBudget(totalBudget);
-    if (next === this.total) return;
+    if (next === this.total && !options.forceGrowth) return;
     this.total = next;
-    this.reallocate();
+    this.reallocate(options);
   }
 
   /** Number of registered members. */
@@ -225,7 +225,7 @@ export class BudgetGovernor {
    * mutators; call it manually only if a member's internal ceiling changed
    * outside the governor's view.
    */
-  reallocate(): void {
+  reallocate(options: { forceGrowth?: boolean } = {}): void {
     // Suspended members first, so the share they release is available to the
     // waterfill below in the same pass. Held at the floor rather than skipped:
     // a member that was carrying a large budget when it was suspended must
@@ -246,9 +246,14 @@ export class BudgetGovernor {
       const weightSum = pool.reduce((sum, entry) => sum + entry.weight, 0);
       const capped: MemberEntry[] = [];
       let cappedSpend = 0;
-      for (const entry of pool) {
-        const target = Math.max(1, Math.floor((budget * entry.weight) / weightSum));
-        if (this.applyTarget(entry, target)) {
+      const targets = pool.map((entry) => ({
+        entry,
+        target: Math.max(1, Math.floor((budget * entry.weight) / weightSum)),
+      }));
+      // Make released allowance available before any member requests an increase.
+      targets.sort((a, b) => a.target - a.entry.applied - (b.target - b.entry.applied));
+      for (const { entry, target } of targets) {
+        if (this.applyTarget(entry, target, options.forceGrowth)) {
           capped.push(entry);
           cappedSpend += entry.applied;
         }
@@ -283,12 +288,12 @@ export class BudgetGovernor {
    * Pushes `target` to a member, with the grow dead-band. Returns true when
    * the member clamped below its target (it is capped and cannot absorb more).
    */
-  private applyTarget(entry: MemberEntry, target: number): boolean {
+  private applyTarget(entry: MemberEntry, target: number, forceGrowth = false): boolean {
     if (target > entry.applied) {
       // Grows within the dead-band are skipped: staying low never violates
       // the sum invariant, and the skipped headroom is reclaimed by the next
       // meaningful reallocation.
-      if (target - entry.applied <= this.hysteresis * entry.applied) return false;
+      if (!forceGrowth && target - entry.applied <= this.hysteresis * entry.applied) return false;
     } else if (target === entry.applied) {
       return false;
     }

@@ -250,3 +250,39 @@ validation evidence rather than shipped package surface.
   those meshes have to blend with each other.
 - [`formats/rad-notes.md`](../formats/rad-notes.md): the `.rad` LOD paths, the
   6M threshold, and the page-table frontier in detail.
+
+
+## Complete-publication draw admission
+
+`BudgetGovernor` distributes desired detail. Opt into `SceneDrawBudget` when
+actual draw usage must also share a ceiling across independently streamed meshes.
+Create one coordinator per scene and pass the same `drawBudget` to each
+`StreamedSplatMesh.load`. Its configured budget stays independent of each mesh's
+`maxBudget` and physical pool capacity. The initial target is 85%; a host can set
+explicit 90%, 95%, and 100% targets after its view and visible replacements settle.
+Use `setTotalBudget(target, { forceGrowth: true })` for those deliberate steps.
+Normal camera reweighting retains its hysteresis.
+
+Call `beginFrame(foregroundDeltaMs)` once per rendered frame, including both split
+panes in that one frame. Exclude background, wake-up, and deliberately throttled
+gaps from this time. The coordinator shares a three-millisecond cooperative
+staging allowance; an indivisible bounded batch can finish beyond its deadline.
+Use `setFixedUsage` for fixed visible content before allocating streamed detail.
+A streamed mesh includes its environment in admission; deduct that fixed
+`environmentSplatCount` from the target distributed to LOD members as well.
+
+Call `mesh.setDrawVisibility` before activating stored hidden content. If admission
+is denied, keep its predecessor visible and retry after complete reductions land.
+Use the union of split-pane membership, not successive pane masks. The
+`drawBudgetAdmitted` getter exposes this admission separately from local masks.
+
+Region, RAD frontier and prefix-wave publications retain their complete previous
+coverage when an increase cannot acquire admission. Temporary excess is bounded
+by 105% and physical/device limits. It requires a complete retained lower-cost
+region that can restore usage below the configured budget; all requests share
+one second of foreground rendering and a subsequent 500-ms below-budget cooldown.
+Expiry restores that prepared region instead of hiding a model or clipping a list.
+Set `allowTemporaryExcess: false` for constrained devices. `snapshot()` reports
+configured budget, target, active/reserved usage, temporary allowance and a
+coverage-floor exception. Minimum coverage that cannot fit blocks refinement;
+it is never advertised as a strict cap.

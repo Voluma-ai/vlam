@@ -57,3 +57,11 @@ export {
   type SplatLoadPhase,
   type SplatInputOptions,
 } from '../loaders/loading';
+
+export {
+  SceneDrawBudget,
+  type SceneDrawBudgetOptions,
+  type SceneDrawSource,
+  type SceneDrawReservation,
+  type PreparedDrawRelief,
+} from './scene-draw-budget';

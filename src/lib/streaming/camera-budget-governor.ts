@@ -214,8 +214,8 @@ export class CameraBudgetGovernor {
   }
 
   /** Replaces the shared total (e.g. the presenting budget on `sessionstart`). */
-  setTotalBudget(totalBudget: number): void {
-    this.budgetGovernor.setTotalBudget(totalBudget);
+  setTotalBudget(totalBudget: number, options: { forceGrowth?: boolean } = {}): void {
+    this.budgetGovernor.setTotalBudget(totalBudget, options);
   }
 
   /** Number of camera-weighted members. */
