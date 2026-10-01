@@ -85,6 +85,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- Clamp flat LCC/Streamed SOG coarsest-coverage queries to the manifest leaves,
+  preventing shared draw-budget initialization from reading beyond the scene.
+
 - Drain pending standalone GPU sorts when unified rendering takes over, so
   streamed LOD refinement cannot stall waiting for a hidden source to draw.
 

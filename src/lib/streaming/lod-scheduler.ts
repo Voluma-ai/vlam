@@ -628,7 +628,13 @@ export class LodScheduler implements LodSource {
    * to substitute always-cached coverage while a finer level is fetching.
    */
   coarsestRunsFor(from: number, to: number): LodRun[] {
-    return this.buildRuns(from, to, (i) => this.maxLevel[i] as number);
+    // Mesh coverage-floor queries use MAX_SAFE_INTEGER for the whole scene;
+    // intersect with the manifest so flat LCC/SOG sources never read past it.
+    return this.buildRuns(
+      Math.max(0, from),
+      Math.min(to, this.leaves.length),
+      (i) => this.maxLevel[i] as number,
+    );
   }
 
   /**
