@@ -67,6 +67,14 @@ function internals(mesh: SplatMesh): SplatMeshInternals {
   return mesh as unknown as SplatMeshInternals;
 }
 
+function graphRevision(mesh: SplatMesh): number {
+  return (mesh as unknown as { graphRevision: number }).graphRevision;
+}
+
+function pickerOf(mesh: SplatMesh): { markNeedsUpdate(): void } {
+  return (mesh as unknown as { picker: { markNeedsUpdate(): void } }).picker;
+}
+
 function renderer(webGpu: boolean): THREE.WebGPURenderer {
   return { backend: { isWebGPUBackend: webGpu } } as unknown as THREE.WebGPURenderer;
 }
@@ -695,6 +703,55 @@ describe('SplatMesh sort scheduling', () => {
     expect(mesh.maxStdDev).toBe(4);
     mesh.setMaxStdDev(3);
     expect(mesh.maxStdDev).toBe(3);
+  });
+
+  // The cutoff and the contribution culls live in the compiled shader. three's
+  // render-object cache only recompiles when `material.version` changes, so a
+  // setter that rebuilt the node graph without bumping it left the previously
+  // compiled pipeline drawing while the getter already reported the new value.
+  it('publishes a setMaxStdDev rebuild through material.version and graphRevision', () => {
+    const mesh = new SplatMesh({ capacity: 1 }, { maxStdDev: 4 });
+    meshes.push(mesh);
+    const material = mesh.material as THREE.Material;
+    const pickerInvalidated = vi.spyOn(pickerOf(mesh), 'markNeedsUpdate');
+    const versionBefore = material.version;
+    const revisionBefore = graphRevision(mesh);
+
+    mesh.setMaxStdDev(3);
+    expect(material.version).toBeGreaterThan(versionBefore);
+    expect(graphRevision(mesh)).toBeGreaterThan(revisionBefore);
+    expect(pickerInvalidated).toHaveBeenCalledTimes(1);
+
+    // Same value again is a no-op: nothing recompiles.
+    const versionAfter = material.version;
+    const revisionAfter = graphRevision(mesh);
+    mesh.setMaxStdDev(3);
+    expect(material.version).toBe(versionAfter);
+    expect(graphRevision(mesh)).toBe(revisionAfter);
+    expect(pickerInvalidated).toHaveBeenCalledTimes(1);
+  });
+
+  it('publishes a setPerformanceProfile rebuild through material.version and graphRevision', () => {
+    const mesh = new SplatMesh({ capacity: 1 }, { performanceProfile: 'quality' });
+    meshes.push(mesh);
+    const material = mesh.material as THREE.Material;
+    const pickerInvalidated = vi.spyOn(pickerOf(mesh), 'markNeedsUpdate');
+    expect(mesh.performanceProfile).toBe('quality');
+    const versionBefore = material.version;
+    const revisionBefore = graphRevision(mesh);
+
+    mesh.setPerformanceProfile('smooth');
+    expect(mesh.performanceProfile).toBe('smooth');
+    expect(material.version).toBeGreaterThan(versionBefore);
+    expect(graphRevision(mesh)).toBeGreaterThan(revisionBefore);
+    expect(pickerInvalidated).toHaveBeenCalledTimes(1);
+
+    const versionAfter = material.version;
+    const revisionAfter = graphRevision(mesh);
+    mesh.setPerformanceProfile('smooth');
+    expect(material.version).toBe(versionAfter);
+    expect(graphRevision(mesh)).toBe(revisionAfter);
+    expect(pickerInvalidated).toHaveBeenCalledTimes(1);
   });
 
   it('rejects setMaxStdDev values that would collapse every splat', () => {

@@ -1089,7 +1089,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (profile === this.performanceProfileValue) return;
     this.performanceProfileValue = profile;
     this.resetProjectedPipeline();
-    this.buildMaterial(this.materialInputs.textures, this.materialInputs.sh);
+    // `rebuildGraph`, not a bare `buildMaterial`: three's render-object cache
+    // only recompiles when `material.version` changes, so the new culls would
+    // otherwise never reach the GPU after the first draw.
+    this.rebuildGraph();
   }
 
   /**
@@ -1113,7 +1116,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.maxStdDevValue = next;
     this.resetProjectedPipeline();
     this.cachedUnifiedView = null;
-    this.buildMaterial(this.materialInputs.textures, this.materialInputs.sh);
+    // See `setPerformanceProfile`: the cutoff lives in the compiled shader.
+    this.rebuildGraph();
   }
 
   /**
