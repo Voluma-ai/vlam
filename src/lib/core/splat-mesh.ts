@@ -2884,9 +2884,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.picker.dispose();
     // Leaving the pool releases this mesh's rows: `compact` accounts for every
     // row against a registered tenant, so a departing one must take its
-    // allocations with it.
-    for (const record of this.ranges.values())
-      this.pool.releaseRows(record.startRow, record.rowCount);
+    // allocations with it. Empty ranges hold no rows, and releasing their
+    // `[0, 0)` placeholder would collide with a real free span at row 0.
+    for (const record of this.ranges.values()) {
+      if (record.rowCount > 0) this.pool.releaseRows(record.startRow, record.rowCount);
+    }
     this.pool.unregister(this);
     // The pool's textures are disposed only by whoever owns the pool. A mesh
     // that built its own pool owns it; one handed a shared pool does not.
