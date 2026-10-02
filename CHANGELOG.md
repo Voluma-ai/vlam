@@ -83,6 +83,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   material rebuild (`needsUpdate`, `graphRevision`, picker invalidation), so
   the new cutoff and contribution culls reach the GPU after the first draw
   instead of leaving the previously compiled pipeline in use.
+
+- `SplatMesh.dispose()` no longer throws when an empty range (such as an
+  empty `partitionSplatData` half) was appended after a removed range in a
+  shared `SplatPool`; the zero-row record is skipped, so the pool is left
+  without a ghost tenant and its textures are released.
+
 - Drain pending standalone GPU sorts when unified rendering takes over, so
   streamed LOD refinement cannot stall waiting for a hidden source to draw.
 
