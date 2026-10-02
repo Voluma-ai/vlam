@@ -2958,6 +2958,30 @@ export class StreamedSplatMesh extends SplatMesh {
         }
       }
     }
+    // Drop retry state for files a complete current-camera walk no longer
+    // wants, mirroring the classic prune in `reschedule` (whose page-table
+    // branch returns before that loop). Without it a chunk that failed once
+    // before the camera moved away is never re-requested, so it never reaches
+    // the attempt cap either, and `isStreaming` (the spinner) stays true for
+    // the mesh's lifetime. Files still wanted keep their backoff untouched.
+    if (
+      complete &&
+      this.retrying.size > 0 &&
+      this.demandReadyGeneration === this.demandGeneration &&
+      !this.demandNeedsNewRevision
+    ) {
+      const keep = new Set<number>([0, ...this.scene.pinnedFiles, ...this.pageTableFetchPriority]);
+      for (const want of this.demandWants) keep.add(want.file);
+      for (const file of this.radChunkDisplayedFiles) keep.add(file);
+      if (this.radChunkPendingFiles) for (const file of this.radChunkPendingFiles) keep.add(file);
+      for (const file of this.filesForIndexedSlots(this.indexedDisplayedSlots)) keep.add(file);
+      if (this.indexedPendingDisplaySlots) {
+        for (const file of this.filesForIndexedSlots(this.indexedPendingDisplaySlots)) {
+          keep.add(file);
+        }
+      }
+      for (const file of this.retrying.keys()) if (!keep.has(file)) this.retrying.delete(file);
+    }
     if (!this.pageTableCachedFiles.has(0)) this.requestChunk(0, 'priority');
     // A queued camera has superseded the worker's last demand. Its wants and
     // touched files describe the old view; re-requesting them here would refill

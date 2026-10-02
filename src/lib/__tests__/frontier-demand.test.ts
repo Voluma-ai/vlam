@@ -156,6 +156,9 @@ describe('page-table demand reconciliation', () => {
       frontierConverged: boolean;
       pageTableContinuePending: boolean;
       scene: { pinnedFiles: Set<number> };
+      loader: { load: (...args: unknown[]) => Promise<unknown> };
+      retrying: Map<number, { attempts: number; readyAt: number }>;
+      isStreaming: boolean;
       replaceActiveIndices: (indices: Uint32Array) => number;
       sourceIndexAttribute: { array: Uint32Array };
       activeSlotByPoolIndex: Uint32Array;
@@ -281,6 +284,72 @@ describe('page-table demand reconciliation', () => {
     expect(requested).toHaveBeenCalledWith(4, 'priority');
     inner.applyDemand(demand(1, [{ file: 5, tier: 0, priority: 3 }], true));
     expect(old.signal.aborted).toBe(true);
+  });
+
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  /** Fails the first chunk fetch once (a transient 5xx) and leaves later ones pending. */
+  function failOnce(inner: ReturnType<typeof fixture>) {
+    const loads: number[] = [];
+    inner.loader.load = (url: unknown) => {
+      loads.push(Number(String(url).split('/').pop()));
+      return loads.length === 1
+        ? Promise.reject(new Error('503 Service Unavailable'))
+        : new Promise(() => {});
+    };
+    return loads;
+  }
+
+  it('drops retry state for a failed chunk a complete demand no longer wants', async () => {
+    const inner = fixture();
+    const loads = failOnce(inner);
+    inner.demandGeneration = 1;
+    inner.applyDemand(demand(1, [{ file: 5, tier: 0, priority: 2 }]));
+    await flush();
+    expect(loads).toEqual([5]);
+    expect(inner.fetching.size).toBe(0);
+    expect(inner.retrying.has(5)).toBe(true);
+    // Nothing is fetching and no frame is pending: the stale retry entry alone
+    // keeps the spinner on.
+    inner.pendingWork = false;
+    expect(inner.isStreaming).toBe(true);
+    // The camera moved on; the complete walk no longer lists file 5.
+    inner.applyDemand(demand(1, [{ file: 7, tier: 0, priority: 2 }]));
+    expect(inner.retrying.size).toBe(0);
+    expect(loads).toEqual([5, 7]);
+    // Let the one remaining (still pending) fetch go so only retry state could
+    // keep `isStreaming` true.
+    inner.fetching.get(7)?.controller.abort();
+    inner.fetching.clear();
+    inner.pendingWork = false;
+    expect(inner.isStreaming).toBe(false);
+  });
+
+  it('keeps retry state (and its backoff) for a failed chunk a complete demand still wants', async () => {
+    const inner = fixture();
+    const loads = failOnce(inner);
+    inner.demandGeneration = 1;
+    inner.applyDemand(demand(1, [{ file: 5, tier: 0, priority: 2 }]));
+    await flush();
+    const entry = inner.retrying.get(5);
+    expect(entry).toBeDefined();
+    inner.applyDemand(demand(1, [{ file: 5, tier: 0, priority: 2 }]));
+    expect(inner.retrying.get(5)).toBe(entry);
+    // Still inside the backoff window: not re-requested yet.
+    expect(loads).toEqual([5]);
+    expect(inner.isStreaming).toBe(true);
+  });
+
+  it('keeps retry state for pinned and displayed files the demand omits', async () => {
+    const inner = fixture();
+    inner.scene.pinnedFiles.add(6);
+    inner.retrying.set(6, { attempts: 1, readyAt: Infinity });
+    inner.retrying.set(8, { attempts: 1, readyAt: Infinity });
+    inner.radChunkDisplayedFiles.add(8);
+    inner.retrying.set(9, { attempts: 1, readyAt: Infinity });
+    inner.demandGeneration = 1;
+    inner.applyDemand(demand(1, []));
+    expect([...inner.retrying.keys()].sort()).toEqual([6, 8]);
   });
 
   it('ignores obsolete camera demand and still applies a later pager plan', () => {
