@@ -79,6 +79,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- `UnifiedSplatMesh` with compute projection no longer draws the previous
+  camera pose while a GPU sort still holds the submission gate: a camera-only
+  move re-projects and re-sorts the already-gathered work buffer at once and
+  the gate follows that replacement, while content changes keep coalescing
+  until the buffer is free.
+
 - `SplatMesh.setMaxStdDev` and `setPerformanceProfile` now publish their
   material rebuild (`needsUpdate`, `graphRevision`, picker invalidation), so
   the new cutoff and contribution culls reach the GPU after the first draw
