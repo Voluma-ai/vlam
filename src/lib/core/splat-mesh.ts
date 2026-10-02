@@ -2236,7 +2236,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         this.updateTimings.sortSubmissions > 0
           ? (this.projectedSorter?.passCount ?? this.sorter?.passCount ?? 1)
           : 0;
-      if (sortAccepted) this.markSortSubmission(this.activeCount);
     } else if (options.sort === false) {
       // Unified sources skip standalone sorting. A sort-hold keeps the
       // already-prepared projection status instead of claiming unified-source.
@@ -4247,6 +4246,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
       );
       this.refreshProjectedVisibleCountHint();
+      // Each GPU sort path marks its own submission (see requestSortIfNeeded):
+      // the hold exists to keep a second pass off the order buffer this one
+      // now owns. The CPU worker path never marks - it owns no GPU buffer, and
+      // a hold there would suppress every other WebGL2 frame's sort.
+      this.markSortSubmission(this.activeCount);
     }
     this.recordProjectedSort(projectionCamera);
     this.sortedActiveListVersion = this.activeListVersion;
