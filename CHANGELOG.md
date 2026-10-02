@@ -79,6 +79,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- RAD float columns are length-checked with the real width of their encoding:
+  `f32_lebytes` counts 4 bytes per value and `f16_lebytes` / `ln_f16` 2, so a
+  truncated `center` column throws instead of silently decoding past its end
+  as zeros.
+
+- Non-finite SH coefficients (NaN / ±Infinity in PLY `f_rest_*`, KSPLAT float
+  SH, or a RAD codebook) no longer poison the scene-wide packed SH range; they
+  are skipped when measuring the extent and encode as the neutral mid code.
+
 - `SplatMesh.setMaxStdDev` and `setPerformanceProfile` now publish their
   material rebuild (`needsUpdate`, `graphRevision`, picker invalidation), so
   the new cutoff and contribution culls reach the GPU after the first draw

@@ -176,6 +176,34 @@ describe('packPaletteSh', () => {
   });
 });
 
+describe('packShCoefficients', () => {
+  it('ignores non-finite coefficients instead of NaN-poisoning the scene range', () => {
+    // One NaN or +Infinity (reachable from PLY `f_rest_*` and KSPLAT float SH)
+    // previously made the measured extent NaN, so every range word and every
+    // SH-bearing splat decoded to NaN color. Non-finite values must measure as
+    // 0 and encode as the neutral mid code, leaving finite values untouched.
+    const corrupt = Float32Array.of(0.5, NaN, -0.25, Infinity, 0.75, -1.5);
+    const clean = Float32Array.of(0.5, 0, -0.25, 0, 0.75, -1.5);
+    const packed = packShCoefficients(corrupt, 2, 1);
+    const reference = packShCoefficients(clean, 2, 1);
+
+    expect(packed.range).toEqual({ min: [-1.5, -1.5, -1.5], max: [1.5, 1.5, 1.5] });
+    expect(packed.packed).toEqual(reference.packed);
+    for (const word of packed.packed) expect(Number.isFinite(word)).toBe(true);
+    const [, g] = decodeWord(packed.packed[0] as number, packed.range);
+    const [r] = decodeWord(packed.packed[1] as number, packed.range);
+    // The neutral code sits within one quantization step of 0 (extent 1.5).
+    expect(Math.abs(g)).toBeLessThan((2 * 1.5) / 1023);
+    expect(Math.abs(r)).toBeLessThan((2 * 1.5) / 2047);
+  });
+
+  it('keeps a scene whose only coefficients are non-finite on the unit range', () => {
+    const packed = packShCoefficients(Float32Array.of(NaN, -Infinity, Infinity), 1, 1);
+    expect(packed.range).toEqual({ min: [-0, -0, -0], max: [0, 0, 0] });
+    expect(packed.packed).toEqual(packShCoefficients(Float32Array.of(0, 0, 0), 1, 1).packed);
+  });
+});
+
 describe('requantizeShWord', () => {
   it('re-encodes a word so it decodes to the same value under the new range', () => {
     const from: ShRange = { min: [0, 0, 0], max: [1, 1, 1] };
