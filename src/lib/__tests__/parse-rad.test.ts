@@ -747,6 +747,28 @@ describe('parseRad', () => {
     await expect(parseRadChunkStreaming(hostile)).rejects.toThrow(/fewer than the/);
   });
 
+  it('rejects an f32_lebytes column holding fewer than 4 * count * dims bytes', async () => {
+    // Real captures store `center` byte-plane transposed (`f32_lebytes`). The
+    // length check must use the 4-byte width of the decoded value, not the
+    // 1-byte width of the planes: a truncated column previously passed and
+    // read past its end as `undefined → 0`, collapsing positions silently.
+    const rows = [
+      [0, 0, 0],
+      [1, 1, 1],
+    ];
+    const chunk = buildChunk(2, false, [
+      // Only one splat's 12 bytes where two splats need 24.
+      { name: 'center', encoding: 'f32_lebytes', bytes: f32Bytes(0, 0, 0) },
+      { name: 'alpha', encoding: 'f32', bytes: f32Bytes(1, 1) },
+      { name: 'rgb', encoding: 'f32', bytes: planarF32(3, rows) },
+      { name: 'scales', encoding: 'f32', bytes: planarF32(3, rows) },
+      { name: 'orientation', encoding: 'f32', bytes: planarF32(3, rows) },
+    ]);
+    await expect(parseRadChunkStreaming(new Uint8Array(chunk).buffer)).rejects.toThrow(
+      /"center" column holds 12 bytes, fewer than the 24/,
+    );
+  });
+
   it('rejects a header count above the supported maximum', async () => {
     const chunk = buildChunk(1, false, splatProperties([0, 0, 0], 1, [1, 1, 1], [1, 1, 1]));
     const file = new Uint8Array(buildRadFile(chunk));

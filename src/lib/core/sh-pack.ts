@@ -21,9 +21,14 @@ export type ShRange = SplatPackedShData['range'];
 /** The 11/10/11 field maxima of a packed SH word, per channel. */
 const SH_FIELD_MAX = [2047, 1023, 2047] as const;
 
-/** Quantizes one signed coefficient into one packed channel field. */
+/**
+ * Quantizes one signed coefficient into one packed channel field. A non-finite
+ * coefficient (NaN/±Infinity from a corrupt source) takes the neutral mid code
+ * that 0 maps to, so one bad value cannot poison the word or the scene range.
+ */
 function encodeShField(value: number, divisor: number, max: number): number {
-  return Math.min(max, Math.max(0, Math.round((value / divisor + 1) * 0.5 * max)));
+  const finite = Number.isFinite(value) ? value : 0;
+  return Math.min(max, Math.max(0, Math.round((finite / divisor + 1) * 0.5 * max)));
 }
 
 /** Coefficients per channel for a band count (0 → none, 3 → 3rd order). */
@@ -73,7 +78,11 @@ export function packShCoefficients(
   const words = shCoefficientCount(bands);
   let extent = knownExtent ?? 0;
   if (knownExtent === undefined) {
-    for (const value of coefficients) extent = Math.max(extent, Math.abs(value));
+    // `Math.max(x, NaN)` is NaN: a single non-finite coefficient must not turn
+    // the scene-wide range (and so every SH-bearing splat) into NaN.
+    for (const value of coefficients) {
+      if (Number.isFinite(value)) extent = Math.max(extent, Math.abs(value));
+    }
   }
   // The shader has one range for every band. A symmetric common range
   // preserves the signed SH convention; exact 0 is not representable (it falls
@@ -125,12 +134,10 @@ export function packPaletteSh(
     entries.set(label, new Uint32Array(want));
     for (let c = 0; c < readable; c++) {
       const texel = (row * width + column0 + c) * 4;
-      extent = Math.max(
-        extent,
-        Math.abs(sh.palette[texel] as number),
-        Math.abs(sh.palette[texel + 1] as number),
-        Math.abs(sh.palette[texel + 2] as number),
-      );
+      for (let ch = 0; ch < 3; ch++) {
+        const value = sh.palette[texel + ch] as number;
+        if (Number.isFinite(value)) extent = Math.max(extent, Math.abs(value));
+      }
     }
   }
   // Measure only referenced entries, just as the former expanded float array

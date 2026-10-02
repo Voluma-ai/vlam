@@ -6,6 +6,7 @@ import {
   decodeChildStart,
   decodeFloatColumn,
   decodeOrientation,
+  radEncodingBytes,
 } from './rad-column-decoders';
 import {
   writeCovariance,
@@ -620,7 +621,9 @@ function decodeRadSh(input: RadShInputs): Pick<DecodedChunk, 'shPacked' | 'shCod
     // The codebook is whole-scene, so its extent is the same whichever chunk
     // computes it - unlike the extent of one chunk's referenced entries.
     extent = 0;
-    for (const value of codebook.coefficients) extent = Math.max(extent, Math.abs(value));
+    for (const value of codebook.coefficients) {
+      if (Number.isFinite(value)) extent = Math.max(extent, Math.abs(value));
+    }
   }
   return {
     shPacked: packShCoefficients(coefficients, input.count, bands, extent),
@@ -698,31 +701,10 @@ function shColumnCount(raw: Uint8Array, prop: RadChunkProperty): number {
     : prop.property.startsWith('sh2')
       ? 15
       : 21;
-  const bytesPerValue = shEncodingBytes(prop);
+  const bytesPerValue = radEncodingBytes(prop);
   if (raw.byteLength % (dimensions * bytesPerValue) !== 0)
     throw new Error(`RAD "${prop.property}" has an invalid SH column length.`);
   return raw.byteLength / (dimensions * bytesPerValue);
-}
-
-/** Bytes per decoded value of an SH column's encoding. */
-function shEncodingBytes(prop: RadChunkProperty): number {
-  switch (prop.encoding) {
-    case 'f32':
-    case 'f32_lebytes':
-      return 4;
-    case 'f16':
-    case 'f16_lebytes':
-    case 'ln_f16':
-      return 2;
-    case 'r8':
-    case 'r8_delta':
-    case 's8':
-    case 's8_delta':
-    case 'ln_0r8':
-      return 1;
-    default:
-      throw new Error(`Unsupported RAD "${prop.property}" encoding "${prop.encoding}".`);
-  }
 }
 
 function decodeShLabels(raw: Uint8Array, prop: RadChunkProperty, count: number): Uint32Array {

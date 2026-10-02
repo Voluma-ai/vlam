@@ -336,8 +336,11 @@ export function measureRestExtent(
   let extent = initial;
   for (let i = from; i < to; i++) {
     const base = (i - viewFirst) * stride;
-    for (const offset of offsets)
-      extent = Math.max(extent, Math.abs(view.getFloat32(base + offset, true)));
+    for (const offset of offsets) {
+      // Skip NaN/±Infinity: `Math.max(x, NaN)` would make the whole range NaN.
+      const value = view.getFloat32(base + offset, true);
+      if (Number.isFinite(value)) extent = Math.max(extent, Math.abs(value));
+    }
   }
   return extent;
 }
