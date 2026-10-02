@@ -109,8 +109,9 @@ selection features until their benefits are measured and visually validated.
   still regresses, and
   `sortIntervalMs=0` still refreshes SH every frame so the overview misses
   vsync. The projector records model/view, projection, viewport, active-list,
-  content and DoF state, so an unchanged compute view reuses its indirect list
-  without falling back to a vertex sort; the native RTX 3090 stationary probe
+  content and DoF state on both the standalone and unified paths, so an
+  unchanged compute view reuses its indirect list without falling back to a
+  vertex sort; the native RTX 3090 stationary probe
   records zero sampled projection, cull, sort and SH submissions. An
   intermediate 1.83M SH2 SOG exercises the missing scene-size band,
   but its median/tail split rules out a broader automatic cohort on this GPU;
