@@ -2178,7 +2178,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // replacement while that pass is in flight lets the older scatter finish
     // over a newer cut (unsorted flashes while walking LCC2/SOG, worse with
     // relighting occupying the same queue). Content changes coalesce and
-    // re-sort when the buffer is free; camera-only motion keeps cadence.
+    // re-sort when the buffer is free; camera-only motion keeps cadence on
+    // the vertex path and re-projects at once under compute projection.
     // Streamed LOD delays the visible swap instead of overlapping. Generic
     // meshes keep the previous `instanceCount` / GPU `sourceIndex` until that
     // matching sort can run, so a compact or `StaticLodSplatMesh` cut cannot
@@ -2190,6 +2191,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     const sortHold =
       (options.sort !== false || unifiedSource) &&
       this.sortScheduler.beginSubmissionFrame(sortFrameNumber, performance.now());
+    const projectionSubmissionsBefore = this.projectedPipeline?.projectionDispatches ?? 0;
+    const sortSubmissionsBefore =
+      (this.sorter?.submissionCount ?? 0) + (this.projectedSorter?.submissionCount ?? 0);
     if (options.sort !== false && sortHold) {
       const contentNeedsSort =
         this.sortScheduler.hasPendingForce() ||
@@ -2198,11 +2202,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       this.sortScheduler.markSubmissionSuppressed(contentNeedsSort);
       if (this.orderIsForeign)
         this.restorePrimaryOrderWhileHeld(projectionCamera, sortCamera, renderer);
+      else if (!contentNeedsSort) this.reprojectWhileHeld(projectionCamera, sortCamera, renderer);
     }
     this.updateTimings.activeListUpdateRanges = this.sourceIndexAttribute.updateRanges.length;
-    const projectionSubmissionsBefore = this.projectedPipeline?.projectionDispatches ?? 0;
-    const sortSubmissionsBefore =
-      (this.sorter?.submissionCount ?? 0) + (this.projectedSorter?.submissionCount ?? 0);
     let sortAccepted = false;
     if (options.sort !== false && !sortHold) {
       const sortStartedAt = performance.now();
@@ -2219,23 +2221,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         sortAccepted = this.requestSortIfNeeded(sortCamera, renderer);
       }
       this.updateTimings.sortSubmitMs = performance.now() - sortStartedAt;
-      const projectionSubmissionsAfter = this.projectedPipeline?.projectionDispatches ?? 0;
-      const sortSubmissionsAfter =
-        (this.sorter?.submissionCount ?? 0) + (this.projectedSorter?.submissionCount ?? 0);
-      this.updateTimings.projectionSubmissions = Math.max(
-        0,
-        projectionSubmissionsAfter - projectionSubmissionsBefore,
-      );
-      this.updateTimings.projectionPasses =
-        this.updateTimings.projectionSubmissions > 0 ? (this.computeProjectionActive ? 4 : 0) : 0;
-      this.updateTimings.sortSubmissions = Math.max(
-        0,
-        sortSubmissionsAfter - sortSubmissionsBefore,
-      );
-      this.updateTimings.sortPasses =
-        this.updateTimings.sortSubmissions > 0
-          ? (this.projectedSorter?.passCount ?? this.sorter?.passCount ?? 1)
-          : 0;
     } else if (options.sort === false) {
       // Unified sources skip standalone sorting. A sort-hold keeps the
       // already-prepared projection status instead of claiming unified-source.
@@ -2247,6 +2232,22 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         this.projectionStrategyState.reason = 'unified-source';
       }
     }
+    // Counted after both branches: a held frame can still dispatch the
+    // compute projector (see reprojectWhileHeld) or a primary-order restore.
+    const projectionSubmissionsAfter = this.projectedPipeline?.projectionDispatches ?? 0;
+    const sortSubmissionsAfter =
+      (this.sorter?.submissionCount ?? 0) + (this.projectedSorter?.submissionCount ?? 0);
+    this.updateTimings.projectionSubmissions = Math.max(
+      0,
+      projectionSubmissionsAfter - projectionSubmissionsBefore,
+    );
+    this.updateTimings.projectionPasses =
+      this.updateTimings.projectionSubmissions > 0 ? (this.computeProjectionActive ? 4 : 0) : 0;
+    this.updateTimings.sortSubmissions = Math.max(0, sortSubmissionsAfter - sortSubmissionsBefore);
+    this.updateTimings.sortPasses =
+      this.updateTimings.sortSubmissions > 0
+        ? (this.projectedSorter?.passCount ?? this.sorter?.passCount ?? 1)
+        : 0;
     const submission = this.sortScheduler.submissionDiagnostics();
     this.updateTimings.sortSerial = submission.serial;
     this.updateTimings.sortSubmissionFrame = submission.frame;
@@ -2662,9 +2663,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /**
    * A held gate must not leave a secondary view's order under the primary
-   * draw. Like {@link sortForView}, this sort is not a tracked submission, so
-   * the in-flight one still releases the gate and its coalesced work proceeds.
-   * A held draw list is left to that tracked sort to publish.
+   * draw. Like {@link sortForView}, the vertex-path sort here is not a tracked
+   * submission, so the in-flight one still releases the gate and its coalesced
+   * work proceeds. The compute path re-projects through
+   * {@link prepareProjectedSort}, which re-marks the gate for its replacement
+   * dispatch. A held draw list is left to the tracked sort to publish.
    */
   private restorePrimaryOrderWhileHeld(
     projectionCamera: THREE.Camera,
@@ -2688,6 +2691,29 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     ) {
       this.orderIsForeign = false;
     }
+  }
+
+  /**
+   * Compute projection draws from cached clip-space centers and axes, so a
+   * camera move cannot wait out a held gate the way a vertex-path sort can
+   * (there only the blend order lags a frame). Dropping it draws the previous
+   * pose under the new camera until the gate releases - on a real adapter the
+   * acknowledged `onSubmittedWorkDone` often lands after the next frame's
+   * update, so every such frame rendered the camera one pose behind. Content
+   * is unchanged here (callers keep coalescing content changes), so the
+   * replacement projection and sort read the same inputs as the queued pass
+   * and simply supersede it; {@link prepareProjectedSort} re-marks the gate so
+   * it follows the newer dispatch. A held draw list still waits for the sort
+   * that publishes it, and {@link needsProjectedSort} keeps stationary frames
+   * from dispatching.
+   */
+  private reprojectWhileHeld(
+    projectionCamera: THREE.Camera,
+    sortCamera: THREE.Camera,
+    renderer: THREE.WebGPURenderer,
+  ): void {
+    if (!this.computeProjectionActive || this.activeCount === 0 || this.gpuDrawListHeld) return;
+    this.prepareProjectedSort(projectionCamera, sortCamera, renderer, false);
   }
 
   /** Rebuilds the query grid if the resident set changed since it was built. */

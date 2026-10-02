@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SplatMesh, type SplatMeshOptions } from '../core/splat-mesh';
 import { writeCovariance } from '../core/splat-data';
 import type { SplatSorter } from '../core/sorter';
+import { computeProjection } from '../projection/compute';
 import { exactSort, radixSort } from '../sorting/radix';
 
 interface SplatMeshInternals {
@@ -16,6 +17,8 @@ interface SplatMeshInternals {
     hasSubmissionInFlight(): boolean;
   };
   sourceIndexAttribute: THREE.BufferAttribute;
+  projectedPipeline: { projectionDispatches: number } | null;
+  projectedSorter: { submissionCount: number } | null;
 }
 
 class StagingTestMesh extends SplatMesh {
@@ -342,6 +345,80 @@ describe('SplatMesh sort scheduling', () => {
     mesh.update(perspectiveAt(1), gpuRenderer);
     expect(sort).toHaveBeenCalledTimes(1);
     expect(internals(mesh).sortScheduler.submissionDiagnostics().action).toBe('suppressed');
+  });
+
+  it('re-projects a camera move under a held gate with compute projection', async () => {
+    // The hardware projection probe: move, draw, move again before the GPU
+    // acknowledges the first sort, then hold the camera. Compute projection
+    // draws from cached clip-space centers, so the second move must dispatch
+    // even while the first submission still holds the gate; the stationary
+    // updates afterwards must not.
+    const gpu = pendingGpuCompletion();
+    const mesh = new SplatMesh(makeSplatData(1), {
+      sortIntervalMs: 0,
+      projectionStrategy: computeProjection(),
+    });
+    meshes.push(mesh);
+    const scene = new THREE.Scene();
+    const orbit = perspectiveAt(3);
+    const front = perspectiveAt(0);
+
+    mesh.update(orbit, gpu.renderer);
+    expect(mesh.projectionStrategyStatus.effective).toBe('compute');
+    const pipeline = internals(mesh).projectedPipeline!;
+    const sorter = internals(mesh).projectedSorter!;
+    expect(pipeline.projectionDispatches).toBe(1);
+    expect(sorter.submissionCount).toBe(1);
+    mesh.onAfterRender(gpu.renderer as never, scene, orbit);
+    const firstSerial = internals(mesh).sortScheduler.submissionDiagnostics().serial;
+
+    mesh.update(front, gpu.renderer);
+    expect(pipeline.projectionDispatches).toBe(2);
+    expect(sorter.submissionCount).toBe(2);
+    expect(internals(mesh).sortScheduler.submissionDiagnostics().action).toBe('submitted');
+    // The gate now follows the replacement dispatch, not the superseded one.
+    const secondSerial = internals(mesh).sortScheduler.submissionDiagnostics().serial;
+    expect(secondSerial).toBeGreaterThan(firstSerial);
+
+    mesh.update(front, gpu.renderer);
+    mesh.update(front, gpu.renderer);
+    expect(pipeline.projectionDispatches).toBe(2);
+    expect(sorter.submissionCount).toBe(2);
+
+    gpu.resolve();
+    await Promise.resolve();
+    expect(internals(mesh).sortScheduler.hasSubmissionInFlight()).toBe(true);
+    expect(internals(mesh).sortScheduler.submissionDiagnostics().serial).toBe(secondSerial);
+  });
+
+  it('keeps coalescing content changes under a held gate with compute projection', () => {
+    // A content change must still wait for the buffer to be free; only the
+    // camera-only re-projection bypasses the hold.
+    const gpu = pendingGpuCompletion();
+    const mesh = new SplatMesh(
+      { capacity: 4096 },
+      {
+        sortIntervalMs: 0,
+        projectionStrategy: computeProjection(),
+      },
+    );
+    mesh.appendRange(makeSplatData(1));
+    internals(mesh).rebuildActiveList();
+    meshes.push(mesh);
+    const scene = new THREE.Scene();
+    const camera = perspectiveAt(0);
+
+    mesh.update(camera, gpu.renderer);
+    expect(mesh.projectionStrategyStatus.effective).toBe('compute');
+    const pipeline = internals(mesh).projectedPipeline!;
+    expect(pipeline.projectionDispatches).toBe(1);
+    mesh.onAfterRender(gpu.renderer as never, scene, camera);
+
+    mesh.appendRange(makeSplatData(1));
+    internals(mesh).rebuildActiveList();
+    mesh.update(perspectiveAt(1), gpu.renderer);
+    expect(pipeline.projectionDispatches).toBe(1);
+    expect(internals(mesh).sortScheduler.submissionDiagnostics().action).toBe('coalesced');
   });
 
   it('does not force a coalesced camera-only sort ahead of cadence', async () => {

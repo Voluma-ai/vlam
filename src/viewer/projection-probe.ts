@@ -286,6 +286,11 @@ const renderGoose = async (
     throw new Error(`Compute projection fell back: ${mesh.projectionStrategyStatus.reason}`);
   }
   renderer.render(scene, gooseCamera);
+  // The draw above acknowledges the first sort against `onSubmittedWorkDone`,
+  // which on a real adapter has not resolved when the camera moves again, so
+  // this second move lands under a held sort gate. Compute projection must
+  // still re-project here (the draw reads cached clip centers); the two
+  // stationary updates that follow must not.
   gooseCamera.position.copy(front);
   gooseCamera.lookAt(target);
   gooseCamera.updateMatrixWorld();
