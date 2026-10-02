@@ -79,6 +79,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- `SplatMesh.setMaxStdDev` and `setPerformanceProfile` now publish their
+  material rebuild (`needsUpdate`, `graphRevision`, picker invalidation), so
+  the new cutoff and contribution culls reach the GPU after the first draw
+  instead of leaving the previously compiled pipeline in use.
 - Drain pending standalone GPU sorts when unified rendering takes over, so
   streamed LOD refinement cannot stall waiting for a hidden source to draw.
 
