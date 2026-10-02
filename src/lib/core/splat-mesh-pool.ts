@@ -78,6 +78,9 @@ export function allocateRowSpan(spans: RowSpan[], rowCount: number, poolRows: nu
  * @returns The new free list, sorted by start row.
  */
 export function releaseRowSpan(spans: RowSpan[], start: number, count: number): RowSpan[] {
+  // An empty span frees nothing; merging it would misreport a release of
+  // `[start, start)` as overlapping a free span that happens to begin there.
+  if (count === 0) return spans;
   spans.push({ start, count });
   spans.sort((a, b) => a.start - b.start);
   const merged: RowSpan[] = [];
