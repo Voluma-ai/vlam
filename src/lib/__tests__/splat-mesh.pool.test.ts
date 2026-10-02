@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { SplatMesh } from '../core/splat-mesh';
+import { SplatPool } from '../core/splat-mesh-pool';
 import { writeCovariance } from '../core/splat-data';
 
 /**
@@ -114,6 +115,29 @@ describe('SplatMesh pool row allocator', () => {
     mesh.removeRange(b);
     mesh.appendRange(makeSplatData(4 * WIDTH));
     expect(mesh.freeSplatCapacity).toBe(0);
+  });
+
+  it('disposes cleanly after an empty range follows a removed one in a shared pool', () => {
+    // An empty `appendRange` (a `partitionSplatData` half with nothing in it,
+    // say) registers a zero-row record at row 0. Once the real range ahead of
+    // it is removed, row 0 heads a free span; dispose must not re-release the
+    // zero-row record on top of it, or it throws mid-loop with `disposed`
+    // already set and leaves the pool holding a ghost tenant.
+    const pool = new SplatPool({ capacity: 4 * WIDTH });
+    const mesh = new SplatMesh({ capacity: 4 * WIDTH }, { pool });
+    const other = new SplatMesh({ capacity: WIDTH }, { pool });
+    const first = mesh.appendRange(makeSplatData(10));
+    mesh.appendRange(makeSplatData(0));
+    mesh.removeRange(first);
+
+    expect(() => mesh.dispose()).not.toThrow();
+    expect(pool.tenantCount).toBe(1);
+    expect(pool.freeRows).toBe(4);
+    expect(() => pool.compact()).not.toThrow();
+
+    other.dispose();
+    expect(pool.tenantCount).toBe(0);
+    pool.dispose();
   });
 
   it('throws the documented capacity error when the pool cannot fit a range', () => {

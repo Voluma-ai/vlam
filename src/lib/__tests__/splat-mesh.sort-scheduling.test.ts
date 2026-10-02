@@ -149,6 +149,60 @@ describe('SplatMesh sort scheduling', () => {
     expect(sort).toHaveBeenCalledTimes(3);
   });
 
+  it('sorts every frame through update() with a WebGL worker sorter', () => {
+    // A real `WorkerSorter` is created by `update()` on the WebGL backend; the
+    // stubbed Worker answers each sort request within the same frame. The
+    // worker owns no GPU order buffer, so no submission hold may ever gate it:
+    // `onAfterRender()` arms the render-ack fallback for marked submissions
+    // and would otherwise suppress every other frame's sort.
+    const globalWorker = globalThis as { Worker?: unknown };
+    const previousWorker = globalWorker.Worker;
+    let sortRequests = 0;
+    globalWorker.Worker = class {
+      onmessage: ((event: { data: unknown }) => void) | null = null;
+      onerror: unknown = null;
+      onmessageerror: unknown = null;
+      postMessage(message: { type: string; requestId?: number; spans?: Uint32Array }): void {
+        if (message.type !== 'sort') return;
+        sortRequests++;
+        const spans = message.spans ?? new Uint32Array(0);
+        const order: number[] = [];
+        for (let i = 0; i < spans.length; i += 2) {
+          for (let j = 0; j < (spans[i + 1] as number); j++) order.push((spans[i] as number) + j);
+        }
+        this.onmessage?.({
+          data: { type: 'order', requestId: message.requestId, order: Uint32Array.from(order) },
+        });
+      }
+      terminate(): void {}
+    };
+    try {
+      const mesh = new SplatMesh({ capacity: 4096 });
+      meshes.push(mesh);
+      mesh.appendRange(makeSplatData(1));
+      internals(mesh).rebuildActiveList();
+      const webgl = {
+        backend: { isWebGPUBackend: false },
+        getDrawingBufferSize: (out: THREE.Vector2) => out.set(800, 600),
+        copyTextureToTexture: vi.fn(),
+      } as unknown as THREE.WebGPURenderer;
+      const scene = new THREE.Scene();
+      const now = vi.spyOn(performance, 'now');
+      const perFrame: number[] = [];
+      for (let frame = 0; frame < 10; frame++) {
+        now.mockReturnValue(frame * 16.7);
+        const camera = perspectiveAt(frame);
+        mesh.update(camera, webgl);
+        mesh.onAfterRender(webgl as never, scene, camera);
+        perFrame.push(sortRequests);
+      }
+      expect(internals(mesh).sorter.kind).toBe('worker');
+      expect(perFrame).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    } finally {
+      globalWorker.Worker = previousWorker;
+    }
+  });
+
   it('forces an immediate sort when the active list changes', () => {
     const { mesh, sort } = meshWithSorter({ sortIntervalMs: 1000 });
     const now = vi.spyOn(performance, 'now');
