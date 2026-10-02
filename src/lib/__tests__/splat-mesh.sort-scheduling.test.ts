@@ -64,6 +64,14 @@ function internals(mesh: SplatMesh): SplatMeshInternals {
   return mesh as unknown as SplatMeshInternals;
 }
 
+function graphRevision(mesh: SplatMesh): number {
+  return (mesh as unknown as { graphRevision: number }).graphRevision;
+}
+
+function pickerOf(mesh: SplatMesh): { markNeedsUpdate(): void } {
+  return (mesh as unknown as { picker: { markNeedsUpdate(): void } }).picker;
+}
+
 function renderer(webGpu: boolean): THREE.WebGPURenderer {
   return { backend: { isWebGPUBackend: webGpu } } as unknown as THREE.WebGPURenderer;
 }
@@ -147,6 +155,60 @@ describe('SplatMesh sort scheduling', () => {
     internals(mesh).requestSortIfNeeded(cameraAt(2), renderer(false));
 
     expect(sort).toHaveBeenCalledTimes(3);
+  });
+
+  it('sorts every frame through update() with a WebGL worker sorter', () => {
+    // A real `WorkerSorter` is created by `update()` on the WebGL backend; the
+    // stubbed Worker answers each sort request within the same frame. The
+    // worker owns no GPU order buffer, so no submission hold may ever gate it:
+    // `onAfterRender()` arms the render-ack fallback for marked submissions
+    // and would otherwise suppress every other frame's sort.
+    const globalWorker = globalThis as { Worker?: unknown };
+    const previousWorker = globalWorker.Worker;
+    let sortRequests = 0;
+    globalWorker.Worker = class {
+      onmessage: ((event: { data: unknown }) => void) | null = null;
+      onerror: unknown = null;
+      onmessageerror: unknown = null;
+      postMessage(message: { type: string; requestId?: number; spans?: Uint32Array }): void {
+        if (message.type !== 'sort') return;
+        sortRequests++;
+        const spans = message.spans ?? new Uint32Array(0);
+        const order: number[] = [];
+        for (let i = 0; i < spans.length; i += 2) {
+          for (let j = 0; j < (spans[i + 1] as number); j++) order.push((spans[i] as number) + j);
+        }
+        this.onmessage?.({
+          data: { type: 'order', requestId: message.requestId, order: Uint32Array.from(order) },
+        });
+      }
+      terminate(): void {}
+    };
+    try {
+      const mesh = new SplatMesh({ capacity: 4096 });
+      meshes.push(mesh);
+      mesh.appendRange(makeSplatData(1));
+      internals(mesh).rebuildActiveList();
+      const webgl = {
+        backend: { isWebGPUBackend: false },
+        getDrawingBufferSize: (out: THREE.Vector2) => out.set(800, 600),
+        copyTextureToTexture: vi.fn(),
+      } as unknown as THREE.WebGPURenderer;
+      const scene = new THREE.Scene();
+      const now = vi.spyOn(performance, 'now');
+      const perFrame: number[] = [];
+      for (let frame = 0; frame < 10; frame++) {
+        now.mockReturnValue(frame * 16.7);
+        const camera = perspectiveAt(frame);
+        mesh.update(camera, webgl);
+        mesh.onAfterRender(webgl as never, scene, camera);
+        perFrame.push(sortRequests);
+      }
+      expect(internals(mesh).sorter.kind).toBe('worker');
+      expect(perFrame).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    } finally {
+      globalWorker.Worker = previousWorker;
+    }
   });
 
   it('forces an immediate sort when the active list changes', () => {
@@ -564,6 +626,55 @@ describe('SplatMesh sort scheduling', () => {
     expect(mesh.maxStdDev).toBe(4);
     mesh.setMaxStdDev(3);
     expect(mesh.maxStdDev).toBe(3);
+  });
+
+  // The cutoff and the contribution culls live in the compiled shader. three's
+  // render-object cache only recompiles when `material.version` changes, so a
+  // setter that rebuilt the node graph without bumping it left the previously
+  // compiled pipeline drawing while the getter already reported the new value.
+  it('publishes a setMaxStdDev rebuild through material.version and graphRevision', () => {
+    const mesh = new SplatMesh({ capacity: 1 }, { maxStdDev: 4 });
+    meshes.push(mesh);
+    const material = mesh.material as THREE.Material;
+    const pickerInvalidated = vi.spyOn(pickerOf(mesh), 'markNeedsUpdate');
+    const versionBefore = material.version;
+    const revisionBefore = graphRevision(mesh);
+
+    mesh.setMaxStdDev(3);
+    expect(material.version).toBeGreaterThan(versionBefore);
+    expect(graphRevision(mesh)).toBeGreaterThan(revisionBefore);
+    expect(pickerInvalidated).toHaveBeenCalledTimes(1);
+
+    // Same value again is a no-op: nothing recompiles.
+    const versionAfter = material.version;
+    const revisionAfter = graphRevision(mesh);
+    mesh.setMaxStdDev(3);
+    expect(material.version).toBe(versionAfter);
+    expect(graphRevision(mesh)).toBe(revisionAfter);
+    expect(pickerInvalidated).toHaveBeenCalledTimes(1);
+  });
+
+  it('publishes a setPerformanceProfile rebuild through material.version and graphRevision', () => {
+    const mesh = new SplatMesh({ capacity: 1 }, { performanceProfile: 'quality' });
+    meshes.push(mesh);
+    const material = mesh.material as THREE.Material;
+    const pickerInvalidated = vi.spyOn(pickerOf(mesh), 'markNeedsUpdate');
+    expect(mesh.performanceProfile).toBe('quality');
+    const versionBefore = material.version;
+    const revisionBefore = graphRevision(mesh);
+
+    mesh.setPerformanceProfile('smooth');
+    expect(mesh.performanceProfile).toBe('smooth');
+    expect(material.version).toBeGreaterThan(versionBefore);
+    expect(graphRevision(mesh)).toBeGreaterThan(revisionBefore);
+    expect(pickerInvalidated).toHaveBeenCalledTimes(1);
+
+    const versionAfter = material.version;
+    const revisionAfter = graphRevision(mesh);
+    mesh.setPerformanceProfile('smooth');
+    expect(material.version).toBe(versionAfter);
+    expect(graphRevision(mesh)).toBe(revisionAfter);
+    expect(pickerInvalidated).toHaveBeenCalledTimes(1);
   });
 
   it('rejects setMaxStdDev values that would collapse every splat', () => {
