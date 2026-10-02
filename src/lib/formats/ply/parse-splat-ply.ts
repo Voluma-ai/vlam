@@ -1,4 +1,9 @@
-import { packShCoefficient, shCoefficientCount, symmetricShRange } from '../../core/sh-pack';
+import {
+  growFiniteExtent,
+  packShCoefficient,
+  shCoefficientCount,
+  symmetricShRange,
+} from '../../core/sh-pack';
 import {
   SH_C0,
   writeCovariance,
@@ -337,9 +342,7 @@ export function measureRestExtent(
   for (let i = from; i < to; i++) {
     const base = (i - viewFirst) * stride;
     for (const offset of offsets) {
-      // Skip NaN/±Infinity: `Math.max(x, NaN)` would make the whole range NaN.
-      const value = view.getFloat32(base + offset, true);
-      if (Number.isFinite(value)) extent = Math.max(extent, Math.abs(value));
+      extent = growFiniteExtent(extent, view.getFloat32(base + offset, true));
     }
   }
   return extent;

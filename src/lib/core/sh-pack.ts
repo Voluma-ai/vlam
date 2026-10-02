@@ -21,14 +21,25 @@ export type ShRange = SplatPackedShData['range'];
 /** The 11/10/11 field maxima of a packed SH word, per channel. */
 const SH_FIELD_MAX = [2047, 1023, 2047] as const;
 
+/** Treats NaN/±Infinity as 0 so one corrupt coefficient cannot poison a word. */
+function finiteCoefficient(value: number): number {
+  return Number.isFinite(value) ? value : 0;
+}
+
 /**
- * Quantizes one signed coefficient into one packed channel field. A non-finite
- * coefficient (NaN/±Infinity from a corrupt source) takes the neutral mid code
- * that 0 maps to, so one bad value cannot poison the word or the scene range.
+ * Grows an absolute extent, ignoring NaN/±Infinity. `Math.max(x, NaN)` is NaN,
+ * so a single bad source value must not turn the scene-wide range into NaN.
  */
+export function growFiniteExtent(extent: number, value: number): number {
+  return Math.max(extent, Math.abs(finiteCoefficient(value)));
+}
+
+/** Quantizes one signed coefficient into one packed channel field. */
 function encodeShField(value: number, divisor: number, max: number): number {
-  const finite = Number.isFinite(value) ? value : 0;
-  return Math.min(max, Math.max(0, Math.round((finite / divisor + 1) * 0.5 * max)));
+  return Math.min(
+    max,
+    Math.max(0, Math.round((finiteCoefficient(value) / divisor + 1) * 0.5 * max)),
+  );
 }
 
 /** Coefficients per channel for a band count (0 → none, 3 → 3rd order). */
@@ -78,11 +89,7 @@ export function packShCoefficients(
   const words = shCoefficientCount(bands);
   let extent = knownExtent ?? 0;
   if (knownExtent === undefined) {
-    // `Math.max(x, NaN)` is NaN: a single non-finite coefficient must not turn
-    // the scene-wide range (and so every SH-bearing splat) into NaN.
-    for (const value of coefficients) {
-      if (Number.isFinite(value)) extent = Math.max(extent, Math.abs(value));
-    }
+    for (const value of coefficients) extent = growFiniteExtent(extent, value);
   }
   // The shader has one range for every band. A symmetric common range
   // preserves the signed SH convention; exact 0 is not representable (it falls
@@ -135,8 +142,7 @@ export function packPaletteSh(
     for (let c = 0; c < readable; c++) {
       const texel = (row * width + column0 + c) * 4;
       for (let ch = 0; ch < 3; ch++) {
-        const value = sh.palette[texel + ch] as number;
-        if (Number.isFinite(value)) extent = Math.max(extent, Math.abs(value));
+        extent = growFiniteExtent(extent, sh.palette[texel + ch] as number);
       }
     }
   }

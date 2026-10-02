@@ -32,10 +32,10 @@ const BUDGET_GZIP_BYTES = {
   // 70,990 B measured after the strategy split × 1.15, rounded to 1 kB.
   '.': 82_000,
   './loaders': 40_000,
-  // Rebasing from 80 kB: the opt-in projection cache is shared by every
-  // SplatMesh subclass, including StaticLodSplatMesh. Measured at 81.7 kB
-  // after the r186/compute-projection work; retain roughly 15% review room.
-  './static-lod': 94_000,
+  // 93,992 B measured after NaN-safe SH extent + RAD lebytes width checks
+  // (both live in the inlined load-worker this entry statically imports)
+  // × 1.15, rounded to 1 kB.
+  './static-lod': 108_000,
   './relighting': 50_000,
   // 160,248 B measured after streamed RAD culling and the shared sort
   // scheduler landed in this graph × 1.15, rounded to 1 kB.

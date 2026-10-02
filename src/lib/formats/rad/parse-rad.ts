@@ -14,7 +14,12 @@ import {
   type SplatData,
   type SplatPackedShData,
 } from '../../core/splat-data';
-import { neutralShWord, packShCoefficients, shCoefficientCount } from '../../core/sh-pack';
+import {
+  growFiniteExtent,
+  neutralShWord,
+  packShCoefficients,
+  shCoefficientCount,
+} from '../../core/sh-pack';
 
 /**
  * Parser for World Labs' Spark `.rad` format (a precomputed LOD splat
@@ -621,9 +626,7 @@ function decodeRadSh(input: RadShInputs): Pick<DecodedChunk, 'shPacked' | 'shCod
     // The codebook is whole-scene, so its extent is the same whichever chunk
     // computes it - unlike the extent of one chunk's referenced entries.
     extent = 0;
-    for (const value of codebook.coefficients) {
-      if (Number.isFinite(value)) extent = Math.max(extent, Math.abs(value));
-    }
+    for (const value of codebook.coefficients) extent = growFiniteExtent(extent, value);
   }
   return {
     shPacked: packShCoefficients(coefficients, input.count, bands, extent),
