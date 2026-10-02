@@ -1219,6 +1219,10 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     }
 
     let sortReady = offset === 0;
+    // Only a GPU sort owns the shared order buffer; a worker reply publishes
+    // later and must not hold the submission gate (it would suppress the next
+    // frame's request once the render acknowledgement arms the fallback).
+    let gpuSortSubmitted = false;
     const sortStartedAt = performance.now();
     if (this.computeProjectionActive && this.projectedPipeline && this.projectedSorter) {
       this.projectedPipeline.prepare(
@@ -1234,6 +1238,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
           cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
         );
         sortSubmitted = true;
+        gpuSortSubmitted = true;
         sortReady = true;
       }
     } else if (offset > 0) {
@@ -1260,6 +1265,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
           this.sortScheduler.markAccepted(now);
           // Worker replies publish later; gathering a source view is not enough.
           sortReady = this.sorter.kind !== 'worker';
+          gpuSortSubmitted = sortReady;
         }
       }
     }
@@ -1268,7 +1274,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       const endedAt = performance.now();
       onPrepareStage('sortSubmit', endedAt - sortStartedAt);
     }
-    if (sortSubmitted && !forceSort) this.sortScheduler.markSubmission(refinementFrame, offset);
+    if (gpuSortSubmitted && !forceSort) this.sortScheduler.markSubmission(refinementFrame, offset);
     const projectionSubmissionsAfter = this.projectedPipeline?.projectionDispatches ?? 0;
     const sortSubmissionsAfter =
       (this.sorter.submissionCount ?? 0) + (this.projectedSorter?.submissionCount ?? 0);
