@@ -1408,6 +1408,192 @@ describe('UnifiedSplatMesh', () => {
     });
   });
 
+  describe('compute projection stationary guard', () => {
+    function projectorSpies(unified: UnifiedSplatMesh) {
+      const internals = unified as unknown as {
+        projectedPipeline: { prepare: (...args: unknown[]) => void };
+        projectedSorter: { sort: (...args: unknown[]) => unknown };
+      };
+      return {
+        prepare: vi.spyOn(internals.projectedPipeline, 'prepare'),
+        sort: vi.spyOn(internals.projectedSorter, 'sort'),
+      };
+    }
+
+    /** Draws once and resolves the queued completion so the sort gate is free. */
+    async function settleFirstSort(
+      unified: UnifiedSplatMesh,
+      renderer: THREE.WebGPURenderer,
+      camera: THREE.PerspectiveCamera,
+      resolve: () => void,
+    ): Promise<void> {
+      unified.onAfterRender(renderer as never, new THREE.Scene(), camera);
+      resolve();
+      // One tick releases the scheduler's completion watch, one publishes.
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+
+    it('dispatches the projector once for two stationary updates', async () => {
+      const { renderer, resolve } = pendingGpuCompletion();
+      const mesh = source();
+      const unified = new UnifiedSplatMesh(renderer, 4, {
+        projectionStrategy: computeProjection(),
+      });
+      unified.addSource(mesh);
+      const { prepare, sort } = projectorSpies(unified);
+      const camera = new THREE.PerspectiveCamera();
+
+      unified.update(camera);
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect(sort).toHaveBeenCalledTimes(1);
+      expect(unified.performanceTimings.sortSubmitted).toBe(true);
+      await settleFirstSort(unified, renderer, camera, resolve);
+      expect(unified.getDrawPublicationSnapshot().ready).toBe(true);
+
+      unified.update(camera);
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect(sort).toHaveBeenCalledTimes(1);
+      expect(unified.performanceTimings.sortSubmitted).toBe(false);
+      expect(unified.performanceTimings.projectionSubmissions).toBe(0);
+      // The skipped dispatch keeps the published draw valid: compute
+      // projection draws the whole work buffer through indirect arguments.
+      expect((unified.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(4);
+      expect(unified.getDrawPublicationSnapshot().ready).toBe(true);
+
+      unified.update(camera);
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect(unified.getDrawPublicationSnapshot().ready).toBe(true);
+      unified.dispose();
+      mesh.dispose();
+    });
+
+    it('re-projects when the camera moves', async () => {
+      const { renderer, resolve } = pendingGpuCompletion();
+      const mesh = source();
+      const unified = new UnifiedSplatMesh(renderer, 4, {
+        projectionStrategy: computeProjection(),
+      });
+      unified.addSource(mesh);
+      const { prepare, sort } = projectorSpies(unified);
+      const camera = new THREE.PerspectiveCamera();
+      unified.update(camera);
+      await settleFirstSort(unified, renderer, camera, resolve);
+      unified.update(camera);
+      expect(prepare).toHaveBeenCalledTimes(1);
+
+      camera.position.set(0, 0, 5);
+      camera.updateMatrixWorld(true);
+      unified.update(camera);
+      expect(prepare).toHaveBeenCalledTimes(2);
+      expect(sort).toHaveBeenCalledTimes(2);
+      expect(unified.performanceTimings.sortSubmitted).toBe(true);
+      unified.dispose();
+      mesh.dispose();
+    });
+
+    it('re-projects when the viewport changes', async () => {
+      const { renderer, resolve } = pendingGpuCompletion();
+      const size = new THREE.Vector2(800, 600);
+      (
+        renderer as unknown as { getDrawingBufferSize: (out: THREE.Vector2) => THREE.Vector2 }
+      ).getDrawingBufferSize = (out) => out.copy(size);
+      const mesh = source();
+      const unified = new UnifiedSplatMesh(renderer, 4, {
+        projectionStrategy: computeProjection(),
+      });
+      unified.addSource(mesh);
+      const { prepare } = projectorSpies(unified);
+      const camera = new THREE.PerspectiveCamera();
+      unified.update(camera);
+      await settleFirstSort(unified, renderer, camera, resolve);
+      unified.update(camera);
+      expect(prepare).toHaveBeenCalledTimes(1);
+
+      size.set(1280, 720);
+      unified.update(camera);
+      expect(prepare).toHaveBeenCalledTimes(2);
+      unified.dispose();
+      mesh.dispose();
+    });
+
+    it('re-projects when depth of field changes', async () => {
+      const { renderer, resolve } = pendingGpuCompletion();
+      const mesh = source();
+      const unified = new UnifiedSplatMesh(renderer, 4, {
+        projectionStrategy: computeProjection(),
+      });
+      unified.addSource(mesh);
+      const { prepare } = projectorSpies(unified);
+      const camera = new THREE.PerspectiveCamera();
+      unified.update(camera);
+      await settleFirstSort(unified, renderer, camera, resolve);
+      unified.update(camera);
+      expect(prepare).toHaveBeenCalledTimes(1);
+
+      // DoF is a live uniform the projector consumes, unlike the vertex path
+      // where it never reaches the sort (see the sort gating suite).
+      unified.setDepthOfField({ focusDistance: 3, aperture: 0.08 });
+      unified.update(camera);
+      expect(prepare).toHaveBeenCalledTimes(2);
+      unified.update(camera);
+      expect(prepare).toHaveBeenCalledTimes(2);
+      unified.dispose();
+      mesh.dispose();
+    });
+
+    it('re-projects after a source content change', async () => {
+      const { renderer, resolve } = pendingGpuCompletion();
+      const mesh = source();
+      const unified = new UnifiedSplatMesh(renderer, 4, {
+        projectionStrategy: computeProjection(),
+      });
+      unified.addSource(mesh);
+      const { prepare, sort } = projectorSpies(unified);
+      const camera = new THREE.PerspectiveCamera();
+      unified.update(camera);
+      await settleFirstSort(unified, renderer, camera, resolve);
+      unified.update(camera);
+      expect(prepare).toHaveBeenCalledTimes(1);
+
+      unified.setSourceOpacity(mesh, 0.5);
+      unified.update(camera);
+      expect(prepare).toHaveBeenCalledTimes(2);
+      expect(sort).toHaveBeenCalledTimes(2);
+      unified.dispose();
+      mesh.dispose();
+    });
+
+    it('always dispatches a secondary view and re-projects the primary afterwards', () => {
+      const renderer = mockRenderer({
+        getRenderTarget: () => null,
+        setRenderTarget: vi.fn(),
+        render: vi.fn(),
+      });
+      const mesh = source();
+      const unified = new UnifiedSplatMesh(renderer, 4, {
+        projectionStrategy: computeProjection(),
+      });
+      unified.addSource(mesh);
+      const { prepare } = projectorSpies(unified);
+      const camera = new THREE.PerspectiveCamera();
+      unified.update(camera);
+      unified.update(camera);
+      expect(prepare).toHaveBeenCalledTimes(1);
+
+      unified.renderView(camera, renderer);
+      expect(prepare).toHaveBeenCalledTimes(2);
+      // The secondary draw left a foreign order; the stationary primary view
+      // still has to re-project through the pending force it raised.
+      unified.update(camera);
+      expect(prepare).toHaveBeenCalledTimes(3);
+      unified.update(camera);
+      expect(prepare).toHaveBeenCalledTimes(3);
+      unified.dispose();
+      mesh.dispose();
+    });
+  });
+
   /**
    * `.rad` stores `alpha ÷ 2`. The standalone display path recovers it, but the
    * unified path used to pass the stored value straight through, so a `.rad`

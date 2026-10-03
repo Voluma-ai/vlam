@@ -85,6 +85,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   the gate follows that replacement, while content changes keep coalescing
   until the buffer is free.
 
+- `UnifiedSplatMesh` with compute projection no longer re-dispatches the
+  projector and counting sort on every free frame of an idle scene. The
+  dispatch is skipped while the view, projection, viewport, admitted count,
+  depth-of-field uniforms and gathered work buffer all match the previous
+  dispatch; camera motion, a resize, `setDepthOfField`, any content change,
+  a secondary `renderView` and a pending force still dispatch.
+
 - RAD float columns are length-checked with the real width of their encoding:
   `f32_lebytes` counts 4 bytes per value and `f16_lebytes` / `ln_f16` 2, so a
   truncated `center` column throws instead of silently decoding past its end

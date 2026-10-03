@@ -296,6 +296,22 @@ export class UnifiedSplatMesh extends THREE.Mesh {
    */
   private previousAdmittedTotal = 0;
   /**
+   * Inputs of the last compute-projection dispatch, mirroring the standalone
+   * `SplatMesh.needsProjectedSort` signature. The projector both culls and
+   * writes per-splat clip-space data, so unlike {@link lastSortedState} this
+   * deliberately covers the projection, raster viewport, admitted count and
+   * the live DoF uniforms the projector reads - a stationary depth key alone
+   * is not enough to reuse its output. Starts unmatchable (zero scale) so the
+   * first prepared frame always dispatches. A held sort gate re-projects only
+   * once this signature changes, see {@link reprojectWhileHeld}.
+   */
+  private readonly lastProjectedView = new THREE.Matrix4().makeScale(0, 0, 0);
+  private readonly lastProjectedProjection = new THREE.Matrix4().makeScale(0, 0, 0);
+  private readonly lastProjectedViewport = new THREE.Vector2(Number.NaN, Number.NaN);
+  private lastProjectedActiveCount = -1;
+  private lastProjectedDofFocusDistance = Number.NaN;
+  private lastProjectedDofAperture = Number.NaN;
+  /**
    * Last work-buffer count whose GPU order has been allowed to draw. Stays 0
    * until the first `onSubmittedWorkDone` so the identity fill of `order`
    * never reaches the canvas.
@@ -304,14 +320,6 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   /** Count waiting on the in-flight GPU sort, or null. */
   private pendingOrderedDrawCount: number | null = null;
   private readonly bounds = new THREE.Sphere();
-  /**
-   * View state consumed by the last compute projection dispatch. A held sort
-   * gate re-projects only once the camera leaves this pose, see
-   * {@link reprojectWhileHeld}.
-   */
-  private readonly lastProjectedView = new THREE.Matrix4();
-  private readonly lastProjectedProjection = new THREE.Matrix4();
-  private readonly lastProjectedViewport = new THREE.Vector2(Number.NaN, Number.NaN);
   private readonly focal: Vec2Uniform;
   private readonly viewport: Vec2Uniform;
   private readonly maxStdDev: FloatUniform;
@@ -1252,25 +1260,56 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     let gpuSortSubmitted = false;
     const sortStartedAt = performance.now();
     if (this.computeProjectionActive && this.projectedPipeline && this.projectedSorter) {
-      this.projectedPipeline.prepare(
-        viewCamera.matrixWorldInverse,
-        projectionCamera.projectionMatrix,
-        offset,
-      );
-      this.recordProjectedPose(viewCamera, projectionCamera);
-      if (offset > 0) {
-        this.projectedSorter.sort(
+      // Stationary guard, the compute-path twin of `shouldSubmit` below: an
+      // idle scene must not burn a full projection plus counting sort on every
+      // free frame. Skip only when every projector input matches the last
+      // dispatch and nothing touched the work buffer this frame. A secondary
+      // view (`forceSort`) always dispatches - it sorts for its own camera -
+      // and a pending force (foreign order, content invalidation) is cleared
+      // only by an actual sort, so it dispatches too. With the dispatch
+      // skipped, `sortSubmitted` stays false and `sortReady` stays false for a
+      // non-empty buffer, which leaves the existing publication untouched
+      // below rather than clearing or re-versioning it. `layoutChanged` already
+      // covers an admitted total that differs from the previous frame, and the
+      // signature covers one that differs from the last dispatch.
+      const stationary =
+        !forceSort &&
+        gatherDispatches === 0 &&
+        !geometryInvalidated &&
+        !layoutChanged &&
+        !this.sortScheduler.hasPendingForce() &&
+        (offset === 0 || this.readyPublication !== null) &&
+        !this.projectedPoseChanged(
           viewCamera.matrixWorldInverse,
+          projectionCamera.projectionMatrix,
           offset,
-          this.bounds,
-          cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
         );
-        // Clears the pending force the way an accepted vertex sort does, so a
-        // later held frame can tell camera-only motion from coalesced content.
-        this.sortScheduler.markAccepted(performance.now());
-        sortSubmitted = true;
-        gpuSortSubmitted = true;
-        sortReady = true;
+      if (!stationary) {
+        const now = performance.now();
+        this.projectedPipeline.prepare(
+          viewCamera.matrixWorldInverse,
+          projectionCamera.projectionMatrix,
+          offset,
+        );
+        if (offset > 0) {
+          this.projectedSorter.sort(
+            viewCamera.matrixWorldInverse,
+            offset,
+            this.bounds,
+            cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
+          );
+          sortSubmitted = true;
+          gpuSortSubmitted = true;
+          sortReady = true;
+          // Clears the pending force the way an accepted vertex sort does, so a
+          // later held frame can tell camera-only motion from coalesced content.
+          this.sortScheduler.markAccepted(now);
+        }
+        this.recordProjectedPose(
+          viewCamera.matrixWorldInverse,
+          projectionCamera.projectionMatrix,
+          offset,
+        );
       }
     } else if (offset > 0) {
       const now = performance.now();
@@ -1549,13 +1588,26 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       return false;
     }
     const count = this.previousAdmittedTotal;
-    if (count === 0 || !this.projectedPoseChanged(viewCamera, projectionCamera)) return false;
+    if (
+      count === 0 ||
+      !this.projectedPoseChanged(
+        viewCamera.matrixWorldInverse,
+        projectionCamera.projectionMatrix,
+        count,
+      )
+    ) {
+      return false;
+    }
     this.projectedPipeline.prepare(
       viewCamera.matrixWorldInverse,
       projectionCamera.projectionMatrix,
       count,
     );
-    this.recordProjectedPose(viewCamera, projectionCamera);
+    this.recordProjectedPose(
+      viewCamera.matrixWorldInverse,
+      projectionCamera.projectionMatrix,
+      count,
+    );
     this.projectedSorter.sort(
       viewCamera.matrixWorldInverse,
       count,
@@ -1565,21 +1617,6 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.sortScheduler.markAccepted(performance.now());
     this.sortScheduler.markSubmission(refinementFrame, count);
     return true;
-  }
-
-  private projectedPoseChanged(viewCamera: THREE.Camera, projectionCamera: THREE.Camera): boolean {
-    return (
-      !this.lastProjectedView.equals(viewCamera.matrixWorldInverse) ||
-      !this.lastProjectedProjection.equals(projectionCamera.projectionMatrix) ||
-      !this.lastProjectedViewport.equals(this.viewport.value)
-    );
-  }
-
-  /** Captures the view inputs consumed by a compute projection dispatch. */
-  private recordProjectedPose(viewCamera: THREE.Camera, projectionCamera: THREE.Camera): void {
-    this.lastProjectedView.copy(viewCamera.matrixWorldInverse);
-    this.lastProjectedProjection.copy(projectionCamera.projectionMatrix);
-    this.lastProjectedViewport.copy(this.viewport.value);
   }
 
   /**
@@ -1632,6 +1669,51 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     geometry.instanceCount = offset;
   }
 
+  /**
+   * Whether any input consumed by the compute projector or its sort differs
+   * from the last dispatch. `view` is the sort camera's inverse world matrix
+   * (the unified work buffer already holds world-space centers).
+   */
+  private projectedPoseChanged(
+    view: THREE.Matrix4,
+    projection: THREE.Matrix4,
+    activeCount: number,
+  ): boolean {
+    return (
+      !this.lastProjectedView.equals(view) ||
+      !this.lastProjectedProjection.equals(projection) ||
+      this.lastProjectedActiveCount !== activeCount ||
+      this.lastProjectedViewport.x !== this.viewport.value.x ||
+      this.lastProjectedViewport.y !== this.viewport.value.y ||
+      this.lastProjectedDofFocusDistance !== this.dofFocusDistance.value ||
+      this.lastProjectedDofAperture !== this.dofAperture.value
+    );
+  }
+
+  /** Captures every input consumed by the compute projector just dispatched. */
+  private recordProjectedPose(
+    view: THREE.Matrix4,
+    projection: THREE.Matrix4,
+    activeCount: number,
+  ): void {
+    this.lastProjectedView.copy(view);
+    this.lastProjectedProjection.copy(projection);
+    this.lastProjectedActiveCount = activeCount;
+    this.lastProjectedViewport.copy(this.viewport.value);
+    this.lastProjectedDofFocusDistance = this.dofFocusDistance.value;
+    this.lastProjectedDofAperture = this.dofAperture.value;
+  }
+
+  /** Makes the next compute-projection preparation dispatch unconditionally. */
+  private invalidateProjectedPose(): void {
+    this.lastProjectedView.makeScale(0, 0, 0);
+    this.lastProjectedProjection.makeScale(0, 0, 0);
+    this.lastProjectedActiveCount = -1;
+    this.lastProjectedViewport.set(Number.NaN, Number.NaN);
+    this.lastProjectedDofFocusDistance = Number.NaN;
+    this.lastProjectedDofAperture = Number.NaN;
+  }
+
   private setComputeProjectionActive(active: boolean): void {
     // `ProjectedSplatPipeline` is retained across an XR session, but XR draws
     // through the established per-eye vertex path. Diagnostics must describe
@@ -1642,6 +1724,9 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     }
     if (this.computeProjectionActive === active) return;
     this.computeProjectionActive = active;
+    // The vertex path sorted the shared order buffer meanwhile (XR), so the
+    // projected buffers no longer describe the draw: dispatch on re-entry.
+    this.invalidateProjectedPose();
     (this.geometry as THREE.InstancedBufferGeometry).setIndirect(
       active ? (this.projectedPipeline?.buffers.drawArgs ?? null) : null,
     );
