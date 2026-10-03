@@ -27,6 +27,27 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   the gate follows that replacement, while content changes keep coalescing
   until the buffer is free.
 
+- A camera move under a held sort gate with compute projection (standalone
+  `SplatMesh` and `UnifiedSplatMesh`) now re-projects on the adaptive sort
+  cadence instead of every held frame. The hold was the compute path's only
+  throttle once the GPU fence outlasts a frame: re-projecting every held
+  frame took an 8,724,225-splat SH3 overview orbit on an RTX 3090 from about
+  73% to 100% of frames dispatching and doubled its frame p95 from 16.8 to
+  33.4 ms. With the cadence gate the overview returns to vsync; scenes whose
+  cadence resolves to 0 ms (under 2M splats, or `sortIntervalMs: 0`) still
+  re-project every held frame. A skipped held frame draws one pose behind
+  until the gate releases or the cadence is due.
+
+- The native hardware probe renders a settle frame before reading unified
+  vertex-path pixels: that path holds its first draw until the submitted GPU
+  order completes, which the single-frame read had been reporting as an
+  invisible splat.
+
+- The benchmark dev server archives results again: its archive endpoint
+  still required result schema version 1 after the comparison pages moved to
+  version 2, so every `/vlam-benchmark.html` run since then ended with
+  "Could not archive results: HTTP 400".
+
 - `UnifiedSplatMesh` with compute projection no longer re-dispatches the
   projector and counting sort on every free frame of an idle scene. The
   dispatch is skipped while the view, projection, viewport, admitted count,
