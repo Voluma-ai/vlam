@@ -247,7 +247,8 @@ argument:
 - **`antialias`** (default `false`): the Mip-Splatting 2D filter: screen-space
   dilation plus opacity compensation, so small and distant splats stop
   over-brightening. This must **match your exporter**; a SOG file's
-  `antialias` meta flag sets it automatically. Enabling it when the capture
+  `antialias` meta flag and an SPZ file's header `antialiased` flag bit set it
+  automatically. Enabling it when the capture
  was not trained with it (or vice versa) is a common cause of "the wrong kind
  of soft".
 - **`performanceProfile`** (`'smooth'` on mobile and fill-constrained desktops,

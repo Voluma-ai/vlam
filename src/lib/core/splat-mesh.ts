@@ -2758,6 +2758,15 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * it follows the newer dispatch. A held draw list still waits for the sort
    * that publishes it, and {@link needsProjectedSort} keeps stationary frames
    * from dispatching.
+   *
+   * The hold was also the compute path's only throttle: a free frame always
+   * re-projects a moved camera, so once the fence outlasts a frame this path
+   * decides the dispatch rate. It therefore follows the adaptive sort cadence
+   * (the clock the SH refresh below already advances), not every held frame:
+   * an 8.7M-splat overview orbit on an RTX 3090 went from ~73% to 100% of
+   * frames dispatching and doubled its frame p95 when every held frame
+   * re-projected. A skipped held frame draws one pose behind, as the vertex
+   * path's blend order does, until the gate releases or the cadence is due.
    */
   private reprojectWhileHeld(
     projectionCamera: THREE.Camera,
@@ -2765,6 +2774,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     renderer: THREE.WebGPURenderer,
   ): void {
     if (!this.computeProjectionActive || this.activeCount === 0 || this.gpuDrawListHeld) return;
+    if (!this.sortScheduler.isCadenceDue(this.activeCount, performance.now())) return;
     this.prepareProjectedSort(projectionCamera, sortCamera, renderer, false);
   }
 

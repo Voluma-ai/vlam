@@ -275,7 +275,8 @@ export interface SplatMeshOptions {
    * dilation plus the opacity compensation that conserves each Gaussian's
    * integral, so small/distant splats stop over-brightening. Match the
    * exporter: enable it for scenes trained/exported with antialiasing (the SOG
-   * `antialias` meta flag sets this automatically). Defaults to `false` (the
+   * `antialias` meta flag and the SPZ header `antialiased` flag bit set this
+   * automatically). Defaults to `false` (the
    * classic 3DGS dilation without compensation).
    */
   antialias?: boolean;

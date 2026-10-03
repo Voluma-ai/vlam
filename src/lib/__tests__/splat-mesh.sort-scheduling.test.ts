@@ -399,6 +399,47 @@ describe('SplatMesh sort scheduling', () => {
     expect(internals(mesh).sortScheduler.submissionDiagnostics().serial).toBe(secondSerial);
   });
 
+  it('defers a held-gate re-projection to the sort cadence', () => {
+    // The hold is the compute path's only throttle once the GPU fence
+    // outlasts a frame (a free frame always re-projects a moved camera), so a
+    // held frame re-projects only when the cadence would admit a sort. The
+    // skipped frame draws one pose behind, exactly as the vertex path's blend
+    // order does under the same hold.
+    const gpu = pendingGpuCompletion();
+    const now = vi.spyOn(performance, 'now').mockReturnValue(0);
+    const mesh = new SplatMesh(makeSplatData(1), {
+      sortIntervalMs: 100,
+      projectionStrategy: computeProjection(),
+    });
+    meshes.push(mesh);
+    const scene = new THREE.Scene();
+
+    mesh.update(perspectiveAt(3), gpu.renderer);
+    expect(mesh.projectionStrategyStatus.effective).toBe('compute');
+    const pipeline = internals(mesh).projectedPipeline!;
+    const sorter = internals(mesh).projectedSorter!;
+    expect(pipeline.projectionDispatches).toBe(1);
+    mesh.onAfterRender(gpu.renderer as never, scene, perspectiveAt(3));
+
+    now.mockReturnValue(16);
+    mesh.update(perspectiveAt(2), gpu.renderer);
+    expect(pipeline.projectionDispatches).toBe(1);
+    expect(sorter.submissionCount).toBe(1);
+    expect(internals(mesh).sortScheduler.submissionDiagnostics().action).toBe('suppressed');
+
+    now.mockReturnValue(120);
+    mesh.update(perspectiveAt(1), gpu.renderer);
+    expect(pipeline.projectionDispatches).toBe(2);
+    expect(sorter.submissionCount).toBe(2);
+    expect(internals(mesh).sortScheduler.submissionDiagnostics().action).toBe('submitted');
+    mesh.onAfterRender(gpu.renderer as never, scene, perspectiveAt(1));
+
+    now.mockReturnValue(130);
+    mesh.update(perspectiveAt(0), gpu.renderer);
+    expect(pipeline.projectionDispatches).toBe(2);
+    expect(sorter.submissionCount).toBe(2);
+  });
+
   it('keeps coalescing content changes under a held gate with compute projection', () => {
     // A content change must still wait for the buffer to be free; only the
     // camera-only re-projection bypasses the hold.

@@ -172,6 +172,22 @@ export class WebGpuSortScheduler {
   }
 
   /**
+   * Whether the adaptive cadence would admit a sort at `now`, without touching
+   * the motion tracking {@link shouldSubmit} maintains (it is consulted once
+   * per frame). A compute-projection re-dispatch under a held gate asks this
+   * so the replacement projection and sort follow the cadence the vertex path
+   * and the SH refresh already share, instead of landing on every frame the
+   * GPU fence outlasts: at 8.7M splats that per-frame re-projection doubled
+   * the overview frame p95 on an RTX 3090. Interval 0 (small scenes, explicit
+   * `sortIntervalMs: 0`) is always due, so those still re-project every held
+   * frame.
+   */
+  isCadenceDue(activeCount: number, now: number): boolean {
+    const interval = this.resolveInterval(activeCount, now);
+    return interval === 0 || now - this.lastAcceptedAt >= interval;
+  }
+
+  /**
    * Commits timing state only after the sorter accepts a submission.
    */
   markAccepted(now: number): void {
