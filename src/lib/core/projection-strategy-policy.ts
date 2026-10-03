@@ -57,6 +57,8 @@ export function resolveAutomaticProjectionStrategy(
   if (!input.isWebGpu) return vertex('auto-webgl');
   if (input.isXr) return vertex('auto-xr');
   if (input.isUnifiedSource) return vertex('auto-unified-source');
+  // Deliberately stricter than the SH cache gate, which accepts an owned
+  // dynamic pool: automatic compute projection is unvalidated on streaming pools.
   if (!input.isStatic || !input.ownsPool) return vertex('auto-dynamic-or-shared-pool');
   if (input.hasSourcePlacement) return vertex('auto-source-placement');
   if (input.hasModifiers) return vertex('auto-modifiers');

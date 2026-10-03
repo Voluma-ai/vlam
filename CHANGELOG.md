@@ -26,6 +26,27 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   same automatic 2D dilation and opacity compensation a flagged `.sog` already
   did. Unflagged files leave the field unset and render exactly as before.
 
+- `SplatMesh.renderView(camera, renderer, target, { reuseShColor: true })`
+  draws the secondary view with the primary view's cached SH color instead of
+  re-evaluating SH for that camera, and leaves the cache valid for the next
+  `update()`. Without it, every secondary view (a per-frame mirror) discards
+  the cache and forces a pool-wide refresh. It only applies while the SH compute
+  cache is active and current; otherwise the view re-evaluates SH as before.
+  `UnifiedSplatMesh.renderView` accepts the option for signature parity and
+  ignores it. The demo exposes it as `?mirror=1&mirrorShReuse=1`.
+
+### Changed
+
+- The SH compute cache now accepts an owned dynamic pool (`StreamedSplatMesh`,
+  dynamic-capacity `SplatMesh`) when `shEvaluation: 'compute'` is explicit.
+  A standalone streamed mesh with SH otherwise evaluates SH per vertex every
+  frame; on a 7.7M-splat classic `.lcc` (NVIDIA Ampere) the explicit cache cut
+  draw GPU time from ~43 ms to ~8 ms. `shEvaluation: 'auto'` keeps dynamic
+  pools on vertex SH until the automatic cohorts are benchmarked on streaming.
+  The SH fallback reason `dynamic-or-shared-pool` is split into `shared-pool`
+  and `auto-dynamic-pool`; hosts reading that reason should match both. The
+  automatic projection reason `auto-dynamic-or-shared-pool` is unchanged.
+
 ### Fixed
 
 - `UnifiedSplatMesh` with compute projection no longer draws the previous

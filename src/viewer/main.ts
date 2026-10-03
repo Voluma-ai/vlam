@@ -4371,6 +4371,8 @@ async function main(): Promise<void> {
   // The plane samples that target by screen position (as a planar reflector
   // does), so the reflection lines up under the real geometry.
   const mirrorDemo = params.get('mirror') === '1';
+  // `?mirrorShReuse=1` draws the mirror with the primary view's cached SH color.
+  const mirrorShReuse = params.get('mirrorShReuse') === '1';
   const mirrorTarget = new THREE.RenderTarget(1, 1, { depthBuffer: true });
   const mirrorCamera = new THREE.PerspectiveCamera();
   mirrorCamera.matrixAutoUpdate = false;
@@ -4434,7 +4436,7 @@ async function main(): Promise<void> {
     mirrorCamera.projectionMatrixInverse.copy(camera.projectionMatrixInverse);
     mirrorPlane.visible = false; // don't reflect the mirror into itself
     try {
-      splats.renderView(mirrorCamera, renderer, mirrorTarget);
+      splats.renderView(mirrorCamera, renderer, mirrorTarget, { reuseShColor: mirrorShReuse });
     } finally {
       // A failed secondary render is surfaced by the frame loop, but must not
       // permanently hide the plane if the host later recovers or remounts.

@@ -899,11 +899,16 @@ export class UnifiedSplatMesh extends THREE.Mesh {
    * Re-sorts and draws this unified source list for a secondary camera.
    * Mirrors and portals use this instead of rendering the hidden source meshes
    * individually, so their reflection keeps one global transparent order.
+   *
+   * @param _options - Accepted for signature parity with
+   *   `SplatMesh.renderView`. `reuseShColor` has no effect here: source SH
+   *   caches are not used on the unified path.
    */
   renderView(
     camera: THREE.PerspectiveCamera,
     renderer: THREE.WebGPURenderer,
     target: THREE.RenderTarget | null = null,
+    _options: { reuseShColor?: boolean } = {},
   ): void {
     if (this.disposed) return;
     if (renderer !== this.renderer) {
