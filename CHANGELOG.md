@@ -79,6 +79,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- `UnifiedSplatMesh` with compute projection no longer draws the previous
+  camera pose while a GPU sort still holds the submission gate: a camera-only
+  move re-projects and re-sorts the already-gathered work buffer at once and
+  the gate follows that replacement, while content changes keep coalescing
+  until the buffer is free.
+
 - RAD float columns are length-checked with the real width of their encoding:
   `f32_lebytes` counts 4 bytes per value and `f16_lebytes` / `ln_f16` 2, so a
   truncated `center` column throws instead of silently decoding past its end
