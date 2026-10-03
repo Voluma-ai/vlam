@@ -1578,6 +1578,13 @@ export class UnifiedSplatMesh extends THREE.Mesh {
    * replacement projection and sort read the same work buffer as the queued
    * pass and simply supersede it; the gate is re-marked so it follows the
    * newer dispatch. A stationary camera dispatches nothing.
+   *
+   * Like the standalone path, the re-projection follows the adaptive sort
+   * cadence rather than every held frame: a free frame always re-projects a
+   * moved camera, so once the fence outlasts a frame this path sets the
+   * dispatch rate, and at large admitted totals a per-frame replacement
+   * projection plus counting sort misses vsync. A skipped held frame draws
+   * one pose behind until the gate releases or the cadence is due.
    */
   private reprojectWhileHeld(
     viewCamera: THREE.Camera,
@@ -1588,13 +1595,15 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       return false;
     }
     const count = this.previousAdmittedTotal;
+    const now = performance.now();
     if (
       count === 0 ||
       !this.projectedPoseChanged(
         viewCamera.matrixWorldInverse,
         projectionCamera.projectionMatrix,
         count,
-      )
+      ) ||
+      !this.sortScheduler.isCadenceDue(count, now)
     ) {
       return false;
     }
@@ -1614,7 +1623,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       this.bounds,
       cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
     );
-    this.sortScheduler.markAccepted(performance.now());
+    this.sortScheduler.markAccepted(now);
     this.sortScheduler.markSubmission(refinementFrame, count);
     return true;
   }
