@@ -29,7 +29,7 @@ export interface SplatData {
   readonly shPacked?: SplatPackedShData;
   /**
    * Scene was trained/exported with antialiasing (e.g. the SOG `antialias`
-   * meta flag). When true, {@link SplatMesh} applies the Mip-Splatting 2D
+   * meta flag or the SPZ header `antialiased` flag bit). When true, {@link SplatMesh} applies the Mip-Splatting 2D
    * filter (dilation + opacity compensation). Absent/false = classic 3DGS.
    */
   readonly antialias?: boolean;

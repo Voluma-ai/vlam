@@ -21,6 +21,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- `parseSpz` reads the SPZ header `antialiased` flag bit (`flags & 0x01`) and
+  reports it as `SplatData.antialias: true`, so a Mip-Splatting `.spz` gets the
+  same automatic 2D dilation and opacity compensation a flagged `.sog` already
+  did. Unflagged files leave the field unset and render exactly as before.
 - Custom streamed dataset loading via `StreamedSplatMesh.loadSource`, with
   explicit format and borrowed/owned source lifetime control.
 - Per-load `onStatus` stages alongside byte progress, including local read
