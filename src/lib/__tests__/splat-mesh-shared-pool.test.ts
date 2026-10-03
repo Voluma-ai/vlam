@@ -220,6 +220,42 @@ describe('SplatMesh sharing a SplatPool', () => {
     pool.dispose();
   });
 
+  it('rejects an append past the mesh capacity atomically, leaving the pool untouched', () => {
+    // A shared-pool mesh sizes its draw list by its own `{ capacity }`, not by
+    // the pool. The pool's row allocator alone would happily hand out the rows,
+    // so without a per-mesh check the active-list write overflowed *after* the
+    // range record, the row allocation and the channel fills had landed - an
+    // orphan with no handle to free it.
+    const pool = new SplatPool({ capacity: 8192 });
+    const mesh = new SplatMesh({ capacity: 2048 }, { pool });
+    const ranges = () => [...mesh.poolRanges()];
+    const before = ranges();
+    const freeBefore = mesh.freeSplatCapacity;
+    const poolFreeBefore = pool.freeRows;
+
+    expect(() => mesh.appendRange(data(4096))).toThrow(
+      /SplatMesh\.appendRange: capacity exceeded - 4096 splats on top of 0 already active would overflow this mesh's capacity of 2048/,
+    );
+
+    expect(ranges()).toEqual(before);
+    expect(mesh.activeSplatCount).toBe(0);
+    expect(mesh.freeSplatCapacity).toBe(freeBefore);
+    expect(pool.freeRows).toBe(poolFreeBefore);
+
+    // The capacity itself is still usable, and filling it leaves the pool with
+    // room this mesh may not draw into.
+    const full = mesh.appendRange(data(2048));
+    expect(mesh.activeSplatCount).toBe(2048);
+    expect(() => mesh.appendRange(data(1))).toThrow(/1 splats on top of 2048 already active/);
+    expect(ranges()).toHaveLength(1);
+    expect(mesh.freeSplatCapacity).toBe(8192 - 2048);
+    mesh.removeRange(full);
+    expect(mesh.activeSplatCount).toBe(0);
+
+    mesh.dispose();
+    pool.dispose();
+  });
+
   it('retains matching packed SH while sharing the pool', () => {
     const pool = new SplatPool({ capacity: 4 * W, packedShBands: 3, packedShTextureCount: 4 });
     const mesh = new SplatMesh({ capacity: W }, { pool, shBands: 3 });
