@@ -19,64 +19,6 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
-### Added
-
-- Custom streamed dataset loading via `StreamedSplatMesh.loadSource`, with
-  explicit format and borrowed/owned source lifetime control.
-- Per-load `onStatus` stages alongside byte progress, including local read
-  completion and worker message routing.
-- Exact affine `SdfShape.transform` support and matching selection previews,
-  including shear and reflection, with atomic shape validation.
-
-- `UnifiedSplatMesh.setSourceCacheModifiers()` so hosts can opt a live source
-  into gather reuse for camera-independent modifiers without removing it.
-  Cached gathers also follow streamed `activeListVersion` so slot reuse cannot
-  keep a stale modifier result.
-
-- `UnifiedSplatMesh` `shColorRefresh` source option. When combined with
-  `cacheModifiers`, a camera-position change refreshes only SH color and
-  reuses cached SDF visibility and covariance. Defaults to `false` so cached
-  color-writing modifiers still full-gather.
-
-- Cached SH gathers refresh only color when the camera moves: clip SDF,
-  covariance, and visibility stay in the work buffer until geometry, the
-  active list, or host-invalidated modifier uniforms change.
-
-- Migration guide for 0.x API renames, package subpaths, renderer setup, strategies, relighting, orientation, and device defaults.
-
-### Changed
-
-- **Breaking:** `buildRadScene` now accepts `RadSceneOptions` instead of
-  positional request/SH/budget/strategy controls; defaults are unchanged.
-  See the migration guide for the argument mapping.
-- Dataset size probes accept an optional abort signal. Streamed loaders forward
-  cancellation and authentication to classic LCC sidecars and RAD bootstrap.
-
-- Snapshot streamed LOD cameras with copy instead of cloning the scene graph
-  every frame.
-
-- Automatic WebGPU sort cadence temporarily backs off during slow frames.
-  Content invalidations, foreign-view restoration, and the final settled camera
-  pose still sort immediately so changed geometry never uses a stale order.
-  Hitch cooldown now starts at 48 ms so a ~50 ms vsync triple still backs off;
-  the previous 50 ms gate missed 49.9 ms stalls.
-
-- `UnifiedSplatMesh` keeps `instanceCount` at the last GPU-sorted count (0
-  until the first sort completes) while a WebGPU sort is in flight. Identity
-  `order` is no longer drawn on the submitting frame.
-
-- Moved packed-center/color storage and shader readers into benchmark-only
-  modules. Published renderer paths use ordinary float center textures without
-  packed-center experiment switches.
-
-- Standalone RAD fragment culling is opt-in through `material.alphaTest`
-  (default `0`). The viewer enables the cutoff only during WebXR presentation
-  and restores the previous threshold on exit, preserving non-XR blending.
-
-- Document the supported high-level WebGPU UnifiedSplatMesh contract while keeping the raw UnifiedSourceView and optional render paths experimental.
-
-- Gate tagged npm publication on preflight, the CI-equivalent secret scan, and packed-package import checks.
-
 ### Fixed
 
 - `UnifiedSplatMesh` with compute projection no longer draws the previous
@@ -113,6 +55,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   dispatch; camera motion, a resize, `setDepthOfField`, any content change,
   a secondary `renderView` and a pending force still dispatch.
 
+## [0.11.5] - 2026-10-02
+
+### Fixed
+
 - RAD float columns are length-checked with the real width of their encoding:
   `f32_lebytes` counts 4 bytes per value and `f16_lebytes` / `ln_f16` 2, so a
   truncated `center` column throws instead of silently decoding past its end
@@ -132,6 +78,35 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   shared `SplatPool`; the zero-row record is skipped, so the pool is left
   without a ghost tenant and its textures are released.
 
+## [0.11.4] - 2026-10-01
+
+### Fixed
+
+- `SplatMesh` restores the primary camera's order over a secondary view's sort
+  while the GPU submission gate is held, so a held draw no longer keeps the
+  foreign order under the primary view.
+
+## [0.11.3] - 2026-09-30
+
+### Added
+
+- Custom streamed dataset loading via `StreamedSplatMesh.loadSource`, with
+  explicit format and borrowed/owned source lifetime control.
+- Per-load `onStatus` stages alongside byte progress, including local read
+  completion and worker message routing.
+- Exact affine `SdfShape.transform` support and matching selection previews,
+  including shear and reflection, with atomic shape validation.
+
+### Changed
+
+- **Breaking:** `buildRadScene` now accepts `RadSceneOptions` instead of
+  positional request/SH/budget/strategy controls; defaults are unchanged.
+  See the migration guide for the argument mapping.
+- Dataset size probes accept an optional abort signal. Streamed loaders forward
+  cancellation and authentication to classic LCC sidecars and RAD bootstrap.
+
+### Fixed
+
 - Drain pending standalone GPU sorts when unified rendering takes over, so
   streamed LOD refinement cannot stall waiting for a hidden source to draw.
 
@@ -150,10 +125,73 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - Replaced obsolete WebGL2 troubleshooting guidance with the atomic snapshot
   publication contract.
 
+## [0.11.2] - 2026-09-30
+
+### Added
+
+- `UnifiedSplatMesh` `shColorRefresh` source option. When combined with
+  `cacheModifiers`, a camera-position change refreshes only SH color and
+  reuses cached SDF visibility and covariance. Defaults to `false` so cached
+  color-writing modifiers still full-gather.
+
+- Cached SH gathers refresh only color when the camera moves: clip SDF,
+  covariance, and visibility stay in the work buffer until geometry, the
+  active list, or host-invalidated modifier uniforms change.
+
+### Changed
+
+- Snapshot streamed LOD cameras with copy instead of cloning the scene graph
+  every frame.
+
+- `UnifiedSplatMesh` keeps `instanceCount` at the last GPU-sorted count (0
+  until the first sort completes) while a WebGPU sort is in flight. Identity
+  `order` is no longer drawn on the submitting frame.
+
+### Fixed
+
 - Start watching the first unified GPU sort even while `instanceCount` is 0, so
   hosts that skip a zero-instance draw still publish the ordered cut. An empty
   work buffer no longer acknowledges a previous sort, which had armed the
   in-flight hold and skipped gathering a source that appeared on the next frame.
+
+## [0.11.1] - 2026-09-29
+
+### Added
+
+- `UnifiedSplatMesh.setSourceCacheModifiers()` so hosts can opt a live source
+  into gather reuse for camera-independent modifiers without removing it.
+  Cached gathers also follow streamed `activeListVersion` so slot reuse cannot
+  keep a stale modifier result.
+
+### Changed
+
+- Automatic WebGPU sort cadence temporarily backs off during slow frames.
+  Content invalidations, foreign-view restoration, and the final settled camera
+  pose still sort immediately so changed geometry never uses a stale order.
+  Hitch cooldown now starts at 48 ms so a ~50 ms vsync triple still backs off;
+  the previous 50 ms gate missed 49.9 ms stalls.
+
+## [0.11.0] - 2026-09-28
+
+### Added
+
+- Migration guide for 0.x API renames, package subpaths, renderer setup, strategies, relighting, orientation, and device defaults.
+
+### Changed
+
+- Moved packed-center/color storage and shader readers into benchmark-only
+  modules. Published renderer paths use ordinary float center textures without
+  packed-center experiment switches.
+
+- Standalone RAD fragment culling is opt-in through `material.alphaTest`
+  (default `0`). The viewer enables the cutoff only during WebXR presentation
+  and restores the previous threshold on exit, preserving non-XR blending.
+
+- Document the supported high-level WebGPU UnifiedSplatMesh contract while keeping the raw UnifiedSourceView and optional render paths experimental.
+
+- Gate tagged npm publication on preflight, the CI-equivalent secret scan, and packed-package import checks.
+
+### Fixed
 
 - Clean up the React example across load failures, cancellation, unmounts, and source changes.
 
@@ -2358,7 +2396,13 @@ The foundational releases, developed rapidly over two days. Highlights:
 - **GPU picking** (`M8`): `SplatMesh.pick(ndc, camera, renderer)`: asynchronous
  one-pixel depth pick returning a world-space center-plane hit.
 
-[Unreleased]: https://github.com/Voluma-ai/vlam/commits/main
+[Unreleased]: https://github.com/Voluma-ai/vlam/compare/v0.11.5...main
+[0.11.5]: https://github.com/Voluma-ai/vlam/compare/v0.11.4...v0.11.5
+[0.11.4]: https://github.com/Voluma-ai/vlam/compare/v0.11.3...v0.11.4
+[0.11.3]: https://github.com/Voluma-ai/vlam/compare/v0.11.2...v0.11.3
+[0.11.2]: https://github.com/Voluma-ai/vlam/compare/v0.11.1...v0.11.2
+[0.11.1]: https://github.com/Voluma-ai/vlam/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/Voluma-ai/vlam/compare/v0.10.4...v0.11.0
 [0.0.18]: https://github.com/Voluma-ai/vlam/commits/main
 [0.0.17]: https://github.com/Voluma-ai/vlam/commits/main
 [0.0.8]: https://github.com/Voluma-ai/vlam/commits/main
