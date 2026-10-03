@@ -79,6 +79,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- `UnifiedSplatMesh` with compute projection no longer draws the previous
+  camera pose while a GPU sort still holds the submission gate: a camera-only
+  move re-projects and re-sorts the already-gathered work buffer at once and
+  the gate follows that replacement, while content changes keep coalescing
+  until the buffer is free.
+
 - `UnifiedSplatMesh` with compute projection no longer re-dispatches the
   projector and counting sort on every free frame of an idle scene. The
   dispatch is skipped while the view, projection, viewport, admitted count,

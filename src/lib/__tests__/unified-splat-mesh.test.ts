@@ -43,6 +43,17 @@ function source(
   );
 }
 
+function splatChunk(): SplatData {
+  const covariance = new Float32Array(6);
+  writeCovariance(covariance, 0, 1, 1, 1, 1, 0, 0, 0);
+  return {
+    count: 1,
+    positions: new Float32Array([0, 0, 0]),
+    colors: new Uint8Array([255, 0, 0, 255]),
+    covariances: covariance,
+  };
+}
+
 function mockRenderer(extras: Record<string, unknown> = {}): THREE.WebGPURenderer {
   return {
     compute: vi.fn(),
@@ -359,6 +370,141 @@ describe('UnifiedSplatMesh', () => {
     unified.update(movingCamera);
     expect(unified.performanceTimings.sortSubmitted).toBe(true);
     expect((unified.geometry as THREE.InstancedBufferGeometry).instanceCount).toBe(1);
+
+    unified.dispose();
+    mesh.dispose();
+  });
+
+  function computeInternals(unified: UnifiedSplatMesh) {
+    return unified as unknown as {
+      projectedPipeline: { projectionDispatches: number };
+      projectedSorter: { submissionCount: number };
+      sortScheduler: {
+        submissionDiagnostics(): { serial: number; action: string };
+        hasSubmissionInFlight(): boolean;
+      };
+    };
+  }
+
+  function cameraAt(z: number): THREE.PerspectiveCamera {
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.set(0, 0, z);
+    camera.updateMatrixWorld(true);
+    return camera;
+  }
+
+  it('re-projects a camera move under a held gate with compute projection', async () => {
+    // The hardware frame loop: prepare, draw, acknowledge; the GPU completion
+    // lands after the next frame's prepare, so that frame finds the gate held.
+    // Compute projection draws from cached clip-space centers, so a camera
+    // move must dispatch the replacement projection and sort right away while
+    // stationary frames under the same hold must not.
+    const { renderer, resolve } = pendingGpuCompletion();
+    const mesh = source();
+    const unified = new UnifiedSplatMesh(renderer, 1, { projectionStrategy: computeProjection() });
+    unified.addSource(mesh);
+    const scene = new THREE.Scene();
+    const orbit = cameraAt(3);
+    const front = cameraAt(0);
+    const {
+      projectedPipeline: pipeline,
+      projectedSorter: sorter,
+      sortScheduler,
+    } = computeInternals(unified);
+
+    unified.update(orbit);
+    expect(unified.projectionStrategyStatus.effective).toBe('compute');
+    expect(pipeline.projectionDispatches).toBe(1);
+    expect(sorter.submissionCount).toBe(1);
+    unified.onAfterRender(renderer as never, scene, orbit);
+    const firstSerial = sortScheduler.submissionDiagnostics().serial;
+
+    unified.update(front);
+    expect(pipeline.projectionDispatches).toBe(2);
+    expect(sorter.submissionCount).toBe(2);
+    expect(unified.performanceTimings.sortSubmitted).toBe(true);
+    expect(unified.performanceTimings.projectionSubmissions).toBe(1);
+    expect(unified.performanceTimings.sortSubmissions).toBe(1);
+    expect(sortScheduler.submissionDiagnostics().action).toBe('submitted');
+    // The gate now follows the replacement dispatch, not the superseded one.
+    const secondSerial = sortScheduler.submissionDiagnostics().serial;
+    expect(secondSerial).toBeGreaterThan(firstSerial);
+    unified.onAfterRender(renderer as never, scene, front);
+
+    unified.update(front);
+    unified.update(front);
+    expect(pipeline.projectionDispatches).toBe(2);
+    expect(sorter.submissionCount).toBe(2);
+    expect(unified.performanceTimings.sortSubmitted).toBe(false);
+    expect(unified.performanceTimings.projectionSubmissions).toBe(0);
+    expect(sortScheduler.submissionDiagnostics().action).toBe('suppressed');
+    expect(sortScheduler.submissionDiagnostics().serial).toBe(secondSerial);
+
+    resolve();
+    await Promise.resolve();
+    expect(sortScheduler.hasSubmissionInFlight()).toBe(false);
+
+    unified.dispose();
+    mesh.dispose();
+  });
+
+  it('keeps coalescing content changes under a held gate with compute projection', async () => {
+    // A content change must still wait for the buffer to be free even when
+    // the camera moved with it; only camera-only motion re-projects.
+    const { renderer, resolve } = pendingGpuCompletion();
+    const mesh = new SplatMesh({ capacity: 4096 });
+    mesh.appendRange(splatChunk());
+    const unified = new UnifiedSplatMesh(renderer, 4096, {
+      projectionStrategy: computeProjection(),
+    });
+    unified.addSource(mesh);
+    const scene = new THREE.Scene();
+    const camera = cameraAt(0);
+    const {
+      projectedPipeline: pipeline,
+      projectedSorter: sorter,
+      sortScheduler,
+    } = computeInternals(unified);
+
+    unified.update(camera);
+    expect(unified.projectionStrategyStatus.effective).toBe('compute');
+    expect(pipeline.projectionDispatches).toBe(1);
+    unified.onAfterRender(renderer as never, scene, camera);
+
+    mesh.appendRange(splatChunk());
+    unified.update(cameraAt(1));
+    expect(pipeline.projectionDispatches).toBe(1);
+    expect(sorter.submissionCount).toBe(1);
+    expect(unified.performanceTimings.sortSubmitted).toBe(false);
+    expect(sortScheduler.submissionDiagnostics().action).toBe('coalesced');
+
+    // Once the buffer is free the coalesced change gathers and sorts.
+    resolve();
+    await Promise.resolve();
+    unified.update(cameraAt(1));
+    expect(pipeline.projectionDispatches).toBe(2);
+    expect(sorter.submissionCount).toBe(2);
+    expect(unified.performanceTimings.activeCount).toBe(2);
+
+    unified.dispose();
+    mesh.dispose();
+  });
+
+  it('does not re-project a held frame on the vertex path', () => {
+    const { renderer } = pendingGpuCompletion();
+    const mesh = source();
+    const unified = new UnifiedSplatMesh(renderer, 1);
+    unified.addSource(mesh);
+    const scene = new THREE.Scene();
+    const sortScheduler = computeInternals(unified).sortScheduler;
+
+    unified.update(cameraAt(3));
+    unified.onAfterRender(renderer as never, scene, cameraAt(3));
+    const serial = sortScheduler.submissionDiagnostics().serial;
+    unified.update(cameraAt(0));
+    expect(unified.performanceTimings.sortSubmitted).toBe(false);
+    expect(sortScheduler.submissionDiagnostics().action).toBe('suppressed');
+    expect(sortScheduler.submissionDiagnostics().serial).toBe(serial);
 
     unified.dispose();
     mesh.dispose();

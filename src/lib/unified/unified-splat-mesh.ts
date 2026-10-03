@@ -302,7 +302,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
    * deliberately covers the projection, raster viewport, admitted count and
    * the live DoF uniforms the projector reads - a stationary depth key alone
    * is not enough to reuse its output. Starts unmatchable (zero scale) so the
-   * first prepared frame always dispatches.
+   * first prepared frame always dispatches. A held sort gate re-projects only
+   * once this signature changes, see {@link reprojectWhileHeld}.
    */
   private readonly lastProjectedView = new THREE.Matrix4().makeScale(0, 0, 0);
   private readonly lastProjectedProjection = new THREE.Matrix4().makeScale(0, 0, 0);
@@ -1039,19 +1040,38 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     }
     if (holdForRefinementSort) {
       this.sortScheduler.markSubmissionSuppressed(contentChanged);
+      // Content changes keep coalescing; only a camera move under compute
+      // projection re-projects the already-gathered work buffer right away.
+      const sortStartedAt = performance.now();
+      const reprojected =
+        !contentChanged && this.reprojectWhileHeld(viewCamera, projectionCamera, refinementFrame);
+      const sortSubmitMs = performance.now() - sortStartedAt;
+      const projectionSubmissionsAfter = this.projectedPipeline?.projectionDispatches ?? 0;
+      const sortSubmissionsAfter =
+        (this.sorter.submissionCount ?? 0) + (this.projectedSorter?.submissionCount ?? 0);
       this.performanceTimingsValue.totalMs = performance.now() - prepareStartedAt;
       this.performanceTimingsValue.gatherMs = 0;
-      this.performanceTimingsValue.sortSubmitMs = 0;
-      this.performanceTimingsValue.sortSubmitted = false;
+      this.performanceTimingsValue.sortSubmitMs = sortSubmitMs;
+      this.performanceTimingsValue.sortSubmitted = reprojected;
       this.performanceTimingsValue.gatherDispatches = 0;
       this.performanceTimingsValue.fullGatherDispatches = 0;
       this.performanceTimingsValue.colorGatherDispatches = 0;
       this.performanceTimingsValue.cacheHits = 0;
       this.performanceTimingsValue.gatherSlots = this.previousAdmittedTotal;
-      this.performanceTimingsValue.projectionSubmissions = 0;
-      this.performanceTimingsValue.projectionPasses = 0;
-      this.performanceTimingsValue.sortSubmissions = 0;
-      this.performanceTimingsValue.sortPasses = 0;
+      this.performanceTimingsValue.projectionSubmissions = Math.max(
+        0,
+        projectionSubmissionsAfter - projectionSubmissionsBefore,
+      );
+      this.performanceTimingsValue.projectionPasses =
+        this.performanceTimingsValue.projectionSubmissions > 0 ? 4 : 0;
+      this.performanceTimingsValue.sortSubmissions = Math.max(
+        0,
+        sortSubmissionsAfter - sortSubmissionsBefore,
+      );
+      this.performanceTimingsValue.sortPasses =
+        this.performanceTimingsValue.sortSubmissions > 0
+          ? (this.projectedSorter?.passCount ?? 1)
+          : 0;
       this.performanceTimingsValue.activeListBytes =
         this.previousAdmittedTotal * Uint32Array.BYTES_PER_ELEMENT;
       this.performanceTimingsValue.activeListRanges = this.previousLayout.length;
@@ -1281,6 +1301,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
           sortSubmitted = true;
           gpuSortSubmitted = true;
           sortReady = true;
+          // Clears the pending force the way an accepted vertex sort does, so a
+          // later held frame can tell camera-only motion from coalesced content.
           this.sortScheduler.markAccepted(now);
         }
         this.recordProjectedPose(
@@ -1542,6 +1564,59 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       performance.now(),
       completion,
     );
+  }
+
+  /**
+   * Compute projection draws from cached clip-space centers and axes (the
+   * shared material returns them whenever `projected` buffers are bound), so
+   * a camera move cannot wait out a held gate the way a vertex-path sort can,
+   * where only the blend order lags a frame. Dropping it draws the previous
+   * pose under the new camera until the gate releases, and on a real adapter
+   * the acknowledged `onSubmittedWorkDone` often lands after the next frame's
+   * update, so every such frame rendered one pose behind. The caller keeps
+   * coalescing content changes (new, changed or re-gathered sources), so the
+   * replacement projection and sort read the same work buffer as the queued
+   * pass and simply supersede it; the gate is re-marked so it follows the
+   * newer dispatch. A stationary camera dispatches nothing.
+   */
+  private reprojectWhileHeld(
+    viewCamera: THREE.Camera,
+    projectionCamera: THREE.Camera,
+    refinementFrame: number,
+  ): boolean {
+    if (!this.computeProjectionActive || !this.projectedPipeline || !this.projectedSorter) {
+      return false;
+    }
+    const count = this.previousAdmittedTotal;
+    if (
+      count === 0 ||
+      !this.projectedPoseChanged(
+        viewCamera.matrixWorldInverse,
+        projectionCamera.projectionMatrix,
+        count,
+      )
+    ) {
+      return false;
+    }
+    this.projectedPipeline.prepare(
+      viewCamera.matrixWorldInverse,
+      projectionCamera.projectionMatrix,
+      count,
+    );
+    this.recordProjectedPose(
+      viewCamera.matrixWorldInverse,
+      projectionCamera.projectionMatrix,
+      count,
+    );
+    this.projectedSorter.sort(
+      viewCamera.matrixWorldInverse,
+      count,
+      this.bounds,
+      cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
+    );
+    this.sortScheduler.markAccepted(performance.now());
+    this.sortScheduler.markSubmission(refinementFrame, count);
+    return true;
   }
 
   /**
