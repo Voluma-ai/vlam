@@ -22,12 +22,18 @@ const MAX_SAFE_POINTS = 1 << 24;
  */
 const MAX_LEGACY_DECOMPRESSED_BYTES = LEGACY_HEADER_BYTES + 92 * MAX_SAFE_POINTS;
 const MAX_RENDER_SH_BANDS = 3;
+/** Header `flags` bit 0: the scene was trained with Mip-Splatting antialiasing. */
+const FLAG_ANTIALIASED = 0x01;
+/** Header `flags` bit 1: an extension block follows the splat payload. */
+const FLAG_EXTENSIONS = 0x02;
 
 interface PackedSpz {
   version: number;
   count: number;
   shDegree: number;
   fractionalBits: number;
+  /** `flags & 0x01`: carried into {@link SplatData.antialias} when set. */
+  antialias: boolean;
   positions: Uint8Array;
   alphas: Uint8Array;
   colors: Uint8Array;
@@ -66,7 +72,7 @@ async function parseVersion4Spz(bytes: Uint8Array): Promise<PackedSpz> {
   const streamCount = view.getUint8(15);
   const tocOffset = view.getUint32(16, true);
   validateSpzHeader(count, shDegree, fractionalBits);
-  if ((flags & 0x02) !== 0) validateExtensions(view, VERSION_4_HEADER_BYTES, tocOffset);
+  if ((flags & FLAG_EXTENSIONS) !== 0) validateExtensions(view, VERSION_4_HEADER_BYTES, tocOffset);
 
   const rotationBytes = count * 4;
   const expectedSizes = [count * 9, count, count * 3, count * 3, rotationBytes];
@@ -110,6 +116,7 @@ async function parseVersion4Spz(bytes: Uint8Array): Promise<PackedSpz> {
     count,
     shDegree,
     fractionalBits,
+    antialias: (flags & FLAG_ANTIALIASED) !== 0,
     positions: streams[0] as Uint8Array,
     alphas: streams[1] as Uint8Array,
     colors: streams[2] as Uint8Array,
@@ -138,11 +145,11 @@ function parseLegacySpz(bytes: Uint8Array): PackedSpz {
     LEGACY_HEADER_BYTES + positionBytes + count + count * 3 + count * 3 + rotationBytes + shBytes;
   if (
     bytes.byteLength < expectedBytes ||
-    ((flags & 0x02) === 0 && bytes.byteLength !== expectedBytes)
+    ((flags & FLAG_EXTENSIONS) === 0 && bytes.byteLength !== expectedBytes)
   ) {
     throw new Error(`Invalid SPZ payload size ${bytes.byteLength}; expected ${expectedBytes}.`);
   }
-  if ((flags & 0x02) !== 0) validateExtensions(view, expectedBytes, bytes.byteLength);
+  if ((flags & FLAG_EXTENSIONS) !== 0) validateExtensions(view, expectedBytes, bytes.byteLength);
 
   let offset = LEGACY_HEADER_BYTES;
   const take = (length: number): Uint8Array => {
@@ -155,6 +162,7 @@ function parseLegacySpz(bytes: Uint8Array): PackedSpz {
     count,
     shDegree,
     fractionalBits,
+    antialias: (flags & FLAG_ANTIALIASED) !== 0,
     positions: take(positionBytes),
     alphas: take(count),
     colors: take(count * 3),
@@ -214,6 +222,9 @@ function unpackSpz(packed: PackedSpz): SplatData {
     colors,
     covariances,
     ...(shPacked ? { shPacked } : {}),
+    // Only set when flagged, so unflagged files keep their existing shape and
+    // `SplatMesh` falls back to the classic 3DGS dilation exactly as before.
+    ...(packed.antialias ? { antialias: true } : {}),
   };
 }
 
