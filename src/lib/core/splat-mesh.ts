@@ -2651,11 +2651,20 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * ordering limitation; WebGPU gets exact per-view order.
    *
    * @param target - Destination render target, or `null`/omitted for the canvas.
+   * @param options.reuseShColor - Draw with the primary view's cached SH color
+   *   instead of re-evaluating SH for `camera`. The cache stays valid, so the
+   *   next `update()` does not pay a full pool-wide SH refresh. Only affects a
+   *   mesh whose SH compute cache is active; vertex SH is always per-view. If
+   *   the pool changed since the cache last refreshed (e.g. `appendRange`
+   *   before any `update()`), this view re-evaluates SH as without the option.
+   *   Suits low-resolution or distorted views (water, minimaps) where the
+   *   view-dependent color shift is not visible.
    */
   renderView(
     camera: THREE.PerspectiveCamera,
     renderer: THREE.WebGPURenderer,
     target: THREE.RenderTarget | null = null,
+    options: { reuseShColor?: boolean } = {},
   ): void {
     if (this.disposed) return;
     this.bindRenderingOnlyRenderer(renderer, 'renderView');
@@ -2667,7 +2676,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (target) _viewSize.set(target.width, target.height);
     else renderer.getDrawingBufferSize(_viewSize);
     this.writeViewUniforms(camera, _viewSize.x, _viewSize.y);
-    this.prepareShEvaluation(renderer, true);
+    const reuseShColor =
+      options.reuseShColor === true &&
+      this.shCache?.isCurrentFor(this.activeCount, this.contentRevision, this.graphRevision) ===
+        true;
+    if (!reuseShColor) this.prepareShEvaluation(renderer, true);
     const sorted = this.sortForView(camera, renderer);
 
     const previousTarget = renderer.getRenderTarget();
@@ -2681,7 +2694,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       // actually ran: WebGL2 still holds the primary order and must not fight
       // its asynchronous worker for a redundant re-sort.
       if (sorted) this.orderIsForeign = true;
-      this.shCache?.invalidate();
+      if (!reuseShColor) this.shCache?.invalidate();
     }
   }
 
@@ -3169,6 +3182,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     const publication = this.workerPublicationPending;
     if (!publication) return;
     this.uploadCapturedPublication(renderer, publication.snapshot);
+    // Rows land here, frames after the pool write that bumped
+    // `contentRevision`. A SH cache refreshed in between read the old
+    // textures and recorded that revision as current; force a full refresh.
+    this.shCache?.invalidate();
     const draw = this.splatIndexAttribute.array as Float32Array;
     draw.set(publication.order, 0);
     this.splatIndexAttribute.clearUpdateRanges();
@@ -4064,7 +4081,15 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     const bytes = this.capacity * 4;
     const shCacheHeight = Math.ceil(this.capacity / SplatMesh.DATA_TEXTURE_WIDTH);
     if (backend.isWebGPUBackend !== true) return 'webgl';
-    if (!this.isStatic || !this.ownsPool) return 'dynamic-or-shared-pool';
+    // A shared pool is not cacheable - another mesh can write slots this
+    // cache never hears about. An owned dynamic pool is: the cache is
+    // pool-indexed, every pool write bumps `contentRevision`, and a deferred
+    // worker publication invalidates it on upload.
+    if (!this.ownsPool) return 'shared-pool';
+    // The automatic cohorts (Apple Mac, auto compute projection) were measured
+    // on static meshes only. A streaming pool refreshes the whole cache on
+    // every install, so it needs an explicit opt-in until benchmarked.
+    if (!this.isStatic && this.shEvaluation !== 'compute') return 'auto-dynamic-pool';
     if (this.perSourceSort !== null) return 'source-placement';
     if (this.modifierList.length > 0) return 'modifiers';
     if (this.unifiedPickVisibility !== null) return 'unified-source';

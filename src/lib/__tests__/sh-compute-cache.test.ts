@@ -3,6 +3,7 @@ import { uniform } from 'three/tsl';
 import { describe, expect, it, vi } from 'vitest';
 import { ShComputeCache } from '../core/sh-compute-cache';
 import { SplatMesh } from '../core/splat-mesh';
+import { SplatPool } from '../core/splat-mesh-pool';
 import type { SplatData } from '../core/splat-data';
 import { computeProjection } from '../projection/compute';
 
@@ -339,13 +340,19 @@ describe('SH path selection and mesh lifecycle', () => {
     'workload-limit',
     'unified-source',
     'source-placement',
-    'dynamic-or-shared-pool',
+    'shared-pool',
   ])('falls back before allocation for %s', (reason) => {
     const gpu = renderer();
-    const mesh = new SplatMesh(reason === 'dynamic-or-shared-pool' ? { capacity: 8 } : data(), {
-      shEvaluation: 'compute',
-      ...(reason === 'sh-disabled' ? { shBands: 0 } : {}),
-    });
+    const mesh =
+      reason === 'shared-pool'
+        ? new SplatMesh(
+            { capacity: 2048 },
+            { shEvaluation: 'compute', pool: new SplatPool({ capacity: 2048 }) },
+          )
+        : new SplatMesh(data(), {
+            shEvaluation: 'compute',
+            ...(reason === 'sh-disabled' ? { shBands: 0 } : {}),
+          });
     internals(mesh).ShCacheCtor = ShComputeCache;
     if (reason === 'webgl') gpu.backend.isWebGPUBackend = false;
     if (reason === 'xr') gpu.xr.isPresenting = true;
@@ -361,6 +368,122 @@ describe('SH path selection and mesh lifecycle', () => {
     expect(internals(mesh).shCache).toBeNull();
     expect(internals(mesh).shEvaluationState.reason).toBe(reason);
     expect(gpu.compute).not.toHaveBeenCalled();
+    mesh.dispose();
+  });
+
+  it('caches SH on an owned dynamic pool and refreshes after a pool write', () => {
+    const gpu = renderer() as unknown as THREE.WebGPURenderer;
+    const mesh = new SplatMesh({ capacity: 4096 }, { shEvaluation: 'compute', shBands: 1 });
+    internals(mesh).ShCacheCtor = ShComputeCache;
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.z = 3;
+    const update = () => mesh.update(camera, gpu, { sort: false });
+    mesh.appendRange(data());
+    update();
+    const cache = internals(mesh).shCache!;
+    expect(cache).not.toBeNull();
+    expect(internals(mesh).shEvaluationState.reason).toBe('explicit-compute');
+    update();
+    expect(cache.snapshot().dispatches).toBe(1);
+    // Streaming installs land through the same pool writes; each must refresh.
+    mesh.appendRange(data());
+    update();
+    expect(cache.snapshot().dispatches).toBe(2);
+    expect(cache.snapshot().lastInvalidation).toBe('content');
+    mesh.dispose();
+  });
+
+  it('keeps an automatic dynamic pool on vertex SH', () => {
+    const gpu = renderer() as unknown as THREE.WebGPURenderer;
+    const mesh = new SplatMesh({ capacity: 4096 }, { shEvaluation: 'auto', shBands: 1 });
+    const gate = mesh as unknown as {
+      shComputeCacheIneligibleReason(renderer: THREE.WebGPURenderer): string | null;
+    };
+    expect(gate.shComputeCacheIneligibleReason(gpu)).toBe('auto-dynamic-pool');
+    mesh.dispose();
+  });
+
+  it('refreshes the SH cache when a deferred worker publication uploads its rows', () => {
+    const gpu = renderer() as unknown as THREE.WebGPURenderer;
+    const mesh = new SplatMesh({ capacity: 4096 }, { shEvaluation: 'compute', shBands: 1 });
+    internals(mesh).ShCacheCtor = ShComputeCache;
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.z = 3;
+    mesh.appendRange(data());
+    mesh.update(camera, gpu, { sort: false });
+    const cache = internals(mesh).shCache!;
+    expect(cache.snapshot().dispatches).toBe(1);
+    // A worker-sorted WebGPU mesh uploads rows only when the reply publishes,
+    // frames after the write whose revision the cache already consumed.
+    const seam = mesh as unknown as {
+      workerPublicationEnabled: boolean;
+      workerPublicationPending: unknown;
+      prepareWorkerPublication(renderer: THREE.WebGPURenderer): void;
+    };
+    seam.workerPublicationEnabled = true;
+    seam.workerPublicationPending = {
+      snapshot: {
+        generation: 1,
+        activeCount: 1,
+        activeListVersion: 0,
+        spans: new Uint32Array(0),
+        activeIndices: new Uint32Array([0]),
+        coreRows: [],
+        channels: new Map(),
+      },
+      order: new Float32Array([0]),
+    };
+    seam.prepareWorkerPublication(gpu);
+    expect(
+      cache.isCurrentFor(1, internals(mesh).contentRevision, internals(mesh).graphRevision),
+    ).toBe(false);
+    mesh.dispose();
+  });
+
+  it('re-evaluates SH in renderView when the pool changed after the last refresh', () => {
+    const gpu = Object.assign(renderer(), {
+      getRenderTarget: vi.fn(() => null),
+      setRenderTarget: vi.fn(),
+      render: vi.fn(),
+    }) as unknown as THREE.WebGPURenderer;
+    const mesh = new SplatMesh({ capacity: 4096 }, { shEvaluation: 'compute', shBands: 1 });
+    internals(mesh).ShCacheCtor = ShComputeCache;
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.z = 3;
+    mesh.appendRange(data());
+    mesh.update(camera, gpu, { sort: false });
+    const cache = internals(mesh).shCache!;
+    mesh.appendRange(data());
+    mesh.renderView(camera, gpu, null, { reuseShColor: true });
+    expect(cache.snapshot().dispatches).toBe(2);
+    mesh.dispose();
+  });
+
+  it('keeps the primary SH cache across a renderView that reuses its color', () => {
+    const gpu = Object.assign(renderer(), {
+      getRenderTarget: vi.fn(() => null),
+      setRenderTarget: vi.fn(),
+      render: vi.fn(),
+    }) as unknown as THREE.WebGPURenderer;
+    const mesh = new SplatMesh(data(), { shEvaluation: 'compute' });
+    internals(mesh).ShCacheCtor = ShComputeCache;
+    const camera = new THREE.PerspectiveCamera();
+    camera.position.z = 3;
+    const mirror = new THREE.PerspectiveCamera();
+    mirror.position.set(0, -3, 3);
+    const update = () => mesh.update(camera, gpu, { sort: false });
+    update();
+    const cache = internals(mesh).shCache!;
+    expect(cache.snapshot().dispatches).toBe(1);
+
+    mesh.renderView(mirror, gpu, null, { reuseShColor: true });
+    update();
+    expect(cache.snapshot().dispatches).toBe(1);
+
+    // The exact default re-evaluates for the mirror and invalidates the primary.
+    mesh.renderView(mirror, gpu);
+    update();
+    expect(cache.snapshot().dispatches).toBe(3);
     mesh.dispose();
   });
 

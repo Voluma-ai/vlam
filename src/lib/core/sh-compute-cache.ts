@@ -240,6 +240,16 @@ export class ShComputeCache {
     return 'cache';
   }
 
+  /** True when the cache holds colors for exactly this pool content and graph. */
+  isCurrentFor(activeCount: number, contentRevision: number, graphRevision: number): boolean {
+    return (
+      this.valid &&
+      this.previousCount === activeCount &&
+      this.previousContent === contentRevision &&
+      this.previousGraph === graphRevision
+    );
+  }
+
   invalidate(): void {
     this.valid = false;
     this.enabled.value = false;
