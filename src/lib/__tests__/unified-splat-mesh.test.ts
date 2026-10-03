@@ -448,6 +448,48 @@ describe('UnifiedSplatMesh', () => {
     mesh.dispose();
   });
 
+  it('defers a held-gate re-projection to the sort cadence', () => {
+    // A hitch stretches the adaptive cadence into its one-second cooldown. A
+    // held camera move inside that window must not stack a replacement
+    // projection and counting sort on top of the hitch (the free path would
+    // still dispatch once the gate releases); one after it re-projects.
+    const { renderer } = pendingGpuCompletion();
+    const now = vi.spyOn(performance, 'now').mockReturnValue(0);
+    const mesh = source();
+    const unified = new UnifiedSplatMesh(renderer, 1, { projectionStrategy: computeProjection() });
+    unified.addSource(mesh);
+    const scene = new THREE.Scene();
+    const {
+      projectedPipeline: pipeline,
+      projectedSorter: sorter,
+      sortScheduler,
+    } = computeInternals(unified);
+
+    unified.update(cameraAt(3));
+    expect(unified.projectionStrategyStatus.effective).toBe('compute');
+    expect(pipeline.projectionDispatches).toBe(1);
+    unified.onAfterRender(renderer as never, scene, cameraAt(3));
+
+    // A 100 ms frame starts the hitch cooldown; the gate is still held.
+    now.mockReturnValue(100);
+    unified.update(cameraAt(2));
+    expect(pipeline.projectionDispatches).toBe(1);
+    expect(sorter.submissionCount).toBe(1);
+    expect(unified.performanceTimings.sortSubmitted).toBe(false);
+    expect(sortScheduler.submissionDiagnostics().action).toBe('suppressed');
+
+    now.mockReturnValue(1200);
+    unified.update(cameraAt(1));
+    expect(pipeline.projectionDispatches).toBe(2);
+    expect(sorter.submissionCount).toBe(2);
+    expect(unified.performanceTimings.sortSubmitted).toBe(true);
+    expect(sortScheduler.submissionDiagnostics().action).toBe('submitted');
+
+    now.mockRestore();
+    unified.dispose();
+    mesh.dispose();
+  });
+
   it('keeps coalescing content changes under a held gate with compute projection', async () => {
     // A content change must still wait for the buffer to be free even when
     // the camera moved with it; only camera-only motion re-projects.

@@ -208,7 +208,7 @@ export function benchmarkDevPlugin(): Plugin {
           }
           const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
           if (
-            body.result?.schemaVersion !== 1 ||
+            ![1, 2].includes(body.result?.schemaVersion) ||
             !['spark', 'vlam', 'playcanvas'].includes(body.result?.config?.engine) ||
             !Array.isArray(body.screenshots) ||
             body.screenshots.length !== 2 ||

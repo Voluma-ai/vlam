@@ -212,6 +212,13 @@ const renderCulledUnified = async (
   try {
     mesh.addSource(sourceMesh);
     mesh.update(camera);
+    // The unified vertex path draws nothing until its first GPU sort has
+    // completed (`onSubmittedWorkDone`), so a single update + draw reads a
+    // blank frame on a real adapter. Draw once to let the readback wait out
+    // the queue, then update again so the completed order publishes; the
+    // compute path is indirect and already visible on the first frame.
+    await drawPixels(mesh);
+    mesh.update(camera);
     return hasVisiblePixels(await drawPixels(mesh));
   } finally {
     mesh.dispose();

@@ -116,6 +116,14 @@ selection features until their benefits are measured and visually validated.
   intermediate 1.83M SH2 SOG exercises the missing scene-size band,
   but its median/tail split rules out a broader automatic cohort on this GPU;
   a second GPU class is still needed before the auto threshold can broaden.
+  A camera move under a held sort gate re-projects at once (the compute draw
+  reads cached clip centers), but on the adaptive cadence rather than every
+  held frame: re-projecting every held frame took the 8.72M overview orbit to
+  100% of frames dispatching and frame p95 33.4 ms, while the cadence gate
+  keeps it at ~70% and 16.8 ms (paired GPU 17.5 ms; interior 7.6 ms paired,
+  16.8 ms p95, unchanged). On this GPU the plain library defaults resolve
+  `auto` to vertex (`auto-full-detail`, the quality profile); the measured
+  auto→compute cohort needs the balanced 2 px / 3 contribution culls.
   Cache compaction is tracked separately below.
 - **Compact compute-projection storage** — reduce the current 52 B/slot
   projection cache, targeting 32 B/slot where precision permits. Keep the
