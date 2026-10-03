@@ -411,7 +411,9 @@ export interface SplatMeshOptions {
    * The pool is *not* owned by the mesh: {@link SplatMesh.dispose} releases the
    * mesh's rows and leaves the textures alone, so the pool's creator disposes
    * it once every tenant is gone. `capacity` on the source is then only used
-   * for the mesh's own draw list, not to size storage.
+   * for the mesh's own draw list, not to size storage: it is still the most
+   * splats this mesh can have active at once, and an append that would exceed
+   * it throws before allocating any pool rows.
    *
    * The supplied pool is authoritative for memory. If the mesh requests a
    * different packed-SH band count, the mesh joins this pool with higher-order

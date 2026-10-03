@@ -1126,7 +1126,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * round up to the next multiple of the texture width internally.
    *
    * @returns A handle to pass to {@link removeRange}.
-   * @throws {Error} when the remaining pool capacity cannot fit the range.
+   * @throws {Error} when the remaining pool capacity cannot fit the range, or
+   *   when the range would push this mesh past its own `capacity` of active
+   *   splats. A mesh on a shared pool sizes its draw list by its own
+   *   `{ capacity }`, not by the pool, so the latter can fail long before the
+   *   pool runs out of rows. Either way nothing is allocated.
    */
   appendRange(data: SplatData): SplatRange {
     this.assertEditableStorage('appendRange');
@@ -1153,6 +1157,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       this.ranges.set(empty, { startRow: 0, rowCount: 0, start: 0, count: 0, active: false });
       return empty;
     }
+    // Inactive rows take no draw slots yet, but a range wider than the whole
+    // draw list could never be activated: refuse it before touching the pool.
+    this.assertDrawCapacity('reserveInactiveRange', count, 0);
     const width = SplatMesh.DATA_TEXTURE_WIDTH;
     const rowCount = Math.ceil(count / width);
     const startRow = allocateRowSpan(this.freeRowSpans, rowCount, this.poolRows);
@@ -1450,9 +1457,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     const record = this.ranges.get(handle);
     if (!record) throw new Error('SplatMesh.setRangeActive: unknown range handle.');
     if (record.active === active) return;
-    record.active = active;
+    // `activateRecord` validates draw capacity before touching anything, so
+    // flip the flag only once it has succeeded.
     if (active) this.activateRecord(record);
     else this.deactivateRecord(record);
+    record.active = active;
     this.contentRevision++;
   }
 
@@ -1469,6 +1478,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     const next = Math.max(0, Math.min(record.count, Math.floor(prefix)));
     const current = record.active ? (record.activePrefix ?? record.count) : 0;
     if (next === current) return;
+    // The old prefix leaves the active list before the new one joins it, so
+    // validate the resulting count up front: a failure here must leave the
+    // record exactly as it was.
+    this.assertDrawCapacity('setRangeActivePrefix', next, this.activeCount - current);
     // Remove the old prefix from the active list, then re-add at the new length.
     if (record.active) {
       this.deactivateRecord(record);
@@ -1631,6 +1644,12 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       this.ranges.set(empty, { startRow: 0, rowCount: 0, start: 0, count: 0, active });
       return empty;
     }
+    // The pool's row allocator only knows about rows. Draw slots are per mesh,
+    // so a shared-pool mesh can run out of them while the pool still has room;
+    // `activateRecord` would then overflow `sourceIndex` after the rows, the
+    // range record and the channel fills were already committed. Fail here,
+    // before any of that, so a rejected append leaves no orphan record.
+    this.assertDrawCapacity('appendRange', reservedCount, active ? this.activeCount : 0);
     const width = SplatMesh.DATA_TEXTURE_WIDTH;
     const rowCount = Math.ceil(reservedCount / width);
     const startRow = allocateRowSpan(this.freeRowSpans, rowCount, this.poolRows);
@@ -1689,6 +1708,35 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   /** Number of splats currently active (drawn and depth-sorted). */
   get activeSplatCount(): number {
     return this.activeCount;
+  }
+
+  /**
+   * Draw slots this mesh owns: the most splats it can have active at once.
+   * Sized from the `{ capacity }` the mesh was constructed with (rounded up to
+   * whole rows), which on a shared pool is smaller than {@link capacity}.
+   */
+  private get drawCapacity(): number {
+    return this.sourceIndexAttribute.array.length;
+  }
+
+  /**
+   * Throws before any state changes when `count` more active splats on top of
+   * `activeCount` would overflow this mesh's draw list. Validation only: the
+   * per-mesh `sourceIndex` / `splatIndex` attributes never grow after
+   * construction.
+   */
+  private assertDrawCapacity(method: string, count: number, activeCount = this.activeCount): void {
+    const limit = this.drawCapacity;
+    if (activeCount + count <= limit) return;
+    const pool = this.capacity;
+    throw new Error(
+      `SplatMesh.${method}: capacity exceeded - ${count} splats on top of ${activeCount} ` +
+        `already active would overflow this mesh's capacity of ${limit}.` +
+        (pool !== limit
+          ? ` The limit is the \`{ capacity }\` this mesh was constructed with, ` +
+            `not the ${pool}-splat shared pool it draws from.`
+          : ''),
+    );
   }
 
   /**
@@ -3364,6 +3412,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private activateRecord(record: RangeRecord): void {
     const count = record.activePrefix ?? record.count;
     if (count === 0) return;
+    // Defensive: callers pre-check, but a `TypedArray.set` overflow below would
+    // land after `queryEpoch` and the active count had already moved.
+    this.assertDrawCapacity('activateRecord', count);
     this.queryEpoch++;
     const source = this.sourceIndexAttribute.array as Uint32Array;
     const identity = this.getPoolIndexTemplate();
