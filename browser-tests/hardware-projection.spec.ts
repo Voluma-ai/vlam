@@ -63,8 +63,10 @@ test('verifies projection and SH caching on a non-software WebGPU adapter', asyn
   expect(value.shParity.cacheDispatches).toBeGreaterThanOrEqual(2);
   expect(value.shParity.projectorPackedColor).toBe(false);
   // The fixture changes the camera twice, then calls `update()` twice more
-  // without changing any projector input. A third/fourth compute projection
-  // here would be redundant work and would defeat the static-scene policy.
+  // without changing any projector input. The second move lands while the
+  // first sort still holds the gate (hardware only: SwiftShader never gets
+  // there), and must still project. A third/fourth compute projection here
+  // would be redundant work and would defeat the static-scene policy.
   expect(value.gooseParity.projectionDispatches).toBe(2);
   expect(value.unifiedContributionCulling).toEqual({
     standaloneBalancedVisible: false,

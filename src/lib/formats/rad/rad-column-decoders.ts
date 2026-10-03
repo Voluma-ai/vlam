@@ -2,10 +2,29 @@
 import { halfToFloat } from '../../core/half-float';
 import type { RadChunkProperty } from './parse-rad';
 
-function shEncodingBytes(prop: RadChunkProperty): number {
-  if (prop.encoding === 'f32') return 4;
-  if (prop.encoding === 'f16') return 2;
-  return 1;
+/**
+ * Bytes one decoded value occupies in a RAD column, per encoding - the width
+ * every length check must use. The `*_lebytes` variants are byte-plane
+ * transposed but still hold a full 4- or 2-byte value per element.
+ */
+export function radEncodingBytes(prop: RadChunkProperty): number {
+  switch (prop.encoding) {
+    case 'f32':
+    case 'f32_lebytes':
+      return 4;
+    case 'f16':
+    case 'f16_lebytes':
+    case 'ln_f16':
+      return 2;
+    case 'r8':
+    case 'r8_delta':
+    case 's8':
+    case 's8_delta':
+    case 'ln_0r8':
+      return 1;
+    default:
+      throw new Error(`Unsupported RAD "${prop.property}" encoding "${prop.encoding}".`);
+  }
 }
 
 function requireRange(prop: RadChunkProperty): { min: number; max: number } {
@@ -48,7 +67,7 @@ export function decodeFloatColumn(
   dims: number,
   count: number,
 ): Float32Array {
-  assertColumnHoldsCount(data, prop, dims, count, shEncodingBytes(prop));
+  assertColumnHoldsCount(data, prop, dims, count, radEncodingBytes(prop));
   switch (prop.encoding) {
     case 'f32':
       return decodeF32(data, dims, count);
