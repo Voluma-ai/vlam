@@ -637,6 +637,73 @@ visible-list atomic-compaction prototype was rejected rather than retained on
 a single attribution theory. Archive:
 `sh2-intermediate-overview-pass-profile-smoke-2026-09-13`.
 
+#### Held-gate re-projection cadence (Linux/RTX 3090, 2026-10-03)
+
+A camera move under a held GPU-sort gate with compute projection now
+dispatches a replacement projection and counting sort at once (the compute
+draw reads cached clip centers, so dropping it rendered one pose behind). On an
+adapter whose `onSubmittedWorkDone` fence outlasts a frame that hold had been
+the compute path's only throttle, so the change was measured on the same
+8,724,225-splat SH3 SOG at the cached `interior` and `overview` poses.
+Protocol: Chromium 152.0.7977.82 on Ubuntu 26.04, NVIDIA GeForce RTX 3090
+(driver 595.91.07), WebGPU, 1280×720, `preset=reference` (quality profile,
+3σ, depth metric, counting sort), the library adaptive cadence (167 ms at
+8.72M), `gpuTimestamps=1`, five seconds of warm-up and ten seconds of
+sampling. v0.11.4 (`2589b95`) and main (`2c5154c`, with the immediate
+re-projection) were served from two worktrees and alternated per run, three
+repetitions per cell; the cadence gate was then alternated against main the
+same way. Rows are medians of per-run percentiles; "dispatches" is the
+projector dispatch count over the ~600 sampled frames.
+
+| Pose | Mode | Build | Dispatches | Paired GPU median / p95 | Frame p95 / p99 |
+| --- | --- | --- | ---: | ---: | ---: |
+| Interior (21.0%) | orbit | v0.11.4 | 602–603 | 7.68 / 8.38 ms | 16.8 / 16.8 ms |
+| Interior | orbit | main | 603–605 | 7.59 / 8.25 ms | 16.8 / 16.8 ms |
+| Interior | orbit | cadence gate | 601–602 | 7.61 / 8.23 ms | 16.8 / 16.8 ms |
+| Overview (99.9%) | orbit | v0.11.4 | 439–443 | 17.66 / 19.84 ms | 16.8 / 16.8 ms |
+| Overview | orbit | main | 535–543 (every frame) | 18.57 / 19.71 ms | 33.4 / 33.4 ms |
+| Overview | orbit | cadence gate | 405–449 | 17.54 / 19.63 ms | 16.8 / 16.8 ms |
+| Interior | stationary | all three | 3 | 4.8–5.5 / 5.2–5.5 ms | 16.8 / 16.8 ms |
+| Overview | stationary | all three | 3 | 6.2 / 6.2 ms | 16.8 / 16.8 ms |
+
+At the overview the fence lands after the next frame's update, so v0.11.4
+dropped about 27% of the re-projections (and drew those frames one pose
+behind) while main re-projected every held frame and missed every other
+vsync in all six overview-orbit runs. `reprojectWhileHeld` now consults the
+scheduler's cadence (`isCadenceDue`): a held frame re-projects only when a
+vertex-path sort would be due, which restores the v0.11.4 dispatch rate and
+frame tail while small scenes (interval 0) keep re-projecting every held
+frame. The stationary skip is unaffected (three dispatches per run).
+
+Explicit `projectionStrategy=auto` under both `preset=reference` and the
+library defaults resolved to vertex on every build (`auto-full-detail`: the
+desktop default is the full-detail quality profile), giving an unchanged
+vertex control of 9.6 ms paired at the interior and 12.2 ms at the overview
+orbit, 16.8 ms frame p95 throughout. With the balanced 2 px / 3 contribution
+culls (`minPixelSize=2&minContribution=3`, library defaults otherwise, two
+repetitions, all three builds alternated) `auto` selects compute
+(`auto-large-static-discrete-sh`, 10.7% / 16.0% visible) and the three builds
+are level: 4.95 / 5.08 / 5.02 ms paired at the interior orbit and 5.35 / 5.37
+/ 5.30 ms at the overview orbit, every frame dispatching on all three because
+the ~5 ms GPU frame lets the fence resolve in time. The overview held 16.8 ms
+frame p95 everywhere; one interior repetition each on main and the gated
+build reported a 20–22 ms p95, as did one three-dispatch stationary run, so
+that is browser callback pacing rather than dispatch rate.
+
+The 1,827,467-splat SH2 SOG and goose both resolve to a 0 ms cadence and
+dispatched once per frame on both v0.11.4 and main with 16.8 ms frame p95 at
+every pose and mode (two repetitions each, explicit compute, reference
+preset); paired GPU medians stayed within 1 ms (SH2 interior orbit 4.34 →
+5.17 ms with one 3.6 ms outlier on v0.11.4; overview 5.44 → 5.23 ms; goose
+2.1–2.8 ms). Raw archives are labelled `held-gate-cadence-langenthal-2026-10-03`,
+`held-gate-cadence-fix-langenthal-2026-10-03`,
+`held-gate-cadence-auto-culls-langenthal-2026-10-03`,
+`held-gate-cadence-langenthal-auto-defaults-2026-10-03` and
+`held-gate-cadence-band-2026-10-03`. The same session found the archive
+endpoint rejecting the pages' schema version 2 since 2026-09-15 and the
+native hardware probe reading the unified vertex path's held first frame as
+blank; both are fixed alongside.
+
 #### Streaming automatic-fallback smoke (Linux/RTX 3090, 2026-09-13)
 
 One native 1280×720 interior-orbit run was taken for each locally cached
