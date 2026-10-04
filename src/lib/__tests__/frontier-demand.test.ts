@@ -682,6 +682,79 @@ describe('page-table demand reconciliation', () => {
     expect(inner.radChunkLastInvalidationReasonValue).toBe('page-identity-changed');
   });
 
+  it('maps whole-row chunk selections through the row table like the per-splat path', () => {
+    const { inner, pages } = chunkPagesFixture();
+    const mapper = inner as typeof inner & {
+      mapRadChunkSelection: (globals: ArrayLike<number>) => {
+        slots: Uint32Array;
+        pageIdentity: Map<number, number>;
+        selectionHashA: number;
+        selectionHashB: number;
+      } | null;
+    };
+    // Two texture rows per chunk; rows land in non-contiguous pool rows and
+    // chunk 2's second row is partial. Chunk 0 is resident but never selected.
+    const width = 2048;
+    const chunkSize = 2 * width;
+    mapper.radChunkAllocator!.chunkSize = chunkSize;
+    pages.set(2, 2);
+    mapper.radChunkPages.clear();
+    mapper.radChunkPages.set(0, {
+      ranges: [],
+      starts: Uint32Array.from([0, width]),
+      count: chunkSize,
+      lastUsed: 0,
+    });
+    mapper.radChunkPages.set(1, {
+      ranges: [],
+      starts: Uint32Array.from([5 * width, 2 * width]),
+      count: chunkSize,
+      lastUsed: 0,
+    });
+    mapper.radChunkPages.set(2, {
+      ranges: [],
+      starts: Uint32Array.from([3 * width, 7 * width]),
+      count: width + 10,
+      lastUsed: 0,
+    });
+    const globals = Uint32Array.from([
+      chunkSize + 3,
+      chunkSize + width + 1,
+      2 * chunkSize + width + 9,
+      chunkSize,
+      2 * chunkSize + 7,
+    ]);
+
+    const result = mapper.mapRadChunkSelection(globals);
+
+    const expectedSlots = Array.from(globals, (global) => {
+      const page = mapper.radChunkPages.get(Math.floor(global / chunkSize))!;
+      const local = global % chunkSize;
+      const row = Math.floor(local / width);
+      return page.starts[row]! + local - row * width;
+    });
+    let hashA = 2166136261;
+    let hashB = 3735928559;
+    globals.forEach((global, i) => {
+      hashA = Math.imul(hashA ^ global, 16777619) >>> 0;
+      hashB = Math.imul(hashB ^ (global + i), 2246822519) >>> 0;
+    });
+    expect(Array.from(result!.slots)).toEqual(expectedSlots);
+    expect(result!.selectionHashA).toBe(hashA);
+    expect(result!.selectionHashB).toBe(hashB);
+    expect(result!.pageIdentity).toEqual(
+      new Map([
+        [1, 1],
+        [2, 2],
+      ]),
+    );
+
+    // Past the partial row's count, or in a chunk that is not resident.
+    expect(mapper.mapRadChunkSelection(Uint32Array.from([2 * chunkSize + width + 10]))).toBeNull();
+    pages.set(3, 3);
+    expect(mapper.mapRadChunkSelection(Uint32Array.from([3 * chunkSize]))).toBeNull();
+  });
+
   it('does not stage a chunk-page selection above the current draw budget', () => {
     const { inner } = chunkPagesFixture();
     inner.pageTableDrawBudget = 1;
