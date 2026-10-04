@@ -6,6 +6,7 @@ import {
   createRelightingProxy,
   createRelightingShadowFactorMaterial,
   renderRelightingFactorMap,
+  updateRelightingShadowFactorWeights,
 } from '../relighting';
 import type { DisplayColorModifier } from '../core/splat-mesh-material';
 
@@ -64,6 +65,81 @@ describe('proxy helpers', () => {
     const material = createRelightingShadowFactorMaterial(new THREE.DirectionalLight());
     expect(material).toBeInstanceOf(THREE.MeshStandardNodeMaterial);
     proxy.dispose();
+    material.dispose();
+  });
+
+  it('only builds shadow lookups for lights that cast shadows', () => {
+    const shadowNodeCount = (material: THREE.MeshStandardNodeMaterial): number => {
+      let count = 0;
+      material.outputNode!.traverse((node) => {
+        if ((node as { isShadowNode?: boolean }).isShadowNode === true) count++;
+      });
+      return count;
+    };
+    const caster = new THREE.SpotLight();
+    caster.castShadow = true;
+    const fillOnly = Array.from({ length: 20 }, () => new THREE.PointLight());
+    const material = createRelightingShadowFactorMaterial(
+      [
+        { light: caster, intensity: 1 },
+        ...fillOnly.map((light) => ({ light, intensity: 0, fill: 0.5 })),
+      ],
+      { combine: 'min' },
+    );
+    expect(shadowNodeCount(material)).toBe(1);
+    material.dispose();
+  });
+
+  it('retunes contribution weights in place while the graph shape holds', () => {
+    const uniformValues = (material: THREE.MeshStandardNodeMaterial): number[] => {
+      const values: number[] = [];
+      material.outputNode!.traverse((node) => {
+        const uniformNode = node as { isUniformNode?: boolean; value?: unknown };
+        if (uniformNode.isUniformNode === true && typeof uniformNode.value === 'number') {
+          values.push(uniformNode.value);
+        }
+      });
+      return values;
+    };
+    const caster = new THREE.SpotLight();
+    caster.castShadow = true;
+    const bulb = new THREE.PointLight();
+    const material = createRelightingShadowFactorMaterial(
+      [
+        { light: caster, intensity: 1 },
+        { light: bulb, intensity: 0, fill: 0.5 },
+      ],
+      { combine: 'min' },
+    );
+    const outputNode = material.outputNode;
+
+    expect(
+      updateRelightingShadowFactorWeights(material, [
+        { light: caster, intensity: 0.25 },
+        { light: bulb, intensity: 0, fill: 0.75 },
+      ]),
+    ).toBe(true);
+    expect(material.outputNode).toBe(outputNode);
+    expect(uniformValues(material)).toEqual(expect.arrayContaining([0.25, 0.75]));
+
+    // Graph-shaping changes need a new material.
+    expect(
+      updateRelightingShadowFactorWeights(material, [
+        { light: caster, intensity: 0 },
+        { light: bulb, intensity: 0, fill: 0.75 },
+      ]),
+    ).toBe(false);
+    expect(updateRelightingShadowFactorWeights(material, [{ light: caster, intensity: 1 }])).toBe(
+      false,
+    );
+    caster.castShadow = false;
+    expect(
+      updateRelightingShadowFactorWeights(material, [
+        { light: caster, intensity: 1 },
+        { light: bulb, intensity: 0, fill: 0.5 },
+      ]),
+    ).toBe(false);
+    expect(updateRelightingShadowFactorWeights(new THREE.MeshBasicNodeMaterial(), [])).toBe(false);
     material.dispose();
   });
 

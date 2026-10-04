@@ -348,6 +348,7 @@ describe('public API surface (@voluma/vlam/relighting)', () => {
     expect(typeof relighting.createRelightingShadowFactorMaterial).toBe('function');
     expect(relighting.RELIGHTING_POINT_SHADOWS).toBe(true);
     expect(typeof relighting.renderRelightingFactorMap).toBe('function');
+    expect(typeof relighting.updateRelightingShadowFactorWeights).toBe('function');
     expectTypeOf<relighting.RelightingSettings>().toBeObject();
     expectTypeOf<relighting.RelightingAttachment>().toBeObject();
     expect('attachRelighting' in vlam).toBe(false);

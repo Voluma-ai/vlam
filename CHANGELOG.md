@@ -21,6 +21,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- `updateRelightingShadowFactorWeights(material, contributions)` retunes
+  contribution `intensity` / `fill` on a shadow-factor material in place.
+  Animated light intensity no longer needs a new material (and pipeline
+  compile) per frame.
+
 - `parseSpz` reads the SPZ header `antialiased` flag bit (`flags & 0x01`) and
   reports it as `SplatData.antialias: true`, so a Mip-Splatting `.spz` gets the
   same automatic 2D dilation and opacity compensation a flagged `.sog` already
@@ -48,6 +53,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   automatic projection reason `auto-dynamic-or-shared-pool` is unchanged.
 
 ### Fixed
+
+- `createRelightingShadowFactorMaterial` skips the shadow lookup for lights
+  without `castShadow`. Each fill-only light used to bind a depth texture and
+  sampler, so ~16 of them exceeded WebGPU's default per-stage texture limit
+  and the pipeline failed to compile.
 
 - `UnifiedSplatMesh` with compute projection no longer draws the previous
   camera pose while a GPU sort still holds the submission gate: a camera-only

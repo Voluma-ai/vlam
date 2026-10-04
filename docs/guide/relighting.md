@@ -45,6 +45,12 @@ lights you pass. A contribution such as
 an umbra. Point and spot fill is shadow-occluded and fades over the light's
 `distance`; spot fill also follows its cone and penumbra. Light and target
 positions are read in world space, so lights may live under transformed groups.
+A light without `castShadow` contributes fill only and adds no shadow lookup.
+To animate contribution `intensity` / `fill`, call
+`updateRelightingShadowFactorWeights(material, contributions)`: it retunes the
+material without recompiling, and returns `false` when the list would compile
+differently (other lights, a weight crossing zero, a `castShadow` change), in
+which case build a new material.
 
 Splat foliage cannot cast. Umbra shape follows **proxy triangles** only.
 Floor-only LCC collision yields ground / overhang self-shadow, not canopy
