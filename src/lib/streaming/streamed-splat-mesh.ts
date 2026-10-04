@@ -169,6 +169,8 @@ const INTERACTIVE_CLASSIC_STAGE_BATCH_TARGET_MS = 0.5;
 type InlineWorkerCtor = new () => Worker;
 
 const DATA_TEXTURE_WIDTH = 2048;
+/** log2(DATA_TEXTURE_WIDTH), for the row split in the chunk-selection hot loop. */
+const DATA_TEXTURE_ROW_SHIFT = 11;
 
 /** One authored RAD chunk, backed by independent texture rows. */
 type RadChunkPageRecord = {
@@ -937,6 +939,13 @@ export class StreamedSplatMesh extends SplatMesh {
   private radChunkPendingSelectionHashB: number | null = null;
   private radChunkPendingBudgetSettled = false;
   private radChunkMappedSlots = new Uint32Array(0);
+  /**
+   * Pool slot of column 0 for every global texture row of resident chunks, and
+   * that row's valid length (0 = not resident). Rebuilt per mapping pass; only
+   * ~32 rows per resident chunk, so the rebuild is negligible.
+   */
+  private radChunkRowBase = new Uint32Array(0);
+  private radChunkRowLength = new Uint16Array(0);
   private radChunkPublishGeneration: number | null = null;
   private radChunkPublishRevision: number | null = null;
   private radChunkPublishActiveListVersion: number | null = null;
@@ -2350,31 +2359,66 @@ export class StreamedSplatMesh extends SplatMesh {
       this.radChunkPageLookup.clear();
       this.radChunkPageLookupRevision = allocator.revision;
     }
-    let previousFile = -1;
-    let resident: RadChunkPageRecord | undefined;
+    // Hot loop: one pass over every selected splat (~2M) on each frontier
+    // publication while the camera moves, so it runs several times a second.
+    // When chunks hold whole texture rows, a flat row table turns each splat
+    // into one table read plus a mask. The page lookup (and the page-identity
+    // record the publication is validated against) only runs when the
+    // selection crosses into another chunk, ~100 times per pass.
     let selectionHashA = 2166136261;
     let selectionHashB = 3735928559;
     const now = performance.now();
-    for (let i = 0; i < globals.length; i++) {
-      const global = globals[i] as number;
-      const file = Math.floor(global / chunkSize);
-      if (file !== previousFile) {
-        const cachedPage = this.radChunkPageLookup.get(file);
-        const page = cachedPage === undefined ? allocator.pageOf(file) : cachedPage;
-        if (page === undefined) return null;
-        if (cachedPage === undefined) this.radChunkPageLookup.set(file, page);
-        previousFile = file;
-        pageIdentity.set(file, page);
-        resident = this.radChunkPages.get(file);
-        if (!resident) return null;
-        resident.lastUsed = now;
+    const visitFile = (file: number): RadChunkPageRecord | undefined => {
+      const cachedPage = this.radChunkPageLookup.get(file);
+      const page = cachedPage === undefined ? allocator.pageOf(file) : cachedPage;
+      if (page === undefined) return undefined;
+      if (cachedPage === undefined) this.radChunkPageLookup.set(file, page);
+      pageIdentity.set(file, page);
+      const resident = this.radChunkPages.get(file);
+      if (resident) resident.lastUsed = now;
+      return resident;
+    };
+
+    if (chunkSize % DATA_TEXTURE_WIDTH === 0) {
+      const rowsPerChunk = chunkSize / DATA_TEXTURE_WIDTH;
+      const { rowBase, rowLength } = this.buildRadChunkRowTable(rowsPerChunk);
+      let chunkRowStart = 0;
+      let chunkRowEnd = 0;
+      for (let i = 0; i < globals.length; i++) {
+        const global = globals[i] as number;
+        const row = global >>> DATA_TEXTURE_ROW_SHIFT;
+        if (row < chunkRowStart || row >= chunkRowEnd) {
+          const file = (row / rowsPerChunk) | 0;
+          if (!visitFile(file)) return null;
+          chunkRowStart = file * rowsPerChunk;
+          chunkRowEnd = chunkRowStart + rowsPerChunk;
+        }
+        // A resident chunk's rows are always inside the table.
+        const column = global & (DATA_TEXTURE_WIDTH - 1);
+        if (column >= (rowLength[row] as number)) return null;
+        slots[i] = (rowBase[row] as number) + column;
+        selectionHashA = Math.imul(selectionHashA ^ global, 16777619) >>> 0;
+        selectionHashB = Math.imul(selectionHashB ^ (global + i), 2246822519) >>> 0;
       }
-      const local = global - file * chunkSize;
-      const slot = resident ? radChunkPoolSlot(resident, local) : undefined;
-      if (slot === undefined) return null;
-      slots[i] = slot;
-      selectionHashA = Math.imul(selectionHashA ^ global, 16777619) >>> 0;
-      selectionHashB = Math.imul(selectionHashB ^ (global + i), 2246822519) >>> 0;
+    } else {
+      let fileStart = 0;
+      let fileEnd = 0;
+      let resident: RadChunkPageRecord | undefined;
+      for (let i = 0; i < globals.length; i++) {
+        const global = globals[i] as number;
+        if (resident === undefined || global < fileStart || global >= fileEnd) {
+          const file = Math.floor(global / chunkSize);
+          resident = visitFile(file);
+          if (!resident) return null;
+          fileStart = file * chunkSize;
+          fileEnd = fileStart + chunkSize;
+        }
+        const slot = radChunkPoolSlot(resident, global - fileStart);
+        if (slot === undefined) return null;
+        slots[i] = slot;
+        selectionHashA = Math.imul(selectionHashA ^ global, 16777619) >>> 0;
+        selectionHashB = Math.imul(selectionHashB ^ (global + i), 2246822519) >>> 0;
+      }
     }
     return {
       slots,
@@ -2383,6 +2427,34 @@ export class StreamedSplatMesh extends SplatMesh {
       selectionHashA,
       selectionHashB,
     };
+  }
+
+  /** Flat global-row table for {@link mapRadChunkSelection}; see `radChunkRowBase`. */
+  private buildRadChunkRowTable(rowsPerChunk: number): {
+    rowBase: Uint32Array;
+    rowLength: Uint16Array;
+  } {
+    let maxFile = -1;
+    for (const file of this.radChunkPages.keys()) if (file > maxFile) maxFile = file;
+    const rows = (maxFile + 1) * rowsPerChunk;
+    if (this.radChunkRowBase.length < rows) {
+      this.radChunkRowBase = new Uint32Array(rows);
+      this.radChunkRowLength = new Uint16Array(rows);
+    } else {
+      this.radChunkRowLength.fill(0, 0, rows);
+    }
+    const rowBase = this.radChunkRowBase;
+    const rowLength = this.radChunkRowLength;
+    for (const [file, page] of this.radChunkPages) {
+      const firstRow = file * rowsPerChunk;
+      for (let row = 0; row < page.starts.length && row < rowsPerChunk; row++) {
+        const length = Math.min(DATA_TEXTURE_WIDTH, page.count - row * DATA_TEXTURE_WIDTH);
+        if (length <= 0) break;
+        rowBase[firstRow + row] = page.starts[row] as number;
+        rowLength[firstRow + row] = length;
+      }
+    }
+    return { rowBase, rowLength };
   }
 
   /** A page may not be reused while its selection is being sorted or rendered. */
