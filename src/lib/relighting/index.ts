@@ -438,7 +438,7 @@ const cascadedShadow = (
     asNode<'float'>(mix(inner, outer, smoothstep(float(radius * 0.7), float(radius * 0.95), dist)));
   // Point lights need the cube-face PointShadowNode; the generic ShadowNode
   // calls PointLightShadow.updateMatrices, which reads the missing `target`.
-  let shadowed = asNode<'float'>((light as { isPointLight?: boolean }).isPointLight === true ? pointShadow(light as never) : shadow(light));
+  let shadowed = asNode<'float'>((light as { isPointLight?: boolean }).isPointLight === true ? pointShadow(light) : shadow(light));
   if (options.midLight) {
     shadowed = blendAt(shadowed, asNode<'float'>(shadow(options.midLight)), nearRadius);
     if (options.outerLight) {
@@ -561,7 +561,7 @@ export function createRelightingShadowFactorMaterial(
     const raw =
       index === 0
         ? cascadedShadow(light, options, dist)
-        : asNode<'float'>((light as { isPointLight?: boolean }).isPointLight === true ? pointShadow(light as never) : shadow(light));
+        : asNode<'float'>((light as { isPointLight?: boolean }).isPointLight === true ? pointShadow(light) : shadow(light));
     // Mix toward lit (1) as punctual range fades so umbras soften instead of
     // clipping at the shadow-map far plane.
     return asNode<'float'>(mix(float(1), raw, punctualUmbraWeight(light)));
