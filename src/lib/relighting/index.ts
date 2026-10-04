@@ -701,14 +701,13 @@ export function updateRelightingShadowFactorWeights(
   lights: THREE.Light | RelightingLightContribution[],
 ): boolean {
   const weights = factorMaterialWeights.get(material);
-  const dbg = ((globalThis as any).__dbgWeights ??= {}); // DBG-TEMP
-  if (!weights) { dbg.noWeights = (dbg.noWeights ?? 0) + 1; return false; } // DBG-TEMP
+  if (!weights) return false;
   const contributions = normalizeRelightingLights(lights);
-  if (contributions.length !== weights.lights.length) { dbg.len = [contributions.length, weights.lights.length]; return false; } // DBG-TEMP
+  if (contributions.length !== weights.lights.length) return false;
   for (let i = 0; i < contributions.length; i++) {
     const contribution = contributions[i]!;
-    if (contribution.light !== weights.lights[i]) { dbg.light = i; return false; } // DBG-TEMP
-    if (contributionShape(contribution) !== weights.shape[i]) { dbg.shape = [i, contributionShape(contribution), weights.shape[i]]; return false; } // DBG-TEMP
+    if (contribution.light !== weights.lights[i]) return false;
+    if (contributionShape(contribution) !== weights.shape[i]) return false;
   }
   for (let i = 0; i < contributions.length; i++) {
     weights.intensity[i]!.value = contributionIntensity(contributions[i]!);
