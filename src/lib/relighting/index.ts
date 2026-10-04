@@ -270,7 +270,7 @@ export type RelightingLightContribution = {
   intensity?: number;
   /**
    * Additive Lambert fill on top of the umbra factor (RGB may exceed 1).
-   * Gated by `shadow()`, facing, and for spot/point lights the Frostbite
+   * Gated by `shadow()` (only when the light has `castShadow`), facing, and for spot/point lights the Frostbite
    * `distance` window (and the spot cone). `0` / omitted = umbra only.
    */
   fill?: number;
@@ -362,7 +362,11 @@ const punctualUmbraWeight = (light: THREE.Light): Node<'float'> => {
  * vertical foliage, but it also erased fill on tree stems, so splats only
  * lit after the host fell back to un-occluded Lambert.
  */
-const punctualFillTerm = (light: THREE.Light, fill: number, vis: Node<'float'>): Node<'vec3'> => {
+const punctualFillTerm = (
+  light: THREE.Light,
+  fill: Node<'float'>,
+  vis: Node<'float'>,
+): Node<'vec3'> => {
   const punctual = light as THREE.SpotLight & THREE.PointLight;
   const isSpot = punctual.isSpotLight === true;
   const isPoint = punctual.isPointLight === true;
@@ -387,12 +391,12 @@ const punctualFillTerm = (light: THREE.Light, fill: number, vis: Node<'float'>):
   }
 
   const chroma = liveRef<'vec3'>('color', 'color', light);
-  return asNode<'vec3'>(chroma.mul(float(fill)).mul(mask));
+  return asNode<'vec3'>(chroma.mul(fill).mul(mask));
 };
 
 const directionalFillTerm = (
   light: THREE.Light,
-  fill: number,
+  fill: Node<'float'>,
   vis: Node<'float'>,
 ): Node<'vec3'> => {
   const dirLight = light as THREE.DirectionalLight;
@@ -402,7 +406,7 @@ const directionalFillTerm = (
   );
   const ndl = asNode<'float'>(normalWorld.dot(shine.negate()).max(0));
   const chroma = liveRef<'vec3'>('color', 'color', light);
-  return asNode<'vec3'>(chroma.mul(float(fill)).mul(ndl).mul(vis));
+  return asNode<'vec3'>(chroma.mul(fill).mul(ndl).mul(vis));
 };
 
 const normalizeRelightingLights = (
@@ -417,6 +421,26 @@ const normalizeRelightingLights = (
   }
   return weighted;
 };
+
+type FactorWeightUniform = THREE.UniformNode<'float', number>;
+
+/** Per-material live weights, so intensity-only edits skip a shader rebuild. */
+type FactorMaterialWeights = {
+  /** Graph shape the weights were compiled for; see {@link contributionShape}. */
+  shape: string[];
+  lights: THREE.Light[];
+  intensity: FactorWeightUniform[];
+  fill: FactorWeightUniform[];
+};
+
+const factorMaterialWeights = new WeakMap<THREE.Material, FactorMaterialWeights>();
+
+/**
+ * What a contribution compiles to: zero-ness of `intensity` / `fill` and the
+ * light's `castShadow` add or drop graph terms, so they cannot change live.
+ */
+const contributionShape = (contribution: RelightingLightContribution): string =>
+  `${contributionIntensity(contribution) > 0 ? 1 : 0}${contributionFill(contribution) > 0 ? 1 : 0}${contribution.light.castShadow === true ? 1 : 0}`;
 
 const cascadedShadow = (
   light: THREE.Light,
@@ -562,6 +586,11 @@ export function createRelightingShadowFactorMaterial(
       : float(1);
 
   const shadowTermAt = (index: number, light: THREE.Light): Node<'float'> => {
+    // A light without `castShadow` renders no shadow map, so it is fully
+    // visible. Skipping the lookup also keeps its depth texture + sampler out
+    // of the bind group: one per fill-only light otherwise exceeds WebGPU's
+    // default 16 sampled textures per fragment stage.
+    if (light.castShadow !== true) return float(1);
     const raw =
       index === 0
         ? cascadedShadow(light, options, dist)
@@ -580,6 +609,19 @@ export function createRelightingShadowFactorMaterial(
     shadowTermAt(index, contribution.light),
   );
 
+  // Weights are uniforms so `updateRelightingShadowFactorWeights` can retune
+  // them (e.g. animated light intensity) without recompiling the pipeline.
+  const intensityWeights = contributions.map(
+    (contribution) => uniform(contributionIntensity(contribution)) as FactorWeightUniform,
+  );
+  const fillWeights = contributions.map(
+    (contribution) => uniform(contributionFill(contribution)) as FactorWeightUniform,
+  );
+  const shadowIndices = contributions
+    .map((contribution, index) => ({ index, intensity: contributionIntensity(contribution) }))
+    .filter(({ intensity }) => intensity > 0)
+    .map(({ index }) => index);
+
   let factor: Node<'float'>;
   let shadowed: Node<'float'> = float(1);
 
@@ -588,32 +630,29 @@ export function createRelightingShadowFactorMaterial(
     // umbra_i = clamp(1 - I * (1 - umbra), 0, 1)
     // so I=0 → no shadow, I=1 → default umbra, I>1 → darker than default.
     let factorCombined: Node<'float'> = float(1);
-    for (let i = 0; i < contributions.length; i++) {
-      const contribution = contributions[i]!;
-      const intensity = contributionIntensity(contribution);
-      if (intensity <= 0) continue;
-      const umbra_i = Math.min(1, Math.max(0, 1 - intensity * (1 - umbra)));
-      const term = shadowTerms[i]!;
-      const factor_i = asNode<'float'>(mix(float(umbra_i), float(1), term));
+    for (const i of shadowIndices) {
+      const umbra_i = asNode<'float'>(
+        float(1)
+          .sub(intensityWeights[i]!.mul(1 - umbra))
+          .clamp(0, 1),
+      );
+      const factor_i = asNode<'float'>(mix(umbra_i, float(1), shadowTerms[i]!));
       factorCombined = asNode<'float'>(min(factorCombined, factor_i));
     }
     shadowed = factorCombined;
     factor = asNode<'float'>(mix(float(1), factorCombined, receive));
   } else {
-    const shadowIndices = contributions
-      .map((contribution, index) => ({ index, intensity: contributionIntensity(contribution) }))
-      .filter(({ intensity }) => intensity > 0);
     if (shadowIndices.length === 1) {
-      shadowed = shadowTerms[shadowIndices[0]!.index]!;
+      shadowed = shadowTerms[shadowIndices[0]!]!;
     } else if (shadowIndices.length > 1) {
       let illum: Node<'float'> = float(0);
-      let denom = 0;
-      for (const { index, intensity } of shadowIndices) {
-        denom += intensity;
-        const term = shadowTerms[index]!;
-        illum = asNode<'float'>(illum.add(float(intensity).mul(term)));
+      let denom: Node<'float'> = float(0);
+      for (const index of shadowIndices) {
+        const weight = intensityWeights[index]!;
+        denom = asNode<'float'>(denom.add(weight));
+        illum = asNode<'float'>(illum.add(weight.mul(shadowTerms[index]!)));
       }
-      shadowed = asNode<'float'>(illum.div(float(denom)));
+      shadowed = asNode<'float'>(illum.div(denom.max(1e-6)));
     }
     if (shadowIndices.length > 0) {
       const attenuation = mix(float(1), shadowed, receive);
@@ -632,16 +671,49 @@ export function createRelightingShadowFactorMaterial(
   }
   for (let i = 0; i < contributions.length; i++) {
     const contribution = contributions[i]!;
-    const fill = contributionFill(contribution);
-    if (fill <= 0) continue;
+    if (contributionFill(contribution) <= 0) continue;
     const light = contribution.light;
+    const fill = asNode<'float'>(fillWeights[i]!);
     const vis = shadowTerms[i]!;
     const punctual = punctualFillTerm(light, fill, vis);
     const directional = directionalFillTerm(light, fill, vis);
     boost = asNode<'vec3'>(boost.add(punctual).add(directional));
   }
   material.outputNode = vec4(vec3(factor).add(boost), float(1));
+  factorMaterialWeights.set(material, {
+    shape: contributions.map(contributionShape),
+    lights: contributions.map((contribution) => contribution.light),
+    intensity: intensityWeights,
+    fill: fillWeights,
+  });
   return material;
+}
+
+/**
+ * Retunes contribution `intensity` / `fill` on a material from
+ * {@link createRelightingShadowFactorMaterial} without recompiling it.
+ * Returns `false` when the new list would compile to a different graph
+ * (other lights or order, a weight crossing zero, a `castShadow` change);
+ * the caller then builds a new material.
+ */
+export function updateRelightingShadowFactorWeights(
+  material: THREE.Material,
+  lights: THREE.Light | RelightingLightContribution[],
+): boolean {
+  const weights = factorMaterialWeights.get(material);
+  if (!weights) return false;
+  const contributions = normalizeRelightingLights(lights);
+  if (contributions.length !== weights.lights.length) return false;
+  for (let i = 0; i < contributions.length; i++) {
+    const contribution = contributions[i]!;
+    if (contribution.light !== weights.lights[i]) return false;
+    if (contributionShape(contribution) !== weights.shape[i]) return false;
+  }
+  for (let i = 0; i < contributions.length; i++) {
+    weights.intensity[i]!.value = contributionIntensity(contributions[i]!);
+    weights.fill[i]!.value = contributionFill(contributions[i]!);
+  }
+  return true;
 }
 
 function triangleMeshToGeometry(data: TriangleMeshData): THREE.BufferGeometry {
