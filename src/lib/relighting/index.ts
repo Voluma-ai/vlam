@@ -16,6 +16,7 @@ import {
   mix,
   normalWorld,
   objectPosition,
+  pointShadow,
   positionWorld,
   reference,
   shadow,
@@ -305,6 +306,16 @@ export type RelightingShadowFactorOptions = {
  */
 export const MAX_RELIGHTING_SHADOW_LIGHTS = 32;
 
+/**
+ * True when {@link createRelightingShadowFactorMaterial} renders real
+ * `PointLight` cube shadows (via `pointShadow`). Hosts feature-detect this to
+ * fall back to a wide-SpotLight approximation on older builds. A `PointLight`
+ * also needs a `target` stub: three's `lightShadowMatrix` calls
+ * `shadow.updateMatrices(light)` on frames without a shadow pass, and the base
+ * `LightShadow` reads `light.target`.
+ */
+export const RELIGHTING_POINT_SHADOWS = true;
+
 const contributionIntensity = (contribution: RelightingLightContribution): number => {
   const value = contribution.intensity;
   if (!Number.isFinite(value)) return 1;
@@ -425,7 +436,13 @@ const cascadedShadow = (
     : 160;
   const blendAt = (inner: Node<'float'>, outer: Node<'float'>, radius: number): Node<'float'> =>
     asNode<'float'>(mix(inner, outer, smoothstep(float(radius * 0.7), float(radius * 0.95), dist)));
-  let shadowed = asNode<'float'>(shadow(light));
+  // Point lights need the cube-face PointShadowNode; the generic ShadowNode
+  // calls PointLightShadow.updateMatrices, which reads the missing `target`.
+  let shadowed = asNode<'float'>(
+    (light as { isPointLight?: boolean }).isPointLight === true
+      ? pointShadow(light)
+      : shadow(light),
+  );
   if (options.midLight) {
     shadowed = blendAt(shadowed, asNode<'float'>(shadow(options.midLight)), nearRadius);
     if (options.outerLight) {
@@ -545,7 +562,14 @@ export function createRelightingShadowFactorMaterial(
       : float(1);
 
   const shadowTermAt = (index: number, light: THREE.Light): Node<'float'> => {
-    const raw = index === 0 ? cascadedShadow(light, options, dist) : asNode<'float'>(shadow(light));
+    const raw =
+      index === 0
+        ? cascadedShadow(light, options, dist)
+        : asNode<'float'>(
+            (light as { isPointLight?: boolean }).isPointLight === true
+              ? pointShadow(light)
+              : shadow(light),
+          );
     // Mix toward lit (1) as punctual range fades so umbras soften instead of
     // clipping at the shadow-map far plane.
     return asNode<'float'>(mix(float(1), raw, punctualUmbraWeight(light)));
