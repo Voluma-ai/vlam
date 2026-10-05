@@ -29,6 +29,7 @@ export const EXAMPLE_APPS = [
   'custom-effect',
   'depth-of-field',
   'relight',
+  'flashlight-fog',
   'tiny-planet',
   'frame-the-camera',
   'annotations',

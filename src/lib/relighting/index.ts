@@ -7,11 +7,13 @@
  */
 import * as THREE from 'three/webgpu';
 import {
+  acos,
   cameraPosition,
   context,
   cos,
   float,
   frameGroup,
+  lightProjectionUV,
   min,
   mix,
   normalWorld,
@@ -271,9 +273,22 @@ export type RelightingLightContribution = {
   /**
    * Additive Lambert fill on top of the umbra factor (RGB may exceed 1).
    * Gated by `shadow()` (only when the light has `castShadow`), facing, and for spot/point lights the Frostbite
-   * `distance` window (and the spot cone). `0` / omitted = umbra only.
+   * `distance` window (and the spot cone, `SpotLight.map` and `beamProfile`).
+   * `0` / omitted = umbra only. The map and profile shape fill only, not the umbra.
    */
   fill?: number;
+  /**
+   * Radial beam profile for a `SpotLight`'s fill (ignored for other lights): a
+   * texture whose red channel multiplies fill along `u = angle / light.angle`, so
+   * `u = 0` is the beam axis and `u = 1` the cone edge (`v` is ignored). Use it
+   * for rotationally symmetric beams (reflector rings, measured lamp falloff)
+   * without authoring a 2D `SpotLight.map`; build one with
+   * {@link createRelightingBeamProfile}. Swapping the texture is live; adding or
+   * removing it changes the compiled graph.
+   */
+  beamProfile?: THREE.Texture | null;
+  /** Blend from the plain cone (`0`) to the full `beamProfile` (`1`). Default `1`. Live. */
+  beamProfileStrength?: number;
 };
 
 /** Options for {@link createRelightingShadowFactorMaterial}. */
@@ -355,9 +370,84 @@ const punctualUmbraWeight = (light: THREE.Light): Node<'float'> => {
   return asNode<'float'>(window.pow(float(decay)));
 };
 
+const contributionBeamProfile = (
+  contribution: RelightingLightContribution,
+): THREE.Texture | null => {
+  const profile = contribution.beamProfile;
+  if ((contribution.light as THREE.SpotLight).isSpotLight !== true) return null;
+  return profile && (profile as { isTexture?: boolean }).isTexture === true ? profile : null;
+};
+
+const contributionBeamProfileStrength = (contribution: RelightingLightContribution): number => {
+  const value = contribution.beamProfileStrength;
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(1, Math.max(0, value as number));
+};
+
+/** Live beam-profile inputs for one spot contribution. */
+type BeamProfileNodes = {
+  texture: THREE.TextureNode;
+  strength: FactorWeightUniform;
+};
+
+/**
+ * Bakes a radial beam profile for {@link RelightingLightContribution.beamProfile}.
+ *
+ * `profile` is either a function of `t = angle / cone half-angle` in `[0, 1]`
+ * or evenly spaced samples from the beam axis (`t = 0`) to the cone edge
+ * (`t = 1`), linearly interpolated. Values are clamped to `>= 0`; values above
+ * 1 brighten fill. The result is a `resolution × 1` half-float red texture with
+ * linear filtering and clamp-to-edge wrapping; the caller owns and disposes it.
+ *
+ * @example Reflector rings: bright core, dark gap, soft ring and a thin rim.
+ * ```ts
+ * const lobe = (t: number, center: number, width: number, gain: number) =>
+ *   gain * Math.exp(-(((t - center) / width) ** 2));
+ * const rings = createRelightingBeamProfile((t) =>
+ *   Math.min(1, 0.12 + lobe(t, 0, 0.2, 0.88) + lobe(t, 0.55, 0.16, 0.38) + lobe(t, 0.88, 0.045, 0.32)),
+ * );
+ * ```
+ */
+export function createRelightingBeamProfile(
+  profile: ArrayLike<number> | ((t: number) => number),
+  resolution = 256,
+): THREE.DataTexture {
+  const width = Math.max(2, Math.floor(Number.isFinite(resolution) ? resolution : 256));
+  let sampleAt: (t: number) => number;
+  if (typeof profile === 'function') {
+    sampleAt = profile;
+  } else {
+    const samples = Array.from(profile, Number);
+    if (samples.length === 0) throw new Error('createRelightingBeamProfile: no samples');
+    sampleAt = (t) => {
+      const x = t * (samples.length - 1);
+      const i = Math.min(Math.floor(x), samples.length - 1);
+      const j = Math.min(i + 1, samples.length - 1);
+      return samples[i]! + (samples[j]! - samples[i]!) * (x - i);
+    };
+  }
+  const data = new Uint16Array(width);
+  for (let i = 0; i < width; i++) {
+    // Texel centres, so linear filtering at u = t reproduces the profile.
+    const value = sampleAt((i + 0.5) / width);
+    data[i] = THREE.DataUtils.toHalfFloat(Number.isFinite(value) ? Math.max(0, value) : 0);
+  }
+  const map = new THREE.DataTexture(data, width, 1, THREE.RedFormat, THREE.HalfFloatType);
+  map.magFilter = THREE.LinearFilter;
+  map.minFilter = THREE.LinearFilter;
+  map.wrapS = THREE.ClampToEdgeWrapping;
+  map.wrapT = THREE.ClampToEdgeWrapping;
+  map.colorSpace = THREE.NoColorSpace;
+  map.needsUpdate = true;
+  return map;
+}
+
 /**
  * Ranged Lambert toward a punctual light, occluded by its shadow map.
- * Spot cone uses `light.angle` / `penumbra` and `light.target`.
+ * Spot cone uses `light.angle` / `penumbra` and `light.target`. A spot's
+ * `map` is projected through its shadow camera exactly as three.js lights
+ * do (RGB multiplies fill inside the frustum), and an optional beam profile
+ * shapes the cone radially.
  * Does **not** use `receiveUpMin`: that slope gate keeps umbra off noisy
  * vertical foliage, but it also erased fill on tree stems, so splats only
  * lit after the host fell back to un-occluded Lambert.
@@ -366,6 +456,7 @@ const punctualFillTerm = (
   light: THREE.Light,
   fill: Node<'float'>,
   vis: Node<'float'>,
+  profile: BeamProfileNodes | null,
 ): Node<'vec3'> => {
   const punctual = light as THREE.SpotLight & THREE.PointLight;
   const isSpot = punctual.isSpotLight === true;
@@ -386,11 +477,28 @@ const punctualFillTerm = (
     const outer = liveRef<'float'>('angle', 'float', spot).max(1e-3);
     const penumbra = liveRef<'float'>('penumbra', 'float', spot).clamp(0, 0.95);
     const inner = asNode<'float'>(outer.mul(float(1).sub(penumbra)).max(1e-3));
-    const cone = asNode<'float'>(smoothstep(cos(outer), cos(inner), toLight.negate().dot(shine)));
+    const cosAngle = asNode<'float'>(toLight.negate().dot(shine));
+    const cone = asNode<'float'>(smoothstep(cos(outer), cos(inner), cosAngle));
     mask = asNode<'float'>(mask.mul(cone));
+    if (profile) {
+      const t = asNode<'float'>(acos(cosAngle.clamp(-1, 1)).div(outer).clamp(0, 1));
+      const radial = asNode<'float'>(profile.texture.sample(vec2(t, 0.5)).r);
+      mask = asNode<'float'>(mask.mul(mix(float(1), radial, profile.strength)));
+    }
   }
 
-  const chroma = liveRef<'vec3'>('color', 'color', light);
+  let chroma = liveRef<'vec3'>('color', 'color', light);
+  const spotMap = (light as THREE.SpotLight).map;
+  if (isSpot && spotMap) {
+    // Same projection and frustum gate as three's SpotLightNode, so a map
+    // lands where it would on a regular lit mesh.
+    const coord = asNode<'vec3'>(lightProjectionUV(light));
+    const projected = asNode<'vec4'>(
+      texture(spotMap, coord.xy).onRenderUpdate(() => (light as THREE.SpotLight).map ?? spotMap),
+    );
+    const inFrustum = coord.mul(2).sub(1).abs().lessThan(1).all();
+    chroma = asNode<'vec3'>(chroma.mul(inFrustum.select(projected.rgb, vec3(1, 1, 1))));
+  }
   return asNode<'vec3'>(chroma.mul(fill).mul(mask));
 };
 
@@ -431,16 +539,30 @@ type FactorMaterialWeights = {
   lights: THREE.Light[];
   intensity: FactorWeightUniform[];
   fill: FactorWeightUniform[];
+  profiles: (BeamProfileNodes | null)[];
 };
 
 const factorMaterialWeights = new WeakMap<THREE.Material, FactorMaterialWeights>();
 
 /**
- * What a contribution compiles to: zero-ness of `intensity` / `fill` and the
- * light's `castShadow` add or drop graph terms, so they cannot change live.
+ * What a contribution compiles to: zero-ness of `intensity` / `fill`, the
+ * light's `castShadow`, and whether a spot has a `map` or `beamProfile` add or
+ * drop graph terms, so they cannot change live.
  */
-const contributionShape = (contribution: RelightingLightContribution): string =>
-  `${contributionIntensity(contribution) > 0 ? 1 : 0}${contributionFill(contribution) > 0 ? 1 : 0}${contribution.light.castShadow === true ? 1 : 0}`;
+const contributionShape = (contribution: RelightingLightContribution): string => {
+  const spot = contribution.light as THREE.SpotLight;
+  // Map and profile only shape fill, so without fill they compile to nothing.
+  const hasFill = contributionFill(contribution) > 0;
+  return [
+    contributionIntensity(contribution) > 0,
+    hasFill,
+    contribution.light.castShadow === true,
+    hasFill && spot.isSpotLight === true && !!spot.map,
+    hasFill && contributionBeamProfile(contribution) !== null,
+  ]
+    .map((bit) => (bit ? 1 : 0))
+    .join('');
+};
 
 const cascadedShadow = (
   light: THREE.Light,
@@ -503,7 +625,10 @@ const cascadedShadow = (
  * (steepened by `decay`) so the shadow map far plane is not a hard cliff.
  * Contribution `fill` adds occluded Lambert (range + cone for punctual lights)
  * on top of that identity so accent lights can light splats without wrapping
- * through collision. Cascades (`midLight` / `outerLight` / `farLight`) still
+ * through collision. A spot's `map` (projected texture, as in three.js) tints
+ * its fill and a contribution `beamProfile` shapes it radially; each adds one
+ * sampled texture to the fragment stage, which WebGPU caps at 16 by default
+ * alongside shadow maps. Cascades (`midLight` / `outerLight` / `farLight`) still
  * attach to the **first** directional only. At most
  * {@link MAX_RELIGHTING_SHADOW_LIGHTS} independent lights are used; extras
  * are ignored. Graph size follows the live contribution count (not a padded
@@ -617,6 +742,15 @@ export function createRelightingShadowFactorMaterial(
   const fillWeights = contributions.map(
     (contribution) => uniform(contributionFill(contribution)) as FactorWeightUniform,
   );
+  // Beam profiles stay swappable: the texture node and strength are retuned in place.
+  const profiles = contributions.map((contribution): BeamProfileNodes | null => {
+    const profile = contributionBeamProfile(contribution);
+    if (!profile || contributionFill(contribution) <= 0) return null;
+    return {
+      texture: texture(profile),
+      strength: uniform(contributionBeamProfileStrength(contribution)),
+    };
+  });
   const shadowIndices = contributions
     .map((contribution, index) => ({ index, intensity: contributionIntensity(contribution) }))
     .filter(({ intensity }) => intensity > 0)
@@ -675,7 +809,7 @@ export function createRelightingShadowFactorMaterial(
     const light = contribution.light;
     const fill = asNode<'float'>(fillWeights[i]!);
     const vis = shadowTerms[i]!;
-    const punctual = punctualFillTerm(light, fill, vis);
+    const punctual = punctualFillTerm(light, fill, vis, profiles[i] ?? null);
     const directional = directionalFillTerm(light, fill, vis);
     boost = asNode<'vec3'>(boost.add(punctual).add(directional));
   }
@@ -685,15 +819,18 @@ export function createRelightingShadowFactorMaterial(
     lights: contributions.map((contribution) => contribution.light),
     intensity: intensityWeights,
     fill: fillWeights,
+    profiles,
   });
   return material;
 }
 
 /**
- * Retunes contribution `intensity` / `fill` on a material from
+ * Retunes contribution `intensity` / `fill` / `beamProfile` /
+ * `beamProfileStrength` on a material from
  * {@link createRelightingShadowFactorMaterial} without recompiling it.
  * Returns `false` when the new list would compile to a different graph
- * (other lights or order, a weight crossing zero, a `castShadow` change);
+ * (other lights or order, a weight crossing zero, a `castShadow` change, a
+ * spot `map` or `beamProfile` added or removed);
  * the caller then builds a new material.
  */
 export function updateRelightingShadowFactorWeights(
@@ -712,6 +849,11 @@ export function updateRelightingShadowFactorWeights(
   for (let i = 0; i < contributions.length; i++) {
     weights.intensity[i]!.value = contributionIntensity(contributions[i]!);
     weights.fill[i]!.value = contributionFill(contributions[i]!);
+    const profile = weights.profiles[i];
+    if (profile) {
+      profile.texture.value = contributionBeamProfile(contributions[i]!)!;
+      profile.strength.value = contributionBeamProfileStrength(contributions[i]!);
+    }
   }
   return true;
 }

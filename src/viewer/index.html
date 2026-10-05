@@ -108,6 +108,10 @@
       #cinematic-orbit {
         top: 120px;
       }
+      /* `display: grid` above beats the UA `[hidden]` rule. */
+      #cinematic-orbit[hidden] {
+        display: none;
+      }
       #copy-view svg,
       #cinematic-orbit svg {
         width: 16px;
@@ -349,6 +353,45 @@
         color: #ba8;
         font: 12px/1 ui-monospace, monospace;
         text-align: right;
+      }
+      #effects .fog-slot {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+      }
+      #effects .fog-slot[hidden] {
+        display: none;
+      }
+      #effects .fog-control {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border: 1px solid rgba(255, 166, 0, 0.18);
+        border-radius: 999px;
+        background: rgba(20, 20, 26, 0.75);
+        white-space: nowrap;
+        color: #766;
+        font: 12px/1 system-ui, sans-serif;
+      }
+      #effects .fog-control input[type='range'] {
+        width: 90px;
+        margin: 0;
+        accent-color: #ba8;
+        cursor: pointer;
+      }
+      #effects .fog-control output {
+        min-width: 2.6em;
+        color: #ba8;
+        font: 12px/1 ui-monospace, monospace;
+        text-align: right;
+      }
+      #effects button.fog-carry {
+        padding: 4px 10px;
+        border: 1px solid rgba(255, 166, 0, 0.18);
+        background: rgba(20, 20, 26, 0.75);
+        font: 12px/1 system-ui, sans-serif;
       }
       #effects .warp-intensity {
         display: flex;

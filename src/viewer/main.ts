@@ -63,6 +63,16 @@ import {
 } from '../lib/effects';
 import type { RelightingAttachment, RelightingProxy } from '../lib/relighting';
 import { createRelightClock } from './relight-clock';
+import {
+  FLASH_RINGS_DEFAULT,
+  FOG_ACCENT_PRESETS,
+  FOG_DENSITY_DEFAULT,
+  FOG_DENSITY_MAX,
+  createVolumetricFogMode,
+  fogLayerHeight,
+  flashlightHalfAngle,
+  type VolumetricFogMode,
+} from './volumetric-fog';
 import { showError, hideError, isErrorVisible, describeLoadError } from './failure';
 import { loadingOverlayText, loadingPill } from './loading-status';
 import { createDropZone, filesFromDirectoryInput } from './drop-zone';
@@ -1425,8 +1435,15 @@ async function main(): Promise<void> {
     commitCameraMove();
   };
 
+  /** The cinematic orbit never runs while walking, so its toggle is hidden. */
+  const syncOrbitToggleVisibility = (): void => {
+    const toggle = document.getElementById('cinematic-orbit');
+    if (toggle) toggle.hidden = walkMode;
+  };
+
   const setWalkMode = (walk: boolean): void => {
     walkMode = walk;
+    syncOrbitToggleVisibility();
     if (walk) groundCamera();
     refreshOverlay();
   };
@@ -1446,6 +1463,7 @@ async function main(): Promise<void> {
           if (!enabled && walkMode) {
             // Walking needs a floor; without collision there is none.
             walkMode = false;
+            syncOrbitToggleVisibility();
             collisionToggles.setWalk(false);
           }
           refreshOverlay();
@@ -2165,7 +2183,7 @@ async function main(): Promise<void> {
       return true;
     }
     // Chrome mounts before the first scene; do not wipe `?effects=relight` yet.
-    if (!mounted && effectMode === 'relight') return true;
+    if (!mounted && (effectMode === 'relight' || effectMode === 'fog')) return true;
     return false;
   };
 
@@ -2548,6 +2566,7 @@ async function main(): Promise<void> {
         relightProxyFailed = false;
         refreshRelightEffectOption();
         if (effectMode === 'relight' && mounted) setupRelight(splats);
+        if (effectMode === 'fog' && mounted) void setupFog(splats);
       },
       undefined,
       (err) => {
@@ -2583,6 +2602,63 @@ async function main(): Promise<void> {
       renderer.setClearColor(relightClearColor, previousAlpha);
       renderer.autoClear = previousAutoClear;
     }
+  };
+
+  // ?effects=fog: low ground fog lit by a carried flashlight and one fixed
+  // spot, on the same collision proxy as relight (see volumetric-fog.ts).
+  let fogMode: VolumetricFogMode | null = null;
+  let fogSetupSequence = 0;
+  /** Wired after the effect picker mounts; shows the fog sliders. */
+  let syncFogControls:
+    | ((state: {
+        visible: boolean;
+        fog?: number;
+        rings?: number;
+        focus?: number;
+        carried?: boolean;
+      }) => void)
+    | null = null;
+
+  const teardownFog = (): void => {
+    fogSetupSequence++;
+    fogMode?.dispose();
+    fogMode = null;
+    syncFogControls?.({ visible: false });
+  };
+
+  const setupFog = async (mesh: SplatMesh): Promise<void> => {
+    teardownFog();
+    const sequence = fogSetupSequence;
+    const useExternal = relightExternalGeometries !== null && relightExternalGeometries.length > 0;
+    if (!useExternal && (!collisionTilesForRelight || collisionTilesForRelight.length === 0)) {
+      // Collision is still loading; its completion calls back in here.
+      return;
+    }
+    mesh.updateWorldMatrix(true, false);
+    const accentPresets = FOG_ACCENT_PRESETS[sceneTitle];
+    const mode = await createVolumetricFogMode({
+      renderer,
+      camera,
+      matrixWorld: mesh.matrixWorld,
+      ...(useExternal
+        ? { geometries: relightExternalGeometries! }
+        : { tiles: collisionTilesForRelight! }),
+      ...(accentPresets ? { accents: accentPresets } : {}),
+    });
+    if (sequence !== fogSetupSequence || !mounted || splats !== mesh || effectMode !== 'fog') {
+      mode.dispose();
+      return;
+    }
+    fogMode = mode;
+    setEffectModifiers([mode.modifier]);
+    mode.attach(mesh);
+    syncFogControls?.({
+      visible: true,
+      fog: mode.fogDensity,
+      rings: FLASH_RINGS_DEFAULT,
+      focus: mode.startFocus,
+      carried: true,
+    });
   };
 
   const lodLegend = document.createElement('div');
@@ -2802,6 +2878,7 @@ async function main(): Promise<void> {
     collisionWorld = null;
     collisionTilesForRelight = null;
     walkMode = false;
+    syncOrbitToggleVisibility();
     collisionToggles.setWalk(false);
     fpvWalkPending = parseFpvParam(params.get('fpv'));
 
@@ -2827,6 +2904,7 @@ async function main(): Promise<void> {
         });
         refreshRelightEffectOption();
         if (effectMode === 'relight' && mounted && splats === mesh) setupRelight(mesh);
+        if (effectMode === 'fog' && mounted && splats === mesh) void setupFog(mesh);
         refreshOverlay(); // the hint gains the walk/fly key
         applyWalkFromUrl();
       })
@@ -2876,6 +2954,7 @@ async function main(): Promise<void> {
     if (effectMode !== 'relight') {
       teardownRelight();
     }
+    if (effectMode !== 'fog') teardownFog();
     // LOD level channel is only written while the lod effect is active.
     if (mesh instanceof StreamedSplatMesh) {
       mesh.setLodLevelDebug(effectMode === 'lod');
@@ -2890,6 +2969,10 @@ async function main(): Promise<void> {
       updateEffects = (t) => sdf.setShapes(makeAnimatedSdfShapes(t, localBounds));
     } else if (effectMode === 'relight') {
       setupRelight(mesh);
+    } else if (effectMode === 'fog') {
+      setEffectModifiers([]);
+      updateEffects = null;
+      void setupFog(mesh);
     } else if (effectMode === 'reveal') {
       const reveal = revealPreset({ frequency: 6, edge: 0.06 });
       setEffectModifiers([reveal.modifier]);
@@ -4266,7 +4349,13 @@ async function main(): Promise<void> {
     // Single-letter shortcuts: never while a text field has focus, or typing a
     // URL into the welcome box would clear the paint and toggle the sky.
     if (isEditableTarget(e.target)) return;
-    if (e.key === 'c' || e.key === 'C') paintTool?.clear();
+    // Leave browser chords (Ctrl/Cmd+C copy, Ctrl/Cmd+F find) alone.
+    const chord = e.ctrlKey || e.metaKey || e.altKey;
+    if (!chord && (e.key === 'c' || e.key === 'C')) paintTool?.clear();
+    // 'f' puts the volumetric-fog flashlight down where it is, or picks it up.
+    if (!chord && (e.key === 'f' || e.key === 'F') && fogMode) {
+      syncFogControls?.({ visible: true, carried: fogMode.toggleCarried() });
+    }
     // 'v' toggles the .lcc2 environment/background tile (M12).
     if (
       (e.key === 'v' || e.key === 'V') &&
@@ -4647,6 +4736,7 @@ async function main(): Promise<void> {
       // the mirror camera, which would fight the cyclopean order both eyes share.
       if (mounted && !presenting && !nearL0HoldActive) renderMirror();
       if (mounted && !presenting && !nearL0HoldActive) renderRelightPass();
+      if (mounted && !presenting && !nearL0HoldActive) fogMode?.renderLighting();
       // `mounted` is false only when the initial scene failed to load: keep
       // drawing the empty scene so a dropped file has a live loop to land in.
       if (mounted && !presenting) separateTool?.update(timer.getElapsed());
@@ -4730,6 +4820,7 @@ async function main(): Promise<void> {
         splats.visible = false;
       }
       renderer.render(scene, camera);
+      if (mounted && !presenting && !nearL0HoldActive) fogMode?.renderBeams();
       if (postUpdate && xrPostUpdateHandle === null) {
         const renderedSplats = splats;
         xrPostUpdateHandle = setTimeout(() => {
@@ -5006,6 +5097,16 @@ async function main(): Promise<void> {
           if (effectMode !== 'warp' || !liveWarp) return;
           liveWarp.intensity.value = intensity;
         },
+        onFogInput: (control, value) => {
+          if (!fogMode) return;
+          if (control === 'fog') fogMode.setFogDensity(value);
+          else if (control === 'rings') fogMode.setRings(value);
+          else fogMode.setFocus(value);
+        },
+        onFogCarriedToggle: () => {
+          if (!fogMode) return;
+          syncFogControls?.({ visible: true, carried: fogMode.toggleCarried() });
+        },
       },
     );
     const PAINT_OWNS_EFFECTS = 'Paint owns the modifier stack - switch the tool to change effects.';
@@ -5056,7 +5157,11 @@ async function main(): Promise<void> {
     setPointerTool(initialTool);
     syncDofFocusSlider = effectPicker.syncDofFocus;
     syncWarpIntensitySlider = effectPicker.syncWarpIntensity;
-    syncRelightModeVisible = (visible) => effectPicker.setModeVisible('relight', visible);
+    syncRelightModeVisible = (visible) => {
+      effectPicker.setModeVisible('relight', visible);
+      effectPicker.setModeVisible('fog', visible);
+    };
+    syncFogControls = effectPicker.syncFog;
     refreshRelightEffectOption();
     if (effectMode === 'dof' && mounted) {
       const bounds = splats.computeSplatBounds();
@@ -5516,11 +5621,20 @@ function buildEffectPicker(
   options: {
     onDofFocusInput?: (focusDistance: number) => void;
     onWarpIntensityInput?: (intensity: number) => void;
+    onFogInput?: (control: 'fog' | 'rings' | 'beam', value: number) => void;
+    onFogCarriedToggle?: () => void;
   } = {},
 ): {
   element: HTMLElement;
   syncDofFocus: (state: { visible: boolean; value?: number; min?: number; max?: number }) => void;
   syncWarpIntensity: (state: { visible: boolean; value?: number }) => void;
+  syncFog: (state: {
+    visible: boolean;
+    fog?: number;
+    rings?: number;
+    focus?: number;
+    carried?: boolean;
+  }) => void;
   /** Greys the control out (paint owns the stack) and shows why on hover. */
   setEnabled: (enabled: boolean, reason?: string) => void;
   /** Reflects an effect change this picker did not originate. */
@@ -5540,6 +5654,11 @@ function buildEffectPicker(
       label: 'relight',
       mode: 'relight',
       title: 'PlayCanvas-style proxy-mesh relight (uses collision or ?proxy= mesh)',
+    },
+    {
+      label: 'volumetric fog',
+      mode: 'fog',
+      title: 'Low ground fog lit by a flashlight (F puts it down) and accent spot lights',
     },
     { label: 'reveal', mode: 'reveal', title: 'wgslFn noise dissolve - WebGPU only (M7.5)' },
     {
@@ -5681,6 +5800,113 @@ function buildEffectPicker(
     applyWarpReadout();
   };
 
+  // Volumetric fog: one pill per slider, plus the flashlight put-down toggle.
+  const fogSlot = document.createElement('span');
+  fogSlot.className = 'fog-slot';
+  fogSlot.hidden = true;
+  const fogRanges = new Map<'fog' | 'rings' | 'beam', HTMLInputElement>();
+  const fogPill = (
+    control: 'fog' | 'rings' | 'beam',
+    caption: string,
+    title: string,
+    min: number,
+    max: number,
+    value: number,
+    format: (v: number) => string,
+    after?: string,
+  ): void => {
+    const pill = document.createElement('label');
+    pill.className = 'fog-control';
+    pill.title = title;
+    const lead = document.createElement('span');
+    lead.textContent = caption;
+    const range = document.createElement('input');
+    range.type = 'range';
+    range.min = String(min);
+    range.max = String(max);
+    range.step = 'any';
+    range.value = String(value);
+    range.setAttribute('aria-label', title);
+    const readout = document.createElement('output');
+    const applyReadout = (): void => {
+      readout.textContent = format(Number(range.value));
+    };
+    applyReadout();
+    range.addEventListener('pointerdown', (e) => e.stopPropagation());
+    range.addEventListener('input', () => {
+      applyReadout();
+      options.onFogInput?.(control, Number(range.value));
+    });
+    range.addEventListener('change', applyReadout);
+    pill.append(lead, range);
+    if (after) {
+      const tail = document.createElement('span');
+      tail.textContent = after;
+      pill.append(tail);
+    }
+    pill.append(readout);
+    fogSlot.appendChild(pill);
+    fogRanges.set(control, range);
+  };
+  fogPill(
+    'fog',
+    'fog',
+    'Fog density; thicker fog also rises higher',
+    0,
+    FOG_DENSITY_MAX,
+    FOG_DENSITY_DEFAULT,
+    (v) => `${fogLayerHeight(v).toFixed(1)} m`,
+  );
+  fogPill(
+    'rings',
+    'rings',
+    'Flashlight reflector rings',
+    0,
+    1,
+    FLASH_RINGS_DEFAULT,
+    (v) => `${Math.round(v * 100)}%`,
+  );
+  fogPill(
+    'beam',
+    'wide',
+    'Flashlight focus: wide and dim to narrow and bright',
+    0,
+    1,
+    0.5,
+    (v) => `${Math.round(2 * THREE.MathUtils.radToDeg(flashlightHalfAngle(v)))}°`,
+    'narrow',
+  );
+  const fogCarry = document.createElement('button');
+  fogCarry.type = 'button';
+  fogCarry.className = 'fog-control fog-carry';
+  fogCarry.title = 'Put the flashlight down where it is, or pick it back up (F)';
+  fogCarry.addEventListener('pointerdown', (e) => e.stopPropagation());
+  fogCarry.addEventListener('click', () => options.onFogCarriedToggle?.());
+  fogSlot.appendChild(fogCarry);
+
+  const syncFog = (state: {
+    visible: boolean;
+    fog?: number;
+    rings?: number;
+    focus?: number;
+    carried?: boolean;
+  }): void => {
+    fogSlot.hidden = !state.visible;
+    if (!state.visible) return;
+    const set = (control: 'fog' | 'rings' | 'beam', value: number | undefined): void => {
+      const range = fogRanges.get(control);
+      if (!range || typeof value !== 'number' || !Number.isFinite(value)) return;
+      range.value = String(value);
+      range.dispatchEvent(new Event('change'));
+    };
+    set('fog', state.fog);
+    set('rings', state.rings);
+    set('beam', state.focus);
+    if (typeof state.carried === 'boolean') {
+      fogCarry.textContent = state.carried ? 'F · put down' : 'F · pick up';
+    }
+  };
+
   const syncPaintColorVisibility = (): void => {
     colorInput.hidden = current !== 'paint';
   };
@@ -5690,6 +5916,7 @@ function buildEffectPicker(
     syncPaintColorVisibility();
     if (current !== 'dof') dofFocus.hidden = true;
     if (current !== 'warp') warpIntensity.hidden = true;
+    if (current !== 'fog') fogSlot.hidden = true;
   };
 
   select.addEventListener('change', () => {
@@ -5717,6 +5944,7 @@ function buildEffectPicker(
   warpSlot.className = 'warp-slot';
   warpSlot.appendChild(warpIntensity);
   picker.appendChild(warpSlot);
+  picker.appendChild(fogSlot);
 
   render();
   // Prefer the bottom chrome so narrow viewports can wrap the pickers above stats.
@@ -5726,6 +5954,7 @@ function buildEffectPicker(
     element: picker,
     syncDofFocus,
     syncWarpIntensity,
+    syncFog,
     setEnabled: (enabled, reason) => {
       select.disabled = !enabled;
       label.title = enabled ? '' : (reason ?? '');

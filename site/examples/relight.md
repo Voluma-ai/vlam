@@ -108,5 +108,6 @@ you copy this out.
 
 ## Next
 
+- [Flashlight in the fog](/examples/flashlight-fog): a ringed spot light carried through a foggy hall at night
 - [Tiny planet](/examples/tiny-planet): wrap this same street without moving the camera
 - [Shader effects](/examples/shader-effects): the cheap per-splat lighting preset
