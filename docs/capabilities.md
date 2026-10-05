@@ -195,12 +195,18 @@ to 0 on the `smooth` profile to save bandwidth and memory. Opt-in float16 pool
 textures (`poolFloatTextures: 'float16'`) and the adaptive pixel-ratio policy
 (`suggestAdaptivePixelRatio`) exist for tighter memory and frame-time budgets.
 The **demo** performance mode (default-on on mobile and on `integrated` /
-`fallback` desktops) keeps that 3σ cutoff and
-turns off renderer MSAA. That is what held 60 Hz on an iPhone 15
-Pro during a hard orbit, what a MacBook Air M3 still needs on streamed
-million-splat scenes, and what a Galaxy S24 Ultra still needs on the same views
-(see below). The library defaults above are unchanged. The HD toggle remains
-for A/B. Do not ship HD as the Mac or phone default.
+`fallback` desktops) keeps that 3σ cutoff. That is what held 60 Hz on an
+iPhone 15 Pro during a hard orbit, what a MacBook Air M3 still needs on
+streamed million-splat scenes, and what a Galaxy S24 Ultra still needs on the
+same views (see below). The library defaults above are unchanged. The HD
+toggle remains for A/B. Do not ship HD as the Mac or phone default.
+Renderer MSAA is off in both modes for splat-only frames: a splat's quad edge
+is already transparent at 3σ, so 4× sampling changed nothing in lossless
+captures while costing ~4.7 ms of a 14 ms Tempel pass on an RTX 3090 at HD
+(1755×963, 6.6M resident; 5.6 → 5.1 ms on a 1.8M static scene). The demo
+turns it on live only while a hard-edged overlay is on screen - the
+separate-tool gizmo, the `?query=1` markers, the `?mirror=1` plane, or an XR
+session - and never in SD. `?rendererAntialias=0/1` pins it.
 The minimum-radius default is mobile-only: integrated or fallback desktops may
 still select the broader `smooth` fill policy, but retain a `0` px floor.
 

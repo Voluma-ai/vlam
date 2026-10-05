@@ -140,7 +140,7 @@ import {
 } from './chrome';
 import { whenDocumentVisible } from './when-document-visible';
 import { installPageResourceLifecycle } from './page-resource-lifecycle';
-import { setRendererMsaa, getRendererMsaaSamples } from './renderer-msaa';
+import { createRendererMsaaPolicy, getRendererMsaaSamples } from './renderer-msaa';
 import { DoubleTapDetector } from './double-tap';
 import { sampleTeleportTransition, type TeleportTransition } from './teleport-transition';
 import { PressForwardDetector } from './press-forward';
@@ -588,8 +588,7 @@ async function main(): Promise<void> {
   // Enrich the navigator profile with a WebGPU adapter class so laptop / Apple
   // Silicon desktops take the integrated tier instead of the workstation 8M path.
   // Resolved before the renderer so the first frame already has the device
-  // default (performance mode drops MSAA at construction; the HD toggle can
-  // restore it live via setRendererMsaa).
+  // default (performance mode sets the start resolution and budget).
   const baseDeviceProfile = detectSplatDeviceProfile() ?? {};
   const probedGpuClass = await probeSplatGpuClass();
   const deviceProfile: SplatDeviceProfile = {
@@ -599,20 +598,22 @@ async function main(): Promise<void> {
   // Performance mode trades detail for frame rate, defaulting on where the GPU
   // needs it (mobile + integrated/fallback desktop) and remembering whatever
   // the viewer chooses. It drives the costs a running viewer can still change:
-  // render resolution, resident splat budget, Gaussian cutoff, and MSAA.
+  // render resolution, resident splat budget, and Gaussian cutoff.
   // Streamed SH bands are still a load-time choice.
   const perfMode = createPerformanceMode(isFillConstrainedSplatDevice(deviceProfile));
-  // Renderer MSAA is on when performance mode is off; ?rendererAntialias=0/1
-  // pins it for A/B (distinct from ?antialias, which toggles the Mip-Splatting
-  // filter, not the render target). Measured on an iPhone 15 Pro: MSAA was the
-  // last few milliseconds that tipped a 3σ pass back over 16.6 ms.
+  // Renderer MSAA never helps a splat (its quad edge is already transparent at
+  // 3σ) but every blended fragment pays for the extra samples: on an RTX 3090
+  // at 1755×963 HD it was ~4.7 ms of a 14 ms Tempel pass and a 600k scene's
+  // last few milliseconds over 16.6 ms on an iPhone 15 Pro. So the frame
+  // starts without it, and `rendererMsaa` (below) switches it on live only
+  // while a hard-edged overlay is on screen: the separate-tool gizmo, the
+  // ?query markers, the ?mirror plane, or an XR session (its reference cube).
+  // ?rendererAntialias=0/1 pins it for A/B (distinct from ?antialias, which
+  // toggles the Mip-Splatting filter, not the render target).
   const rendererAntialiasParam = params.get('rendererAntialias');
-  const rendererAntialias =
-    rendererAntialiasParam === '0'
-      ? false
-      : rendererAntialiasParam === '1'
-        ? true
-        : !perfMode.enabled;
+  const rendererAntialiasPinned =
+    rendererAntialiasParam === '0' ? false : rendererAntialiasParam === '1' ? true : null;
+  const rendererAntialias = rendererAntialiasPinned ?? false;
   const xrSupported =
     params.get('xr') !== '0' &&
     typeof navigator !== 'undefined' &&
@@ -627,6 +628,13 @@ async function main(): Promise<void> {
     forceWebGL,
     xrCompatible: xrSupported,
     trackTimestamp: gpuTimestampsEnabled,
+  });
+  // MSAA is not a public three.js setter: the policy retargets the cached
+  // sample count in place (see renderer-msaa.ts), so a gizmo or a headset can
+  // turn it on without a reload and a file-picker scene stays mounted.
+  const rendererMsaa = createRendererMsaaPolicy(renderer, {
+    pinned: rendererAntialiasPinned,
+    performanceMode: () => perfMode.enabled,
   });
   // Avoid three's full-screen color-conversion pass for Quest XR on either backend.
   // Splat colors are already display-ready; ordinary materials encode inline.
@@ -1013,6 +1021,7 @@ async function main(): Promise<void> {
         logXrDiagnostics(true);
         restoreXrMaterial();
         xrDiagnosticProbe.visible = false;
+        rendererMsaa.set('xr', false);
         xrSortCadence.reset();
         // three leaves its last head pose and union projection on the
         // application camera. Restore the exact desktop state before
@@ -1031,24 +1040,38 @@ async function main(): Promise<void> {
         refreshOverlay();
       });
       if (chrome.enterVr) {
-        buildEnterVrButton(renderer, (message, offerWebGl) => {
-          showError({
-            title: 'Cannot enter VR',
-            message,
-            ...(offerWebGl
-              ? {
-                  action: {
-                    label: 'Reload in WebGL mode',
-                    onClick: () => {
-                      const url = new URL(location.href);
-                      url.searchParams.set('backend', 'webgl');
-                      location.href = url.toString();
+        buildEnterVrButton(
+          renderer,
+          async (xrSession) => {
+            // three sizes the XR target with the renderer's sample count inside
+            // `setSession`, so the cube's MSAA has to be on before it runs.
+            rendererMsaa.set('xr', true);
+            try {
+              await renderer.xr.setSession(xrSession);
+            } catch (error) {
+              rendererMsaa.set('xr', false);
+              throw error;
+            }
+          },
+          (message, offerWebGl) => {
+            showError({
+              title: 'Cannot enter VR',
+              message,
+              ...(offerWebGl
+                ? {
+                    action: {
+                      label: 'Reload in WebGL mode',
+                      onClick: () => {
+                        const url = new URL(location.href);
+                        url.searchParams.set('backend', 'webgl');
+                        location.href = url.toString();
+                      },
                     },
-                  },
-                }
-              : {}),
-          });
-        });
+                  }
+                : {}),
+            });
+          },
+        );
       }
     } catch (error) {
       // XR is an enhancement; a probe failure must not block the 2D viewer.
@@ -2849,15 +2872,18 @@ async function main(): Promise<void> {
   const mountFireOccluder = async (): Promise<void> => {
     if (!logoDepth || !logo || logoFireOccluderPending || !collisionTilesForRelight) return;
     logoFireOccluderPending = true;
-    const depth = logoDepth;
     try {
       const { createRelightingProxy } = await import('../lib/relighting');
-      if (logoDepth !== depth || !logo) return;
+      // The import can yield; the mark is torn down with the scene.
+      const mark = logo;
+      const depth = logoDepth;
+      const tiles = collisionTilesForRelight;
+      if (!mark || !depth || !tiles) return;
       splats.updateWorldMatrix(true, false);
       const inverse = splats.matrixWorld.clone().invert();
       const proxy = createRelightingProxy({
-        tiles: collisionTilesForRelight,
-        geometries: [logo.strokeProxyGeometry().applyMatrix4(inverse)],
+        tiles,
+        geometries: [mark.strokeProxyGeometry().applyMatrix4(inverse)],
         matrixWorld: splats.matrixWorld.clone(),
       });
       logoFireOccluder = proxy;
@@ -4651,6 +4677,10 @@ async function main(): Promise<void> {
     const active = pointerTool === 'select';
     separateTool.setInteractive(active);
     separateTool.volumeAnchor.visible = active;
+    // The gizmo and its wireframe volume are the demo's hard-edged overlays;
+    // multisample while the tool is armed, not just once an object is picked,
+    // so the sample count does not flip mid-gesture.
+    rendererMsaa.set('gizmo', active);
     if (!active) {
       // Drop the tint too: a highlight with no visible volume is unexplainable.
       modifierSlots.set('selection', null);
@@ -4893,6 +4923,7 @@ async function main(): Promise<void> {
   // (queryHeight) - a floor probe running across a streamed scene as its LOD
   // churns, with no GPU round-trip and no collision mesh.
   const spatialQueryDemo = params.get('query') === '1';
+  rendererMsaa.set('query', spatialQueryDemo);
   const nearestMarker = new THREE.Mesh(
     new THREE.SphereGeometry(0.12, 16, 12),
     new THREE.MeshBasicMaterial({ color: 0x33ff88, depthTest: false }),
@@ -4958,6 +4989,7 @@ async function main(): Promise<void> {
     scene.add(mirrorPlane);
     sizeMirrorTarget();
   }
+  rendererMsaa.set('mirror', mirrorDemo);
   const configureMirrorForScene = (): boolean => {
     if (!mirrorDemo || !mounted) return false;
     // Put the mirror plane at the scene's floor, sized to span it. The mesh's
@@ -5718,10 +5750,9 @@ async function main(): Promise<void> {
   }
 
   // Performance-mode toggle. Applies live: resolution, resident budget,
-  // contribution culling, Gaussian cutoff, and renderer MSAA. MSAA is not a
-  // public three.js setter - `setRendererMsaa` retargets the cached sample
-  // count in place so HD does not need a reload (and a file-picker scene
-  // stays mounted). A pinned ?pixelRatio / ?budget / ?maxStdDev /
+  // contribution culling, Gaussian cutoff, and (while a hard-edged overlay is
+  // on screen) renderer MSAA, so HD does not need a reload and a file-picker
+  // scene stays mounted. A pinned ?pixelRatio / ?budget / ?maxStdDev /
   // ?rendererAntialias still wins, so A/B runs stay reproducible.
   if (chrome.perfMode) {
     buildPerformanceToggle(perfMode.enabled, (enabled) => {
@@ -5732,9 +5763,7 @@ async function main(): Promise<void> {
       resetAdaptivePixelRatio();
       renderer.setPixelRatio(resolvePixelRatio());
       renderer.setSize(window.innerWidth, window.innerHeight);
-      if (rendererAntialiasParam === null) {
-        setRendererMsaa(renderer, !enabled);
-      }
+      rendererMsaa.sync();
       // Routed through the shared helper so a toggle *during* an immersive
       // session keeps the stereo cap instead of restoring the page budget.
       applySplatBudget();
@@ -5862,6 +5891,7 @@ async function main(): Promise<void> {
  */
 function buildEnterVrButton(
   renderer: THREE.WebGPURenderer,
+  setSession: (session: XRSession) => Promise<void>,
   onFailure: (message: string, offerWebGl: boolean) => void,
 ): void {
   const needsWebGpuFeature =
@@ -5890,7 +5920,7 @@ function buildEnterVrButton(
           session = null;
           button.textContent = 'Enter VR';
         });
-        await attachXrSession(next, (xrSession) => renderer.xr.setSession(xrSession));
+        await attachXrSession(next, setSession);
         session = next;
         button.textContent = 'Exit VR';
       } catch (error) {
@@ -5921,8 +5951,8 @@ function buildPerformanceToggle(enabled: boolean, onChange: (enabled: boolean) =
     button.setAttribute('aria-pressed', String(value));
     button.textContent = value ? 'SD' : 'HD';
     const label = value
-      ? 'SD: lower resolution, splat coverage, and MSAA for frame rate. On by default on mobile.'
-      : 'HD: full resolution, splat coverage, and MSAA.';
+      ? 'SD: lower resolution and splat coverage for frame rate. On by default on mobile.'
+      : 'HD: full resolution and splat coverage.';
     button.setAttribute('aria-label', label);
     button.title = label;
   };

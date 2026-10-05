@@ -85,6 +85,18 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- Demo: HD no longer multisamples splat-only frames. A splat's quad edge is
+  already transparent at 3σ, so renderer MSAA changed nothing in lossless
+  captures (mean difference < 0.04/255 on Tempel, Kauz and goose) while
+  costing ~4.7 ms of a 14 ms Tempel pass on an RTX 3090 at 1755×963 (6.6M
+  resident; 5.6 → 5.1 ms on a 1.8M static scene, 3.0 → 1.8 ms on goose).
+  The renderer now starts without MSAA in both modes and switches it on live,
+  through the existing sample-count retarget, only while a hard-edged overlay
+  is on screen: the separate-tool gizmo while that tool is armed, the
+  `?query=1` markers, the `?mirror=1` plane, or an XR session (set before
+  `setSession`, because three sizes the XR target from the renderer's sample
+  count there). SD never multisamples; `?rendererAntialias=0/1` still pins
+  the renderer for A/B. The HD/SD labels drop their MSAA wording.
 - The SH compute cache now accepts an owned dynamic pool (`StreamedSplatMesh`,
   dynamic-capacity `SplatMesh`) when `shEvaluation: 'compute'` is explicit.
   A standalone streamed mesh with SH otherwise evaluates SH per vertex every
