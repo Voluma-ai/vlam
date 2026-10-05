@@ -5,6 +5,14 @@ The published package bundles no third-party code as-is; [three](https://github.
 below cover algorithms adapted, with substantial modification, into original
 source in this repository.
 
+## three.js examples
+
+Copyright (c) 2010-2026 three.js authors
+
+The demo viewer's volumetric fire (`src/viewer/volume-fire.ts`) adapts the
+fluid-simulation kernels of the `webgpu_volume_fire` example. three.js is
+MIT-licensed; the license text is the same as the PlayCanvas one below.
+
 ## PlayCanvas Engine
 
 Copyright (c) 2011-2026 PlayCanvas Ltd.

@@ -745,9 +745,19 @@ export function applySplatMaterialGraph(
         majorAxis,
         minorAxis,
       );
+      // Live DoF: drop splats whose faded peak is invisible (see
+      // `SplatContributionDof`); a no-op branch while the aperture is 0.
+      const dofVisible = isSplatContributionVisible(
+        asNode<'float'>(settings.lodAlpha ? stack.color.a.mul(2) : stack.color.a),
+        majorAxis,
+        minorAxis,
+        0,
+        0,
+        { aperture: uniforms.dofAperture, opacityCompensation },
+      );
 
       const writePosition = (): void => {
-        If(footprintVisible, () => {
+        If(footprintVisible.and(dofVisible), () => {
           const pixelOffset = majorAxis
             .mul(positionGeometry.x)
             .add(minorAxis.mul(positionGeometry.y));

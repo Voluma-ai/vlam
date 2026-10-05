@@ -21,6 +21,21 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- Demo: `?logo=full` (or `?logo=stroke`) stands the VLAM! mark in the scene
+  as synthetic splats built from the logo bitmap - the white stroke as an
+  extruded, flame-lit cutout (flat faces, hard edges, ~22k splats) and the
+  flame as an animated volumetric body with glow, rising embers and a light
+  pool, placed in Tempel's courtyard (or at `?logoAt=x,y,z`, sized by
+  `?logoHeight=`). Under `?effects=fog` the flame is an accent light.
+  `?logoAnim=0` freezes it. On WebGPU the flame is a simulated volumetric fire
+  (a GPU fluid solve in the flame's shape, after three's `webgpu_volume_fire`
+  example); `?fire=splat` keeps the splat flame instead. The mark is WebGPU-only
+  for now: the WebGL2 fallback cannot sort it with a streamed scene, so it
+  stays hidden there. The
+  stroke joins the fog and relight proxies as a mesh of its own shape, so the
+  flashlight and accent lights land on it, and the fire stops at the
+  collision proxy's depth so pillars occlude it.
+
 - Shadow-factor relighting fill honours `SpotLight.map` (projected like
   three's own spot lights), and contributions take a radial `beamProfile`
   texture plus a live `beamProfileStrength`, so textured beams such as
@@ -34,7 +49,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - Demo viewer: a *volumetric fog* effect. Low ground fog lit by a
   camera-carried ringed flashlight (`F` puts it down; fog, rings and focus
   sliders) and accent spot lights. On Tempel: a warm lamp slowly circling
-  the courtyard behind both pillar rings, plus an orange and a blue spot
+  the courtyard behind both pillar rings, plus a purple and a blue spot
   crossing the courtyard.
 
 - `updateRelightingShadowFactorWeights(material, contributions)` retunes
