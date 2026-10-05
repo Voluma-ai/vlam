@@ -25,8 +25,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   a proxy mesh (LCC collision tiles, or a dropped GLB): the splats draw
   unchanged into a colour target, the proxy supplies the depth they never
   write, and a half-resolution gather blur with the core path's circle of
-  confusion composites the result. Its cost no longer grows with splat count
-  (Tempel: 7 → ~55 fps). Captures without a proxy keep the core per-splat
+  confusion composites the result. The core path stays on underneath with a
+  pixel-scale circle of confusion so far splats rasterize as small discs
+  rather than flickering sub-pixel dots, and the scene target skips MSAA
+  (invisible on Gaussian footprints, costly to blend). Its cost no longer
+  grows with splat count (Tempel: 7 → 60 fps). Captures without a proxy keep the core per-splat
   `setDepthOfField` path. The picker gains an aperture slider beside focus,
   and the focus slider is logarithmic, so a large capture's range is as
   usable beside the camera as across the scene; both drive either path.

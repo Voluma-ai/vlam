@@ -2739,7 +2739,11 @@ async function main(): Promise<void> {
           tiles: collisionTilesForRelight!,
           matrixWorld: mesh.matrixWorld.clone(),
         });
-    const mode = createPostDepthOfField(renderer, settings);
+    const mode = createPostDepthOfField(renderer, settings, {
+      // The core path stays on under the pass with a pixel-scale CoC, so far
+      // splats rasterize as small discs instead of flickering sub-pixel dots.
+      preBlur: (preBlur) => setSceneDepthOfField(mesh, preBlur),
+    });
     mode.setOccluder(occluder.group);
     postDof = mode;
     postDofOccluder = occluder;

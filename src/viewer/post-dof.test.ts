@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_DOF_RADIUS_PX, computeDofCocVariancePx2 } from '../lib/core';
-import { POST_DOF_TAPS, postDofCocPx, vogelDisc } from './post-dof';
+import { POST_DOF_TAPS, postDofCocPx, preBlurAperture, vogelDisc } from './post-dof';
 
 describe('postDofCocPx', () => {
   const lens = { focusDistance: 4, aperture: 0.2, focalPx: 900 };
@@ -32,6 +32,28 @@ describe('postDofCocPx', () => {
       Math.min(MAX_DOF_RADIUS_PX, apertureRadius),
       6,
     );
+  });
+});
+
+describe('preBlurAperture', () => {
+  it('yields an aperture whose CoC at infinity is the requested radius', () => {
+    const aperture = preBlurAperture({
+      radiusPx: 1.5,
+      focusDistance: 8,
+      focalPx: 834,
+      aperture: 0.25,
+    });
+    expect(postDofCocPx({ depth: Infinity, focusDistance: 8, focalPx: 834, aperture })).toBeCloseTo(
+      1.5,
+      6,
+    );
+  });
+
+  it('never exceeds the live aperture, and is off when the effect is', () => {
+    expect(preBlurAperture({ radiusPx: 1.5, focusDistance: 8, focalPx: 10, aperture: 0.25 })).toBe(
+      0.25,
+    );
+    expect(preBlurAperture({ radiusPx: 1.5, focusDistance: 8, focalPx: 834, aperture: 0 })).toBe(0);
   });
 });
 
