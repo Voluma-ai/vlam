@@ -3030,6 +3030,7 @@ async function main(): Promise<void> {
         fog?: number;
         rings?: number;
         focus?: number;
+        lit?: boolean;
         carried?: boolean;
       }) => void)
     | null = null;
@@ -3047,6 +3048,7 @@ async function main(): Promise<void> {
 
   const teardownFog = (): void => {
     fogSetupSequence++;
+    if (fogMode) scene.remove(fogMode.model);
     fogMode?.dispose();
     fogMode = null;
     syncFogControls?.({ visible: false });
@@ -3079,6 +3081,7 @@ async function main(): Promise<void> {
       return;
     }
     fogMode = mode;
+    scene.add(mode.model);
     setEffectModifiers([mode.modifier]);
     mode.attach(logoUnified ?? mesh);
     syncFogControls?.({
@@ -3086,6 +3089,7 @@ async function main(): Promise<void> {
       fog: mode.fogDensity,
       rings: FLASH_RINGS_DEFAULT,
       focus: mode.startFocus,
+      lit: false,
       carried: true,
     });
   };
@@ -4792,6 +4796,17 @@ async function main(): Promise<void> {
     checkOneAnnotationOcclusion();
   };
 
+  // The carried flashlight follows the mouse cursor over the canvas.
+  renderer.domElement.addEventListener('pointermove', (e) => {
+    if (!fogMode || e.pointerType === 'touch') return;
+    const rect = renderer.domElement.getBoundingClientRect();
+    fogMode.setAim({
+      x: ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      y: -(((e.clientY - rect.top) / rect.height) * 2 - 1),
+    });
+  });
+  renderer.domElement.addEventListener('pointerleave', () => fogMode?.setAim(null));
+
   window.addEventListener('keydown', (e) => {
     // Single-letter shortcuts: never while a text field has focus, or typing a
     // URL into the welcome box would clear the paint and toggle the sky.
@@ -4799,9 +4814,14 @@ async function main(): Promise<void> {
     // Leave browser chords (Ctrl/Cmd+C copy, Ctrl/Cmd+F find) alone.
     const chord = e.ctrlKey || e.metaKey || e.altKey;
     if (!chord && (e.key === 'c' || e.key === 'C')) paintTool?.clear();
-    // 'f' puts the volumetric-fog flashlight down where it is, or picks it up.
+    // 'f' lights the volumetric-fog flashlight, then puts it down or picks it up.
     if (!chord && (e.key === 'f' || e.key === 'F') && fogMode) {
-      syncFogControls?.({ visible: true, carried: fogMode.toggleCarried() });
+      {
+        // Off: F lights it; lit: F puts it down or picks it up.
+        if (fogMode.lit) fogMode.toggleCarried();
+        else fogMode.toggleLit();
+        syncFogControls?.({ visible: true, lit: fogMode.lit, carried: fogMode.carried });
+      }
     }
     // 'v' toggles the .lcc2 environment/background tile (M12).
     if (
@@ -5613,7 +5633,7 @@ async function main(): Promise<void> {
         },
         onFogCarriedToggle: () => {
           if (!fogMode) return;
-          syncFogControls?.({ visible: true, carried: fogMode.toggleCarried() });
+          syncFogControls?.({ visible: true, lit: fogMode.toggleLit(), carried: true });
         },
       },
     );
@@ -6165,6 +6185,7 @@ function buildEffectPicker(
     fog?: number;
     rings?: number;
     focus?: number;
+    lit?: boolean;
     carried?: boolean;
   }) => void;
   /** Greys the control out (paint owns the stack) and shows why on hover. */
@@ -6460,7 +6481,7 @@ function buildEffectPicker(
   const fogCarry = document.createElement('button');
   fogCarry.type = 'button';
   fogCarry.className = 'fog-control fog-carry';
-  fogCarry.title = 'Put the flashlight down where it is, or pick it back up (F)';
+  fogCarry.title = 'Turn the flashlight on or off. F lights it, then puts it down or picks it up';
   fogCarry.addEventListener('pointerdown', (e) => e.stopPropagation());
   fogCarry.addEventListener('click', () => options.onFogCarriedToggle?.());
   fogSlot.appendChild(fogCarry);
@@ -6470,6 +6491,7 @@ function buildEffectPicker(
     fog?: number;
     rings?: number;
     focus?: number;
+    lit?: boolean;
     carried?: boolean;
   }): void => {
     fogSlot.hidden = !state.visible;
@@ -6483,8 +6505,8 @@ function buildEffectPicker(
     set('fog', state.fog);
     set('rings', state.rings);
     set('beam', state.focus);
-    if (typeof state.carried === 'boolean') {
-      fogCarry.textContent = state.carried ? 'F · put down' : 'F · pick up';
+    if (typeof state.lit === 'boolean') {
+      fogCarry.textContent = state.lit ? 'Flashlight off' : 'F · flashlight on';
     }
   };
 

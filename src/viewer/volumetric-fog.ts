@@ -90,6 +90,13 @@ export const FLASH_RINGS_DEFAULT = 0.9;
 /** Fill / beam gain are tuned at this half-angle. */
 const REFERENCE = 0.38;
 const FLASH_FILL = 32;
+/**
+ * Fill of the switched-off flashlight. Not 0: a zero fill changes the factor
+ * material's compiled shape, and the weight update then refuses the whole
+ * change, leaving the old fill (and its rings) lit.
+ */
+const FILL_OFF = 1e-6;
+
 /** Flashlight reach (m) at the reference brightness. */
 const FLASH_RANGE = 18;
 const FLASH_GAIN = 0.6;
@@ -181,6 +188,8 @@ export const FOG_ACCENT_PRESETS: Readonly<Record<string, readonly FogAccent[]>> 
 export type VolumetricFogMode = {
   /** Height-fog modifier for the splat effect slot. */
   readonly modifier: SplatModifier;
+  /** The flashlight's visible model (world space); add it to the drawn scene. */
+  readonly model: THREE.Object3D;
   /** Attaches the night factor map to the displayed mesh. */
   attach(target: RelightingTarget): void;
   /** Per frame, before the splat draw: moves the lights and lights the proxy. */
@@ -198,8 +207,17 @@ export type VolumetricFogMode = {
   setFocus(focus: number): void;
   readonly startFocus: number;
   readonly fogDensity: number;
-  /** Puts the flashlight down where it is, or picks it back up. Returns `carried`. */
+  /** Switches the flashlight on or off (it starts off). Returns whether it is now on. */
+  toggleLit(): boolean;
+  /** Puts the lit flashlight down where it is, or picks it back up. Returns `carried`. */
   toggleCarried(): boolean;
+  readonly lit: boolean;
+  readonly carried: boolean;
+  /**
+   * Aims the flashlight at the mouse cursor (normalised device
+   * coordinates, -1…1, y up); `null` points it where the camera looks.
+   */
+  setAim(ndc: { readonly x: number; readonly y: number } | null): void;
   /**
    * The fog's spot lights as of the last {@link renderLighting} (world
    * space), for other volumes that should scatter them too (the mark's smoke).
@@ -317,6 +335,23 @@ export async function createVolumetricFogMode(
       0.12 + lobe(t, 0, 0.2, 0.88) + lobe(t, 0.55, 0.16, 0.38) + lobe(t, 0.88, 0.045, 0.32),
     ),
   );
+
+  // Dark body and a thicker, shorter head along +Y, the lens end at the origin
+  // with a glowing bulb half out of it. Unlit materials: the scene has no lights.
+  const model = new THREE.Group();
+  const darkMaterial = new THREE.MeshBasicMaterial({ color: 0x1b1b1e });
+  const glowMaterial = new THREE.MeshBasicMaterial({ color: 0xfff0d8, toneMapped: false });
+  const bodyGeometry = new THREE.CylinderGeometry(0.022, 0.022, 0.2, 20);
+  const headGeometry = new THREE.CylinderGeometry(0.036, 0.036, 0.07, 24);
+  const bulbGeometry = new THREE.SphereGeometry(0.028, 20, 12);
+  const body = new THREE.Mesh(bodyGeometry, darkMaterial);
+  body.position.y = -0.17;
+  const head = new THREE.Mesh(headGeometry, darkMaterial);
+  head.position.y = -0.035;
+  model.add(body, head, new THREE.Mesh(bulbGeometry, glowMaterial));
+  model.visible = false;
+  const modelAxis = new THREE.Vector3(0, 1, 0);
+  const modelDirection = new THREE.Vector3();
 
   const flashlight = new THREE.SpotLight(0xfff0d8, 1, FLASH_RANGE, START, 0.1, 1.2);
   // Preset accents, or one warm spot anchored across the room (see below).
@@ -526,9 +561,14 @@ export async function createVolumetricFogMode(
 
   // --- Placement -------------------------------------------------------------
   const forward = new THREE.Vector3();
+  const aimPoint = new THREE.Vector3();
+  let aim: { x: number; y: number } | null = null;
   const right = new THREE.Vector3();
   let floorY = probeFloor() ?? camera.position.y - 1.6;
+  let lit = false;
+  let ringStrength = FLASH_RINGS_DEFAULT;
   let carried = true;
+  let focusNow = 0;
   let framesToProbe = 0;
 
   // Without presets, the one accent stands across the room from the camera:
@@ -618,19 +658,30 @@ export async function createVolumetricFogMode(
     beam.dir.value.copy(beam.light.target.position).sub(beam.light.position).normalize();
   };
 
+  /** The rings go with the beam: nothing shows while the flashlight is off. */
+  const applyRings = (): void => {
+    const strength = lit ? ringStrength : 0;
+    beams[0]!.rings.value = strength;
+    flashContribution.beamProfileStrength = strength;
+    flashlight.visible = lit;
+    model.visible = lit;
+    updateRelightingShadowFactorWeights(factorMaterial, contributions());
+  };
+
   const applyFocus = (focus: number): void => {
+    focusNow = focus;
     const angle = flashlightHalfAngle(focus);
     const brightness = WIDE_BRIGHTNESS * (NARROW_BRIGHTNESS / WIDE_BRIGHTNESS) ** focus;
     flashlight.angle = angle;
     beams[0]!.outer.value = angle;
     beams[0]!.inner.value = angle * (1 - flashlight.penumbra);
-    beams[0]!.gain.value = FLASH_GAIN * brightness;
+    beams[0]!.gain.value = lit ? FLASH_GAIN * brightness : 0;
     // A concentrated beam carries further: the distance at which it falls to
     // the same illuminance grows with sqrt(intensity) (inverse-square law).
     flashlight.distance = FLASH_RANGE * Math.sqrt(brightness);
     beams[0]!.range.value = flashlight.distance;
-    flashContribution.fill = FLASH_FILL * brightness;
-    updateRelightingShadowFactorWeights(factorMaterial, contributions());
+    flashContribution.fill = lit ? FLASH_FILL * brightness : FILL_OFF;
+    applyRings();
   };
   const startFocus = (WIDE - START) / (WIDE - NARROW);
   applyFocus(startFocus);
@@ -639,6 +690,7 @@ export async function createVolumetricFogMode(
 
   return {
     modifier,
+    model,
     startFocus,
     get fogDensity() {
       return fogDensity.value;
@@ -688,10 +740,19 @@ export async function createVolumetricFogMode(
         // Held just below and right of the eye, pointing where the camera looks.
         camera.updateMatrixWorld();
         camera.getWorldDirection(forward);
-        flashlight.position.set(0.18, -0.15, 0).applyMatrix4(camera.matrixWorld);
-        flashlight.target.position.copy(camera.position).addScaledVector(forward, 10);
+        flashlight.position.set(0.18, -0.15, -0.45).applyMatrix4(camera.matrixWorld);
+        if (aim === null) {
+          flashlight.target.position.copy(camera.position).addScaledVector(forward, 10);
+        } else {
+          // The point 10 m down the cursor's ray, so the beam crosses it.
+          aimPoint.set(aim.x, aim.y, 0.5).unproject(camera).sub(camera.position).normalize();
+          flashlight.target.position.copy(camera.position).addScaledVector(aimPoint, 10);
+        }
         flashlight.updateMatrixWorld();
         flashlight.target.updateMatrixWorld();
+        model.position.copy(flashlight.position);
+        modelDirection.copy(flashlight.target.position).sub(flashlight.position).normalize();
+        model.quaternion.setFromUnitVectors(modelAxis, modelDirection);
       }
       for (const beam of beams) syncBeam(beam);
       renderRelightingFactorMap(renderer, lightScene, camera, factorTarget);
@@ -722,9 +783,8 @@ export async function createVolumetricFogMode(
       fogLayer = fogLayerHeight(density);
     },
     setRings(strength) {
-      beams[0]!.rings.value = strength;
-      flashContribution.beamProfileStrength = strength;
-      updateRelightingShadowFactorWeights(factorMaterial, contributions());
+      ringStrength = strength;
+      applyRings();
     },
     setFocus: applyFocus,
     volumeLights() {
@@ -738,9 +798,24 @@ export async function createVolumetricFogMode(
         color: beam.light.color,
       }));
     },
+    setAim(ndc) {
+      aim = ndc === null ? null : { x: ndc.x, y: ndc.y };
+    },
+    get carried() {
+      return carried;
+    },
+    get lit() {
+      return lit;
+    },
     toggleCarried() {
       carried = !carried;
       return carried;
+    },
+    toggleLit() {
+      lit = !lit;
+      carried = true;
+      applyFocus(focusNow);
+      return lit;
     },
     dispose() {
       attachment?.dispose();
@@ -755,6 +830,9 @@ export async function createVolumetricFogMode(
       factorTarget.dispose();
       rings.dispose();
       flashlight.dispose();
+      for (const geometry of [bodyGeometry, headGeometry, bulbGeometry]) geometry.dispose();
+      darkMaterial.dispose();
+      glowMaterial.dispose();
       for (const light of accents) light.dispose();
     },
   };
