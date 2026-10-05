@@ -319,8 +319,22 @@ export function unpackRgba8FromFloat(packed: THREE.Node<'float'>): THREE.Node<'v
 }
 
 /**
+ * Live depth-of-field inputs for {@link isSplatContributionVisible}: the CoC
+ * dilation grows the quad (up to `MAX_DOF_RADIUS_PX`) while the √det fade in
+ * `opacityCompensation` dims its peak. Out-of-focus splats that were sub-pixel
+ * end up as large quads whose peak alpha is far below one 8-bit step: they add
+ * nothing visible but still shade their whole footprint (fill-rate collapse).
+ */
+export type SplatContributionDof = {
+  aperture: Scalar;
+  opacityCompensation: Scalar;
+};
+
+/**
  * SuperSplat-style contribution tests. `minPixelSize` is a diameter in px;
  * `minContribution` is opacity × major × minor. Either 0 disables that test.
+ * With `dof` and a live aperture, opacity is the DoF-faded peak and a faded
+ * peak under 1/255 is rejected even when both thresholds are 0.
  */
 export function isSplatContributionVisible(
   opacity: THREE.Node<'float'>,
@@ -328,11 +342,21 @@ export function isSplatContributionVisible(
   minorAxis: THREE.Node<'vec2'>,
   minPixelSize: number,
   minContribution: number,
+  dof?: SplatContributionDof,
 ): THREE.Node<'bool'> {
-  if (minPixelSize <= 0 && minContribution <= 0) return asNode<'bool'>(float(1).greaterThan(0));
+  const dofActive = dof ? asNode<'bool'>(dof.aperture.greaterThan(0)) : null;
+  const effectiveOpacity =
+    dof && dofActive
+      ? asNode<'float'>(dofActive.select(opacity.min(1).mul(dof.opacityCompensation), opacity))
+      : opacity;
+  if (minPixelSize <= 0 && minContribution <= 0) {
+    return dofActive
+      ? asNode<'bool'>(dofActive.not().or(effectiveOpacity.greaterThanEqual(1 / 255)))
+      : asNode<'bool'>(float(1).greaterThan(0));
+  }
   const majorRadius = majorAxis.length();
   const minorRadius = minorAxis.length();
-  let visible: THREE.Node<'bool'> = asNode<'bool'>(opacity.greaterThanEqual(1 / 255));
+  let visible: THREE.Node<'bool'> = asNode<'bool'>(effectiveOpacity.greaterThanEqual(1 / 255));
   if (minPixelSize > 0) {
     visible = asNode<'bool'>(
       visible.and(majorRadius.max(minorRadius).mul(2).greaterThanEqual(minPixelSize)),
@@ -340,7 +364,9 @@ export function isSplatContributionVisible(
   }
   if (minContribution > 0) {
     visible = asNode<'bool'>(
-      visible.and(opacity.mul(majorRadius).mul(minorRadius).greaterThanEqual(minContribution)),
+      visible.and(
+        effectiveOpacity.mul(majorRadius).mul(minorRadius).greaterThanEqual(minContribution),
+      ),
     );
   }
   return visible;

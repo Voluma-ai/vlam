@@ -50,20 +50,26 @@ import type {
 
 type Node<T extends string> = THREE.Node<T>;
 
-/** Night level the factor map multiplies everything by before the lights add fill. */
-const AMBIENT = 0.06;
+/**
+ * Night level the factor map multiplies everything by before the lights add
+ * fill: 30% under the original 0.06, so the lights carry more of the scene.
+ */
+const AMBIENT = 0.042;
 /**
  * Fog fills the room up to a height above the floor that grows with density,
  * from {@link FOG_LAYER_MIN} (no fog) to {@link FOG_LAYER_MAX} at
- * {@link FOG_DENSITY_MAX}; the default density gives about 1.5 m. Soft top.
+ * {@link FOG_DENSITY_MAX}; the default density gives 2.1 m. Soft top.
  */
 const FOG_LAYER_MIN = 0.25;
 const FOG_LAYER_MAX = 5;
 const FOG_EDGE = 0.3;
 /** Top of the fog slider. */
 export const FOG_DENSITY_MAX = 0.3;
-/** Start of the fog slider: a layer about 1.5 m deep. */
-export const FOG_DENSITY_DEFAULT = 0.08;
+/** Fog layer height (m) the fog slider starts at. */
+const FOG_LAYER_DEFAULT = 2.1;
+/** Start of the fog slider: the density whose layer is {@link FOG_LAYER_DEFAULT} deep. */
+export const FOG_DENSITY_DEFAULT =
+  ((FOG_LAYER_DEFAULT - FOG_LAYER_MIN) / (FOG_LAYER_MAX - FOG_LAYER_MIN)) * FOG_DENSITY_MAX;
 /** Fog layer height (m above the floor) for a fog density. */
 export const fogLayerHeight = (density: number): number =>
   FOG_LAYER_MIN +
@@ -84,6 +90,13 @@ export const FLASH_RINGS_DEFAULT = 0.9;
 /** Fill / beam gain are tuned at this half-angle. */
 const REFERENCE = 0.38;
 const FLASH_FILL = 32;
+/**
+ * Fill of the switched-off flashlight. Not 0: a zero fill changes the factor
+ * material's compiled shape, and the weight update then refuses the whole
+ * change, leaving the old fill (and its rings) lit.
+ */
+const FILL_OFF = 1e-6;
+
 /** Flashlight reach (m) at the reference brightness. */
 const FLASH_RANGE = 18;
 const FLASH_GAIN = 0.6;
@@ -103,6 +116,11 @@ export type VolumetricFogInputs = {
   /** Already world-space proxy geometry (e.g. `?proxy=`); wins over `tiles`. */
   geometries?: readonly THREE.BufferGeometry[];
   /**
+   * World-space geometry lit alongside either proxy (the demo's mark, say),
+   * so lights, shadows and the beam march see it. Owned by the caller.
+   */
+  extraGeometries?: readonly THREE.BufferGeometry[];
+  /**
    * Fixed spot lights besides the flashlight (see {@link FOG_ACCENT_PRESETS}).
    * Without any, one warm spot is placed across the room from the camera.
    */
@@ -114,6 +132,12 @@ export type FogAccent = {
   position: readonly [number, number, number];
   target: readonly [number, number, number];
   color?: THREE.ColorRepresentation;
+  /** Cone half-angle in radians; default 0.32 (about 18°). */
+  angle?: number;
+  /** Soft fraction of the cone edge, 0 (hard) … 1; default 0.35. */
+  penumbra?: number;
+  /** Multiplier on the lamp's fill and beam strength; default 1. */
+  gain?: number;
   /**
    * Circles the light around `center` (x, z) at `radius`, keeping its height
    * and aiming at `target`: one lap every `period` seconds, starting at the
@@ -164,21 +188,54 @@ export const FOG_ACCENT_PRESETS: Readonly<Record<string, readonly FogAccent[]>> 
 export type VolumetricFogMode = {
   /** Height-fog modifier for the splat effect slot. */
   readonly modifier: SplatModifier;
+  /** The flashlight's visible model (world space); add it to the drawn scene. */
+  readonly model: THREE.Object3D;
   /** Attaches the night factor map to the displayed mesh. */
   attach(target: RelightingTarget): void;
   /** Per frame, before the splat draw: moves the lights and lights the proxy. */
   renderLighting(): void;
   /** Per frame, after the main render: adds the light scattered by the fog. */
   renderBeams(): void;
+  /**
+   * The proxy depth {@link renderLighting} leaves behind at drawing-buffer
+   * size, for other passes that stop at the scene (the mark's fire).
+   */
+  readonly proxyDepth: THREE.DepthTexture;
   setFogDensity(density: number): void;
   setRings(strength: number): void;
   /** 0 = wide and dim, 1 = narrow and bright. */
   setFocus(focus: number): void;
   readonly startFocus: number;
   readonly fogDensity: number;
-  /** Puts the flashlight down where it is, or picks it back up. Returns `carried`. */
+  /** Switches the flashlight on or off (it starts off). Returns whether it is now on. */
+  toggleLit(): boolean;
+  /** Puts the lit flashlight down where it is, or picks it back up. Returns `carried`. */
   toggleCarried(): boolean;
+  readonly lit: boolean;
+  readonly carried: boolean;
+  /**
+   * Aims the flashlight at the mouse cursor (normalised device
+   * coordinates, -1…1, y up); `null` points it where the camera looks.
+   */
+  setAim(ndc: { readonly x: number; readonly y: number } | null): void;
+  /**
+   * The fog's spot lights as of the last {@link renderLighting} (world
+   * space), for other volumes that should scatter them too (the mark's smoke).
+   */
+  volumeLights(): readonly VolumeLight[];
   dispose(): void;
+};
+
+/** A spot light shaded like the fog's beams: cone, range window, soft falloff. */
+export type VolumeLight = {
+  readonly position: THREE.Vector3;
+  readonly direction: THREE.Vector3;
+  readonly cosOuter: number;
+  readonly cosInner: number;
+  /** The fog's beam gain for this light. */
+  readonly gain: number;
+  readonly range: number;
+  readonly color: THREE.Color;
 };
 
 type BeamLight = {
@@ -208,11 +265,17 @@ export async function createVolumetricFogMode(
   } = await import('../lib/relighting');
   const { renderer, camera } = inputs;
 
+  const extra = inputs.extraGeometries ?? [];
+  // The proxy bakes `matrixWorld` into every geometry it is handed, so world
+  // geometry riding along with source-local tiles is pre-multiplied by the
+  // inverse and comes out in world space again.
+  const inverseWorld = inputs.matrixWorld.clone().invert();
   const proxy: RelightingProxy =
     inputs.geometries && inputs.geometries.length > 0
-      ? createRelightingProxy({ geometries: inputs.geometries, albedo: 1 })
+      ? createRelightingProxy({ geometries: [...inputs.geometries, ...extra], albedo: 1 })
       : createRelightingProxy({
           tiles: inputs.tiles ?? [],
+          geometries: extra.map((geometry) => geometry.clone().applyMatrix4(inverseWorld)),
           matrixWorld: inputs.matrixWorld.clone(),
           albedo: 1,
         });
@@ -273,14 +336,40 @@ export async function createVolumetricFogMode(
     ),
   );
 
+  // Dark body and a thicker, shorter head along +Y, the lens end at the origin
+  // with a glowing bulb half out of it. Unlit materials: the scene has no lights.
+  const model = new THREE.Group();
+  const darkMaterial = new THREE.MeshBasicMaterial({ color: 0x1b1b1e });
+  const glowMaterial = new THREE.MeshBasicMaterial({ color: 0xfff0d8, toneMapped: false });
+  const bodyGeometry = new THREE.CylinderGeometry(0.022, 0.022, 0.2, 20);
+  const headGeometry = new THREE.CylinderGeometry(0.036, 0.036, 0.07, 24);
+  const bulbGeometry = new THREE.SphereGeometry(0.028, 20, 12);
+  const body = new THREE.Mesh(bodyGeometry, darkMaterial);
+  body.position.y = -0.17;
+  const head = new THREE.Mesh(headGeometry, darkMaterial);
+  head.position.y = -0.035;
+  model.add(body, head, new THREE.Mesh(bulbGeometry, glowMaterial));
+  model.visible = false;
+  const modelAxis = new THREE.Vector3(0, 1, 0);
+  const modelDirection = new THREE.Vector3();
+
   const flashlight = new THREE.SpotLight(0xfff0d8, 1, FLASH_RANGE, START, 0.1, 1.2);
   // Preset accents, or one warm spot anchored across the room (see below).
   const accentPoses: readonly (FogAccent | null)[] = inputs.accents?.length
     ? inputs.accents
     : [null];
   const accents = accentPoses.map(
-    (pose) => new THREE.SpotLight(pose?.color ?? 0xffc890, 1, 34, 0.32, 0.35, 1.2),
+    (pose) =>
+      new THREE.SpotLight(
+        pose?.color ?? 0xffc890,
+        1,
+        34,
+        pose?.angle ?? 0.32,
+        pose?.penumbra ?? 0.35,
+        1.2,
+      ),
   );
+  const accentGain = (index: number): number => accentPoses[index]?.gain ?? 1;
   for (const light of [flashlight, ...accents]) {
     light.castShadow = true;
     light.shadow.mapSize.set(1024, 1024);
@@ -298,10 +387,10 @@ export async function createVolumetricFogMode(
     beamProfile: rings,
     beamProfileStrength: FLASH_RINGS_DEFAULT,
   };
-  const accentContributions: RelightingLightContribution[] = accents.map((light) => ({
+  const accentContributions: RelightingLightContribution[] = accents.map((light, i) => ({
     light,
     intensity: 0,
-    fill: 55,
+    fill: 55 * accentGain(i),
   }));
   const contributions = () => [flashContribution, ...accentContributions];
   const factorMaterial = createRelightingShadowFactorMaterial(contributions(), {
@@ -330,12 +419,16 @@ export async function createVolumetricFogMode(
   const densityAt = (y: Node<'float'>): Node<'float'> =>
     fogDensity.mul(float(1).sub(smoothstep(fogTop.sub(FOG_EDGE), fogTop.add(FOG_EDGE), y)));
 
+  // The camera's world position as a uniform rather than TSL's `cameraPosition`:
+  // a unified draw folds this modifier into a compute gather, which has no
+  // camera to resolve the node against.
+  const eyeWorld = uniform(new THREE.Vector3());
   const modifier: SplatModifier = (ctx) => {
-    const toSplat = ctx.worldCenter.sub(cameraPosition);
+    const toSplat = ctx.worldCenter.sub(eyeWorld);
     const distance = toSplat.length();
     // Share of the camera→splat segment that lies inside the layer.
-    const low = min(cameraPosition.y, ctx.worldCenter.y);
-    const high = max(cameraPosition.y, ctx.worldCenter.y);
+    const low = min(eyeWorld.y, ctx.worldCenter.y);
+    const high = max(eyeWorld.y, ctx.worldCenter.y);
     const inside = fogTop.sub(low).div(high.sub(low).max(1e-3)).clamp(0, 1);
     const haze = float(1).sub(exp(fogDensity.mul(distance).mul(inside).negate()));
     return { color: vec4(mix(ctx.color.rgb, fogColor, haze), ctx.color.a) };
@@ -360,7 +453,7 @@ export async function createVolumetricFogMode(
   });
   const beams = [
     beamLight(flashlight, FLASH_GAIN, FLASH_RINGS_DEFAULT, 0),
-    ...accents.map((light) => beamLight(light, 8, 0, 1.2)),
+    ...accents.map((light, i) => beamLight(light, 8 * accentGain(i), 0, 1.2)),
   ];
 
   /** Proxy depth along the view ray, or {@link MAX_DISTANCE} where it shows sky. */
@@ -468,9 +561,14 @@ export async function createVolumetricFogMode(
 
   // --- Placement -------------------------------------------------------------
   const forward = new THREE.Vector3();
+  const aimPoint = new THREE.Vector3();
+  let aim: { x: number; y: number } | null = null;
   const right = new THREE.Vector3();
   let floorY = probeFloor() ?? camera.position.y - 1.6;
+  let lit = false;
+  let ringStrength = FLASH_RINGS_DEFAULT;
   let carried = true;
+  let focusNow = 0;
   let framesToProbe = 0;
 
   // Without presets, the one accent stands across the room from the camera:
@@ -560,19 +658,30 @@ export async function createVolumetricFogMode(
     beam.dir.value.copy(beam.light.target.position).sub(beam.light.position).normalize();
   };
 
+  /** The rings go with the beam: nothing shows while the flashlight is off. */
+  const applyRings = (): void => {
+    const strength = lit ? ringStrength : 0;
+    beams[0]!.rings.value = strength;
+    flashContribution.beamProfileStrength = strength;
+    flashlight.visible = lit;
+    model.visible = lit;
+    updateRelightingShadowFactorWeights(factorMaterial, contributions());
+  };
+
   const applyFocus = (focus: number): void => {
+    focusNow = focus;
     const angle = flashlightHalfAngle(focus);
     const brightness = WIDE_BRIGHTNESS * (NARROW_BRIGHTNESS / WIDE_BRIGHTNESS) ** focus;
     flashlight.angle = angle;
     beams[0]!.outer.value = angle;
     beams[0]!.inner.value = angle * (1 - flashlight.penumbra);
-    beams[0]!.gain.value = FLASH_GAIN * brightness;
+    beams[0]!.gain.value = lit ? FLASH_GAIN * brightness : 0;
     // A concentrated beam carries further: the distance at which it falls to
     // the same illuminance grows with sqrt(intensity) (inverse-square law).
     flashlight.distance = FLASH_RANGE * Math.sqrt(brightness);
     beams[0]!.range.value = flashlight.distance;
-    flashContribution.fill = FLASH_FILL * brightness;
-    updateRelightingShadowFactorWeights(factorMaterial, contributions());
+    flashContribution.fill = lit ? FLASH_FILL * brightness : FILL_OFF;
+    applyRings();
   };
   const startFocus = (WIDE - START) / (WIDE - NARROW);
   applyFocus(startFocus);
@@ -581,10 +690,12 @@ export async function createVolumetricFogMode(
 
   return {
     modifier,
+    model,
     startFocus,
     get fogDensity() {
       return fogDensity.value;
     },
+    proxyDepth: factorTarget.depthTexture,
     attach(target) {
       attachment?.dispose();
       attachment = attachRelighting(target, {
@@ -596,6 +707,7 @@ export async function createVolumetricFogMode(
       });
     },
     renderLighting() {
+      camera.getWorldPosition(eyeWorld.value);
       const now = performance.now() / 1000;
       if (startedAt === null && probeFloor() !== null) startedAt = now;
       const seconds = startedAt === null ? 0 : now - startedAt;
@@ -628,10 +740,19 @@ export async function createVolumetricFogMode(
         // Held just below and right of the eye, pointing where the camera looks.
         camera.updateMatrixWorld();
         camera.getWorldDirection(forward);
-        flashlight.position.set(0.18, -0.15, 0).applyMatrix4(camera.matrixWorld);
-        flashlight.target.position.copy(camera.position).addScaledVector(forward, 10);
+        flashlight.position.set(0.18, -0.15, -0.45).applyMatrix4(camera.matrixWorld);
+        if (aim === null) {
+          flashlight.target.position.copy(camera.position).addScaledVector(forward, 10);
+        } else {
+          // The point 10 m down the cursor's ray, so the beam crosses it.
+          aimPoint.set(aim.x, aim.y, 0.5).unproject(camera).sub(camera.position).normalize();
+          flashlight.target.position.copy(camera.position).addScaledVector(aimPoint, 10);
+        }
         flashlight.updateMatrixWorld();
         flashlight.target.updateMatrixWorld();
+        model.position.copy(flashlight.position);
+        modelDirection.copy(flashlight.target.position).sub(flashlight.position).normalize();
+        model.quaternion.setFromUnitVectors(modelAxis, modelDirection);
       }
       for (const beam of beams) syncBeam(beam);
       renderRelightingFactorMap(renderer, lightScene, camera, factorTarget);
@@ -662,14 +783,39 @@ export async function createVolumetricFogMode(
       fogLayer = fogLayerHeight(density);
     },
     setRings(strength) {
-      beams[0]!.rings.value = strength;
-      flashContribution.beamProfileStrength = strength;
-      updateRelightingShadowFactorWeights(factorMaterial, contributions());
+      ringStrength = strength;
+      applyRings();
     },
     setFocus: applyFocus,
+    volumeLights() {
+      return beams.map((beam) => ({
+        position: beam.pos.value,
+        direction: beam.dir.value,
+        cosOuter: Math.cos(beam.outer.value),
+        cosInner: Math.cos(beam.inner.value),
+        gain: beam.gain.value,
+        range: beam.range.value,
+        color: beam.light.color,
+      }));
+    },
+    setAim(ndc) {
+      aim = ndc === null ? null : { x: ndc.x, y: ndc.y };
+    },
+    get carried() {
+      return carried;
+    },
+    get lit() {
+      return lit;
+    },
     toggleCarried() {
       carried = !carried;
       return carried;
+    },
+    toggleLit() {
+      lit = !lit;
+      carried = true;
+      applyFocus(focusNow);
+      return lit;
     },
     dispose() {
       attachment?.dispose();
@@ -684,6 +830,9 @@ export async function createVolumetricFogMode(
       factorTarget.dispose();
       rings.dispose();
       flashlight.dispose();
+      for (const geometry of [bodyGeometry, headGeometry, bulbGeometry]) geometry.dispose();
+      darkMaterial.dispose();
+      glowMaterial.dispose();
       for (const light of accents) light.dispose();
     },
   };

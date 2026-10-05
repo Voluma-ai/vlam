@@ -26,6 +26,16 @@ splats.setDepthOfField({ focusDistance: 1.8, aperture: 0.45 });
 There is no post-process pass or second render target; the blur is applied while
 each splat is projected.
 
+The cost of that faithfulness is fill: every blurred splat covers a disc up to
+the circle-of-confusion cap, so on a capture with millions of resident splats
+the frame time grows with splat count × CoC². The full viewer therefore runs
+`?effects=dof` as a screen-space pass whenever the capture ships a proxy mesh
+(LCC collision tiles, or a dropped GLB): the splats draw sharp, the proxy
+supplies the depth they never write, and a half-resolution gather blur with
+the same circle of confusion composites the frame. Captures without a proxy
+fall back to the per-splat path above. The library ships only the per-splat
+path; the pass lives in the demo (`src/viewer/post-dof.ts`) as a reference.
+
 ## The two dials
 
 **`focusDistance`**, how far from the camera the sharp plane sits, in world units. This is the one you animate: racking focus from a foreground object to a background one is a shot, not a setting.

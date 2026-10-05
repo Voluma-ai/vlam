@@ -32,7 +32,7 @@ import {
   type StreamedSplatPerformanceEvent,
 } from '../lib/streaming';
 import { computeProjection } from '../lib/projection/compute';
-import { UnifiedSplatMesh } from '../lib/unified';
+import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '../lib/unified';
 import {
   DEFAULT_CLASSIC_SPLATS_PER_SWAP,
   DEFAULT_PAGE_TABLE_WRITES_PER_PLAN,
@@ -73,6 +73,16 @@ import {
   flashlightHalfAngle,
   type VolumetricFogMode,
 } from './volumetric-fog';
+import {
+  LOGO_FLOOR_BELOW,
+  LOGO_PLACEMENTS,
+  createVlamLogo,
+  loadLogoBitmap,
+  type VlamLogo,
+} from './vlam-logo';
+import { createProxyDepth, type ProxyDepth } from './proxy-depth';
+import { createVolumeFire, type VolumeFire } from './volume-fire';
+import { createPostDepthOfField, type PostDepthOfField } from './post-dof';
 import { showError, hideError, isErrorVisible, describeLoadError } from './failure';
 import { loadingOverlayText, loadingPill } from './loading-status';
 import { createDropZone, filesFromDirectoryInput } from './drop-zone';
@@ -176,6 +186,19 @@ const DEFAULT_SCENE = `${import.meta.env.BASE_URL}goose.sog`;
 
 /** Pool texture row width; dynamic sources are row-aligned to this fixed size. */
 const SPLAT_POOL_ROW_WIDTH = 2048;
+/** Longest the canvas waits for the mark, fog and refined frontier after the startup hold. */
+const COMPLETE_VIEW_TIMEOUT_MS = 10_000;
+/** Consecutive ready frames before the canvas fades in. */
+const COMPLETE_VIEW_READY_FRAMES = 3;
+const COMPLETE_VIEW_FADE_MS = 300;
+/** How far the volumetric fire's base sits above the mark's drawn flame, metres. */
+const LOGO_FIRE_LIFT = 0.5;
+/** How far the volumetric fire sits toward the white stroke, metres. */
+const LOGO_FIRE_TOWARD_STROKE = 0.5;
+/** The white spot's fully lit core spans the stroke's angular radius times this. */
+const LOGO_SPOT_MARGIN = 1.05;
+/** Soft fraction of the white spot's cone edge. */
+const LOGO_SPOT_PENUMBRA = 0.15;
 
 /** Absolute URL or site-root path for a scene name from `?scene=`. */
 function resolveSceneUrl(scene: string): string {
@@ -2040,6 +2063,30 @@ async function main(): Promise<void> {
   window.addEventListener('keydown', noteCinematicOrbitInteraction, true);
   window.addEventListener('keyup', noteCinematicOrbitInteraction, true);
   let nearL0RevealFadeUntil = 0;
+  /**
+   * The startup hold lifts on the coarsest in-view LOD, before the mark, its
+   * fire and the fog exist and while the frontier is still refining: showing
+   * that frame reads as a broken scene that pops into place a moment later.
+   * So the canvas stays hidden from the hold until the view is complete (see
+   * `completeViewReady`) or `COMPLETE_VIEW_TIMEOUT_MS` passes, then fades in.
+   */
+  let awaitingCompleteView = false;
+  /** `performance.now()` deadline, 0 while the startup hold is still pending. */
+  let completeViewDeadline = 0;
+  let completeViewReadyFrames = 0;
+  const hideCanvasUntilComplete = (): void => {
+    awaitingCompleteView = true;
+    completeViewDeadline = 0;
+    completeViewReadyFrames = 0;
+    renderer.domElement.style.transition = '';
+    renderer.domElement.style.opacity = '0';
+  };
+  const showCompleteView = (): void => {
+    awaitingCompleteView = false;
+    completeViewDeadline = 0;
+    renderer.domElement.style.transition = `opacity ${COMPLETE_VIEW_FADE_MS}ms ease-out`;
+    renderer.domElement.style.opacity = '';
+  };
   let sceneNote = '';
   let updateEffects: ((elapsed: number) => void) | null = null;
   let paintTool: PaintTool | null = null;
@@ -2077,8 +2124,14 @@ async function main(): Promise<void> {
   let benchmarkGroundY: number | null = null;
   /** Wired after the effect picker mounts; syncs the DoF focus slider. */
   let syncDofFocusSlider:
-    ((state: { visible: boolean; value?: number; min?: number; max?: number }) => void) | null =
-    null;
+    | ((state: {
+        visible: boolean;
+        value?: number;
+        min?: number;
+        max?: number;
+        aperture?: number;
+      }) => void)
+    | null = null;
   let syncWarpIntensitySlider: ((state: { visible: boolean; value?: number }) => void) | null =
     null;
   /** Shows/hides the relight option once a cast mesh is known. */
@@ -2305,15 +2358,20 @@ async function main(): Promise<void> {
     mesh.updateWorldMatrix(true, false);
     // External splat-transform GLB is already Y-up world geometry. LCC
     // collision tiles are source-local and need mesh.matrixWorld baked in.
+    // The mark's stroke joins the proxy so the sun lights and shadows it too
+    // (world geometry; the tiles path bakes `matrixWorld`, so pre-invert).
+    const strokeProxy = logo ? [logo.strokeProxyGeometry()] : [];
     if (useExternal) {
       relightProxy = createRelightingProxy({
-        geometries: relightExternalGeometries!,
+        geometries: [...relightExternalGeometries!, ...strokeProxy],
         albedo: 1,
       });
       console.info(`Relight using ?proxy=${relightProxyUrl}`);
     } else {
+      const inverse = mesh.matrixWorld.clone().invert();
       relightProxy = createRelightingProxy({
         tiles: collisionTilesForRelight!,
+        geometries: strokeProxy.map((geometry) => geometry.applyMatrix4(inverse)),
         matrixWorld: mesh.matrixWorld.clone(),
         albedo: 1,
       });
@@ -2524,7 +2582,7 @@ async function main(): Promise<void> {
     };
 
     const target = ensureRelightTarget();
-    relightAttachment = attachRelighting(mesh, {
+    relightAttachment = attachRelighting(logoUnified ?? mesh, {
       map: target.texture,
       blend: 1,
       brightness: 1,
@@ -2567,6 +2625,7 @@ async function main(): Promise<void> {
         refreshRelightEffectOption();
         if (effectMode === 'relight' && mounted) setupRelight(splats);
         if (effectMode === 'fog' && mounted) void setupFog(splats);
+        if (effectMode === 'dof' && mounted) void setupPostDof(splats, currentDepthOfField(splats));
       },
       undefined,
       (err) => {
@@ -2604,6 +2663,362 @@ async function main(): Promise<void> {
     }
   };
 
+  // ?logo=stroke|full: the VLAM! mark built from synthetic splats, standing
+  // in the scene (see vlam-logo.ts). It mounts once the scene is up, on the
+  // courtyard preset for a known scene, at `?logoAt=x,y,z`, or on the floor at
+  // the scene's center, and faces the camera it was born under. WebGPU only:
+  // the WebGL2 fallback cannot sort it with the scene, so it stays hidden.
+  const logoParam = params.get('logo');
+  const logoParts: 'stroke' | 'full' | null =
+    logoParam === null ? null : logoParam === 'stroke' || logoParam === 'v' ? 'stroke' : 'full';
+  const logoHeightParam = Number(params.get('logoHeight') ?? 8);
+  if (!Number.isFinite(logoHeightParam) || logoHeightParam <= 0) {
+    throw new Error('Invalid logoHeight: expected a positive number of metres.');
+  }
+  const logoAt = parseVector3Param(params.get('logoAt'));
+  let logo: VlamLogo | null = null;
+  let logoMounting = false;
+  /**
+   * On WebGPU the scene and the mark draw through one unified mesh, so one
+   * global sort lets pillars occlude the mark and the mark occlude the scene
+   * from every side. Standalone draws (`?logoUnified=0`, an A/B) layer the
+   * mark on top instead.
+   */
+  let logoUnified: UnifiedSplatMesh | null = null;
+  /**
+   * Core DoF lives on whichever mesh draws: with the mark mounted the scene is
+   * a source of `logoUnified`, whose own DoF uniforms ignore the source's.
+   * Keep both in step so the slider works on either path.
+   */
+  const setSceneDepthOfField = (
+    mesh: SplatMesh,
+    settings: Parameters<SplatMesh['setDepthOfField']>[0],
+  ): void => {
+    mesh.setDepthOfField(settings);
+    logoUnified?.setDepthOfField(mesh.getDepthOfField());
+  };
+  type DofSettings = ReturnType<SplatMesh['getDepthOfField']>;
+  /**
+   * ?effects=dof: a screen-space pass off the proxy mesh when the capture has
+   * one (collision tiles or a dropped GLB), else the core per-splat path. The
+   * per-splat path widens every footprint and is fill-rate bound on large
+   * captures; the proxy gives the pass a depth the splats never write (see
+   * post-dof.ts).
+   */
+  let postDof: PostDepthOfField | null = null;
+  let postDofOccluder: RelightingProxy | null = null;
+  let postDofSequence = 0;
+  const dofProxyReady = (): boolean =>
+    (relightExternalGeometries?.length ?? 0) > 0 || (collisionTilesForRelight?.length ?? 0) > 0;
+  const teardownPostDof = (): void => {
+    postDofSequence++;
+    postDof?.dispose();
+    postDof = null;
+    postDofOccluder?.dispose();
+    postDofOccluder = null;
+  };
+  /** The live DoF settings, whichever path holds them. */
+  const currentDepthOfField = (mesh: SplatMesh): DofSettings =>
+    postDof
+      ? { focusDistance: postDof.focusDistance, aperture: postDof.aperture }
+      : mesh.getDepthOfField();
+  const setupPostDof = async (mesh: SplatMesh, settings: DofSettings): Promise<void> => {
+    teardownPostDof();
+    const sequence = postDofSequence;
+    const useExternal = relightExternalGeometries !== null && relightExternalGeometries.length > 0;
+    if (!useExternal && (!collisionTilesForRelight || collisionTilesForRelight.length === 0)) {
+      // Collision is still loading; its completion calls back in here.
+      return;
+    }
+    const { createRelightingProxy } = await import('../lib/relighting');
+    if (sequence !== postDofSequence || !mounted || splats !== mesh || effectMode !== 'dof') return;
+    mesh.updateWorldMatrix(true, false);
+    const occluder = useExternal
+      ? createRelightingProxy({ geometries: relightExternalGeometries! })
+      : createRelightingProxy({
+          tiles: collisionTilesForRelight!,
+          matrixWorld: mesh.matrixWorld.clone(),
+        });
+    const mode = createPostDepthOfField(renderer, settings);
+    mode.setOccluder(occluder.group);
+    postDof = mode;
+    postDofOccluder = occluder;
+    // The splat pass draws sharp; the blur runs after it.
+    setSceneDepthOfField(mesh, { focusDistance: settings.focusDistance, aperture: 0 });
+  };
+  /** Applies DoF settings through whichever path the scene supports. */
+  const applyDepthOfField = (mesh: SplatMesh, settings: DofSettings): void => {
+    if (!dofProxyReady()) {
+      teardownPostDof();
+      setSceneDepthOfField(mesh, settings);
+      return;
+    }
+    if (postDof) {
+      postDof.setDepthOfField(settings);
+      setSceneDepthOfField(mesh, { focusDistance: settings.focusDistance, aperture: 0 });
+      return;
+    }
+    // Per-splat until the pass is up (an async import away); setup zeros it.
+    setSceneDepthOfField(mesh, settings);
+    void setupPostDof(mesh, settings);
+  };
+  /**
+   * On WebGPU the flame is a simulated volumetric fire (see volume-fire.ts)
+   * in the splat flame's shape; `?fire=splat` keeps the splat flame.
+   */
+  let logoFire: VolumeFire | null = null;
+  /**
+   * Scene depth the fire stops at (see proxy-depth.ts): the volume fire's
+   * march and the splat fire's per-splat occlusion both read it.
+   */
+  let logoDepth: ProxyDepth | null = null;
+  /** The scene's collision proxy plus the stroke, rendered into `logoDepth`. */
+  let logoFireOccluder: RelightingProxy | null = null;
+  let logoFireOccluderPending = false;
+  /**
+   * How the stroke is lit. In the unified draw it is a relit surface: the
+   * fog/relight proxies carry a stroke-shaped mesh, so the factor map brings
+   * the flashlight, the white spot and the night level, and the stroke's own
+   * shading stays at daylight. Standalone draws shade it themselves: night
+   * level plus a white spot 8 m above the start pose under fog. The spot is
+   * always reported as a fog accent so its beam shows.
+   */
+  const logoStart = new THREE.Vector3();
+  const syncLogoLighting = (): void => {
+    if (!logo) return;
+    const relitByProxy = logoUnified !== null && (effectMode === 'fog' || effectMode === 'relight');
+    logo.setNight(relitByProxy || effectMode !== 'fog' ? 1 : 0.08);
+    // 8 m above the start pose and 3 m in toward the mark: lower and closer,
+    // the proxy roof occluded the lamp except through one gap.
+    const toward = logo.position.clone().sub(logoStart).setY(0).normalize().multiplyScalar(3);
+    const lamp = logoStart
+      .clone()
+      .add(new THREE.Vector3(0, 8, 0))
+      .add(toward);
+    // The cone hugs the stroke as seen from the lamp, so it lights the white
+    // V and not the grass around its foot. The edge must still clear the
+    // stroke (a cone edge across it read as a bright wedge): a hard-ish
+    // penumbra keeps the whole stroke inside the fully lit core.
+    const axis = logo.strokeCenterWorld.clone().sub(lamp).normalize();
+    const { points } = logo.splats.strokeOutline;
+    const corner = new THREE.Vector3();
+    logo.stroke.updateMatrixWorld();
+    let strokeAngle = 0;
+    for (let i = 0; i < points.length; i += 2) {
+      corner
+        .set(points[i] as number, points[i + 1] as number, 0)
+        .applyMatrix4(logo.stroke.matrixWorld);
+      strokeAngle = Math.max(strokeAngle, axis.angleTo(corner.sub(lamp)));
+    }
+    const angleDeg =
+      (THREE.MathUtils.radToDeg(strokeAngle) * LOGO_SPOT_MARGIN) / (1 - LOGO_SPOT_PENUMBRA);
+    logo.setSpotlight(
+      effectMode === 'fog'
+        ? {
+            position: lamp,
+            target: logo.strokeCenterWorld.clone(),
+            // 30% under the original 1.4 / 0.27: the spot washed the stroke out.
+            intensity: relitByProxy ? 0 : 0.98,
+            angleDeg,
+            penumbra: LOGO_SPOT_PENUMBRA,
+            fogGain: 0.19,
+          }
+        : null,
+    );
+  };
+  /**
+   * The mark belongs to the fog and relight demos: under any other effect it
+   * is hidden, and its draws and the fire's simulation stop until it is
+   * wanted again.
+   */
+  let logoShown = true;
+  const syncLogoVisible = (): void => {
+    if (!logo) return;
+    const shown = effectMode === 'fog' || effectMode === 'relight';
+    if (shown === logoShown) return;
+    logoShown = shown;
+    if (logoUnified) logoUnified.setSourceVisible(logo.stroke, shown);
+    else logo.stroke.visible = shown;
+    if (logo.fire) logo.fire.visible = shown;
+  };
+  /** Builds the fire's depth occluder once the scene's collision tiles are in. */
+  const mountFireOccluder = async (): Promise<void> => {
+    if (!logoDepth || !logo || logoFireOccluderPending || !collisionTilesForRelight) return;
+    logoFireOccluderPending = true;
+    const depth = logoDepth;
+    try {
+      const { createRelightingProxy } = await import('../lib/relighting');
+      if (logoDepth !== depth || !logo) return;
+      splats.updateWorldMatrix(true, false);
+      const inverse = splats.matrixWorld.clone().invert();
+      const proxy = createRelightingProxy({
+        tiles: collisionTilesForRelight,
+        geometries: [logo.strokeProxyGeometry().applyMatrix4(inverse)],
+        matrixWorld: splats.matrixWorld.clone(),
+      });
+      logoFireOccluder = proxy;
+      depth.setOccluder(proxy.group);
+    } finally {
+      logoFireOccluderPending = false;
+    }
+  };
+  const unmountLogo = (): void => {
+    if (logoFireOccluder) {
+      logoDepth?.setOccluder(null);
+      logoFireOccluder.dispose();
+      logoFireOccluder = null;
+    }
+    if (logoDepth) {
+      logoDepth.dispose();
+      logoDepth = null;
+    }
+    if (logoFire) {
+      logoFire.dispose();
+      logoFire = null;
+    }
+    if (logoUnified) {
+      scene.remove(logoUnified);
+      logoUnified.dispose();
+      logoUnified = null;
+    }
+    if (logo) {
+      for (const mesh of logo.meshes) scene.remove(mesh);
+      logo.dispose();
+      logo = null;
+    }
+  };
+  /** Set once the mark is turned down on a backend that cannot inter-sort it. */
+  let logoUnsupported = false;
+  const mountLogo = async (): Promise<void> => {
+    if (logoParts === null || logo || logoMounting || logoUnsupported) return;
+    // Without the unified draw (WebGL2) the mark and a streamed scene are
+    // separate transparent draws that never inter-sort: the mark paints over
+    // the pillars and its own layers mis-order. Hide it there until WebGL2
+    // gets a unified path (see ROADMAP.md).
+    if (!supportsUnifiedSplatMesh(renderer)) {
+      logoUnsupported = true;
+      console.info('VLAM! logo: hidden on the WebGL2 fallback (needs unified rendering).');
+      return;
+    }
+    logoMounting = true;
+    try {
+      const bitmap = await loadLogoBitmap(`${import.meta.env.BASE_URL}vlam.png`);
+      let base = logoAt?.clone() ?? null;
+      let height = logoHeightParam;
+      const preset = LOGO_PLACEMENTS[sceneTitle];
+      if (!base && preset) base = new THREE.Vector3(...preset);
+      if (!base) {
+        // An unknown scene: stand on its floor at its center, no taller than
+        // the scene itself (the default goose is under a metre tall).
+        const bounds = splats.computeSplatBounds().clone().applyMatrix4(splats.matrixWorld);
+        const center = bounds.getCenter(new THREE.Vector3());
+        height = Math.min(height, (bounds.max.y - bounds.min.y) * 0.8);
+        base = new THREE.Vector3(center.x, bounds.min.y + LOGO_FLOOR_BELOW, center.z);
+      }
+      // The mark's meshes share the scene mesh's draw settings so they can
+      // join it in one unified draw.
+      const sceneView = splats.getUnifiedSourceView();
+      const volumeFire =
+        logoParts === 'full' && backendName === 'WebGPU' && params.get('fire') !== 'splat';
+      const mark = createVlamLogo(bitmap, {
+        height,
+        parts: logoParts,
+        floorBelow: LOGO_FLOOR_BELOW,
+        animate: params.get('logoAnim') !== '0',
+        flameBody: !volumeFire,
+        mesh: {
+          sortMetric,
+          srgbOutput: sceneView.srgbOutput,
+          maxStdDev: sceneView.maxStdDev,
+          minSplatSizePx: sceneView.minSplatSizePx,
+          minPixelSize: sceneView.minPixelSize,
+          minContribution: sceneView.minContribution,
+          projectedFilterProfile: sceneView.projectedFilterProfile,
+          antialias: sceneView.antialias,
+        },
+      });
+      if (volumeFire) {
+        // The mark's local frame is in metres (posed without scale), so the
+        // emitter moves by shifting its seeds and bounds: up, and sideways
+        // toward the white stroke (local x is the mark's width).
+        const { points } = mark.splats.strokeOutline;
+        let strokeX = 0;
+        for (let i = 0; i < points.length; i += 2) strokeX += points[i] as number;
+        strokeX /= Math.max(points.length / 2, 1);
+        const shiftX = Math.sign(strokeX - mark.splats.flameCenter[0]) * LOGO_FIRE_TOWARD_STROKE;
+        const lift = (xyz: readonly [number, number, number]): [number, number, number] => [
+          xyz[0] + shiftX,
+          xyz[1] + LOGO_FIRE_LIFT,
+          xyz[2],
+        ];
+        const seeds = new Float32Array(mark.splats.flameSeeds);
+        for (let i = 0; i < seeds.length; i += 3) {
+          seeds[i] = (seeds[i] as number) + shiftX;
+          seeds[i + 1] = (seeds[i + 1] as number) + LOGO_FIRE_LIFT;
+        }
+        const fire = createVolumeFire({
+          renderer,
+          seeds,
+          min: lift(mark.flameMin),
+          max: lift(mark.flameMax),
+        });
+        // Posed with the mark, drawn by the fire itself after the main render.
+        mark.followers.push(fire.mesh);
+        logoFire = fire;
+      }
+      if (mark.fire) {
+        // The fire is emissive: it draws on its own after the scene, out of
+        // reach of the relit unified draw, and hides splats behind the proxy.
+        logoDepth = createProxyDepth(renderer);
+        mark.fire.modifiers = [...mark.fire.modifiers, logoDepth.occlusionModifier()];
+        mark.fire.renderOrder = 1;
+      }
+      mark.place(base, camera.position);
+      logoStart.copy(camera.position);
+      // `?logoUnified=0` keeps the standalone draws for an A/B.
+      if (
+        supportsUnifiedSplatMesh(renderer) &&
+        !benchmarkUnified &&
+        params.get('logoUnified') !== '0'
+      ) {
+        const capacity = splats.capacity + mark.stroke.capacity;
+        const unified = new UnifiedSplatMesh(renderer, capacity, {
+          performanceProfile: splats.performanceProfile,
+          srgbOutput: sceneView.srgbOutput,
+          minPixelSize: sceneView.minPixelSize,
+          minContribution: sceneView.minContribution,
+          sortMetric,
+        });
+        unified.addSource(splats, { priority: 1 });
+        unified.setDepthOfField(splats.getDepthOfField());
+        // The stroke is a lit surface: the relighting proxies carry its shape,
+        // so the factor map lights it like the scene. The emissive fire stays
+        // out of the unified draw, whose relighting would darken it.
+        unified.addSource(mark.stroke);
+        scene.add(unified);
+        if (mark.fire) scene.add(mark.fire);
+        logoUnified = unified;
+      } else {
+        for (const mesh of mark.meshes) scene.add(mesh);
+      }
+      logo = mark;
+      logoShown = true;
+      syncLogoVisible();
+      syncLogoLighting();
+      // Relighting attaches to the draw that is on screen now, and the flame
+      // is a fog accent light: an effect set up before the mark mounted has to
+      // be rebuilt around it.
+      // Unconditionally: a setup still awaiting its proxy has no `fogMode`
+      // yet, and would otherwise finish without the stroke in it.
+      if (effectMode === 'fog' && mounted) void setupFog(splats);
+      if (effectMode === 'relight' && mounted) void setupRelight(splats);
+    } catch (error) {
+      console.error('VLAM! logo failed to mount', error);
+    } finally {
+      logoMounting = false;
+    }
+  };
+
   // ?effects=fog: low ground fog lit by a carried flashlight and one fixed
   // spot, on the same collision proxy as relight (see volumetric-fog.ts).
   let fogMode: VolumetricFogMode | null = null;
@@ -2615,12 +3030,25 @@ async function main(): Promise<void> {
         fog?: number;
         rings?: number;
         focus?: number;
+        lit?: boolean;
         carried?: boolean;
       }) => void)
     | null = null;
 
+  /** What `awaitingCompleteView` waits for once the startup hold has lifted. */
+  const completeViewReady = (): boolean => {
+    if (!mounted || !(splats instanceof StreamedSplatMesh)) return true;
+    // The mark mounts on the first frame after the hold; fog rebuilds around it.
+    if (logoParts !== null && !logoUnsupported && (!logo || logoMounting)) return false;
+    if (effectMode === 'fog' && !fogMode) return false;
+    if (logoDepth && collisionTilesForRelight && !logoFireOccluder) return false;
+    // Refinement of the frozen pose: frontier converged and nothing in flight.
+    return splats.frontierState.frontierConverged && splats.pendingChunkCount === 0;
+  };
+
   const teardownFog = (): void => {
     fogSetupSequence++;
+    if (fogMode) scene.remove(fogMode.model);
     fogMode?.dispose();
     fogMode = null;
     syncFogControls?.({ visible: false });
@@ -2635,7 +3063,9 @@ async function main(): Promise<void> {
       return;
     }
     mesh.updateWorldMatrix(true, false);
-    const accentPresets = FOG_ACCENT_PRESETS[sceneTitle];
+    // The mark's flame lights the fog around it as one more accent spot.
+    const accents = [...(FOG_ACCENT_PRESETS[sceneTitle] ?? []), ...(logo?.fogAccents() ?? [])];
+    const extraGeometries = logo ? [logo.strokeProxyGeometry()] : [];
     const mode = await createVolumetricFogMode({
       renderer,
       camera,
@@ -2643,20 +3073,23 @@ async function main(): Promise<void> {
       ...(useExternal
         ? { geometries: relightExternalGeometries! }
         : { tiles: collisionTilesForRelight! }),
-      ...(accentPresets ? { accents: accentPresets } : {}),
+      ...(accents.length > 0 ? { accents } : {}),
+      extraGeometries,
     });
     if (sequence !== fogSetupSequence || !mounted || splats !== mesh || effectMode !== 'fog') {
       mode.dispose();
       return;
     }
     fogMode = mode;
+    scene.add(mode.model);
     setEffectModifiers([mode.modifier]);
-    mode.attach(mesh);
+    mode.attach(logoUnified ?? mesh);
     syncFogControls?.({
       visible: true,
       fog: mode.fogDensity,
       rings: FLASH_RINGS_DEFAULT,
       focus: mode.startFocus,
+      lit: false,
       carried: true,
     });
   };
@@ -2736,7 +3169,9 @@ async function main(): Promise<void> {
     if (chrome.status) status?.classList.remove('progress');
     const mesh = splats;
     if (mesh instanceof StreamedSplatMesh) {
-      if (chrome.overlay) {
+      if (chrome.overlay && awaitingCompleteView) {
+        overlay.textContent = 'Preparing scene…';
+      } else if (chrome.overlay) {
         overlay.textContent =
           `${sceneTitle} · ${mesh.activeSplatCount.toLocaleString('en-US')} / ` +
           `${mesh.budget.toLocaleString('en-US')} splats · ` +
@@ -2877,6 +3312,13 @@ async function main(): Promise<void> {
     collisionWorld?.dispose();
     collisionWorld = null;
     collisionTilesForRelight = null;
+    if (postDof) {
+      // The old scene's proxy goes with its tiles; per-splat DoF covers the
+      // gap until the new tiles (if any) land and set the pass back up.
+      const settings = { focusDistance: postDof.focusDistance, aperture: postDof.aperture };
+      teardownPostDof();
+      if (effectMode === 'dof') setSceneDepthOfField(mesh, settings);
+    }
     walkMode = false;
     syncOrbitToggleVisibility();
     collisionToggles.setWalk(false);
@@ -2905,6 +3347,9 @@ async function main(): Promise<void> {
         refreshRelightEffectOption();
         if (effectMode === 'relight' && mounted && splats === mesh) setupRelight(mesh);
         if (effectMode === 'fog' && mounted && splats === mesh) void setupFog(mesh);
+        if (effectMode === 'dof' && mounted && splats === mesh) {
+          void setupPostDof(mesh, currentDepthOfField(mesh));
+        }
         refreshOverlay(); // the hint gains the walk/fly key
         applyWalkFromUrl();
       })
@@ -2943,7 +3388,8 @@ async function main(): Promise<void> {
     // Core DoF is independent of the modifier stack; clear it unless this mode
     // is the DoF demo so switching effects does not leave blur on.
     if (effectMode !== 'dof') {
-      mesh.setDepthOfField({ aperture: 0 });
+      teardownPostDof();
+      setSceneDepthOfField(mesh, { aperture: 0 });
       syncDofFocusSlider?.({ visible: false });
     }
     if (effectMode !== 'warp') {
@@ -2955,6 +3401,8 @@ async function main(): Promise<void> {
       teardownRelight();
     }
     if (effectMode !== 'fog') teardownFog();
+    syncLogoVisible();
+    syncLogoLighting();
     // LOD level channel is only written while the lod effect is active.
     if (mesh instanceof StreamedSplatMesh) {
       mesh.setLodLevelDebug(effectMode === 'lod');
@@ -2988,11 +3436,9 @@ async function main(): Promise<void> {
       updateEffects = null;
       syncWarpIntensitySlider?.({ visible: true, value: warp.intensity.value });
     } else if (effectMode === 'dof') {
-      // Fixed focus (no rack). Default to the view-space depth of the scene
-      // center so large captures start sharp where you're looking; the focus
-      // slider retunes. Aperture scales with span. Core projected-2D path.
-      const span = localBounds.getSize(new THREE.Vector3()).length();
-      const aperture = Math.min(0.25, Math.max(0.07, 0.22 / Math.sqrt(Math.max(span, 0.5))));
+      // Fixed focus (no rack) at the demo default; the sliders retune. The
+      // range comes from the projected bounds and the look-at distance.
+      const aperture = DOF_APERTURE_DEFAULT;
       const lookTarget = new THREE.Vector3();
       const cameraPosition = new THREE.Vector3();
       controls.getTarget(lookTarget, false);
@@ -3004,8 +3450,8 @@ async function main(): Promise<void> {
         cameraPosition,
       );
       setEffectModifiers([]);
-      mesh.setDepthOfField({ focusDistance, aperture });
-      syncDofFocusSlider?.({ visible: true, value: focusDistance, min, max });
+      applyDepthOfField(mesh, { focusDistance, aperture });
+      syncDofFocusSlider?.({ visible: true, value: focusDistance, min, max, aperture });
       updateEffects = null;
     } else if (effectMode === 'paint') {
       // The mask channel is defined wherever paint's tool is wired (the static
@@ -3048,7 +3494,7 @@ async function main(): Promise<void> {
     }
     // Unlike the normal effect path, paint wires directly into this helper.
     // Clear a preceding core DoF effect before assigning its mask modifier.
-    mesh.setDepthOfField({ aperture: 0 });
+    setSceneDepthOfField(mesh, { aperture: 0 });
     setEffectModifiers([createMaskHighlightModifier('mask')]);
     paintTool = {
       paintAt: (point, radius) => mesh.paintPersistent('mask', point, radius, getPaintBrushIndex()),
@@ -3101,6 +3547,8 @@ async function main(): Promise<void> {
         benchmarkUnified.dispose();
         benchmarkUnified = null;
       }
+      // The mark belongs to the scene it was placed in; it remounts on the next.
+      unmountLogo();
       restoreXrMaterial();
       scene.remove(splats);
       splats.dispose();
@@ -3165,8 +3613,10 @@ async function main(): Promise<void> {
     ) {
       next.mesh.visible = false;
       nearL0HoldActive = true;
+      hideCanvasUntilComplete();
     } else {
       nearL0HoldActive = false;
+      if (awaitingCompleteView) showCompleteView();
     }
     syncCameraControlsEnabled();
     // Re-point the slot stack before any slot is filled: the old mesh is gone,
@@ -3360,6 +3810,7 @@ async function main(): Promise<void> {
     if (splats.initialRevealState.status === 'pending') {
       splats.visible = false;
       nearL0HoldActive = true;
+      hideCanvasUntilComplete();
       syncCameraControlsEnabled();
     }
   };
@@ -4345,6 +4796,17 @@ async function main(): Promise<void> {
     checkOneAnnotationOcclusion();
   };
 
+  // The carried flashlight follows the mouse cursor over the canvas.
+  renderer.domElement.addEventListener('pointermove', (e) => {
+    if (!fogMode || e.pointerType === 'touch') return;
+    const rect = renderer.domElement.getBoundingClientRect();
+    fogMode.setAim({
+      x: ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      y: -(((e.clientY - rect.top) / rect.height) * 2 - 1),
+    });
+  });
+  renderer.domElement.addEventListener('pointerleave', () => fogMode?.setAim(null));
+
   window.addEventListener('keydown', (e) => {
     // Single-letter shortcuts: never while a text field has focus, or typing a
     // URL into the welcome box would clear the paint and toggle the sky.
@@ -4352,9 +4814,14 @@ async function main(): Promise<void> {
     // Leave browser chords (Ctrl/Cmd+C copy, Ctrl/Cmd+F find) alone.
     const chord = e.ctrlKey || e.metaKey || e.altKey;
     if (!chord && (e.key === 'c' || e.key === 'C')) paintTool?.clear();
-    // 'f' puts the volumetric-fog flashlight down where it is, or picks it up.
+    // 'f' lights the volumetric-fog flashlight, then puts it down or picks it up.
     if (!chord && (e.key === 'f' || e.key === 'F') && fogMode) {
-      syncFogControls?.({ visible: true, carried: fogMode.toggleCarried() });
+      {
+        // Off: F lights it; lit: F puts it down or picks it up.
+        if (fogMode.lit) fogMode.toggleCarried();
+        else fogMode.toggleLit();
+        syncFogControls?.({ visible: true, lit: fogMode.lit, carried: fogMode.carried });
+      }
     }
     // 'v' toggles the .lcc2 environment/background tile (M12).
     if (
@@ -4723,6 +5190,9 @@ async function main(): Promise<void> {
       }
     }
     updateEffects?.(timer.getElapsed());
+    // The mark faces the camera it is born under, so it waits for the start
+    // pose: the camera sits at the origin until the initial-view hold lifts.
+    if (mounted && !nearL0HoldActive && logoParts !== null && !logo) void mountLogo();
     // The floor probe follows the desktop camera's world position, which is
     // rig-local (and runtime-driven) while presenting.
     if (mounted && !presenting && !nearL0HoldActive) updateFloorProbe();
@@ -4734,7 +5204,7 @@ async function main(): Promise<void> {
       // in its own depth order.
       // Skip the mirror in VR: renderView re-sorts the shared order buffer for
       // the mirror camera, which would fight the cyclopean order both eyes share.
-      if (mounted && !presenting && !nearL0HoldActive) renderMirror();
+      if (mounted && !presenting && !nearL0HoldActive && !logoUnified) renderMirror();
       if (mounted && !presenting && !nearL0HoldActive) renderRelightPass();
       if (mounted && !presenting && !nearL0HoldActive) fogMode?.renderLighting();
       // `mounted` is false only when the initial scene failed to load: keep
@@ -4757,9 +5227,26 @@ async function main(): Promise<void> {
       if (mounted && !suppressStreamedUpdate && (!postUpdate || !xrPostUpdatePrimed)) {
         const sortThisFrame =
           !presenting || backendName !== 'WebGL2' || xrSortCadence.shouldAttempt(timestamp);
-        if (benchmarkUnified) benchmarkUnified.update(camera);
+        const unified = benchmarkUnified ?? logoUnified;
+        if (logo && logoUnified && logoShown) logo.tick(timer.getElapsed());
+        if (unified) unified.update(camera);
         else splats.update(camera, renderer, sortThisFrame ? undefined : XR_SKIP_SORT_OPTIONS);
         if (postUpdate) xrPostUpdatePrimed = true;
+      }
+      if (mounted && !presenting && logo && !logoUnified && logoShown) {
+        logo.update(camera, renderer, timer.getElapsed());
+      }
+      if (mounted && !presenting && logoDepth) {
+        if (!logoFireOccluder && collisionTilesForRelight) void mountFireOccluder();
+        if (logoShown) {
+          // Under fog, the fog's lighting pass already rendered the proxy depth.
+          logoDepth.render(camera, fogMode?.proxyDepth ?? null);
+          // The standalone fire sorts itself (the unified path skips it).
+          if (logoUnified) logo?.fire?.update(camera, renderer);
+        }
+      }
+      if (mounted && !presenting && logoFire && logoShown) {
+        logoFire.update(frameDelta, timer.getElapsed());
       }
       if (mounted && splats instanceof StreamedSplatMesh) {
         const streamingError = splats.streamingError;
@@ -4794,11 +5281,29 @@ async function main(): Promise<void> {
           nearL0HoldActive = false;
           syncCameraControlsEnabled();
           nearL0RevealFadeUntil = performance.now() + 150;
+          if (awaitingCompleteView) {
+            completeViewDeadline = performance.now() + COMPLETE_VIEW_TIMEOUT_MS;
+          }
           if (reveal.status === 'degraded') {
             console.warn(
               `Startup hold degraded (${reveal.reason}); resuming progressive streaming.`,
             );
           }
+          if (!presenting) refreshOverlay();
+        }
+      }
+      if (awaitingCompleteView && completeViewDeadline > 0) {
+        // A few ready frames in a row: the fog's lighting pass and the unified
+        // sort have to have run on the finished set, not just been armed.
+        completeViewReadyFrames = completeViewReady() ? completeViewReadyFrames + 1 : 0;
+        if (
+          completeViewReadyFrames >= COMPLETE_VIEW_READY_FRAMES ||
+          performance.now() >= completeViewDeadline
+        ) {
+          if (completeViewReadyFrames < COMPLETE_VIEW_READY_FRAMES) {
+            console.info('VLAM! viewer: showing the scene before it completed (timeout).');
+          }
+          showCompleteView();
           if (!presenting) refreshOverlay();
         }
       }
@@ -4815,11 +5320,26 @@ async function main(): Promise<void> {
           nearL0RevealFadeUntil = 0;
         }
       }
-      if (benchmarkUnified) {
-        benchmarkUnified.visible = !nearL0HoldActive;
+      const unifiedDraw = benchmarkUnified ?? logoUnified;
+      if (unifiedDraw) {
+        unifiedDraw.visible = !nearL0HoldActive;
         splats.visible = false;
       }
-      renderer.render(scene, camera);
+      // Post DoF draws the scene (and the fire) into its own target, then
+      // blurs and composites once both are in. Not in XR: the pass is a
+      // single-view screen-space effect.
+      const dofFrame = mounted && !presenting && !nearL0HoldActive ? postDof : null;
+      dofFrame?.beginFrame(camera);
+      try {
+        renderer.render(scene, camera);
+        if (mounted && !presenting && !nearL0HoldActive && logoFire && logoShown) {
+          // The smoke scatters the fog's lights (the flashlight among them).
+          logoFire.setVolumeLights(fogMode?.volumeLights() ?? null);
+          logoFire.render(camera, logoDepth?.texture ?? null);
+        }
+      } finally {
+        dofFrame?.endFrame(camera);
+      }
       if (mounted && !presenting && !nearL0HoldActive) fogMode?.renderBeams();
       if (postUpdate && xrPostUpdateHandle === null) {
         const renderedSplats = splats;
@@ -5091,7 +5611,15 @@ async function main(): Promise<void> {
       {
         onDofFocusInput: (focusDistance) => {
           if (effectMode !== 'dof' || !mounted) return;
-          splats.setDepthOfField({ focusDistance });
+          postDof?.setDepthOfField({ focusDistance });
+          // The core path keeps the focus too (its aperture is 0 under the pass),
+          // so losing the proxy hands over without a jump.
+          setSceneDepthOfField(splats, { focusDistance });
+        },
+        onDofApertureInput: (aperture) => {
+          if (effectMode !== 'dof' || !mounted) return;
+          const { focusDistance } = currentDepthOfField(splats);
+          applyDepthOfField(splats, { focusDistance, aperture });
         },
         onWarpIntensityInput: (intensity) => {
           if (effectMode !== 'warp' || !liveWarp) return;
@@ -5105,7 +5633,7 @@ async function main(): Promise<void> {
         },
         onFogCarriedToggle: () => {
           if (!fogMode) return;
-          syncFogControls?.({ visible: true, carried: fogMode.toggleCarried() });
+          syncFogControls?.({ visible: true, lit: fogMode.toggleLit(), carried: true });
         },
       },
     );
@@ -5165,19 +5693,19 @@ async function main(): Promise<void> {
     refreshRelightEffectOption();
     if (effectMode === 'dof' && mounted) {
       const bounds = splats.computeSplatBounds();
-      const span = bounds.getSize(new THREE.Vector3()).length();
-      const aperture = Math.min(0.25, Math.max(0.07, 0.22 / Math.sqrt(Math.max(span, 0.5))));
+      const aperture = DOF_APERTURE_DEFAULT;
       const lookTarget = new THREE.Vector3();
       const cameraPosition = new THREE.Vector3();
       controls.getTarget(lookTarget, false);
       controls.getPosition(cameraPosition, false);
       const range = dofFocusRangeForMesh(splats, bounds, lookTarget, cameraPosition);
-      splats.setDepthOfField({ focusDistance: range.focusDistance, aperture });
+      applyDepthOfField(splats, { focusDistance: range.focusDistance, aperture });
       syncDofFocusSlider({
         visible: true,
         value: range.focusDistance,
         min: range.min,
         max: range.max,
+        aperture,
       });
     }
     if (effectMode === 'warp') {
@@ -5271,6 +5799,15 @@ async function main(): Promise<void> {
       },
       get updateEffects(): ((elapsed: number) => void) | null {
         return updateEffects;
+      },
+      get logo(): VlamLogo | null {
+        return logo;
+      },
+      get logoUnified(): UnifiedSplatMesh | null {
+        return logoUnified;
+      },
+      get logoFire(): VolumeFire | null {
+        return logoFire;
       },
       get relighting(): Record<string, unknown> {
         return relightingDiagnostics();
@@ -5554,11 +6091,17 @@ function buildCollisionToggles(
   };
 }
 
+/** Where the DoF demo starts its focus plane (world units), within the range. */
+const DOF_FOCUS_DEFAULT = 8;
+/** The DoF demo's starting aperture (Voluma `apertureSize` units). */
+const DOF_APERTURE_DEFAULT = 0.25;
+
 /**
- * View-space focus defaults for the DoF demo: sharp at the camera look-at
- * distance, slider spanning projected bounds (plus nearer stops for interior
- * viewpoints). Uses CameraControls getPosition/getTarget so we do not depend
- * on whether `controls.update` has already written `camera.matrixWorld`.
+ * View-space focus defaults for the DoF demo: the sharp plane at
+ * {@link DOF_FOCUS_DEFAULT} (clamped into range), the slider spanning the
+ * projected bounds plus nearer stops for interior viewpoints. Uses
+ * CameraControls getPosition/getTarget so we do not depend on whether
+ * `controls.update` has already written `camera.matrixWorld`.
  */
 function dofFocusRangeForMesh(
   mesh: SplatMesh,
@@ -5583,23 +6126,22 @@ function dofFocusRangeForMesh(
     near = Math.min(near, depth);
     far = Math.max(far, depth);
   }
-  // Look-at distance is the intended sharp plane; equals view −z when the
-  // target sits on the optical axis (normal for orbit/look controls).
+  // Look-at distance sizes the range (it equals view −z when the target sits
+  // on the optical axis, normal for orbit/look controls); the start focus is
+  // a fixed distance so every scene opens on the same plane.
   const contentDepth = Math.max(1e-4, cameraPositionWorld.distanceTo(lookTargetWorld));
   if (!Number.isFinite(near) || far <= 0) {
     const span = localBounds.getSize(new THREE.Vector3()).length();
-    const focusDistance = Math.max(1e-4, contentDepth || span * 0.3);
-    return {
-      focusDistance,
-      min: Math.max(1e-4, focusDistance * 0.05),
-      max: Math.max(focusDistance * 4, 1),
-    };
+    const anchor = Math.max(1e-4, contentDepth || span * 0.3);
+    const min = Math.max(1e-4, Math.min(anchor, DOF_FOCUS_DEFAULT) * 0.05);
+    const max = Math.max(anchor, DOF_FOCUS_DEFAULT) * 4;
+    return { focusDistance: DOF_FOCUS_DEFAULT, min, max };
   }
   // Interior cameras often sit inside the AABB, so the nearest front corner can
   // be far past the look-at - always allow focusing closer than that.
   const min = Math.max(1e-4, Math.min(near * 0.5, contentDepth * 0.15, 0.25));
-  const max = Math.max(far * 1.25, contentDepth * 3, min * 1.01);
-  const focusDistance = Math.min(max, Math.max(min, contentDepth));
+  const max = Math.max(far * 1.25, contentDepth * 3, DOF_FOCUS_DEFAULT * 1.5, min * 1.01);
+  const focusDistance = Math.min(max, Math.max(min, DOF_FOCUS_DEFAULT));
   return { focusDistance, min, max };
 }
 
@@ -5615,24 +6157,35 @@ function dofFocusRangeForMesh(
  * it owns the modifier stack - which is why {@link setEnabled} exists for the
  * tool picker to grey this control out while paint holds it.
  */
+/** Top of the demo's aperture slider (Voluma `apertureSize` units). */
+const DOF_APERTURE_MAX = 0.5;
+
 function buildEffectPicker(
   activeEffect: string | null,
   onChange: (mode: string | null) => void,
   options: {
     onDofFocusInput?: (focusDistance: number) => void;
+    onDofApertureInput?: (aperture: number) => void;
     onWarpIntensityInput?: (intensity: number) => void;
     onFogInput?: (control: 'fog' | 'rings' | 'beam', value: number) => void;
     onFogCarriedToggle?: () => void;
   } = {},
 ): {
   element: HTMLElement;
-  syncDofFocus: (state: { visible: boolean; value?: number; min?: number; max?: number }) => void;
+  syncDofFocus: (state: {
+    visible: boolean;
+    value?: number;
+    min?: number;
+    max?: number;
+    aperture?: number;
+  }) => void;
   syncWarpIntensity: (state: { visible: boolean; value?: number }) => void;
   syncFog: (state: {
     visible: boolean;
     fog?: number;
     rings?: number;
     focus?: number;
+    lit?: boolean;
     carried?: boolean;
   }) => void;
   /** Greys the control out (paint owns the stack) and shows why on hover. */
@@ -5711,53 +6264,102 @@ function buildEffectPicker(
   // Keep the native picker from stealing focus in a way that blocks WASD.
   colorInput.addEventListener('pointerdown', (e) => e.stopPropagation());
 
+  // Focus is a log slider: each bit of travel multiplies the distance by the
+  // same factor, so a range of 0.25 m to 190 m on a large capture is as usable
+  // beside the camera as across the courtyard (linear, the first metre was a
+  // pixel wide). The input holds 0..1; readout and callback speak distance.
   const dofFocus = document.createElement('label');
   dofFocus.className = 'dof-focus';
-  dofFocus.title = 'Focal distance (view-space)';
+  dofFocus.title = 'Focal distance (view-space, world units)';
   dofFocus.hidden = true;
   const dofCaption = document.createElement('span');
   dofCaption.textContent = 'focus';
   const dofRange = document.createElement('input');
   dofRange.type = 'range';
-  dofRange.min = '0.1';
-  dofRange.max = '10';
+  dofRange.min = '0';
+  dofRange.max = '1';
   dofRange.step = 'any';
-  dofRange.value = '1';
+  dofRange.value = '0.5';
   dofRange.setAttribute('aria-label', 'Focal distance');
   const dofValue = document.createElement('output');
-  dofValue.textContent = '1.00';
+  let focusMin = 0.1;
+  let focusMax = 10;
+  const focusFromSlider = (t: number): number =>
+    focusMin * (focusMax / focusMin) ** Math.min(1, Math.max(0, t));
+  const sliderFromFocus = (focus: number): number =>
+    Math.log(Math.min(focusMax, Math.max(focusMin, focus)) / focusMin) /
+    Math.log(focusMax / focusMin);
   const formatFocus = (v: number): string =>
     v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2);
   const applyDofReadout = (): void => {
-    dofValue.textContent = formatFocus(Number(dofRange.value));
+    dofValue.textContent = formatFocus(focusFromSlider(Number(dofRange.value)));
   };
+  applyDofReadout();
   dofRange.addEventListener('pointerdown', (e) => e.stopPropagation());
   dofRange.addEventListener('input', () => {
     applyDofReadout();
-    options.onDofFocusInput?.(Number(dofRange.value));
+    options.onDofFocusInput?.(focusFromSlider(Number(dofRange.value)));
   });
   dofFocus.appendChild(dofCaption);
   dofFocus.appendChild(dofRange);
   dofFocus.appendChild(dofValue);
+
+  // Aperture: how fast the scene leaves focus either side of the plane. The
+  // blur radius grows with it until the circle-of-confusion cap; 0 is off.
+  const dofAperture = document.createElement('label');
+  dofAperture.className = 'dof-focus';
+  dofAperture.title = 'Aperture: how quickly the scene leaves focus (0 = off)';
+  dofAperture.hidden = true;
+  const apertureCaption = document.createElement('span');
+  apertureCaption.textContent = 'aperture';
+  const apertureRange = document.createElement('input');
+  apertureRange.type = 'range';
+  apertureRange.min = '0';
+  apertureRange.max = String(DOF_APERTURE_MAX);
+  apertureRange.step = 'any';
+  apertureRange.value = '0.1';
+  apertureRange.setAttribute('aria-label', 'Aperture');
+  const apertureValue = document.createElement('output');
+  const applyApertureReadout = (): void => {
+    apertureValue.textContent = Number(apertureRange.value).toFixed(2);
+  };
+  applyApertureReadout();
+  apertureRange.addEventListener('pointerdown', (e) => e.stopPropagation());
+  apertureRange.addEventListener('input', () => {
+    applyApertureReadout();
+    options.onDofApertureInput?.(Number(apertureRange.value));
+  });
+  dofAperture.appendChild(apertureCaption);
+  dofAperture.appendChild(apertureRange);
+  dofAperture.appendChild(apertureValue);
 
   const syncDofFocus = (state: {
     visible: boolean;
     value?: number;
     min?: number;
     max?: number;
+    aperture?: number;
   }): void => {
     dofFocus.hidden = !state.visible;
+    dofAperture.hidden = !state.visible;
     if (!state.visible) return;
-    if (typeof state.min === 'number' && typeof state.max === 'number' && state.max > state.min) {
-      dofRange.min = String(state.min);
-      dofRange.max = String(state.max);
+    if (
+      typeof state.min === 'number' &&
+      typeof state.max === 'number' &&
+      state.min > 0 &&
+      state.max > state.min
+    ) {
+      focusMin = state.min;
+      focusMax = state.max;
     }
     if (typeof state.value === 'number' && Number.isFinite(state.value)) {
-      const min = Number(dofRange.min);
-      const max = Number(dofRange.max);
-      dofRange.value = String(Math.min(max, Math.max(min, state.value)));
+      dofRange.value = String(sliderFromFocus(state.value));
+    }
+    if (typeof state.aperture === 'number' && Number.isFinite(state.aperture)) {
+      apertureRange.value = String(Math.min(DOF_APERTURE_MAX, Math.max(0, state.aperture)));
     }
     applyDofReadout();
+    applyApertureReadout();
   };
 
   const warpIntensity = document.createElement('label');
@@ -5879,7 +6481,7 @@ function buildEffectPicker(
   const fogCarry = document.createElement('button');
   fogCarry.type = 'button';
   fogCarry.className = 'fog-control fog-carry';
-  fogCarry.title = 'Put the flashlight down where it is, or pick it back up (F)';
+  fogCarry.title = 'Turn the flashlight on or off. F lights it, then puts it down or picks it up';
   fogCarry.addEventListener('pointerdown', (e) => e.stopPropagation());
   fogCarry.addEventListener('click', () => options.onFogCarriedToggle?.());
   fogSlot.appendChild(fogCarry);
@@ -5889,6 +6491,7 @@ function buildEffectPicker(
     fog?: number;
     rings?: number;
     focus?: number;
+    lit?: boolean;
     carried?: boolean;
   }): void => {
     fogSlot.hidden = !state.visible;
@@ -5902,8 +6505,8 @@ function buildEffectPicker(
     set('fog', state.fog);
     set('rings', state.rings);
     set('beam', state.focus);
-    if (typeof state.carried === 'boolean') {
-      fogCarry.textContent = state.carried ? 'F · put down' : 'F · pick up';
+    if (typeof state.lit === 'boolean') {
+      fogCarry.textContent = state.lit ? 'Flashlight off' : 'F · flashlight on';
     }
   };
 
@@ -5938,6 +6541,7 @@ function buildEffectPicker(
   const dofSlot = document.createElement('span');
   dofSlot.className = 'dof-slot';
   dofSlot.appendChild(dofFocus);
+  dofSlot.appendChild(dofAperture);
   picker.appendChild(dofSlot);
 
   const warpSlot = document.createElement('span');
@@ -5947,9 +6551,13 @@ function buildEffectPicker(
   picker.appendChild(fogSlot);
 
   render();
-  // Prefer the bottom chrome so narrow viewports can wrap the pickers above stats.
-  const chrome = document.querySelector('#bottom-chrome');
+  // Prefer the picker stack so the select stays pinned bottom-right.
+  const chrome =
+    document.querySelector('#picker-stack') ?? document.querySelector('#bottom-chrome');
   (chrome ?? document.body).appendChild(picker);
+  // The relight clock is the relight effect's control: it sits left of the select like the others.
+  const relightClock = document.querySelector('#relight-clock');
+  if (relightClock) picker.appendChild(relightClock);
   return {
     element: picker,
     syncDofFocus,

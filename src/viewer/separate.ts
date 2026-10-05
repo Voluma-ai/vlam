@@ -482,7 +482,8 @@ export function createSeparateTool(context: SeparateToolContext): SeparateTool {
     separateButton.disabled = busy || !state.usable || parts.length > 0 || !context.canSeparate();
   };
 
-  const chrome = document.querySelector('#bottom-chrome');
+  const chrome =
+    document.querySelector('#picker-stack') ?? document.querySelector('#bottom-chrome');
   (chrome ?? document.body).appendChild(panel);
 
   // --- Actions --------------------------------------------------------------

@@ -146,6 +146,18 @@ selection features until their benefits are measured and visually validated.
   **Acceptance:** same-camera reference captures outside and inside scene
   bounds, correct projected size and picked positions, and perspective
   non-regression on WebGPU, WebGL2, and unified rendering.
+- **WebGL2 unified rendering with streamed sources** — `UnifiedSplatMesh` is
+  WebGPU-only, and the WebGL2 fallback `MergedSplatMesh` only takes fully
+  loaded `SplatData`, so on WebGL2 a streamed scene and any added mesh draw as
+  separate transparent meshes that never inter-sort (the demo's `?logo=full`
+  mark in Tempel with `?backend=webgl` paints wholesale over the pillars, and
+  its stroke and fire mis-order against each other). Prototype a CPU path that
+  gathers the streamed mesh's resident cut plus static sources into one worker
+  sort and one draw. A demo-side stopgap is building the mark as one mesh so
+  at least its own layers sort together. **Acceptance:** correct occlusion
+  both ways between a streamed scene and a static source from every side on
+  WebGL2, with the worker sort cost and frame-time tails measured on
+  WebGL2-class devices, and no change to the WebGPU unified path.
 
 ## External blockers
 

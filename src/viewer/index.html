@@ -68,6 +68,9 @@
           order: 1;
           flex: 1 0 100%;
         }
+        #picker-stack {
+          flex: 1 0 100%;
+        }
         /* Keep select-and-cut chrome off the picker row. */
         #separate {
           flex: 1 0 100%;
@@ -180,11 +183,34 @@
       /* The two pickers are twins: `tool` is what a click does, `effect` is how
          the scene looks. Both are <select>s so the lists can keep growing
          without the bottom chrome turning into a wall of buttons. */
+      /* Right-aligned stack: effect on top, tool below. Each select is pinned
+         to the right edge (it renders last) and its contextual controls grow
+         leftwards, so nothing the user aims at shifts when controls appear. */
+      #picker-stack {
+        flex: 0 1 auto;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 8px;
+        min-width: 0;
+      }
+      #relight-clock,
+      #separate {
+        order: 0;
+        max-width: 100%;
+      }
+      #effects { order: 1; }
+      #tools { order: 2; }
+      #effects .label,
+      #tools .label {
+        order: 99;
+      }
       #effects,
       #tools {
         flex: 0 1 auto;
         display: flex;
         flex-wrap: wrap;
+        justify-content: flex-end;
         align-items: center;
         gap: 12px;
         font: 13px/1.5 system-ui, sans-serif;
@@ -343,7 +369,7 @@
         display: none;
       }
       #effects .dof-focus input[type='range'] {
-        width: 110px;
+        width: 130px;
         margin: 0;
         accent-color: #ba8;
         cursor: pointer;
@@ -990,6 +1016,7 @@
     <div id="app"></div>
     <div id="bottom-chrome">
       <div id="overlay">Loading…</div>
+      <div id="picker-stack"></div>
     </div>
     <a id="site-home" href="/" aria-label="Back to the VLAM! docs">
       <!-- Icon only (no wordmark), matching the docs header. The viewer is

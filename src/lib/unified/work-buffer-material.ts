@@ -235,6 +235,7 @@ export function createWorkBufferMaterial(options: {
       minor,
       options.minPixelSize ?? 0,
       options.minContribution ?? 0,
+      { aperture: options.dofAperture, opacityCompensation },
     );
     return inFrustum
       .and(drawable)

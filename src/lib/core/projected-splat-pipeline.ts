@@ -220,6 +220,7 @@ export class ProjectedSplatPipeline {
             projectedAxes.minor,
             options.minPixelSize,
             options.minContribution,
+            { aperture: options.dofAperture, opacityCompensation },
           ),
         );
       {
@@ -455,6 +456,7 @@ export class StandaloneProjectedSplatPipeline {
         projectedAxes.minor,
         options.minPixelSize,
         options.minContribution,
+        { aperture: options.dofAperture, opacityCompensation },
       );
       If(footprintVisible.and(contributionVisible), () => {
         clipData.element(poolIndex).assign(clipCenter);

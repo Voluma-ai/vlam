@@ -62,7 +62,7 @@ export interface ToolPicker {
   readonly slot: HTMLElement;
 }
 
-/** Builds the picker and mounts it in the bottom chrome, before the effects nav. */
+/** Builds the picker and mounts it in the bottom-right picker stack, below the effects nav. */
 export function buildToolPicker(
   active: ViewerTool,
   onChange: (tool: ViewerTool) => void,
@@ -113,10 +113,8 @@ export function buildToolPicker(
 
   apply(active);
 
-  const chrome = document.querySelector('#bottom-chrome');
-  const effects = document.querySelector('#effects');
-  if (chrome && effects) chrome.insertBefore(picker, effects);
-  else (chrome ?? document.body).appendChild(picker);
+  const stack = document.querySelector('#picker-stack') ?? document.querySelector('#bottom-chrome');
+  (stack ?? document.body).appendChild(picker);
 
   return {
     element: picker,
