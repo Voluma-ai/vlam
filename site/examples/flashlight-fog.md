@@ -79,6 +79,11 @@ updateRelightingShadowFactorWeights(factorMat, [contribution]);
 beamGain.value = baseGain * brightness;
 ```
 
+Focus also changes reach. The range at which a beam falls to the same
+brightness grows with the square root of its intensity, so
+`flashlight.distance` follows `baseRange * Math.sqrt(brightness)`: about 12 m
+wide open, 39 m fully focused.
+
 All of it is live. The relight material reads `light.angle` as a uniform, the
 shadow camera follows it, and the profile is sampled over `angle / light.angle`,
 so the rings narrow with the cone instead of being cropped.

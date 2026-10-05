@@ -140,8 +140,9 @@ const beamGain = uniform(0.6);
 const beamColor = uniform(flashlight.color);
 const coneOuter = uniform(flashlight.angle);
 const coneInner = uniform(flashlight.angle * (1 - flashlight.penumbra));
+const beamRange = uniform(flashlight.distance);
 const STEPS = 48;
-const MAX_DISTANCE = 30;
+const MAX_DISTANCE = 40;
 
 const beam = Fn(() => {
   const depth = texture(relightTarget.depthTexture!, screenUV).x;
@@ -161,7 +162,7 @@ const beam = Fn(() => {
     const t = acos(cosAngle).div(coneOuter).clamp(0, 1);
     const ring = mix(float(1), texture(rings, vec2(t, 0.5)).level(float(0)).r, ringStrength);
     // Same range window as the relight fill, plus a soft inverse-square.
-    const range = d.div(float(flashlight.distance)).pow4().oneMinus().clamp().pow2();
+    const range = d.div(beamRange).pow4().oneMinus().clamp().pow2();
     const falloff = range.div(d.mul(d).mul(0.08).add(1));
     const transmittance = exp(s.mul(fogDensity).negate());
     scattered.addAssign(
@@ -229,6 +230,7 @@ const WIDE_BRIGHTNESS = solidAngle(REFERENCE) / solidAngle(WIDE);
 const NARROW_BRIGHTNESS = 4.7;
 const baseFill = contribution.fill;
 const baseGain = beamGain.value;
+const baseRange = flashlight.distance;
 const focusBeam = (focus: number) => {
   const angle = WIDE + (NARROW - WIDE) * focus;
   const brightness = WIDE_BRIGHTNESS * (NARROW_BRIGHTNESS / WIDE_BRIGHTNESS) ** focus;
@@ -239,6 +241,10 @@ const focusBeam = (focus: number) => {
   contribution.fill = baseFill * brightness;
   updateRelightingShadowFactorWeights(factorMat, [contribution]);
   beamGain.value = baseGain * brightness;
+  // A concentrated beam carries further: the distance at which it falls to the
+  // same illuminance grows with sqrt(intensity) (inverse-square law).
+  flashlight.distance = baseRange * Math.sqrt(brightness);
+  beamRange.value = flashlight.distance;
 };
 // Start on a 20° beam (10° half-angle; SpotLight.angle is measured from the axis).
 const START = THREE.MathUtils.degToRad(10);

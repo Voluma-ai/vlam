@@ -31,6 +31,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   the streamed Tempel capture, with a fog modifier on the splats and a
   ray-marched beam in the air.
 
+- Demo viewer: a *volumetric fog* effect. Low ground fog lit by a
+  camera-carried ringed flashlight (`F` puts it down; fog, rings and focus
+  sliders) and accent spot lights. On Tempel: a warm lamp slowly circling
+  the courtyard behind both pillar rings, plus an orange and a blue spot
+  crossing the courtyard.
+
 - `updateRelightingShadowFactorWeights(material, contributions)` retunes
   contribution `intensity` / `fill` on a shadow-factor material in place.
   Animated light intensity no longer needs a new material (and pipeline
