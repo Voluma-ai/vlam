@@ -206,7 +206,9 @@ export function createRelightClock() {
     field('North °', heading),
     zoneSuggestions,
   );
-  document.querySelector('#bottom-chrome')?.append(panel);
+  (document.querySelector('#picker-stack') ?? document.querySelector('#bottom-chrome'))?.append(
+    panel,
+  );
   const dateString = (c: Civil): string =>
     `${c.year}-${String(c.month).padStart(2, '0')}-${String(c.day).padStart(2, '0')}`;
   let renderedPlaying: boolean | null = null;

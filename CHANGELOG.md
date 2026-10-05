@@ -21,6 +21,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- Demo: `?effects=dof` now runs as a screen-space pass when the capture has
+  a proxy mesh (LCC collision tiles, or a dropped GLB): the splats draw
+  unchanged into a colour target, the proxy supplies the depth they never
+  write, and a half-resolution gather blur with the core path's circle of
+  confusion composites the result. Its cost no longer grows with splat count
+  (Tempel: 7 → ~55 fps). Captures without a proxy keep the core per-splat
+  `setDepthOfField` path. The picker gains an aperture slider beside focus,
+  and the focus slider is logarithmic, so a large capture's range is as
+  usable beside the camera as across the scene; both drive either path.
 - Demo: `?logo=full` (or `?logo=stroke`) stands the VLAM! mark in the scene
   as synthetic splats built from the logo bitmap - the white stroke as an
   extruded, flame-lit cutout (flat faces, hard edges, ~22k splats) and the
