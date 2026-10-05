@@ -23,17 +23,18 @@ the same source file shown below.
 11. **[Select and cut away part of a capture](/examples/select-and-cut)**: select a volume, count its splats, and split the capture.
 12. **[Cinematic depth of field](/examples/depth-of-field)**: focus and aperture like a real lens, plus click-to-focus.
 13. **[Relight a capture](/examples/relight)**: sun and shadows on a streamed street, from its collision mesh.
-14. **[Tiny planet](/examples/tiny-planet)**: wrap a streamed street under your feet, or up into a bowl.
-15. **[Write your own effect](/examples/custom-effect)**: build an efficient modifier from scratch.
+14. **[Flashlight in the fog](/examples/flashlight-fog)**: a ringed flashlight lighting a foggy hall at night, and the air in front of it.
+15. **[Tiny planet](/examples/tiny-planet)**: wrap a streamed street under your feet, or up into a bowl.
+16. **[Write your own effect](/examples/custom-effect)**: build an efficient modifier from scratch.
 
 ## Shipping it
 
-16. **[Use it from React](/examples/react-viewer)**: mount and dispose a viewer safely.
-17. **[Annotations pinned to the capture](/examples/annotations)**: add HTML labels that track and hide behind the capture.
-18. **[Make it fast on a phone](/examples/fast-on-phones)**: tune pixel ratio and device-derived settings.
-19. **[Works everywhere: the WebGL2 fallback](/examples/webgl-fallback)**, support browsers without WebGPU.
-20. **[View it in VR](/examples/in-vr)**: start a headset session and manage its budget.
-21. **[Save and share a viewpoint](/examples/share-a-viewpoint)**: store a camera view in the URL and animate between views.
+17. **[Use it from React](/examples/react-viewer)**: mount and dispose a viewer safely.
+18. **[Annotations pinned to the capture](/examples/annotations)**: add HTML labels that track and hide behind the capture.
+19. **[Make it fast on a phone](/examples/fast-on-phones)**: tune pixel ratio and device-derived settings.
+20. **[Works everywhere: the WebGL2 fallback](/examples/webgl-fallback)**, support browsers without WebGPU.
+21. **[View it in VR](/examples/in-vr)**: start a headset session and manage its budget.
+22. **[Save and share a viewpoint](/examples/share-a-viewpoint)**: store a camera view in the URL and animate between views.
 
 ## Reference
 

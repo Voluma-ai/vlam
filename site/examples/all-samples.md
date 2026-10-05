@@ -66,6 +66,10 @@ Each is a standalone program. Follow the link for the explanation and a live run
 <<< ../../docs/examples/samples/relight.ts
 :::
 
+::: details flashlight-fog.ts, Tempel `.lcc2`, spot `beamProfile` fill, fog modifier, ray-marched beam · [walkthrough](/examples/flashlight-fog)
+<<< ../../docs/examples/samples/flashlight-fog.ts
+:::
+
 ::: details tiny-planet.ts, Tempel `.lcc2`, `worldWarpPreset` planet / bowl · [walkthrough](/examples/tiny-planet)
 <<< ../../docs/examples/samples/tiny-planet.ts
 :::

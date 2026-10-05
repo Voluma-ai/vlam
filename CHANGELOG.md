@@ -21,6 +21,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- Shadow-factor relighting fill honours `SpotLight.map` (projected like
+  three's own spot lights), and contributions take a radial `beamProfile`
+  texture plus a live `beamProfileStrength`, so textured beams such as
+  reflector rings or gobos need no flashlight-specific API.
+  `createRelightingBeamProfile(fn | samples)` bakes a profile texture.
+
+- Docs example *Flashlight in the fog*: a ringed `beamProfile` flashlight on
+  the streamed Tempel capture, with a fog modifier on the splats and a
+  ray-marched beam in the air.
+
 - `updateRelightingShadowFactorWeights(material, contributions)` retunes
   contribution `intensity` / `fill` on a shadow-factor material in place.
   Animated light intensity no longer needs a new material (and pipeline

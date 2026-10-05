@@ -52,6 +52,43 @@ material without recompiling, and returns `false` when the list would compile
 differently (other lights, a weight crossing zero, a `castShadow` change), in
 which case build a new material.
 
+### Textured and shaped spot lights
+
+Spot fill can carry a light pattern, for example the rings of a reflector, a
+gobo, or a window frame. There are two layers, and they combine:
+
+- **`SpotLight.map`** — three's own projected texture. Its RGB multiplies the
+  fill inside the light's shadow-camera frustum, with the same projection three
+  uses on lit meshes. Use it for any 2D pattern.
+- **Contribution `beamProfile`** — a 1D texture over
+  `t = angle / light.angle` (0 at the beam axis, 1 at the cone edge) whose red
+  channel multiplies the fill. Use it for rotationally symmetric beams without
+  drawing a 2D texture. `createRelightingBeamProfile(fn | samples)` bakes one;
+  `beamProfileStrength` (0..1, default 1) blends from the plain cone to the full
+  profile.
+
+```ts
+const lobe = (t: number, center: number, width: number, gain: number) =>
+  gain * Math.exp(-(((t - center) / width) ** 2));
+const rings = createRelightingBeamProfile((t) =>
+  Math.min(1, 0.12 + lobe(t, 0, 0.2, 0.88) + lobe(t, 0.55, 0.16, 0.38) + lobe(t, 0.88, 0.045, 0.32)),
+);
+const material = createRelightingShadowFactorMaterial(
+  [{ light: spot, intensity: 0, fill: 1.5, beamProfile: rings, beamProfileStrength: 1 }],
+  { combine: 'min' },
+);
+```
+
+Both shape fill only, not the umbra. Swapping the map or profile texture, and
+changing `beamProfileStrength` through `updateRelightingShadowFactorWeights`,
+are live. Adding or removing either one changes the compiled graph. Each one
+adds a sampled texture to the fragment stage; WebGPU allows 16 by default,
+shared with shadow maps.
+
+The runnable [Flashlight in the fog](../../site/examples/flashlight-fog.md)
+example carries a ringed spot through a foggy capture, with the beam
+ray-marched through the air.
+
 Splat foliage cannot cast. Umbra shape follows **proxy triangles** only.
 Floor-only LCC collision yields ground / overhang self-shadow, not canopy
 silhouettes from the splat leaves — use a denser lighting mesh when you need

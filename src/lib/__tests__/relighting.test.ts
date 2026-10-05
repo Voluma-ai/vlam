@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   attachRelighting,
   clampRelightingSettings,
+  createRelightingBeamProfile,
   createRelightingProxy,
   createRelightingShadowFactorMaterial,
   renderRelightingFactorMap,
@@ -141,6 +142,85 @@ describe('proxy helpers', () => {
     ).toBe(false);
     expect(updateRelightingShadowFactorWeights(new THREE.MeshBasicNodeMaterial(), [])).toBe(false);
     material.dispose();
+  });
+
+  it('bakes beam profiles from functions and samples', () => {
+    const halfAt = (map: THREE.DataTexture, i: number) =>
+      THREE.DataUtils.fromHalfFloat((map.image.data as Uint16Array)[i]!);
+    const ramp = createRelightingBeamProfile((t) => t, 4);
+    expect(ramp.image.width).toBe(4);
+    expect(ramp.type).toBe(THREE.HalfFloatType);
+    expect(ramp.magFilter).toBe(THREE.LinearFilter);
+    // Texel centres: 0.125, 0.375, 0.625, 0.875.
+    expect(halfAt(ramp, 0)).toBeCloseTo(0.125, 3);
+    expect(halfAt(ramp, 3)).toBeCloseTo(0.875, 3);
+    const sampled = createRelightingBeamProfile([2, 0, -1], 2);
+    expect(halfAt(sampled, 0)).toBeCloseTo(1, 3);
+    expect(halfAt(sampled, 1)).toBe(0);
+    expect(() => createRelightingBeamProfile([])).toThrow();
+    ramp.dispose();
+    sampled.dispose();
+  });
+
+  it('projects a spot map and keeps beam profiles live', () => {
+    const textureValues = (material: THREE.MeshStandardNodeMaterial): unknown[] => {
+      const values: unknown[] = [];
+      material.outputNode!.traverse((node) => {
+        const textureNode = node as { isTextureNode?: boolean; value?: unknown };
+        if (textureNode.isTextureNode === true) values.push(textureNode.value);
+      });
+      return values;
+    };
+    const spot = new THREE.SpotLight();
+    const cookie = new THREE.Texture();
+    spot.map = cookie;
+    const profile = createRelightingBeamProfile((t) => 1 - t, 8);
+    const contributions = [
+      { light: spot, intensity: 0, fill: 1, beamProfile: profile, beamProfileStrength: 0.5 },
+    ];
+    const material = createRelightingShadowFactorMaterial(contributions, { combine: 'min' });
+    expect(textureValues(material)).toEqual(expect.arrayContaining([cookie, profile]));
+
+    const other = createRelightingBeamProfile([1, 0], 8);
+    expect(
+      updateRelightingShadowFactorWeights(material, [
+        { ...contributions[0]!, beamProfile: other, beamProfileStrength: 0.25 },
+      ]),
+    ).toBe(true);
+    expect(textureValues(material)).toContain(other);
+    expect(textureValues(material)).not.toContain(profile);
+
+    // Adding or dropping a profile or map changes the graph.
+    expect(
+      updateRelightingShadowFactorWeights(material, [{ ...contributions[0]!, beamProfile: null }]),
+    ).toBe(false);
+    spot.map = null;
+    expect(updateRelightingShadowFactorWeights(material, contributions)).toBe(false);
+
+    // Profiles only apply to spot lights.
+    const bulb = new THREE.PointLight();
+    const pointMaterial = createRelightingShadowFactorMaterial(
+      [{ light: bulb, intensity: 0, fill: 1, beamProfile: profile }],
+      { combine: 'min' },
+    );
+    expect(textureValues(pointMaterial)).not.toContain(profile);
+
+    // Without fill neither one compiles in, so adding them stays live.
+    const unlit = createRelightingShadowFactorMaterial([{ light: spot, intensity: 1, fill: 0 }], {
+      combine: 'min',
+    });
+    spot.map = cookie;
+    expect(
+      updateRelightingShadowFactorWeights(unlit, [
+        { light: spot, intensity: 1, fill: 0, beamProfile: profile },
+      ]),
+    ).toBe(true);
+
+    material.dispose();
+    pointMaterial.dispose();
+    unlit.dispose();
+    profile.dispose();
+    other.dispose();
   });
 
   it('restores renderer state after a factor pass', () => {
