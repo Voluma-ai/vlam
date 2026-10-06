@@ -1,6 +1,13 @@
 import * as THREE from 'three/webgpu';
 import type { WebGLRenderer } from 'three';
-import { uniform } from 'three/tsl';
+import { uniform, uniformArray } from 'three/tsl';
+import {
+  MAX_LIVE_OPACITY_RANGES,
+  isFractionalOpacity,
+  resolveGatherOpacity,
+  writeLiveOpacityRanges,
+  type LiveOpacitySlice,
+} from './live-opacity';
 import { ComputeSorter, releaseRendererAttributes } from '../core/compute-sorter';
 import { clampDepthOfFieldSettings, type DepthOfFieldSettings } from '../core/depth-of-field';
 import { SplatMesh } from '../core/splat-mesh';
@@ -51,6 +58,11 @@ interface SourceRecord {
   shColorRefresh: boolean;
   originalVisible: boolean;
   lastGather: GatherCacheSnapshot | null;
+  /**
+   * Whether this source's fractional opacity is applied live in the draw
+   * rather than baked by the gather. Assigned per prepare (bounded table).
+   */
+  liveOpacity: boolean;
   /** Per-prepare scratch: the source view snapshot for the current frame. */
   view: UnifiedSourceView | null;
   /** Per-prepare scratch: registration index for stable priority ordering. */
@@ -332,6 +344,10 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   private readonly compensateProjectedLowPass: FloatUniform;
   private readonly dofFocusDistance: FloatUniform;
   private readonly dofAperture: FloatUniform;
+  private readonly liveOpacityRangeValues: THREE.Vector4[];
+  private readonly liveOpacityRanges: ReturnType<typeof uniformArray>;
+  private readonly liveOpacityCount: FloatUniform;
+  private readonly liveOpacitySlices: LiveOpacitySlice[] = [];
   private displayColorModifierValue: DisplayColorModifier | null = null;
   private readonly srgbOutput: boolean;
   private readonly sortMetric: SplatSortMetric;
@@ -378,6 +394,12 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     const compensateProjectedLowPass = uniform(0);
     const dofFocusDistance = uniform(10);
     const dofAperture = uniform(0);
+    const liveOpacityRangeValues = Array.from(
+      { length: MAX_LIVE_OPACITY_RANGES },
+      () => new THREE.Vector4(),
+    );
+    const liveOpacityRanges = uniformArray(liveOpacityRangeValues, 'vec4');
+    const liveOpacityCount = uniform(0);
     const performanceProfile = resolveSplatPerformanceProfile(options.performanceProfile);
     const contributionCulls = resolveProjectedContributionCulls({
       minPixelSize: validateContributionCull(options.minPixelSize, 'minPixelSize'),
@@ -449,6 +471,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         minPixelSize: contributionCulls.minPixelSize,
         minContribution: contributionCulls.minContribution,
         displayColorModifier: null,
+        liveOpacity: { ranges: liveOpacityRanges, count: liveOpacityCount },
       }),
     );
     if (projectedPipeline) geometry.setIndirect(projectedPipeline.buffers.drawArgs);
@@ -466,6 +489,9 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.compensateProjectedLowPass = compensateProjectedLowPass;
     this.dofFocusDistance = dofFocusDistance;
     this.dofAperture = dofAperture;
+    this.liveOpacityRangeValues = liveOpacityRangeValues;
+    this.liveOpacityRanges = liveOpacityRanges;
+    this.liveOpacityCount = liveOpacityCount;
     this.srgbOutput = options.srgbOutput ?? false;
     this.sortMetric = options.sortMetric ?? 'depth';
     this.projectionStrategyValue = projectionStrategy;
@@ -610,6 +636,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       shColorRefresh: options.shColorRefresh === true,
       originalVisible: source.visible,
       lastGather: null,
+      liveOpacity: false,
       view: null,
       registrationOrder: 0,
       offset: 0,
@@ -865,7 +892,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
           view.activeCount === entry.activeCount &&
           view.matrixWorld.equals(entry.matrixWorld) &&
           record.offset === entry.offset &&
-          record.opacity * view.revealMultiplier === entry.effectiveOpacity
+          this.gatherOpacityOf(record, view) === entry.effectiveOpacity
         );
       });
     const expectedInstanceCount = this.computeProjectionActive
@@ -1087,6 +1114,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       this.performanceTimingsValue.sortTracking = submission.tracking;
       this.performanceTimingsValue.sortAcknowledgementMs = submission.acknowledgementMs;
       this.performanceTimingsValue.sortInputCount = submission.inputCount;
+      // The gather is held, but a fade must still advance on this frame.
+      this.updateLiveOpacity();
       return;
     }
     if (!this.sortScheduler.hasSubmissionInFlight() && this.pendingOrderedDrawCount !== null) {
@@ -1152,6 +1181,14 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     // opacity, content revision). Camera-only SH color refreshes reuse cached
     // SDF / covariance and must not force a sort.
     let geometryInvalidated = false;
+    // Fractional opacities move to the live draw table while it has room; the
+    // rest keep the baked (re-gathering) behaviour.
+    let liveOpacitySlots = MAX_LIVE_OPACITY_RANGES;
+    for (const record of admitted) {
+      const effective = record.opacity * (record.view as UnifiedSourceView).revealMultiplier;
+      if (!isFractionalOpacity(effective)) record.liveOpacity = true;
+      else record.liveOpacity = liveOpacitySlots-- > 0;
+    }
     const gatherStartedAt = onPrepareStage ? performance.now() : 0;
     for (const record of admitted) {
       const view = record.view as UnifiedSourceView;
@@ -1162,7 +1199,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         previous.offset === sliceOffset &&
         previous.activeCount === view.activeCount;
       const last = record.lastGather;
-      const effectiveOpacity = record.opacity * view.revealMultiplier;
+      const effectiveOpacity = this.gatherOpacityOf(record, view);
       const geometryMatches =
         last !== null &&
         gatherGeometryMatches(last, view, sliceOffset, ownedSameSlice, effectiveOpacity);
@@ -1253,6 +1290,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     // refreshes re-gather without geometryInvalidated and deliberately skip
     // this. DoF is a live draw uniform and reaches neither branch.
     if (geometryInvalidated || layoutChanged) this.sortScheduler.invalidateContent();
+    this.updateLiveOpacity();
     if (onPrepareStage) {
       const endedAt = performance.now();
       onPrepareStage('layout', endedAt - layoutStartedAt);
@@ -1369,7 +1407,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
           graphRevision: view.graphRevision,
           offset: record.offset,
           activeCount: view.activeCount,
-          effectiveOpacity: record.opacity * view.revealMultiplier,
+          effectiveOpacity: this.gatherOpacityOf(record, view),
           matrixWorld: view.matrixWorld.clone(),
         };
       });
@@ -1452,7 +1490,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         view.activeCount !== entry.activeCount ||
         !view.matrixWorld.equals(entry.matrixWorld) ||
         record.offset !== entry.offset ||
-        record.opacity * view.revealMultiplier !== entry.effectiveOpacity
+        this.gatherOpacityOf(record, view) !== entry.effectiveOpacity
       )
         return false;
     }
@@ -1748,6 +1786,34 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     this.sortScheduler.invalidateContent();
   }
 
+  /** Opacity the gather bakes into `centers.w` for this source (see `live-opacity.ts`). */
+  private gatherOpacityOf(record: SourceRecord, view: UnifiedSourceView): number {
+    return resolveGatherOpacity(record.opacity * view.revealMultiplier, record.liveOpacity);
+  }
+
+  /**
+   * Refreshes the draw's live-opacity ranges from the *drawn* layout and each
+   * slice's gathered opacity. Runs every prepare, held or not, so fades advance
+   * every frame instead of only when a gather lands.
+   */
+  private updateLiveOpacity(): void {
+    const slices = this.liveOpacitySlices;
+    slices.length = 0;
+    for (const entry of this.previousLayout) {
+      const record = this.sources.find((candidate) => candidate.source === entry.source);
+      const gathered = record?.lastGather;
+      const view = record?.view;
+      if (!record?.visible || !gathered || !view) continue;
+      slices.push({
+        offset: entry.offset,
+        activeCount: entry.activeCount,
+        gatheredOpacity: gathered.opacity,
+        currentOpacity: record.opacity * view.revealMultiplier,
+      });
+    }
+    this.liveOpacityCount.value = writeLiveOpacityRanges(slices, this.liveOpacityRangeValues);
+  }
+
   private assertNotDisposed(operation: string): void {
     if (this.disposed) {
       throw new Error(`UnifiedSplatMesh: ${operation} called after dispose.`);
@@ -1781,6 +1847,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       minPixelSize: this.minPixelSize,
       minContribution: this.minContribution,
       displayColorModifier: this.displayColorModifierValue,
+      liveOpacity: { ranges: this.liveOpacityRanges, count: this.liveOpacityCount },
     });
     previous.dispose();
   }

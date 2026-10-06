@@ -85,6 +85,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- `git push` runs the local preflight only. The pinned Linux Playwright
+  container remains available as `npm run test:browser:linux` and is no longer
+  required before a push; CI still runs the browser checks on Ubuntu.
 - Demo: HD no longer multisamples splat-only frames. A splat's quad edge is
   already transparent at 3σ, so renderer MSAA changed nothing in lossless
   captures (mean difference < 0.04/255 on Tempel, Kauz and goose) while

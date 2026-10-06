@@ -36,12 +36,11 @@ npm run test:browser:linux # browser checks in pinned Ubuntu/Playwright Docker
 npm run test:coverage # Vitest with V8 coverage (text + cobertura, what CI runs)
 ```
 
-`git push` runs `npm run preflight` through Husky. When the pushed commits touch
-runtime source, browser tests/assets, Playwright/Vite configuration, or package
-metadata, it also runs `npm run test:browser:linux`. That Docker check uses the
-exact Playwright version from `package-lock.json`, Ubuntu Noble, Node 24, and
-the same SwiftShader launch flags as CI. Install and start Docker Desktop before
-pushing renderer-sensitive work. As with every Git hook, `--no-verify` is an
+`git push` runs `npm run preflight` through Husky. It does not start Docker.
+`npm run test:browser:linux` is an optional local reproduction of the browser
+checks in a pinned Ubuntu/Playwright image (Playwright version from
+`package-lock.json`, Ubuntu Noble, Node 24, SwiftShader). CI already runs
+those checks on an Ubuntu runner. As with every Git hook, `--no-verify` is an
 emergency escape hatch, not the normal workflow.
 
 ## Continuous integration (GitHub Actions)
@@ -178,8 +177,8 @@ versus VLAM pages (`/spark-benchmark.html`, `/vlam-benchmark.html`) need
  `pre-merge-commit` run `npm run lint`, `npm run typecheck`, and
  `npm run docs:check` (the CI lint + typecheck jobs, plus the docs
  link/changelog gate). The pre-push hook runs the remaining reproducible CI
- gates and adds Linux browser parity for renderer-sensitive changes. The
- hosted `gitleaks` scan remains CI-only.
+ gates. The hosted `gitleaks` scan and the optional Linux Playwright container
+ remain outside that hook.
  Skip with `HUSKY=0 git commit` only when you have a reason.
 - **One roadmap item per PR** from [`ROADMAP.md`](ROADMAP.md); update its state
  in the same PR. Keep diffs reviewable.

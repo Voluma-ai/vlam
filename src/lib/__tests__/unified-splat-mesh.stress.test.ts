@@ -102,6 +102,17 @@ interface PrivateUnified {
     opacity: number;
   }>;
   previousLayout: Array<{ source: SplatMesh; offset: number; activeCount: number }>;
+  liveOpacityRangeValues: THREE.Vector4[];
+  liveOpacityCount: { value: number };
+}
+
+/** The draw's live opacity multiplier for one work slot (see `live-opacity.ts`). */
+function liveOpacityScaleAt(internal: PrivateUnified, slot: number): number {
+  for (let i = 0; i < internal.liveOpacityCount.value; i++) {
+    const range = internal.liveOpacityRangeValues[i]!;
+    if (slot >= range.x && slot < range.y) return range.z;
+  }
+  return 1;
 }
 
 interface ShadowSlot {
@@ -198,7 +209,7 @@ describe('UnifiedSplatMesh stress/property', () => {
           shadow[slot] = {
             source: record!.source,
             contentRevision: view.contentRevision,
-            opacity: record!.opacity,
+            opacity: call.opacity,
             matrix: view.matrixWorld.clone(),
           };
         }
@@ -238,8 +249,9 @@ describe('UnifiedSplatMesh stress/property', () => {
       expect(cursor + unified.droppedSplatCount).toBe(visibleSplats);
 
       // Freshness: every slot a current slice owns must have been written by
-      // its source, at the source's *current* content revision, opacity, and
-      // world transform - a stale cache hit shows up here immediately.
+      // its source, at the source's *current* content revision and world
+      // transform, and must *display* its current opacity (gathered opacity ×
+      // live draw scale) - a stale cache hit shows up here immediately.
       for (const entry of layout) {
         const record = internal.sources.find((candidate) => candidate.source === entry.source)!;
         const view = entry.source.getUnifiedSourceView();
@@ -248,7 +260,10 @@ describe('UnifiedSplatMesh stress/property', () => {
           expect(written, `slot ${slot} was never gathered`).not.toBeNull();
           expect(written!.source).toBe(entry.source);
           expect(written!.contentRevision).toBe(view.contentRevision);
-          expect(written!.opacity).toBe(record.opacity);
+          expect(written!.opacity * liveOpacityScaleAt(internal, slot)).toBeCloseTo(
+            record.opacity,
+            6,
+          );
           expect(written!.matrix.equals(view.matrixWorld)).toBe(true);
         }
       }
@@ -284,10 +299,11 @@ describe('UnifiedSplatMesh stress/property', () => {
     mesh.dispose();
   });
 
-  it('regathers a slice after an opacity change and caches it again afterwards', () => {
+  it('fades a slice live without regathering, and regathers only when it crosses zero', () => {
     const renderer = mockRenderer();
     const mesh = staticSource(2);
     const unified = new UnifiedSplatMesh(renderer, 4);
+    const internal = unified as unknown as PrivateUnified;
     unified.addSource(mesh);
     const camera = new THREE.PerspectiveCamera();
     const calls: GatherCall[] = [];
@@ -295,11 +311,28 @@ describe('UnifiedSplatMesh stress/property', () => {
     unified.update(camera);
     expect(calls).toHaveLength(1);
 
+    // A fractional fade is a live draw value: no gather, the slice scales.
     calls.length = 0;
     unified.setSourceOpacity(mesh, 0.25);
     unified.update(camera);
+    expect(calls).toHaveLength(0);
+    expect(liveOpacityScaleAt(internal, 0)).toBe(0.25);
+    expect(liveOpacityScaleAt(internal, 1)).toBe(0.25);
+
+    // Reaching zero culls the slice in the gather.
+    calls.length = 0;
+    unified.setSourceOpacity(mesh, 0);
+    unified.update(camera);
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.opacity).toBe(0.25);
+    expect(calls[0]!.opacity).toBe(0);
+
+    // Leaving zero revives it once with a drawable gather, then fades live.
+    calls.length = 0;
+    unified.setSourceOpacity(mesh, 0.5);
+    unified.update(camera);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.opacity).toBe(1);
+    expect(liveOpacityScaleAt(internal, 0)).toBe(0.5);
 
     calls.length = 0;
     unified.update(camera);

@@ -1,6 +1,11 @@
 import * as THREE from 'three/webgpu';
 import { experiments } from '../internal/experiments';
-import type { DisplayColorModifier, FloatUniform, Vec2Uniform } from '../core/splat-material-types';
+import {
+  asNode,
+  type DisplayColorModifier,
+  type FloatUniform,
+  type Vec2Uniform,
+} from '../core/splat-material-types';
 import {
   capProjectedEigenvaluesToScreenRadius,
   equalizeProjectedEigenvalues,
@@ -15,9 +20,12 @@ import {
   radSplatOpacity,
 } from '../core/splat-render-math';
 import { MAX_SPLAT_RADIUS_PX } from '../core/splat-frustum';
+import { MAX_LIVE_OPACITY_RANGES } from './live-opacity';
 import {
   Discard,
   Fn,
+  If,
+  Loop,
   cameraProjectionMatrix,
   float,
   instanceIndex,
@@ -26,6 +34,7 @@ import {
   positionGeometry,
   screenUV,
   storage,
+  uniformArray,
   varying,
   vec3,
   vec4,
@@ -72,6 +81,14 @@ export function createWorkBufferMaterial(options: {
   minContribution?: number;
   /** Optional display-only RGB transform; omitted adds no fragment work. */
   displayColorModifier?: DisplayColorModifier | null;
+  /**
+   * Live whole-source opacity: `[start, end, scale, 0]` work-slot ranges (see
+   * `live-opacity.ts`) and how many are in use. Omitted draws `centers.w` as is.
+   */
+  liveOpacity?: {
+    ranges: ReturnType<typeof uniformArray>;
+    count: FloatUniform;
+  };
 }): THREE.NodeMaterial {
   const material = new THREE.NodeMaterial();
   const centers = storage(options.centers, 'vec4', options.capacity);
@@ -115,13 +132,29 @@ export function createWorkBufferMaterial(options: {
     mergedExponent?.setInterpolation('flat');
   }
   material.vertexNode = Fn(() => {
-    const workIndex = order.element(instanceIndex).toInt();
+    const workSlot = order.element(instanceIndex);
+    const workIndex = workSlot.toInt();
     const centerSample = centers.element(workIndex);
     const center = centerSample.xyz;
     // Gather stamps display opacity into center.w. `w <= 0` is non-drawable
     // (hidden, fully faded, or a zero source). Fractional fades still draw.
-    const drawable = centerSample.w.greaterThan(0);
-    displayOpacity.assign(centerSample.w);
+    // Live sources gather w = 1 and take their fade from the range table, so a
+    // crossfade never re-gathers or force-sorts (see `live-opacity.ts`).
+    const liveScale = float(1).toVar();
+    const liveOpacity = options.liveOpacity;
+    if (liveOpacity) {
+      Loop(MAX_LIVE_OPACITY_RANGES, ({ i }) => {
+        If(float(i).lessThan(liveOpacity.count), () => {
+          const range = asNode<'vec4'>(liveOpacity.ranges.element(i));
+          If(workSlot.greaterThanEqual(range.x).and(workSlot.lessThan(range.y)), () => {
+            liveScale.assign(range.z);
+          });
+        });
+      });
+    }
+    const liveCenterOpacity = centerSample.w.mul(liveScale);
+    const drawable = liveCenterOpacity.greaterThan(0);
+    displayOpacity.assign(liveCenterOpacity);
     workColor.assign(colors.element(workIndex));
     if (mergedExponent) {
       const remap = workColor.a.mul(4).sub(3).min(5);
