@@ -314,7 +314,15 @@ const renderGoose = async (
   return { pixels, projectionDispatches };
 };
 const gooseVertex = await renderGoose('vertex');
+const gooseVertexAgain = await renderGoose('vertex');
 const gooseCompute = await renderGoose('compute');
+let vertexRepeatChannels = 0;
+let vertexRepeatMax = 0;
+for (let i = 0; i < gooseVertex.pixels.length; i++) {
+  const delta = Math.abs(gooseVertex.pixels[i]! - gooseVertexAgain.pixels[i]!);
+  if (delta > 0) vertexRepeatChannels++;
+  vertexRepeatMax = Math.max(vertexRepeatMax, delta);
+}
 let gooseDifferentChannels = 0;
 let gooseMaxChannelDifference = 0;
 let gooseOver2 = 0;
@@ -326,7 +334,9 @@ const width = 1280;
 for (let i = 0; i < gooseVertex.pixels.length; i += 4) {
   let pixelMax = 0;
   for (let channel = 0; channel < 4; channel++) {
-    const computeDifference = Math.abs(gooseVertex.pixels[i + channel]! - gooseCompute.pixels[i + channel]!);
+    const computeDifference = Math.abs(
+      gooseVertex.pixels[i + channel]! - gooseCompute.pixels[i + channel]!,
+    );
     if (computeDifference > 0) gooseDifferentChannels++;
     if (computeDifference > 2) gooseOver2++;
     if (computeDifference > 10) gooseOver10++;
@@ -350,6 +360,45 @@ gooseWorst.sort(
     Math.max(...a.vertex.map((value, index) => Math.abs(value - a.compute[index]!))) -
     Math.max(...b.vertex.map((value, index) => Math.abs(value - b.compute[index]!))),
 );
+const height = 720;
+const shiftedMean = (dx: number, dy: number): number => {
+  let sum = 0;
+  let count = 0;
+  for (let y = 0; y < height; y++) {
+    const sy = y + dy;
+    if (sy < 0 || sy >= height) continue;
+    for (let x = 0; x < width; x++) {
+      const sx = x + dx;
+      if (sx < 0 || sx >= width) continue;
+      const i = (y * width + x) * 4;
+      const j = (sy * width + sx) * 4;
+      for (let channel = 0; channel < 3; channel++) {
+        sum += Math.abs(gooseVertex.pixels[i + channel]! - gooseCompute.pixels[j + channel]!);
+        count++;
+      }
+    }
+  }
+  return sum / count;
+};
+const diffCanvas = document.createElement('canvas');
+diffCanvas.id = 'goose-diff';
+diffCanvas.width = width;
+diffCanvas.height = 720;
+const diffContext = diffCanvas.getContext('2d');
+if (diffContext) {
+  const image = diffContext.createImageData(width, 720);
+  for (let i = 0; i < gooseVertex.pixels.length; i += 4) {
+    const dr = Math.abs(gooseVertex.pixels[i]! - gooseCompute.pixels[i]!);
+    const dg = Math.abs(gooseVertex.pixels[i + 1]! - gooseCompute.pixels[i + 1]!);
+    const db = Math.abs(gooseVertex.pixels[i + 2]! - gooseCompute.pixels[i + 2]!);
+    image.data[i] = Math.min(255, dr * 8);
+    image.data[i + 1] = Math.min(255, dg * 8);
+    image.data[i + 2] = Math.min(255, db * 8);
+    image.data[i + 3] = 255;
+  }
+  diffContext.putImageData(image, 0, 0);
+  document.body.append(diffCanvas);
+}
 
 // Goose has no SH, so use a small view-dependent fixture to exercise the
 // cache-plus-projection color path and its refresh after camera movement.
@@ -464,9 +513,18 @@ output.textContent = JSON.stringify({
     over50: gooseOver50,
     meanAbs: gooseAbsSum / gooseVertex.pixels.length,
     worst: gooseWorst.slice(-8),
+    shift: {
+      zero: shiftedMean(0, 0),
+      left: shiftedMean(-1, 0),
+      right: shiftedMean(1, 0),
+      up: shiftedMean(0, -1),
+      down: shiftedMean(0, 1),
+    },
     // One move to the orbit pose and one return to the front pose. The two
     // following stationary updates must reuse the projected list.
     projectionDispatches: gooseCompute.projectionDispatches,
+    vertexRepeatChannels,
+    vertexRepeatMax,
   },
   shParity: {
     base: shBase.pixels,

@@ -56,7 +56,8 @@ test('compute projection has exact dense coverage and indirect arguments', async
   // Projection in a compute shader and in a vertex shader may round their
   // final float differently. At 1280×720 the real SOG comparison is still
   // pixel-equivalent: only a few hundred of 3.7M channels may differ by ≤2.
-  console.log('gooseWorst', JSON.stringify(value.gooseParity));
+  console.log('gooseWorst', JSON.stringify({ ...value.gooseParity, worst: undefined }));
+  await page.locator('#goose-diff').screenshot({ path: testInfo.outputPath('goose-diff.png') });
   expect(value.gooseParity.differentChannels).toBeLessThanOrEqual(512);
   expect(value.gooseParity.maxChannelDifference).toBeLessThanOrEqual(2);
   expect(value.shParity.cacheDispatches).toBeGreaterThanOrEqual(2);
