@@ -382,6 +382,7 @@ describe('UnifiedSplatMesh', () => {
       sortScheduler: {
         submissionDiagnostics(): { serial: number; action: string };
         hasSubmissionInFlight(): boolean;
+        hasPendingForce(): boolean;
       };
     };
   }
@@ -547,6 +548,38 @@ describe('UnifiedSplatMesh', () => {
     expect(unified.performanceTimings.sortSubmitted).toBe(false);
     expect(sortScheduler.submissionDiagnostics().action).toBe('suppressed');
     expect(sortScheduler.submissionDiagnostics().serial).toBe(serial);
+
+    unified.dispose();
+    mesh.dispose();
+  });
+
+  it('advances a crossfade on a held frame without re-gathering or re-sorting', () => {
+    const { renderer } = pendingGpuCompletion();
+    const mesh = source();
+    const unified = new UnifiedSplatMesh(renderer, 1);
+    unified.addSource(mesh);
+    const scene = new THREE.Scene();
+    const sortScheduler = computeInternals(unified).sortScheduler;
+    const live = unified as unknown as {
+      liveOpacityRangeValues: THREE.Vector4[];
+      liveOpacityCount: { value: number };
+    };
+    const gather = gatherSpies(unified)[0]!.gather;
+
+    unified.update(cameraAt(3));
+    unified.onAfterRender(renderer as never, scene, cameraAt(3));
+    expect(live.liveOpacityCount.value).toBe(0);
+    const gathers = gather.mock.calls.length;
+
+    // The previous sort is still in flight: this frame is held. The fade must
+    // still reach the draw, and must not queue a regather or forced sort.
+    unified.setSourceOpacity(mesh, 0.4);
+    unified.update(cameraAt(3));
+    expect(sortScheduler.submissionDiagnostics().action).toBe('suppressed');
+    expect(live.liveOpacityCount.value).toBe(1);
+    expect(live.liveOpacityRangeValues[0]!.toArray()).toEqual([0, 1, 0.4, 0]);
+    expect(gather.mock.calls.length).toBe(gathers);
+    expect(sortScheduler.hasPendingForce()).toBe(false);
 
     unified.dispose();
     mesh.dispose();
@@ -1322,12 +1355,33 @@ describe('UnifiedSplatMesh', () => {
       const camera = new THREE.PerspectiveCamera();
       unified.update(camera);
       expect(sort).toHaveBeenCalledTimes(1);
-      unified.setSourceOpacity(mesh, 0.5);
+      // Fading to zero culls the slice in the gather: a content regather.
+      unified.setSourceOpacity(mesh, 0);
       unified.update(camera);
       expect(sort).toHaveBeenCalledTimes(2);
       // Settled again: the regathered content is now sorted, nothing changed.
       unified.update(camera);
       expect(sort).toHaveBeenCalledTimes(2);
+      unified.dispose();
+      mesh.dispose();
+    });
+
+    it('does not re-gather or re-sort a fractional crossfade under a stationary camera', () => {
+      const renderer = mockRenderer();
+      const mesh = source();
+      const unified = new UnifiedSplatMesh(renderer, 1);
+      unified.addSource(mesh);
+      const sort = sorterSpy(unified);
+      const gather = gatherSpies(unified)[0]!.gather;
+      const camera = new THREE.PerspectiveCamera();
+      unified.update(camera);
+      expect(sort).toHaveBeenCalledTimes(1);
+      for (const opacity of [0.9, 0.6, 0.3, 0.05]) {
+        unified.setSourceOpacity(mesh, opacity);
+        unified.update(camera);
+      }
+      expect(sort).toHaveBeenCalledTimes(1);
+      expect(gather).toHaveBeenCalledTimes(1);
       unified.dispose();
       mesh.dispose();
     });
@@ -1598,7 +1652,8 @@ describe('UnifiedSplatMesh', () => {
       unified.update(camera);
       expect(prepare).toHaveBeenCalledTimes(1);
 
-      unified.setSourceOpacity(mesh, 0.5);
+      // Fading to zero culls the slice in the gather: a content regather.
+      unified.setSourceOpacity(mesh, 0);
       unified.update(camera);
       expect(prepare).toHaveBeenCalledTimes(2);
       expect(sort).toHaveBeenCalledTimes(2);

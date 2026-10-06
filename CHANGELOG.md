@@ -85,6 +85,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- `git push` still runs the local Playwright checks. A failed preflight gate
+  reprints the failed test names and error lines after the full log, so a Git
+  UI that only keeps the tail still shows what to fix. The pinned Linux
+  container remains `npm run test:browser:linux` and is not part of the hook.
 - Demo: HD no longer multisamples splat-only frames. A splat's quad edge is
   already transparent at 3σ, so renderer MSAA changed nothing in lossless
   captures (mean difference < 0.04/255 on Tempel, Kauz and goose) while

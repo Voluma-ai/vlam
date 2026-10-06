@@ -4308,6 +4308,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           localCameraPosition: this.localCameraPosition,
           sh: wantPackedColor ? this.materialInputs.sh : null,
         });
+        const matchVertexSort = this.activeCount > 1000;
         this.projectedSorter = new ComputeSorter({
           renderer,
           capacity: this.capacity,
@@ -4315,10 +4316,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           dataTextureWidth: SplatMesh.DATA_TEXTURE_WIDTH,
           splatIndexAttribute: this.splatIndexAttribute,
           sourceIndexAttribute: this.sourceIndexAttribute,
-          visibleIndexAttribute: this.projectedPipeline.buffers.visibleIndices,
-          projectedParametersAttribute: this.projectedPipeline.buffers.parameters,
-          visibleCountAttribute: this.projectedPipeline.buffers.visibleCount,
-          indirectDispatchAttribute: this.projectedPipeline.buffers.dispatchArgs,
+          ...(matchVertexSort
+            ? {}
+            : {
+                visibleIndexAttribute: this.projectedPipeline.buffers.visibleIndices,
+                projectedParametersAttribute: this.projectedPipeline.buffers.parameters,
+                visibleCountAttribute: this.projectedPipeline.buffers.visibleCount,
+                indirectDispatchAttribute: this.projectedPipeline.buffers.dispatchArgs,
+              }),
           sortMetric: this.sortMetric,
         });
       } catch (error) {

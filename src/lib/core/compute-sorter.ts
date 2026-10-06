@@ -158,6 +158,9 @@ export class ComputeSorter implements SplatSorter {
    */
   private visibleCountHint = 0;
 
+  /** Bucket count used by the most recent {@link sort}. Diagnostic. */
+  lastBucketCount = 0;
+
   private readonly viewCenter = new THREE.Vector3();
   private readonly sortMetric: SplatSortMetric;
 
@@ -430,6 +433,7 @@ export class ComputeSorter implements SplatSorter {
     this.activeCount.value = activeCount;
 
     const buckets = this.effectiveBucketCount();
+    this.lastBucketCount = buckets;
     const range = intersectSortRange(
       sceneSortRange(modelView, bounds, this.sortMetric, this.viewCenter),
       visibleRange,
