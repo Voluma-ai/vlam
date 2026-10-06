@@ -6,6 +6,7 @@
 <script type="module">
   import * as THREE from 'three/webgpu';
   import { createWebGPURenderer, SplatMesh } from '../lib/core';
+  import { exactSort, radixSort } from '../lib/sorting/radix';
   const output = document.querySelector('#result');
   try {
     const renderer = await createWebGPURenderer({
@@ -15,7 +16,11 @@
     });
     renderer.setSize(4, 4, false);
     await renderer.init();
-    const strategy = new URLSearchParams(location.search).get('sort') ?? 'counting';
+    const requested = new URLSearchParams(location.search).get('sort') ?? 'counting';
+    // `'radix'` and `'exact'` are no longer strategy names. The factories live
+    // in the optional radix entry so the default graph does not include them.
+    const strategy =
+      requested === 'radix' ? radixSort() : requested === 'exact' ? exactSort() : requested;
     // 2^17 slots: counting sort allocates past the 2^16 floor, and radix keeps
     // empty workgroups while the pool is sparse.
     const mesh = new SplatMesh({ capacity: 131072 }, { sortIntervalMs: 0 });
@@ -65,7 +70,7 @@
         if (seen.has(slot)) duplicates++;
         seen.add(slot);
         const z = mesh.backing.centers[slot * 4 + 2];
-        if (z < last - (strategy === 'counting' ? 0.005 : 0.001)) inversions++;
+        if (z < last - (requested === 'counting' ? 0.005 : 0.001)) inversions++;
         last = z;
       }
       reports.push({
