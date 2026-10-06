@@ -36,12 +36,15 @@ npm run test:browser:linux # browser checks in pinned Ubuntu/Playwright Docker
 npm run test:coverage # Vitest with V8 coverage (text + cobertura, what CI runs)
 ```
 
-`git push` runs `npm run preflight` through Husky. It does not start Docker.
-`npm run test:browser:linux` is an optional local reproduction of the browser
-checks in a pinned Ubuntu/Playwright image (Playwright version from
-`package-lock.json`, Ubuntu Noble, Node 24, SwiftShader). CI already runs
-those checks on an Ubuntu runner. As with every Git hook, `--no-verify` is an
-emergency escape hatch, not the normal workflow.
+`git push` runs `npm run preflight` through Husky, including the local
+Playwright checks. It does not start Docker. When a gate fails, preflight
+reprints the failed test names and error lines after the full log, because
+Git UIs keep only that tail. `npm run test:browser:linux` is the optional
+pinned Ubuntu/Playwright reproduction (Playwright version from
+`package-lock.json`, Ubuntu Noble, Node 24, SwiftShader). CI runs the same
+browser checks on an Ubuntu runner. `--no-browser` skips Playwright for a
+local preflight only. As with every Git hook, `--no-verify` is an emergency
+escape hatch, not the normal workflow.
 
 ## Continuous integration (GitHub Actions)
 
@@ -177,8 +180,9 @@ versus VLAM pages (`/spark-benchmark.html`, `/vlam-benchmark.html`) need
  `pre-merge-commit` run `npm run lint`, `npm run typecheck`, and
  `npm run docs:check` (the CI lint + typecheck jobs, plus the docs
  link/changelog gate). The pre-push hook runs the remaining reproducible CI
- gates. The hosted `gitleaks` scan and the optional Linux Playwright container
- remain outside that hook.
+ gates, including local Playwright, and reprints a short failure summary.
+ The hosted `gitleaks` scan and the Linux Playwright container remain outside
+ that hook.
  Skip with `HUSKY=0 git commit` only when you have a reason.
 - **One roadmap item per PR** from [`ROADMAP.md`](ROADMAP.md); update its state
  in the same PR. Keep diffs reviewable.

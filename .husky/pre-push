@@ -1,3 +1,4 @@
-# Run every reproducible CI gate before publishing commits. The pinned Linux
-# Playwright container stays an optional manual check (`npm run test:browser:linux`).
+# Local CI gates, including Playwright. Docker stays manual
+# (`npm run test:browser:linux`). A failed gate reprints a short summary last,
+# because Git UIs keep only the tail of the hook log.
 node scripts/pre-push.mjs
