@@ -349,7 +349,7 @@ const renderGoose = async (
     );
     const m = modelView.elements;
     const projection = gooseCamera.projectionMatrix.elements;
-    const focal = [(projection[0]! * 1280) / 2, (projection[5]! * 720) / 2];
+    const focal = [(projection[0] * 1280) / 2, (projection[5] * 720) / 2];
     const { centers, covarianceA, covarianceB } = pipeline.pool.backing;
     const count = pipeline.activeCount;
     const dot3 = (p: number[], q: number[]) => p[0]! * q[0]! + p[1]! * q[1]! + p[2]! * q[2]!;
