@@ -1,12 +1,14 @@
 /**
- * Viewer-only VLAM! mark: the logo bitmap turned into splats
- * (`logo-splats.ts`), mounted as two `SplatMesh`es that share one pose:
+ * Viewer-only VLAM! mark: the white left stroke of the V as a mesh
+ * (`vlam-balk.glb`, fitted to the logo bitmap's outline) and the flame and
+ * its effects as synthetic splats (`logo-splats.ts`):
  *
- *  - the **stroke**, the white left stroke of the V, lit in-shader from the
- *    flame and relit by the scene's lights like any other surface;
+ *  - the **stroke**, a lit mesh: shaded in-shader from the flame and relit by
+ *    the scene's factor map like any other surface, and the same mesh is the
+ *    relighting / occluder proxy;
  *  - the **fire**: flame body, glow, embers and the light pool on the floor,
- *    emissive, so a host draws it on its own rather than through a relit
- *    unified draw, and night relighting leaves it alone.
+ *    one `SplatMesh`, emissive, so the host draws it on its own and night
+ *    relighting leaves it alone.
  *
  * The flame is the light source: the stroke's lighting is a warm point light
  * at the flame centroid plus a hemispheric sky term scaled by `night`, which
@@ -16,6 +18,8 @@
  */
 import * as THREE from 'three/webgpu';
 import {
+  cameraPosition,
+  colorSpaceToWorking,
   float,
   fract,
   hash,
@@ -25,20 +29,24 @@ import {
   mx_noise_float,
   mx_noise_vec3,
   normalize,
+  normalWorld,
+  positionWorld,
   pow,
+  screenUV,
   smoothstep,
   uniform,
   vec3,
   vec4,
+  viewportSize,
 } from 'three/tsl';
-import { SplatMesh, type SplatData, type SplatMeshOptions, type SplatModifier } from '../lib/core';
 import {
-  buildLogoSplats,
-  type LogoBitmap,
-  type LogoLayer,
-  type LogoSplats,
-  type StrokeOutline,
-} from './logo-splats';
+  SplatMesh,
+  type DisplayColorModifier,
+  type SplatData,
+  type SplatMeshOptions,
+  type SplatModifier,
+} from '../lib/core';
+import { buildLogoSplats, type LogoBitmap, type LogoLayer, type LogoSplats } from './logo-splats';
 import type { FogAccent } from './volumetric-fog';
 
 /** The mark's base floats this far above the floor; the light pool sits on the floor. */
@@ -70,6 +78,12 @@ export async function loadLogoBitmap(url: string): Promise<LogoBitmap> {
 export interface VlamLogoOptions {
   /** World height of the mark, metres (default 8). */
   readonly height?: number;
+  /**
+   * The mesh of the white stroke (`vlam-balk.glb`, in the mark's local frame
+   * at 8 m): drawn as a real lit surface and used verbatim as the relighting /
+   * occluder proxy.
+   */
+  readonly strokeGeometry: THREE.BufferGeometry;
   /** Show only the white stroke (`'stroke'`) or the whole mark (`'full'`). */
   readonly parts?: 'stroke' | 'full';
   /** Freeze the animation (the mark still lights itself). */
@@ -105,11 +119,20 @@ export interface LogoSpotlight {
 
 /** The mounted mark. */
 export interface VlamLogo {
-  /** The white stroke: a lit surface the scene's relighting may darken. */
-  readonly stroke: SplatMesh;
+  /**
+   * The white stroke, a lit mesh. Add it to the scene; it is posed with the
+   * mark and occludes the splats behind it through the depth test. Also the
+   * pose reference (matrixWorld) of the mark.
+   */
+  readonly stroke: THREE.Mesh;
+  /**
+   * Relighting target of the stroke: `attachRelighting` installs its
+   * factor-map callback here, as on a splat mesh.
+   */
+  readonly strokeDisplay: { displayColorModifier: DisplayColorModifier | null };
   /** The emissive layers; `null` for a stroke-only mark. */
   readonly fire: SplatMesh | null;
-  /** Both meshes, for adding to a scene or a unified draw. */
+  /** The splat meshes (the fire), for the scene. */
   readonly meshes: readonly SplatMesh[];
   readonly splats: LogoSplats;
   /** World position of the flame centroid: where its light comes from. */
@@ -148,86 +171,78 @@ export interface VlamLogo {
   dispose(): void;
 }
 
-/** The stroke's relighting / occluder proxy, scaled about its center. */
-const STROKE_PROXY_SCALE = 0.985;
+/**
+ * The mark height (metres) `vlam-balk.glb` is modelled for. The mesh is the
+ * V's left stroke baked into the mark's local frame at this height (fitted to
+ * the bitmap's stroke outline), and scales uniformly with `height`.
+ */
+const STROKE_MESH_HEIGHT = 8;
+
+/** The warm flame tint on the stroke. */
+const FLAME_WARM = vec3(1.0, 0.58, 0.26);
+
+/** Where the stroke's lights are, in whatever frame `p`, `n` and `eye` share. */
+interface StrokeLights {
+  readonly flame: THREE.UniformNode<'vec3', THREE.Vector3>;
+  readonly spot: THREE.UniformNode<'vec3', THREE.Vector3>;
+  readonly spotDir: THREE.UniformNode<'vec3', THREE.Vector3>;
+  readonly spotIntensity: THREE.UniformNode<'float', number>;
+  readonly spotCosOuter: THREE.UniformNode<'float', number>;
+  readonly spotCosInner: THREE.UniformNode<'float', number>;
+  readonly night: THREE.UniformNode<'float', number>;
+  readonly flicker: THREE.UniformNode<'float', number>;
+  /** 1 with a flame, 0 for a stroke-only mark. */
+  readonly flameLight: THREE.Node<'float'>;
+}
 
 /**
- * A closed prism of the stroke's outline, ±halfDepth along local z. Built
- * non-indexed with flat faces: the relighting proxy recomputes normals per
- * triangle, so no cap triangle can tilt a shared vertex normal and show as a
- * lit or dark facet. The outline is lightly smoothed (its crossings zigzag by
- * half a cell) and then pushed outward by `margin`, so the prism always
- * covers the splat stroke, corners included: where it fell short, the factor
- * map showed the lit wall behind as a bright patch on the stroke's tip.
+ * The stroke's shading, shared by the splat modifier (mesh-local frame) and
+ * the mesh material (world frame): a warm point light at the flame + sky
+ * hemisphere + a tight highlight + an optional white spot. Returns display
+ * (sRGB) color.
  */
-export function buildStrokeGeometry(outline: StrokeOutline, margin = 0.06): THREE.BufferGeometry {
-  const n = outline.points.length / 2;
-  const h = outline.halfDepth;
-  const xs = new Float32Array(n);
-  const ys = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    let x = 0;
-    let y = 0;
-    for (let k = -1; k <= 1; k++) {
-      const j = (((i + k) % n) + n) % n;
-      x += outline.points[j * 2] as number;
-      y += outline.points[j * 2 + 1] as number;
-    }
-    xs[i] = x / 3;
-    ys[i] = y / 3;
-  }
-  let cx = 0;
-  let cy = 0;
-  let area = 0;
-  for (let i = 0; i < n; i++) {
-    const j = (i + 1) % n;
-    cx += xs[i] as number;
-    cy += ys[i] as number;
-    area += (xs[i] as number) * (ys[j] as number) - (xs[j] as number) * (ys[i] as number);
-  }
-  cx /= Math.max(1, n);
-  cy /= Math.max(1, n);
-  // Counter-clockwise seen from +z, whatever order the outline arrived in.
-  const ccw = area >= 0;
-  // Push each point outward along the normal of the chord between its
-  // neighbours (the side the centroid is not on).
-  for (let i = 0; i < n; i++) {
-    const prev = (i + n - 1) % n;
-    const next = (i + 1) % n;
-    let nx = (ys[next] as number) - (ys[prev] as number);
-    let ny = (xs[prev] as number) - (xs[next] as number);
-    const length = Math.hypot(nx, ny) || 1;
-    nx /= length;
-    ny /= length;
-    if (nx * ((xs[i] as number) - cx) + ny * ((ys[i] as number) - cy) < 0) {
-      nx = -nx;
-      ny = -ny;
-    }
-    xs[i] = (xs[i] as number) + nx * margin;
-    ys[i] = (ys[i] as number) + ny * margin;
-  }
-  const positions: number[] = [];
-  const tri = (a: readonly number[], b: readonly number[], c: readonly number[]): void => {
-    positions.push(...a, ...b, ...c);
-  };
-  for (let i = 0; i < n; i++) {
-    const j = (i + 1) % n;
-    const [a, b] = ccw ? [i, j] : [j, i];
-    const ax = xs[a] as number;
-    const ay = ys[a] as number;
-    const bx = xs[b] as number;
-    const by = ys[b] as number;
-    // Front cap (+z) and back cap (-z, reversed).
-    tri([cx, cy, h], [ax, ay, h], [bx, by, h]);
-    tri([cx, cy, -h], [bx, by, -h], [ax, ay, -h]);
-    // Side wall, outward.
-    tri([ax, ay, h], [ax, ay, -h], [bx, by, -h]);
-    tri([ax, ay, h], [bx, by, -h], [bx, by, h]);
-  }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.computeVertexNormals();
-  return geometry;
+function shadeStroke(
+  lights: StrokeLights,
+  p: THREE.Node<'vec3'>,
+  n: THREE.Node<'vec3'>,
+  eye: THREE.Node<'vec3'>,
+  albedo: THREE.Node<'vec3'>,
+): THREE.Node<'vec3'> {
+  const toLight = lights.flame.sub(p);
+  const distance = toLight.length();
+  const l = toLight.div(distance.max(1e-4));
+  const attenuation = float(1).div(distance.mul(distance).mul(0.35).add(1));
+  // Lambert plus a fill the flame throws on everything near it, so the
+  // stroke's side facing away still catches the fire at night.
+  const diffuse = max(n.dot(l), 0)
+    .mul(2.4)
+    .add(0.5)
+    .mul(attenuation)
+    .mul(lights.flicker)
+    .mul(lights.flameLight);
+  const v = normalize(eye.sub(p));
+  const h = normalize(l.add(v));
+  const specular = pow(max(n.dot(h), 0), 20)
+    .mul(attenuation)
+    .mul(lights.flicker)
+    .mul(lights.flameLight)
+    .mul(0.8);
+  // Hemispheric daylight: facing discs stay white, undersides fall to half.
+  const sky = n.y.mul(0.25).add(0.78).mul(lights.night).add(0.04);
+  // White spot: Lambert inside a soft cone, mild distance falloff.
+  const toSpot = lights.spot.sub(p);
+  const spotDistance = toSpot.length();
+  const ls = toSpot.div(spotDistance.max(1e-4));
+  const cone = smoothstep(
+    lights.spotCosOuter,
+    lights.spotCosInner,
+    ls.negate().dot(lights.spotDir),
+  );
+  const spot = max(n.dot(ls), 0)
+    .mul(cone)
+    .mul(lights.spotIntensity)
+    .div(spotDistance.mul(spotDistance).mul(0.004).add(1));
+  return albedo.mul(sky.add(FLAME_WARM.mul(diffuse)).add(spot)).add(FLAME_WARM.mul(specular));
 }
 
 /** Copies the splats `[start, end)` into their own `SplatData`. */
@@ -247,7 +262,7 @@ function sliceSplatData(
 }
 
 /** Creates the mark from its bitmap; the caller adds {@link VlamLogo.meshes} to the scene. */
-export function createVlamLogo(bitmap: LogoBitmap, options: VlamLogoOptions = {}): VlamLogo {
+export function createVlamLogo(bitmap: LogoBitmap, options: VlamLogoOptions): VlamLogo {
   const height = options.height ?? 8;
   const strokeOnly = options.parts === 'stroke';
   const floorBelow = options.floorBelow ?? LOGO_FLOOR_BELOW;
@@ -263,68 +278,66 @@ export function createVlamLogo(bitmap: LogoBitmap, options: VlamLogoOptions = {}
   });
   const { layers, data } = splats;
   const fireStart = layers.stroke.end;
-  const stroke = new SplatMesh(sliceSplatData(data, 0, fireStart, antialias), meshOptions);
+  const strokeGeometry = options.strokeGeometry
+    .clone()
+    .scale(height / STROKE_MESH_HEIGHT, height / STROKE_MESH_HEIGHT, height / STROKE_MESH_HEIGHT);
   const fire = strokeOnly
     ? null
     : new SplatMesh(sliceSplatData(data, fireStart, data.count, antialias), meshOptions);
-  const meshes = fire ? [stroke, fire] : [stroke];
+  const meshes = fire ? [fire] : [];
 
   // Shared live inputs. Each modifier is built once and never replaced.
   const time = uniform(0);
   const night = uniform(1);
   /** Smooth CPU-side flicker the whole light stack shares. */
   const flicker = uniform(1);
-  const lightLocal = uniform(new THREE.Vector3(...splats.flameCenter));
   /** The flame's light on the stroke; 0 when the mark has no flame. */
   const flameLight = float(strokeOnly ? 0 : 1);
-  // An optional spot light on the stroke, kept in the mark's local frame.
-  const spotLocal = uniform(new THREE.Vector3());
-  const spotDirLocal = uniform(new THREE.Vector3(0, -1, 0));
-  const spotIntensity = uniform(0);
-  const spotCosOuter = uniform(Math.cos(THREE.MathUtils.degToRad(18)));
-  const spotCosInner = uniform(Math.cos(THREE.MathUtils.degToRad(12)));
+  const makeLights = (flame: THREE.Vector3): StrokeLights => ({
+    flame: uniform(flame),
+    // An optional spot light on the stroke.
+    spot: uniform(new THREE.Vector3()),
+    spotDir: uniform(new THREE.Vector3(0, -1, 0)),
+    spotIntensity: uniform(0),
+    spotCosOuter: uniform(Math.cos(THREE.MathUtils.degToRad(18))),
+    spotCosInner: uniform(Math.cos(THREE.MathUtils.degToRad(12))),
+    night,
+    flicker,
+    flameLight,
+  });
+  // The stroke shades in world space; `syncFlameWorld` keeps the lights in step.
+  const lights = makeLights(new THREE.Vector3());
   let spotWorld: LogoSpotlight | null = null;
-  const warm = vec3(1.0, 0.58, 0.26);
   const idle = float(animate ? 1 : 0);
 
-  // Stroke: warm point light at the flame + sky hemisphere + a tight highlight.
-  const strokeModifier: SplatModifier = (ctx) => {
-    const p = ctx.localCenter;
-    const n = ctx.normal;
-    const toLight = lightLocal.sub(p);
-    const distance = toLight.length();
-    const l = toLight.div(distance.max(1e-4));
-    const attenuation = float(1).div(distance.mul(distance).mul(0.35).add(1));
-    // Lambert plus a fill the flame throws on everything near it, so the
-    // stroke's side facing away still catches the fire at night.
-    const diffuse = max(n.dot(l), 0)
-      .mul(2.4)
-      .add(0.5)
-      .mul(attenuation)
-      .mul(flicker)
-      .mul(flameLight);
-    const v = normalize(ctx.cameraLocal.sub(p));
-    const h = normalize(l.add(v));
-    const specular = pow(max(n.dot(h), 0), 20)
-      .mul(attenuation)
-      .mul(flicker)
-      .mul(flameLight)
-      .mul(0.8);
-    // Hemispheric daylight: facing discs stay white, undersides fall to half.
-    const sky = n.y.mul(0.25).add(0.78).mul(night).add(0.04);
-    // White spot: Lambert inside a soft cone, mild distance falloff.
-    const toSpot = spotLocal.sub(p);
-    const spotDistance = toSpot.length();
-    const ls = toSpot.div(spotDistance.max(1e-4));
-    const cone = smoothstep(spotCosOuter, spotCosInner, ls.negate().dot(spotDirLocal));
-    const spot = max(n.dot(ls), 0)
-      .mul(cone)
-      .mul(spotIntensity)
-      .div(spotDistance.mul(spotDistance).mul(0.004).add(1));
-    const rgb = ctx.color.rgb.mul(sky.add(warm.mul(diffuse)).add(spot)).add(warm.mul(specular));
-    return { color: vec4(rgb, ctx.color.a) };
+  const material = new THREE.MeshBasicNodeMaterial();
+  material.toneMapped = false;
+  let modifier: DisplayColorModifier | null = null;
+  const buildStrokeColor = (): void => {
+    // Same color path as the splats: lit in display space, then into the
+    // working space (unless the scene emits sRGB as-is), then relit.
+    const lit = shadeStroke(lights, positionWorld, normalWorld, cameraPosition, vec3(0.97));
+    const working = options.mesh?.srgbOutput
+      ? lit
+      : (colorSpaceToWorking(vec4(lit, 1), THREE.SRGBColorSpace) as unknown as THREE.Node<'vec4'>)
+          .rgb;
+    const rgb = modifier ? modifier(working, screenUV, viewportSize) : working;
+    material.colorNode = vec4(rgb, 1);
+    material.needsUpdate = true;
   };
-  stroke.modifiers = [strokeModifier];
+  buildStrokeColor();
+  const strokeDisplay: VlamLogo['strokeDisplay'] = {
+    get displayColorModifier() {
+      return modifier;
+    },
+    set displayColorModifier(next) {
+      modifier = next;
+      buildStrokeColor();
+    },
+  };
+  const stroke = new THREE.Mesh(strokeGeometry, material);
+  stroke.frustumCulled = false;
+  stroke.raycast = () => undefined;
 
   // Fire: layers are blended with float masks rather than `select`: a TSL
   // conditional in this graph drops the splats of one branch (seen on the
@@ -417,26 +430,21 @@ export function createVlamLogo(bitmap: LogoBitmap, options: VlamLogoOptions = {}
       strokeCenterLocal.y += (points[i * 2 + 1] as number) / count;
     }
   }
-  const inverseStroke = new THREE.Matrix4();
   const syncFlameWorld = (): void => {
     stroke.updateMatrixWorld();
     flameWorld.set(...splats.flameCenter).applyMatrix4(stroke.matrixWorld);
     strokeCenterWorld.copy(strokeCenterLocal).applyMatrix4(stroke.matrixWorld);
-    // The spot is given in world space; the shader wants it mesh-local.
-    inverseStroke.copy(stroke.matrixWorld).invert();
+    lights.flame.value.copy(flameWorld);
     if (spotWorld) {
-      spotLocal.value.copy(spotWorld.position).applyMatrix4(inverseStroke);
-      spotDirLocal.value
-        .copy(spotWorld.target)
-        .applyMatrix4(inverseStroke)
-        .sub(spotLocal.value)
-        .normalize();
+      lights.spot.value.copy(spotWorld.position);
+      lights.spotDir.value.copy(spotWorld.target).sub(spotWorld.position).normalize();
     }
   };
   syncFlameWorld();
 
   return {
     stroke,
+    strokeDisplay,
     fire,
     meshes,
     splats,
@@ -449,7 +457,7 @@ export function createVlamLogo(bitmap: LogoBitmap, options: VlamLogoOptions = {}
     place(base, faceToward) {
       // Local +z is the front of the mark; turn it toward the point about y.
       const yaw = Math.atan2(faceToward.x - base.x, faceToward.z - base.z);
-      for (const object of [...meshes, ...followers]) {
+      for (const object of [stroke, ...meshes, ...followers]) {
         object.position.copy(base);
         object.rotation.set(0, yaw, 0);
         object.updateMatrixWorld();
@@ -475,10 +483,10 @@ export function createVlamLogo(bitmap: LogoBitmap, options: VlamLogoOptions = {}
     },
     setSpotlight(spot) {
       spotWorld = spot;
-      spotIntensity.value = spot ? (spot.intensity ?? 1.4) : 0;
       const outer = THREE.MathUtils.degToRad(spot?.angleDeg ?? 18);
-      spotCosOuter.value = Math.cos(outer);
-      spotCosInner.value = Math.cos(outer * (1 - (spot?.penumbra ?? 0.35)));
+      lights.spotIntensity.value = spot ? (spot.intensity ?? 1.4) : 0;
+      lights.spotCosOuter.value = Math.cos(outer);
+      lights.spotCosInner.value = Math.cos(outer * (1 - (spot?.penumbra ?? 0.35)));
       syncFlameWorld();
     },
     fogAccents() {
@@ -505,19 +513,14 @@ export function createVlamLogo(bitmap: LogoBitmap, options: VlamLogoOptions = {}
     },
     strokeProxyGeometry() {
       stroke.updateMatrixWorld();
-      const geometry = buildStrokeGeometry(splats.strokeOutline);
-      // Slightly inside the splat stroke: at full size the lit proxy showed
-      // as a faint glow around the V's edge.
-      geometry.computeBoundingBox();
-      const center = geometry.boundingBox!.getCenter(new THREE.Vector3());
-      geometry
-        .translate(-center.x, -center.y, -center.z)
-        .scale(STROKE_PROXY_SCALE, STROKE_PROXY_SCALE, STROKE_PROXY_SCALE)
-        .translate(center.x, center.y, center.z);
-      return geometry.applyMatrix4(stroke.matrixWorld);
+      // The proxy is the mesh itself: no inset, so the factor map ends
+      // exactly at the silhouette.
+      return strokeGeometry.clone().applyMatrix4(stroke.matrixWorld);
     },
     dispose() {
       for (const mesh of meshes) mesh.dispose();
+      strokeGeometry.dispose();
+      material.dispose();
     },
   };
 }

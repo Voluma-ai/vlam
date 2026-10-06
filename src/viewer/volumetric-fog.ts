@@ -190,8 +190,8 @@ export type VolumetricFogMode = {
   readonly modifier: SplatModifier;
   /** The flashlight's visible model (world space); add it to the drawn scene. */
   readonly model: THREE.Object3D;
-  /** Attaches the night factor map to the displayed mesh. */
-  attach(target: RelightingTarget): void;
+  /** Attaches the night factor map to the displayed mesh (and any other surfaces drawn with it). */
+  attach(...targets: readonly RelightingTarget[]): void;
   /** Per frame, before the splat draw: moves the lights and lights the proxy. */
   renderLighting(): void;
   /** Per frame, after the main render: adds the light scattered by the fog. */
@@ -205,6 +205,8 @@ export type VolumetricFogMode = {
   setRings(strength: number): void;
   /** 0 = wide and dim, 1 = narrow and bright. */
   setFocus(focus: number): void;
+  /** The current focus, 0 … 1. */
+  readonly focus: number;
   readonly startFocus: number;
   readonly fogDensity: number;
   /** Switches the flashlight on or off (it starts off). Returns whether it is now on. */
@@ -686,7 +688,7 @@ export async function createVolumetricFogMode(
   const startFocus = (WIDE - START) / (WIDE - NARROW);
   applyFocus(startFocus);
 
-  let attachment: RelightingAttachment | null = null;
+  let attachments: RelightingAttachment[] = [];
 
   return {
     modifier,
@@ -696,15 +698,17 @@ export async function createVolumetricFogMode(
       return fogDensity.value;
     },
     proxyDepth: factorTarget.depthTexture,
-    attach(target) {
-      attachment?.dispose();
-      attachment = attachRelighting(target, {
-        map: factorTarget.texture,
-        blend: 1,
-        brightness: AMBIENT,
-        background: AMBIENT,
-        softness: 2,
-      });
+    attach(...targets) {
+      for (const attachment of attachments) attachment.dispose();
+      attachments = targets.map((target) =>
+        attachRelighting(target, {
+          map: factorTarget.texture,
+          blend: 1,
+          brightness: AMBIENT,
+          background: AMBIENT,
+          softness: 2,
+        }),
+      );
     },
     renderLighting() {
       camera.getWorldPosition(eyeWorld.value);
@@ -787,6 +791,9 @@ export async function createVolumetricFogMode(
       applyRings();
     },
     setFocus: applyFocus,
+    get focus() {
+      return focusNow;
+    },
     volumeLights() {
       return beams.map((beam) => ({
         position: beam.pos.value,
@@ -818,8 +825,8 @@ export async function createVolumetricFogMode(
       return lit;
     },
     dispose() {
-      attachment?.dispose();
-      attachment = null;
+      for (const attachment of attachments) attachment.dispose();
+      attachments = [];
       factorMaterial.dispose();
       for (const pass of [beamPass, compositePass]) {
         pass.material.dispose();

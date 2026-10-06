@@ -4,6 +4,7 @@ import * as THREE from 'three/webgpu';
 import { installRadSelectionSnapshot, snapshotVlamRadSelection } from './rad-selection-snapshot';
 import { context, screenUV, texture as tslTexture, workingToColorSpace } from 'three/tsl';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import CameraControls from 'camera-controls';
 import {
   ModifierSlots,
@@ -192,6 +193,8 @@ const COMPLETE_VIEW_TIMEOUT_MS = 10_000;
 const COMPLETE_VIEW_READY_FRAMES = 3;
 const COMPLETE_VIEW_FADE_MS = 300;
 /** How far the volumetric fire's base sits above the mark's drawn flame, metres. */
+/** Beam focus (0 … 1) per wheel pixel while the flashlight is lit: ten notches sweep the range. */
+const FLASH_WHEEL_FOCUS = 0.001;
 const LOGO_FIRE_LIFT = 0.5;
 /** How far the volumetric fire sits toward the white stroke, metres. */
 const LOGO_FIRE_TOWARD_STROKE = 0.5;
@@ -2199,6 +2202,8 @@ async function main(): Promise<void> {
   let suppressStaleRelightOption = false;
   let relightProxy: RelightingProxy | null = null;
   let relightAttachment: RelightingAttachment | null = null;
+  /** The same factor map on the mark's mesh stroke, which is not a splat source. */
+  let strokeRelightAttachment: RelightingAttachment | null = null;
   let relightSetupSequence = 0;
   let relightScene: THREE.Scene | null = null;
   let relightTarget: THREE.RenderTarget | null = null;
@@ -2280,6 +2285,8 @@ async function main(): Promise<void> {
     }
     relightAttachment?.dispose();
     relightAttachment = null;
+    strokeRelightAttachment?.dispose();
+    strokeRelightAttachment = null;
     relightFactorMaterial?.dispose();
     relightFactorMaterial = null;
     relightProxy?.dispose();
@@ -2552,6 +2559,7 @@ async function main(): Promise<void> {
       const daylight = THREE.MathUtils.smoothstep(elevation, -0.12, 0.12);
       const brightness = 0.2 + 0.8 * daylight;
       relightAttachment?.update({ brightness, background: brightness });
+      strokeRelightAttachment?.update({ brightness, background: brightness });
       const warmth = 1 - THREE.MathUtils.smoothstep(elevation, 0, 0.65);
       relightSunColor.setRGB(1, 1 - 0.3 * warmth, 1 - 0.62 * warmth);
       const sunIntensity = daylight * (0.4 + 0.6 * Math.max(0, Math.sin(elevation)));
@@ -2605,13 +2613,22 @@ async function main(): Promise<void> {
     };
 
     const target = ensureRelightTarget();
-    relightAttachment = attachRelighting(logoUnified ?? mesh, {
+    relightAttachment = attachRelighting(mesh, {
       map: target.texture,
       blend: 1,
       brightness: 1,
       background: 1,
       softness: 2,
     });
+    strokeRelightAttachment = logo
+      ? attachRelighting(logo.strokeDisplay, {
+          map: target.texture,
+          blend: 1,
+          brightness: 1,
+          background: 1,
+          softness: 2,
+        })
+      : null;
     updateEffects = () => {
       if (renderer.xr.isPresenting || !relightController) return;
       applyRelightSun();
@@ -2701,24 +2718,12 @@ async function main(): Promise<void> {
   const logoAt = parseVector3Param(params.get('logoAt'));
   let logo: VlamLogo | null = null;
   let logoMounting = false;
-  /**
-   * On WebGPU the scene and the mark draw through one unified mesh, so one
-   * global sort lets pillars occlude the mark and the mark occlude the scene
-   * from every side. Standalone draws (`?logoUnified=0`, an A/B) layer the
-   * mark on top instead.
-   */
-  let logoUnified: UnifiedSplatMesh | null = null;
-  /**
-   * Core DoF lives on whichever mesh draws: with the mark mounted the scene is
-   * a source of `logoUnified`, whose own DoF uniforms ignore the source's.
-   * Keep both in step so the slider works on either path.
-   */
+  /** Core DoF settings for the scene mesh. */
   const setSceneDepthOfField = (
     mesh: SplatMesh,
     settings: Parameters<SplatMesh['setDepthOfField']>[0],
   ): void => {
     mesh.setDepthOfField(settings);
-    logoUnified?.setDepthOfField(mesh.getDepthOfField());
   };
   type DofSettings = ReturnType<SplatMesh['getDepthOfField']>;
   /**
@@ -2813,7 +2818,7 @@ async function main(): Promise<void> {
   const logoStart = new THREE.Vector3();
   const syncLogoLighting = (): void => {
     if (!logo) return;
-    const relitByProxy = logoUnified !== null && (effectMode === 'fog' || effectMode === 'relight');
+    const relitByProxy = effectMode === 'fog' || effectMode === 'relight';
     logo.setNight(relitByProxy || effectMode !== 'fog' ? 1 : 0.08);
     // 8 m above the start pose and 3 m in toward the mark: lower and closer,
     // the proxy roof occluded the lamp except through one gap.
@@ -2864,8 +2869,7 @@ async function main(): Promise<void> {
     const shown = effectMode === 'fog' || effectMode === 'relight';
     if (shown === logoShown) return;
     logoShown = shown;
-    if (logoUnified) logoUnified.setSourceVisible(logo.stroke, shown);
-    else logo.stroke.visible = shown;
+    logo.stroke.visible = shown;
     if (logo.fire) logo.fire.visible = shown;
   };
   /** Builds the fire's depth occluder once the scene's collision tiles are in. */
@@ -2906,19 +2910,33 @@ async function main(): Promise<void> {
       logoFire.dispose();
       logoFire = null;
     }
-    if (logoUnified) {
-      scene.remove(logoUnified);
-      logoUnified.dispose();
-      logoUnified = null;
-    }
     if (logo) {
       for (const mesh of logo.meshes) scene.remove(mesh);
+      scene.remove(logo.stroke);
       logo.dispose();
       logo = null;
     }
   };
   /** Set once the mark is turned down on a backend that cannot inter-sort it. */
   let logoUnsupported = false;
+  /** The stroke mesh (`vlam-balk.glb`) merged into one world-baked geometry. */
+  const loadLogoStrokeGeometry = async (): Promise<THREE.BufferGeometry> => {
+    const gltf = await new GLTFLoader().loadAsync(`${import.meta.env.BASE_URL}vlam-balk.glb`);
+    gltf.scene.updateMatrixWorld(true);
+    const parts: THREE.BufferGeometry[] = [];
+    gltf.scene.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const geometry = (object.geometry as THREE.BufferGeometry).clone();
+      // Only position and normal matter; the material is ours.
+      for (const name of Object.keys(geometry.attributes)) {
+        if (name !== 'position' && name !== 'normal') geometry.deleteAttribute(name);
+      }
+      parts.push(geometry.applyMatrix4(object.matrixWorld).toNonIndexed());
+    });
+    const merged = parts.length > 0 ? mergeGeometries(parts) : null;
+    if (!merged) throw new Error('vlam-balk.glb contains no mesh.');
+    return merged;
+  };
   const mountLogo = async (): Promise<void> => {
     if (logoParts === null || logo || logoMounting || logoUnsupported) return;
     // Without the unified draw (WebGL2) the mark and a streamed scene are
@@ -2933,6 +2951,7 @@ async function main(): Promise<void> {
     logoMounting = true;
     try {
       const bitmap = await loadLogoBitmap(`${import.meta.env.BASE_URL}vlam.png`);
+      const strokeGeometry = await loadLogoStrokeGeometry();
       let base = logoAt?.clone() ?? null;
       let height = logoHeightParam;
       const preset = LOGO_PLACEMENTS[sceneTitle];
@@ -2951,6 +2970,7 @@ async function main(): Promise<void> {
       const volumeFire =
         logoParts === 'full' && backendName === 'WebGPU' && params.get('fire') !== 'splat';
       const mark = createVlamLogo(bitmap, {
+        strokeGeometry,
         height,
         parts: logoParts,
         floorBelow: LOGO_FLOOR_BELOW,
@@ -3005,32 +3025,11 @@ async function main(): Promise<void> {
       }
       mark.place(base, camera.position);
       logoStart.copy(camera.position);
-      // `?logoUnified=0` keeps the standalone draws for an A/B.
-      if (
-        supportsUnifiedSplatMesh(renderer) &&
-        !benchmarkUnified &&
-        params.get('logoUnified') !== '0'
-      ) {
-        const capacity = splats.capacity + mark.stroke.capacity;
-        const unified = new UnifiedSplatMesh(renderer, capacity, {
-          performanceProfile: splats.performanceProfile,
-          srgbOutput: sceneView.srgbOutput,
-          minPixelSize: sceneView.minPixelSize,
-          minContribution: sceneView.minContribution,
-          sortMetric,
-        });
-        unified.addSource(splats, { priority: 1 });
-        unified.setDepthOfField(splats.getDepthOfField());
-        // The stroke is a lit surface: the relighting proxies carry its shape,
-        // so the factor map lights it like the scene. The emissive fire stays
-        // out of the unified draw, whose relighting would darken it.
-        unified.addSource(mark.stroke);
-        scene.add(unified);
-        if (mark.fire) scene.add(mark.fire);
-        logoUnified = unified;
-      } else {
-        for (const mesh of mark.meshes) scene.add(mesh);
-      }
+      // The stroke is a lit mesh (the relighting proxies carry its shape, so
+      // the factor map lights it like the scene); the emissive fire draws on
+      // its own after the scene, out of reach of the relit scene draw.
+      scene.add(mark.stroke);
+      for (const mesh of mark.meshes) scene.add(mesh);
       logo = mark;
       logoShown = true;
       syncLogoVisible();
@@ -3113,7 +3112,7 @@ async function main(): Promise<void> {
     fogMode = mode;
     scene.add(mode.model);
     setEffectModifiers([mode.modifier]);
-    mode.attach(logoUnified ?? mesh);
+    mode.attach(mesh, ...(logo ? [logo.strokeDisplay] : []));
     syncFogControls?.({
       visible: true,
       fog: mode.fogDensity,
@@ -4840,6 +4839,20 @@ async function main(): Promise<void> {
     });
   });
   renderer.domElement.addEventListener('pointerleave', () => fogMode?.setAim(null));
+  // While the flashlight is lit the wheel focuses its beam (forward = narrower)
+  // instead of dollying the camera.
+  renderer.domElement.addEventListener(
+    'wheel',
+    (e) => {
+      if (!fogMode?.lit) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const pixels = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? e.deltaY * 33 : e.deltaY;
+      fogMode.setFocus(THREE.MathUtils.clamp(fogMode.focus - pixels * FLASH_WHEEL_FOCUS, 0, 1));
+      syncFogControls?.({ visible: true, focus: fogMode.focus });
+    },
+    { capture: true, passive: false },
+  );
 
   window.addEventListener('keydown', (e) => {
     // Single-letter shortcuts: never while a text field has focus, or typing a
@@ -5240,7 +5253,7 @@ async function main(): Promise<void> {
       // in its own depth order.
       // Skip the mirror in VR: renderView re-sorts the shared order buffer for
       // the mirror camera, which would fight the cyclopean order both eyes share.
-      if (mounted && !presenting && !nearL0HoldActive && !logoUnified) renderMirror();
+      if (mounted && !presenting && !nearL0HoldActive) renderMirror();
       if (mounted && !presenting && !nearL0HoldActive) renderRelightPass();
       if (mounted && !presenting && !nearL0HoldActive) fogMode?.renderLighting();
       // `mounted` is false only when the initial scene failed to load: keep
@@ -5263,13 +5276,11 @@ async function main(): Promise<void> {
       if (mounted && !suppressStreamedUpdate && (!postUpdate || !xrPostUpdatePrimed)) {
         const sortThisFrame =
           !presenting || backendName !== 'WebGL2' || xrSortCadence.shouldAttempt(timestamp);
-        const unified = benchmarkUnified ?? logoUnified;
-        if (logo && logoUnified && logoShown) logo.tick(timer.getElapsed());
-        if (unified) unified.update(camera);
+        if (benchmarkUnified) benchmarkUnified.update(camera);
         else splats.update(camera, renderer, sortThisFrame ? undefined : XR_SKIP_SORT_OPTIONS);
         if (postUpdate) xrPostUpdatePrimed = true;
       }
-      if (mounted && !presenting && logo && !logoUnified && logoShown) {
+      if (mounted && !presenting && logo && logoShown) {
         logo.update(camera, renderer, timer.getElapsed());
       }
       if (mounted && !presenting && logoDepth) {
@@ -5277,8 +5288,6 @@ async function main(): Promise<void> {
         if (logoShown) {
           // Under fog, the fog's lighting pass already rendered the proxy depth.
           logoDepth.render(camera, fogMode?.proxyDepth ?? null);
-          // The standalone fire sorts itself (the unified path skips it).
-          if (logoUnified) logo?.fire?.update(camera, renderer);
         }
       }
       if (mounted && !presenting && logoFire && logoShown) {
@@ -5356,7 +5365,7 @@ async function main(): Promise<void> {
           nearL0RevealFadeUntil = 0;
         }
       }
-      const unifiedDraw = benchmarkUnified ?? logoUnified;
+      const unifiedDraw = benchmarkUnified;
       if (unifiedDraw) {
         unifiedDraw.visible = !nearL0HoldActive;
         splats.visible = false;
@@ -5835,9 +5844,6 @@ async function main(): Promise<void> {
       },
       get logo(): VlamLogo | null {
         return logo;
-      },
-      get logoUnified(): UnifiedSplatMesh | null {
-        return logoUnified;
       },
       get logoFire(): VolumeFire | null {
         return logoFire;
@@ -6505,7 +6511,7 @@ function buildEffectPicker(
   fogPill(
     'beam',
     'wide',
-    'Flashlight focus: wide and dim to narrow and bright',
+    'Flashlight focus: wide and dim to narrow and bright (scroll wheel while it is lit)',
     0,
     1,
     0.5,
