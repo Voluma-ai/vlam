@@ -268,6 +268,11 @@ const DEFAULT_RAD_INITIAL_DISPLAY_FRACTION = 0.5;
 const SLAB_PAGE_SPLATS = 65_536;
 /** Spark's desktop RAD residency target, bounded by the capture and device. */
 const RAD_CHUNK_PAGE_TARGET = 256;
+/**
+ * A governor-suspended member (BudgetGovernor's SUSPENDED_BUDGET). Its walk
+ * cannot publish a cut that small, so its last cut would keep every page.
+ */
+const RAD_CHUNK_SUSPENDED_BUDGET = 1;
 /** Physical chunk pages per page of cut: room for the next view beside the displayed one. */
 const RAD_CHUNK_PAGE_HEADROOM = 1.25;
 
@@ -1143,6 +1148,8 @@ export class StreamedSplatMesh extends SplatMesh {
    * so the displayed cut froze while fetches and evictions churned.
    */
   private readonly radChunkInstallQueue = new Map<number, SplatData>();
+  /** Governor-suspended: the displayed cut was released and detail is not fetched. */
+  private radChunkSuspended = false;
   private readonly snapshotWaiters = new Map<
     number,
     (snapshot: FrontierSnapshotReply | null) => void
@@ -3703,6 +3710,8 @@ export class StreamedSplatMesh extends SplatMesh {
         : this.pageTableRequestedDraw;
       if (this.radChunkResidency && this.pageTableDrawBudget !== previousDrawBudget) {
         this.radChunkHardValidityRevisionValue++;
+        this.radChunkSuspended = next <= RAD_CHUNK_SUSPENDED_BUDGET;
+        if (this.radChunkSuspended) this.releaseRadChunkDisplay();
         this.trimRadChunkPagesToBudget();
       }
       if (!this.radChunkResidency) {
@@ -7420,6 +7429,12 @@ export class StreamedSplatMesh extends SplatMesh {
       );
       return false;
     }
+    if (this.radChunkUsesSharedPool && !this.radChunkPoolHasRoom(data.count)) {
+      // The pool is full even after siblings shed their extra pages, and this
+      // mesh has nothing left outside its displayed cut to give up.
+      allocator.release(file);
+      return false;
+    }
     const ranges: SplatRange[] = [];
     try {
       // A shared pool is commonly fragmented by the main scene and several marker
@@ -7466,13 +7481,78 @@ export class StreamedSplatMesh extends SplatMesh {
    * rest free for the next view's chunks while the displayed cut stays pinned.
    */
   private radChunkCutFileBound(): { maxFiles?: number } {
+    const maxFiles = this.radChunkCutPages();
+    return maxFiles < this.scene.chunkUrls.length ? { maxFiles } : {};
+  }
+
+  /**
+   * Pages one displayed cut may span. In a shared pool that is also the
+   * governed budget's pages, even when the page limit could hold the whole
+   * capture: split panes give each capture half of a pool the budgets fill, so
+   * a cut spanning every page of its capture starved the other pane's capture.
+   */
+  private radChunkCutPages(): number {
     const allocator = this.radChunkAllocator;
-    if (!this.radChunkResidency || !allocator) return {};
+    if (!this.radChunkResidency || !allocator) return Number.POSITIVE_INFINITY;
     const limit = this.radChunkUsesSharedPool
       ? this.radChunkSharedPageLimit()
       : allocator.capacityPages;
-    if (limit >= this.scene.chunkUrls.length) return {};
-    return { maxFiles: Math.max(1, Math.floor(limit / RAD_CHUNK_PAGE_HEADROOM)) };
+    // When every chunk fits the limit, displayed and candidate cuts always fit
+    // together; otherwise keep headroom for the next view's chunks.
+    let pages =
+      limit >= this.scene.chunkUrls.length ? limit : Math.floor(limit / RAD_CHUNK_PAGE_HEADROOM);
+    if (this.radChunkUsesSharedPool) {
+      pages = Math.min(pages, Math.ceil(this.pageTableDrawBudget / allocator.chunkSize));
+    }
+    return Math.max(1, pages);
+  }
+
+  /**
+   * Pool tenant hook: drops least-recently-used pages outside the displayed
+   * and pending cuts while this mesh holds more than one cut's pages.
+   */
+  shedPoolRows(rows: number): number {
+    const allocator = this.radChunkAllocator;
+    if (!this.radChunkUsesSharedPool || !allocator || this.pageTableDisposed) return 0;
+    const keep = this.radChunkCutPages();
+    let freed = 0;
+    while (freed < rows && allocator.residentCount > keep) {
+      const before = this.radChunkPoolRows();
+      if (!this.evictRadChunkPage()) break;
+      freed += before - this.radChunkPoolRows();
+    }
+    return freed;
+  }
+
+  /** Pool rows this mesh's resident chunk pages occupy. */
+  private radChunkPoolRows(): number {
+    let rows = 0;
+    for (const page of this.radChunkPages.values()) rows += page.ranges.length;
+    return rows;
+  }
+
+  /**
+   * Drops a suspended chunk-page mesh's displayed cut so its pages can return to
+   * the shared pool. A suspended source is not drawn (split panes skip it, a
+   * timeline hides it), but its pinned pages kept the next marker's capture from
+   * paging in at all. It streams again when the governor restores its budget.
+   */
+  private releaseRadChunkDisplay(): void {
+    this.discardIndexedPublication('suspended');
+    if (this.radChunkDisplayedGlobals.length === 0) return;
+    this.radChunkLastInvalidationReasonValue = 'suspended';
+    this.radChunkDisplayedGlobals = new Uint32Array(0);
+    this.radChunkDisplayedFiles.clear();
+    this.radChunkDisplayedSelectionHashA = null;
+    this.radChunkDisplayedSelectionHashB = null;
+    this.replaceActiveIndices(new Uint32Array(0));
+    this.retainVisibleInstanceCount(0);
+    this.pageTableDrawn = 0;
+    this.radChunkDemandSettledRevision = -1;
+    this.demandWants = [];
+    this.demandFirstSeen.clear();
+    this.radChunkInstallQueue.clear();
+    this.pendingWork = true;
   }
 
   /** True when a full page budget has a page outside the displayed and pending cuts. */
@@ -7489,7 +7569,25 @@ export class StreamedSplatMesh extends SplatMesh {
     const limit = this.radChunkUsesSharedPool
       ? this.radChunkSharedPageLimit()
       : allocator.capacityPages;
-    return allocator.residentCount >= limit;
+    if (allocator.residentCount >= limit) return true;
+    return this.radChunkUsesSharedPool && !this.radChunkPoolHasRoom(allocator.chunkSize, false);
+  }
+
+  /**
+   * Whether the shared pool can take a chunk of `count` splats. Asks siblings to
+   * shed pages beyond their share first, then (when `evictOwn`) evicts this
+   * mesh's own pages outside its displayed and pending cuts. Split panes and the
+   * suspended captures' root pages can fill a pool below this mesh's page limit;
+   * installing anyway threw "SplatMesh capacity exceeded" and dropped the chunk.
+   */
+  private radChunkPoolHasRoom(count: number, evictOwn = true): boolean {
+    const rows = Math.ceil(count / DATA_TEXTURE_WIDTH);
+    if (this.reclaimSharedPoolRows(rows)) return true;
+    if (!evictOwn) return false;
+    while (this.evictRadChunkPage()) {
+      if (this.reclaimSharedPoolRows(rows)) return true;
+    }
+    return false;
   }
 
   /** Installs chunks deferred during a walk, once its plan is applied and protected. */
@@ -7755,12 +7853,13 @@ export class StreamedSplatMesh extends SplatMesh {
     ) {
       return;
     }
-    // A chunk that cannot evict its way into a page would be decoded and dropped.
+    // A suspended mesh draws nothing, and a chunk that cannot evict its way into
+    // a page would be decoded and dropped: neither is worth a download.
     if (
       this.radChunkResidency &&
       file !== 0 &&
-      this.radChunkPagesFull() &&
-      !this.hasEvictableRadChunkPage()
+      (this.radChunkSuspended ||
+        (this.radChunkPagesFull() && !this.hasEvictableRadChunkPage()))
     ) {
       return;
     }

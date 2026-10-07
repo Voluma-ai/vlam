@@ -303,6 +303,15 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     return this.pool.activeSlotByPoolIndex;
   }
 
+  /**
+   * Ensures the shared pool has `rows` free rows, asking sibling tenants to
+   * shed rows they hold beyond their share. Returns whether they are free.
+   */
+  protected reclaimSharedPoolRows(rows: number): boolean {
+    if (this.pool.freeRows >= rows) return true;
+    return this.pool.reclaimRows(this, rows) >= rows;
+  }
+
   /** Rows in the pool backing this mesh. */
   private get poolRows(): number {
     return this.pool.rows;
