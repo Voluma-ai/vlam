@@ -176,6 +176,8 @@ const beam = Fn(() => {
     const transmittance = exp(s.mul(fogDensity).negate());
     // Project the step through the shadow camera the way three's shadow
     // filters do (y flipped for WebGPU); outside the camera the step is lit.
+    // No depth bias: that guards surfaces against acne, and in the air it
+    // would leave a slab of lit fog just behind every occluder.
     const clip = lightShadowMatrix(flashlight).mul(vec4(point, 1));
     const coord = clip.xyz.div(clip.w);
     const inFrustum = coord.x
@@ -185,9 +187,7 @@ const beam = Fn(() => {
       .and(coord.y.lessThanEqual(1))
       .and(coord.z.lessThanEqual(1));
     const unshadowed = inFrustum.select(
-      shadowDepth
-        .sample(vec2(coord.x, coord.y.oneMinus()))
-        .compare(coord.z.add(flashlight.shadow.bias)).x,
+      shadowDepth.sample(vec2(coord.x, coord.y.oneMinus())).compare(coord.z).x,
       float(1),
     );
     scattered.addAssign(
