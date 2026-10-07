@@ -159,6 +159,13 @@ type RadPublicationDiagnostic = {
 
 const RAD_DIAGNOSTIC_RING_SIZE = 32;
 const RAD_DIAGNOSTIC_SAMPLE_SIZE = 4096;
+/**
+ * A page-table camera jump counts as a hard relocation once it exceeds this
+ * fraction of the capture's bounds diagonal (never less than one local unit).
+ * A fixed unit threshold treated every orbit frame of a centimetre-scale
+ * capture as a teleport, so smooth motion discarded each walk's wants.
+ */
+const HARD_RELOCATION_BOUNDS_FRACTION = 0.02;
 /** Bounds hidden LOD replacement preparation on the main thread while camera motion continues. */
 const INTERACTIVE_CLASSIC_STAGE_BUDGET_MS = 3;
 /** Limits any indivisible typed-array conversion inside that time budget. */
@@ -261,6 +268,13 @@ const DEFAULT_RAD_INITIAL_DISPLAY_FRACTION = 0.5;
 const SLAB_PAGE_SPLATS = 65_536;
 /** Spark's desktop RAD residency target, bounded by the capture and device. */
 const RAD_CHUNK_PAGE_TARGET = 256;
+/**
+ * A governor-suspended member (BudgetGovernor's SUSPENDED_BUDGET). Its walk
+ * cannot publish a cut that small, so its last cut would keep every page.
+ */
+const RAD_CHUNK_SUSPENDED_BUDGET = 1;
+/** Physical chunk pages per page of cut: room for the next view beside the displayed one. */
+const RAD_CHUNK_PAGE_HEADROOM = 1.25;
 
 /**
  * Ceiling on the page-table cache floor. A `.rad` frontier refines only into
@@ -1127,6 +1141,15 @@ export class StreamedSplatMesh extends SplatMesh {
   private lastWorkerSnapshot: FrontierSnapshotReply | null = null;
   private nextSnapshotRequestId = 0;
   private pageTableHostCacheRevision = 0;
+  /**
+   * Decoded RAD chunks waiting for a full chunk-page budget's walk to finish.
+   * Installing one evicts a page, and a walk that started before the eviction
+   * selected that page: every candidate then missed a page and was rejected,
+   * so the displayed cut froze while fetches and evictions churned.
+   */
+  private readonly radChunkInstallQueue = new Map<number, SplatData>();
+  /** Governor-suspended: the displayed cut was released and detail is not fetched. */
+  private radChunkSuspended = false;
   private readonly snapshotWaiters = new Map<
     number,
     (snapshot: FrontierSnapshotReply | null) => void
@@ -2879,7 +2902,10 @@ export class StreamedSplatMesh extends SplatMesh {
         }
       } else if (plan.type === 'resizeSafe') this.applyIndexedResizeSafe(plan.capacity);
       else if (plan.type === 'snapshot') this.applyFrontierSnapshot(plan);
-      else this.applyFrontierPlan(plan);
+      else {
+        this.applyFrontierPlan(plan);
+        this.flushRadChunkInstallQueue();
+      }
     } catch (error) {
       this.failFrontierWorker(error);
     }
@@ -3065,14 +3091,13 @@ export class StreamedSplatMesh extends SplatMesh {
       for (const file of this.retrying.keys()) if (!keep.has(file)) this.retrying.delete(file);
     }
     if (!this.pageTableCachedFiles.has(0)) this.requestChunk(0, 'priority');
-    // A queued camera has superseded the worker's last demand. Its wants and
+    // A hard relocation has superseded the worker's last demand. Its wants and
     // touched files describe the old view; re-requesting them here would refill
-    // the slots that a hard relocation just reclaimed before the new walk can
-    // answer.
-    if (
-      this.radChunkResidency &&
-      (this.demandNeedsNewRevision || this.demandReadyGeneration !== this.demandGeneration)
-    ) {
+    // the slots that the relocation just reclaimed before the new walk can
+    // answer. Smooth motion also queues a newer camera on nearly every frame,
+    // but the last walk's bounded carryover still describes the view: dropping
+    // it there starved orbiting cameras of every page.
+    if (this.radChunkResidency && this.hardRelocationPending) {
       return;
     }
     for (const want of this.demandWants) this.requestChunk(want.file, 'priority');
@@ -3120,6 +3145,7 @@ export class StreamedSplatMesh extends SplatMesh {
     this.pageTableInFlight = false;
     this.pendingWork = false;
     this.retrying.clear();
+    this.radChunkInstallQueue.clear();
     for (const { controller } of this.fetching.values()) controller.abort();
     this.frontierWorker?.terminate();
     if (this.frontierWorker) {
@@ -3684,6 +3710,8 @@ export class StreamedSplatMesh extends SplatMesh {
         : this.pageTableRequestedDraw;
       if (this.radChunkResidency && this.pageTableDrawBudget !== previousDrawBudget) {
         this.radChunkHardValidityRevisionValue++;
+        this.radChunkSuspended = next <= RAD_CHUNK_SUSPENDED_BUDGET;
+        if (this.radChunkSuspended) this.releaseRadChunkDisplay();
         this.trimRadChunkPagesToBudget();
       }
       if (!this.radChunkResidency) {
@@ -4274,6 +4302,7 @@ export class StreamedSplatMesh extends SplatMesh {
     this.resident.clear();
     this.staged.clear();
     this.pageTableCachedFiles.clear();
+    this.radChunkInstallQueue.clear();
     this.envHandle = undefined;
     this.envSplatCount = 0;
     super.dispose();
@@ -6496,8 +6525,10 @@ export class StreamedSplatMesh extends SplatMesh {
       this.radChunkDemandSettledCamera = null;
       this.radChunkDemandSettledForward = null;
     }
+    const relocationDistance = this.hardRelocationDistance();
     const hardRelocation =
-      this.lastPostedCamera !== null && squaredDistance3(camera, this.lastPostedCamera) > 1;
+      this.lastPostedCamera !== null &&
+      squaredDistance3(camera, this.lastPostedCamera) > relocationDistance * relocationDistance;
     const firstHardRelocation =
       hardRelocation && !this.hardRelocationPending && this.pageTableReplacementSeq === null;
     if (demandChanged) {
@@ -6532,14 +6563,17 @@ export class StreamedSplatMesh extends SplatMesh {
     this.demandDiagnostics.requestedCameraPosition = camera;
     if (firstHardRelocation) this.reclaimStalePriorityFetches();
     const supersedeInFlight = this.pageTableInFlight && firstHardRelocation;
-    if (this.radChunkResidency && (this.demandNeedsNewRevision || supersedeInFlight)) {
-      // A new walk owns queued priority from this point. Let requests already
-      // on the wire finish, but do not let the previous cut refill their slots
-      // while JavaScript computes the replacement demand.
+    if (this.radChunkResidency && (firstHardRelocation || this.hardRelocationPending)) {
+      // A relocation's walk owns queued priority from this point. Let requests
+      // already on the wire finish, but do not let the previous cut refill
+      // their slots while JavaScript computes the replacement demand.
       this.demandWants = [];
       this.demandFirstSeen.clear();
       this.demandReadyGeneration = -1;
-    } else if (this.radChunkResidency && !this.pageTableInFlight) {
+    } else if (this.radChunkResidency) {
+      // Smooth motion queues a new walk on nearly every frame, and a large
+      // capture's walk can take most of a second. Carry the previous view's
+      // bounded wants over meanwhile so fetch slots do not idle until it lands.
       this.boundChunkPageCarryoverDemand();
     }
     this.reconcileDemand(
@@ -6567,7 +6601,7 @@ export class StreamedSplatMesh extends SplatMesh {
       this.demandDiagnostics.generation = this.demandGeneration;
       this.demandReadyGeneration = -1;
       this.demandNeedsNewRevision = false;
-      if (this.radChunkResidency) {
+      if (this.radChunkResidency && firstHardRelocation) {
         this.demandWants = [];
         this.demandFirstSeen.clear();
       }
@@ -6596,6 +6630,7 @@ export class StreamedSplatMesh extends SplatMesh {
       ...this.pageTableFoveation,
       limit,
       budget: this.pageTableDrawBudget,
+      ...this.radChunkCutFileBound(),
       revision: this.demandGeneration,
       diagnostics: this.onPerformanceEvent !== undefined,
       initialPublishMinSplats: initialPublishMinSplats(
@@ -7340,7 +7375,11 @@ export class StreamedSplatMesh extends SplatMesh {
     const tenantCeiling = Math.max(1, Math.floor(this.radChunkSharedPoolPages / 1.25));
     return Math.max(
       1,
-      Math.min(allocator.capacityPages, tenantCeiling, Math.ceil(budgetPages * 1.25)),
+      Math.min(
+        allocator.capacityPages,
+        tenantCeiling,
+        Math.ceil(budgetPages * RAD_CHUNK_PAGE_HEADROOM),
+      ),
     );
   }
 
@@ -7390,6 +7429,12 @@ export class StreamedSplatMesh extends SplatMesh {
       );
       return false;
     }
+    if (this.radChunkUsesSharedPool && !this.radChunkPoolHasRoom(data.count)) {
+      // The pool is full even after siblings shed their extra pages, and this
+      // mesh has nothing left outside its displayed cut to give up.
+      allocator.release(file);
+      return false;
+    }
     const ranges: SplatRange[] = [];
     try {
       // A shared pool is commonly fragmented by the main scene and several marker
@@ -7428,6 +7473,131 @@ export class StreamedSplatMesh extends SplatMesh {
       warn(`StreamedSplatMesh: failed to upload RAD chunk ${file}; retaining the old cut.`, error);
       return false;
     }
+  }
+
+  /**
+   * Page bound for a chunk-page cut that cannot keep the whole capture resident:
+   * the draw-budget pages the limit was sized from (limit / 1.25), leaving the
+   * rest free for the next view's chunks while the displayed cut stays pinned.
+   */
+  private radChunkCutFileBound(): { maxFiles?: number } {
+    const maxFiles = this.radChunkCutPages();
+    return maxFiles < this.scene.chunkUrls.length ? { maxFiles } : {};
+  }
+
+  /**
+   * Pages one displayed cut may span. In a shared pool that is also the
+   * governed budget's pages, even when the page limit could hold the whole
+   * capture: split panes give each capture half of a pool the budgets fill, so
+   * a cut spanning every page of its capture starved the other pane's capture.
+   */
+  private radChunkCutPages(): number {
+    const allocator = this.radChunkAllocator;
+    if (!this.radChunkResidency || !allocator) return Number.POSITIVE_INFINITY;
+    const limit = this.radChunkUsesSharedPool
+      ? this.radChunkSharedPageLimit()
+      : allocator.capacityPages;
+    // When every chunk fits the limit, displayed and candidate cuts always fit
+    // together; otherwise keep headroom for the next view's chunks.
+    let pages =
+      limit >= this.scene.chunkUrls.length ? limit : Math.floor(limit / RAD_CHUNK_PAGE_HEADROOM);
+    if (this.radChunkUsesSharedPool) {
+      pages = Math.min(pages, Math.ceil(this.pageTableDrawBudget / allocator.chunkSize));
+    }
+    return Math.max(1, pages);
+  }
+
+  /**
+   * Pool tenant hook: drops least-recently-used pages outside the displayed
+   * and pending cuts while this mesh holds more than one cut's pages.
+   */
+  shedPoolRows(rows: number): number {
+    const allocator = this.radChunkAllocator;
+    if (!this.radChunkUsesSharedPool || !allocator || this.pageTableDisposed) return 0;
+    const keep = this.radChunkCutPages();
+    let freed = 0;
+    while (freed < rows && allocator.residentCount > keep) {
+      const before = this.radChunkPoolRows();
+      if (!this.evictRadChunkPage()) break;
+      freed += before - this.radChunkPoolRows();
+    }
+    return freed;
+  }
+
+  /** Pool rows this mesh's resident chunk pages occupy. */
+  private radChunkPoolRows(): number {
+    let rows = 0;
+    for (const page of this.radChunkPages.values()) rows += page.ranges.length;
+    return rows;
+  }
+
+  /**
+   * Drops a suspended chunk-page mesh's displayed cut so its pages can return to
+   * the shared pool. A suspended source is not drawn (split panes skip it, a
+   * timeline hides it), but its pinned pages kept the next marker's capture from
+   * paging in at all. It streams again when the governor restores its budget.
+   */
+  private releaseRadChunkDisplay(): void {
+    this.discardIndexedPublication('suspended');
+    if (this.radChunkDisplayedGlobals.length === 0) return;
+    this.radChunkLastInvalidationReasonValue = 'suspended';
+    this.radChunkDisplayedGlobals = new Uint32Array(0);
+    this.radChunkDisplayedFiles.clear();
+    this.radChunkDisplayedSelectionHashA = null;
+    this.radChunkDisplayedSelectionHashB = null;
+    this.replaceActiveIndices(new Uint32Array(0));
+    this.retainVisibleInstanceCount(0);
+    this.pageTableDrawn = 0;
+    this.radChunkDemandSettledRevision = -1;
+    this.demandWants = [];
+    this.demandFirstSeen.clear();
+    this.radChunkInstallQueue.clear();
+    this.pendingWork = true;
+  }
+
+  /** True when a full page budget has a page outside the displayed and pending cuts. */
+  private hasEvictableRadChunkPage(): boolean {
+    const protectedFiles = this.protectedRadChunkFiles();
+    for (const file of this.radChunkPages.keys()) if (!protectedFiles.has(file)) return true;
+    return false;
+  }
+
+  /** True when installing another chunk page would first evict one. */
+  private radChunkPagesFull(): boolean {
+    const allocator = this.radChunkAllocator;
+    if (!allocator) return false;
+    const limit = this.radChunkUsesSharedPool
+      ? this.radChunkSharedPageLimit()
+      : allocator.capacityPages;
+    if (allocator.residentCount >= limit) return true;
+    return this.radChunkUsesSharedPool && !this.radChunkPoolHasRoom(allocator.chunkSize, false);
+  }
+
+  /**
+   * Whether the shared pool can take a chunk of `count` splats. Asks siblings to
+   * shed pages beyond their share first, then (when `evictOwn`) evicts this
+   * mesh's own pages outside its displayed and pending cuts. Split panes and the
+   * suspended captures' root pages can fill a pool below this mesh's page limit;
+   * installing anyway threw "SplatMesh capacity exceeded" and dropped the chunk.
+   */
+  private radChunkPoolHasRoom(count: number, evictOwn = true): boolean {
+    const rows = Math.ceil(count / DATA_TEXTURE_WIDTH);
+    if (this.reclaimSharedPoolRows(rows)) return true;
+    if (!evictOwn) return false;
+    while (this.evictRadChunkPage()) {
+      if (this.reclaimSharedPoolRows(rows)) return true;
+    }
+    return false;
+  }
+
+  /** Installs chunks deferred during a walk, once its plan is applied and protected. */
+  private flushRadChunkInstallQueue(): void {
+    if (this.pageTableInFlight || this.radChunkInstallQueue.size === 0) return;
+    const queued = [...this.radChunkInstallQueue];
+    this.radChunkInstallQueue.clear();
+    if (this.disposed || this.pageTableDisposed) return;
+    for (const [file, data] of queued) this.forwardChunkToWorker(file, data);
+    this.pendingWork = true;
   }
 
   /** Mirrors stable page presence to the traversal worker. */
@@ -7471,6 +7641,10 @@ export class StreamedSplatMesh extends SplatMesh {
   private forwardChunkToWorker(file: number, data: SplatData): void {
     const tree = data.radTree;
     if (!tree) return;
+    if (this.radChunkResidency && this.pageTableInFlight && this.radChunkPagesFull()) {
+      this.radChunkInstallQueue.set(file, data);
+      return;
+    }
     if (!this.installRadChunkPage(file, data)) return;
     this.pageTableCachedFiles.add(file);
     this.pageTableHostCacheRevision++;
@@ -7588,6 +7762,18 @@ export class StreamedSplatMesh extends SplatMesh {
     }
   }
 
+  /** Camera translation, in local units, that supersedes the previous walk outright. */
+  private hardRelocationDistance(): number {
+    const bounds = this.scene.bounds;
+    if (bounds.isEmpty()) return 1;
+    const diagonal = Math.hypot(
+      bounds.max.x - bounds.min.x,
+      bounds.max.y - bounds.min.y,
+      bounds.max.z - bounds.min.z,
+    );
+    return Number.isFinite(diagonal) ? Math.max(1, diagonal * HARD_RELOCATION_BOUNDS_FRACTION) : 1;
+  }
+
   /** Reclaims old-camera RAD priority slots after a translation-only cut. */
   private reclaimStalePriorityFetches(): void {
     if (!this.radChunkResidency) return;
@@ -7653,6 +7839,7 @@ export class StreamedSplatMesh extends SplatMesh {
     if (
       this.cache.has(file) ||
       this.pageTableCachedFiles.has(file) ||
+      this.radChunkInstallQueue.has(file) ||
       this.fetching.has(file) ||
       this.fetching.size >= this.maxInflight
     ) {
@@ -7663,6 +7850,15 @@ export class StreamedSplatMesh extends SplatMesh {
       kind === 'priority' &&
       classicWant === undefined &&
       this.pageTableActiveFetches() >= 3
+    ) {
+      return;
+    }
+    // A suspended mesh draws nothing, and a chunk that cannot evict its way into
+    // a page would be decoded and dropped: neither is worth a download.
+    if (
+      this.radChunkResidency &&
+      file !== 0 &&
+      (this.radChunkSuspended || (this.radChunkPagesFull() && !this.hasEvictableRadChunkPage()))
     ) {
       return;
     }

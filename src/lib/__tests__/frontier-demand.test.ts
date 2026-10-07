@@ -45,7 +45,9 @@ describe('page-table demand reconciliation', () => {
     for (const mesh of meshes) mesh.dispose();
     meshes.length = 0;
   });
-  function fixture() {
+  function fixture(
+    bounds = new THREE.Box3(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1)),
+  ) {
     const scene = {
       source: {
         budget: 8192,
@@ -57,7 +59,7 @@ describe('page-table demand reconciliation', () => {
       chunkUrls: Array.from({ length: 30 }, (_, i) => `https://example.test/${i}`),
       chunkSize: 4,
       chunkKind: 'file',
-      bounds: new THREE.Box3(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1)),
+      bounds,
       pinnedFiles: new Set([0]),
       maxResidentSplats: 8192,
       foveation: { minScreenRadiusPx: 1.6, maxScreenRadiusPx: 4 },
@@ -486,6 +488,93 @@ describe('page-table demand reconciliation', () => {
     expect(inner.protectedRadChunkFiles()).toEqual(new Set([0, 7, 8, 9]));
   });
 
+  function decodedChunk(count = 4) {
+    return {
+      count,
+      positions: new Float32Array(count * 3),
+      colors: new Uint8Array(count * 4),
+      covariances: new Float32Array(count * 6),
+      radTree: {
+        childCount: new Uint16Array(count),
+        childStart: new Uint32Array(count),
+        size: new Float32Array(count),
+      },
+    };
+  }
+
+  it('defers installing a chunk into full pages until the in-flight walk is applied', () => {
+    const { inner } = chunkPagesFixture();
+    const mesh = inner as typeof inner & {
+      forwardChunkToWorker: (file: number, data: ReturnType<typeof decodedChunk>) => void;
+      installRadChunkPage: (file: number) => boolean;
+      handleFrontierMessage: (plan: unknown) => void;
+      applyFrontierPlan: (plan: unknown) => void;
+      radChunkInstallQueue: Map<number, unknown>;
+    };
+    mesh.pageTableInFlight = true;
+    const install = vi.spyOn(mesh, 'installRadChunkPage').mockReturnValue(true);
+    const apply = vi.spyOn(mesh, 'applyFrontierPlan').mockImplementation(() => {
+      mesh.pageTableInFlight = false;
+    });
+
+    // Installing now would evict a page the running walk may have selected.
+    mesh.forwardChunkToWorker(5, decodedChunk());
+    expect(install).not.toHaveBeenCalled();
+    expect(mesh.radChunkInstallQueue.has(5)).toBe(true);
+    // A queued chunk is already downloaded: do not fetch it again.
+    mesh.requestChunk(5, 'priority');
+    expect(mesh.fetching.has(5)).toBe(false);
+
+    mesh.handleFrontierMessage({ type: 'plan', seq: 1 });
+    expect(apply).toHaveBeenCalledOnce();
+    expect(install).toHaveBeenCalledWith(5, expect.anything());
+    expect(mesh.radChunkInstallQueue.size).toBe(0);
+  });
+
+  it('releases a suspended chunk-page cut and stops fetching its detail', () => {
+    const { inner } = chunkPagesFixture();
+    const mesh = inner as typeof inner & {
+      setBudget: (budget: number) => number;
+      radChunkDisplayedFiles: Set<number>;
+      radChunkSuspended: boolean;
+      demandWants: { file: number; tier: number; priority: number }[];
+    };
+    mesh.pageTableDrawBudget = 8;
+    mesh.radChunkDisplayedGlobals = Uint32Array.from([0, 1, 4, 5]);
+    mesh.radChunkDisplayedFiles.add(0);
+    mesh.radChunkDisplayedFiles.add(1);
+    mesh.demandWants = [{ file: 5, tier: 0, priority: 1 }];
+
+    // The governor's suspended budget: the walk cannot publish anything that
+    // small, so without a release both pages would stay pinned.
+    mesh.setBudget(1);
+
+    expect(mesh.radChunkSuspended).toBe(true);
+    expect(mesh.radChunkDisplayedGlobals).toHaveLength(0);
+    expect(mesh.radChunkDisplayedFiles.size).toBe(0);
+    expect(mesh.demandWants).toEqual([]);
+    mesh.requestChunk(5, 'priority');
+    expect(mesh.fetching.has(5)).toBe(false);
+  });
+
+  it('bounds a chunk-page cut that cannot keep the capture resident', () => {
+    const { inner } = chunkPagesFixture();
+    inner.pageTableInFlight = false;
+    inner.lastPostedCamera = null;
+    inner.reschedulePageTable(
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0, 0, -1),
+      new THREE.Frustum(),
+      1000,
+    );
+    const posted = inner.frontierWorker.posted.filter(
+      (message): message is { type: string; maxFiles?: number } =>
+        (message as { type?: string }).type === 'reschedule',
+    );
+    // Two pages for a 30-chunk capture: leave one page for the next view.
+    expect(posted.at(-1)?.maxFiles).toBe(1);
+  });
+
   it('settles an unchanged budget-clamped cut without fetching more waiter pages', () => {
     const { inner } = chunkPagesFixture();
     inner.demandGeneration = 1;
@@ -614,13 +703,14 @@ describe('page-table demand reconciliation', () => {
     expect(request.signal.aborted).toBe(false);
   });
 
-  it('does not request old chunk-page wants while a newer camera is pending', () => {
+  it('does not request old chunk-page wants while a hard relocation is pending', () => {
     const inner = fixture();
     inner.radChunkResidency = true;
     inner.pageTableCachedFiles.add(0);
     inner.demandGeneration = 2;
     inner.demandReadyGeneration = 1;
     inner.demandNeedsNewRevision = true;
+    inner.hardRelocationPending = true;
     inner.demandWants = [{ file: 7, tier: 0, priority: 10 }];
     const request = vi.spyOn(inner, 'requestChunk').mockImplementation(() => {});
 
@@ -628,11 +718,77 @@ describe('page-table demand reconciliation', () => {
 
     expect(request).not.toHaveBeenCalled();
 
+    inner.hardRelocationPending = false;
     inner.demandNeedsNewRevision = false;
     inner.demandReadyGeneration = inner.demandGeneration;
     inner.demandWants = [{ file: 8, tier: 0, priority: 9 }];
     inner.reconcileDemand(true);
     expect(request).toHaveBeenCalledWith(8, 'priority');
+  });
+
+  it('keeps requesting chunk-page wants while smooth motion queues a newer camera', () => {
+    const inner = fixture();
+    inner.radChunkResidency = true;
+    inner.pageTableCachedFiles.add(0);
+    inner.demandGeneration = 2;
+    inner.demandReadyGeneration = 1;
+    inner.demandNeedsNewRevision = true;
+    const request = vi.spyOn(inner, 'requestChunk').mockImplementation(() => {});
+
+    inner.applyDemand(demand(2, [{ file: 7, tier: 0, priority: 10 }]));
+
+    expect(request).toHaveBeenCalledWith(7, 'priority');
+  });
+
+  it('scales hard relocation to the capture bounds so orbiting keeps its wants', () => {
+    // A centimetre-scale capture: a few local units per frame is smooth motion.
+    const inner = fixture(
+      new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(20_000, 20_000, 2_000)),
+    );
+    inner.radChunkResidency = true;
+    inner.pageTableInFlight = true;
+    inner.pageTableCachedFiles.add(0);
+    inner.lastPostedCamera = [0, 0, 0];
+    inner.cameraEpoch = 1;
+    inner.demandGeneration = 1;
+    inner.demandReadyGeneration = 1;
+    inner.demandWants = [{ file: 7, tier: 0, priority: 10 }];
+    const old = new AbortController();
+    inner.fetching.set(5, {
+      controller: old,
+      kind: 'priority',
+      demandGeneration: 1,
+      cameraEpoch: 1,
+      demandKey: 'old-camera',
+      requestedCameraPosition: [0, 0, 0] as const,
+    });
+    const reclaim = vi.spyOn(inner, 'reclaimStalePriorityFetches');
+    const request = vi.spyOn(inner, 'requestChunk').mockImplementation(() => {});
+
+    for (const x of [2, 4, 6]) {
+      inner.reschedulePageTable(
+        new THREE.Vector3(x, 0, 0),
+        new THREE.Vector3(0, 0, -1),
+        new THREE.Frustum(),
+        1000 + x,
+      );
+    }
+
+    expect(reclaim).not.toHaveBeenCalled();
+    expect(old.signal.aborted).toBe(false);
+    expect(inner.hardRelocationPending).toBe(false);
+    expect(request).toHaveBeenCalledWith(7, 'priority');
+
+    // A jump across a sizeable part of the capture is still a relocation.
+    inner.reschedulePageTable(
+      new THREE.Vector3(5_000, 0, 0),
+      new THREE.Vector3(0, 0, -1),
+      new THREE.Frustum(),
+      2000,
+    );
+    expect(reclaim).toHaveBeenCalledOnce();
+    expect(old.signal.aborted).toBe(true);
+    expect(inner.demandWants).toEqual([]);
   });
 
   it('publishes a complete resident cut while camera demand is newer', () => {

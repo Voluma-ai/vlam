@@ -212,6 +212,12 @@ export interface FrontierTraversalOptions {
   readonly scratch?: FrontierScratch;
   /** Collect selected-node samples for an explicit diagnostic run. */
   readonly collectDiagnostics?: boolean;
+  /**
+   * Maximum distinct chunk files the cut may span. A node whose children would
+   * add files beyond it stays in the cut as a coarse stand-in, while nodes whose
+   * children live in files the cut already spans keep refining.
+   */
+  readonly maxFiles?: number;
 }
 
 export interface FrontierWaiter {
@@ -286,6 +292,9 @@ export class FrontierTraversalJob {
   private rootCoverInfeasible = false;
   private refinable = false;
   private finalResult: FrontierTraversalResult | null = null;
+  private readonly maxFiles: number;
+  /** Heap and output nodes per chunk file, while `maxFiles` bounds the cut. */
+  private readonly fileRefs = new Map<number, number>();
 
   constructor(
     private readonly chunkMap: ReadonlyMap<number, SplatData>,
@@ -306,6 +315,22 @@ export class FrontierTraversalJob {
     this.touched.clear();
     this.waiterList.length = 0;
     this.notables = options.collectDiagnostics ? [] : null;
+    this.maxFiles = options.maxFiles ?? Number.POSITIVE_INFINITY;
+  }
+
+  private refFile(file: number, delta: number): void {
+    if (!Number.isFinite(this.maxFiles)) return;
+    const next = (this.fileRefs.get(file) ?? 0) + delta;
+    if (next > 0) this.fileRefs.set(file, next);
+    else this.fileRefs.delete(file);
+  }
+
+  /** Whether children in these files fit `maxFiles` (the popped parent is already released). */
+  private childFilesFit(firstChunk: number, lastChunk: number): boolean {
+    if (!Number.isFinite(this.maxFiles)) return true;
+    let files = this.fileRefs.size;
+    for (let cc = firstChunk; cc <= lastChunk; cc++) if (!this.fileRefs.has(cc)) files++;
+    return files <= this.maxFiles;
   }
 
   get done(): boolean {
@@ -338,6 +363,7 @@ export class FrontierTraversalJob {
       this.picks.set(file, picked);
     }
     picked.push(local);
+    this.refFile(file, 1);
     this.note(file * this.chunkSize + local, pixelScale);
   }
 
@@ -385,6 +411,7 @@ export class FrontierTraversalJob {
             if (data?.radTree) {
               this.seeded.add(root);
               this.heap.push(root, pixelScaleOf(data, root - file * this.chunkSize, this.view));
+              this.refFile(file, 1);
               this.numSplats++;
             }
           }
@@ -406,12 +433,14 @@ export class FrontierTraversalJob {
         const local = global - file * this.chunkSize;
         if (!data?.radTree) {
           this.heap.pop();
+          this.refFile(file, -1);
           this.numSplats--;
         } else {
           const tree = data.radTree;
           const childCount = tree.childCount[local] as number;
           if (childCount === 0) {
             this.heap.pop();
+            this.refFile(file, -1);
             this.output(file, local, pixelScale);
           } else {
             const nextSplats = this.numSplats - 1 + childCount;
@@ -421,10 +450,15 @@ export class FrontierTraversalJob {
               continue;
             }
             this.heap.pop();
+            this.refFile(file, -1);
             const childStart = tree.childStart[local] as number;
             const firstChunk = Math.floor(childStart / this.chunkSize);
             const lastChunk = Math.floor((childStart + childCount - 1) / this.chunkSize);
-            if (!this.touchMissing(global, pixelScale, firstChunk, lastChunk)) {
+            if (!this.childFilesFit(firstChunk, lastChunk)) {
+              // Over the page bound: keep this node as the stand-in. Neither a
+              // budget clamp nor missing data, so other nodes keep refining.
+              this.output(file, local, pixelScale);
+            } else if (!this.touchMissing(global, pixelScale, firstChunk, lastChunk)) {
               this.output(file, local, pixelScale);
             } else {
               for (let c = 0; c < childCount; c++) {
@@ -434,7 +468,10 @@ export class FrontierTraversalJob {
                 const childLocal = child - childFile * this.chunkSize;
                 const childScale = pixelScaleOf(childData, childLocal, this.view);
                 if (childScale <= this.limit) this.output(childFile, childLocal, childScale);
-                else this.heap.push(child, childScale);
+                else {
+                  this.heap.push(child, childScale);
+                  this.refFile(childFile, 1);
+                }
               }
               this.numSplats = nextSplats;
             }

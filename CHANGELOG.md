@@ -21,6 +21,39 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- Streaming: switching a split pane between large chunk-page `.rad` captures
+  no longer leaves the new capture coarse. A governor-suspended capture (budget
+  1, drawn in neither pane) kept its displayed cut and every page pinned,
+  because its walk cannot publish a cut that small, and the other pane's
+  capture held pages for its whole file; the shared pool filled and the next
+  capture stalled at a few pages. A suspended capture now releases its cut and
+  stops fetching until the governor restores its budget. In a shared pool a
+  cut is bounded to its budget's pages, and an install that finds the pool full
+  asks sibling tenants to shed pages outside their cuts
+  (`SplatPoolTenant.shedPoolRows`, `SplatPool.reclaimRows`), then evicts its
+  own, instead of throwing "SplatMesh capacity exceeded" and dropping the chunk.
+- Streaming: a chunk-page `.rad` capture larger than its page budget no longer
+  freezes its displayed cut. A walk selects from the pages resident when it
+  starts, but chunks arriving during the walk were installed straight away and
+  each evicted a page; under steady fetching every candidate lost a dozen of
+  its pages before it returned, was rejected as `missing-page`, and the cut
+  never changed while chunks were fetched, installed and evicted forever
+  (`construction-timelap`: selection stuck, ~15 MB/s refetched). Chunks that
+  would evict now wait until the walk's plan is applied. A cut is also bounded
+  to the draw-budget pages (`maxFiles` = page limit / 1.25), so the displayed
+  cut can no longer pin every page and leave no room for the next view, and a
+  full page budget with nothing evictable stops fetching. Captures whose
+  chunks all fit their pages are not bounded.
+- Streaming: chunk-page `.rad` meshes keep refining while the camera moves.
+  Every newly queued camera used to discard the last walk's wanted pages, so
+  under a continuous orbit (auto-rotate) a large capture's fetch slots idled
+  between walks that each took most of a second, and the frontier stalled far
+  short of its draw budget. The last walk's bounded carryover now stays
+  fetchable during smooth motion; only a hard relocation drops it. A hard
+  relocation is now a jump beyond 2% of the capture's bounds diagonal (never
+  less than one local unit) rather than any move over one unit, which treated
+  every orbit frame of a centimetre-scale capture as a teleport and reclaimed
+  its in-flight fetches.
 - Streaming: the per-plan `[vlam:rad-*]` console traces emitted while
   `onPerformanceEvent` is set are now gated by a per-tag heartbeat
   (`rad-trace-gate.ts`): lines that carry demand, moves, appends, evictions,

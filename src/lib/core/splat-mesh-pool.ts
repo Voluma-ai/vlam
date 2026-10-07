@@ -133,6 +133,12 @@ export interface SplatPoolTenant {
   relocatePoolRange(range: SplatPoolRange, targetRow: number): void;
   /** Called once after a compaction, so the tenant can rebuild draw state. */
   onPoolCompacted(): void;
+  /**
+   * Optionally frees up to `rows` rows this tenant holds beyond its own share
+   * (cached detail it is not drawing), so a sibling can page in. Returns the
+   * rows released. See {@link SplatPool.reclaimRows}.
+   */
+  shedPoolRows?(rows: number): number;
 }
 
 /** Options for {@link SplatPool}. */
@@ -348,6 +354,20 @@ export class SplatPool {
    */
   unregister(tenant: SplatPoolTenant): void {
     this.tenants.delete(tenant);
+  }
+
+  /**
+   * Asks the other tenants to shed rows they hold beyond their share until
+   * `rows` rows are free. Returns the free rows afterwards.
+   */
+  reclaimRows(requester: SplatPoolTenant, rows: number): number {
+    for (const tenant of this.tenants) {
+      const missing = rows - this.freeRows;
+      if (missing <= 0) break;
+      if (tenant === requester || !tenant.shedPoolRows) continue;
+      tenant.shedPoolRows(missing);
+    }
+    return this.freeRows;
   }
 
   /** Number of meshes drawing from this pool. */
