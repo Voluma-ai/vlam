@@ -1531,6 +1531,7 @@ function rescheduleChunkPages(msg: FrontierRescheduleMessage): void {
     msg,
     job: new FrontierTraversalJob(snapshot, rootList, chunkSize, view, msg.limit, msg.budget, {
       collectDiagnostics: diagnosticsEnabled,
+      ...(msg.maxFiles !== undefined ? { maxFiles: msg.maxFiles } : {}),
     }),
     view,
     traversalId: nextTraversalId++,

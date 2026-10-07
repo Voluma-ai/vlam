@@ -108,6 +108,54 @@ describe('traverseFrontier', () => {
     expect(touched.has(1)).toBe(true); // chunk 1 is the detail to fetch next
   });
 
+  it('keeps a coarse stand-in instead of spanning more chunk files than maxFiles', () => {
+    const p: [number, number, number] = [0, 0, 1];
+    const leaf = { size: 1, pos: p, childCount: 0, childStart: 0 };
+    // chunkSize 4: root 0 → 1,2 (chunk 0); 1 → 4,5 (chunk 1); 2 → 8,9 (chunk 2).
+    const nodes: TreeNode[] = [
+      { size: 8, pos: p, childCount: 2, childStart: 1 },
+      { size: 5, pos: p, childCount: 2, childStart: 4 },
+      { size: 4, pos: p, childCount: 2, childStart: 8 },
+      leaf,
+      leaf,
+      leaf,
+      leaf,
+      leaf,
+      leaf,
+      leaf,
+      leaf,
+      leaf,
+    ];
+    const map = buildChunkMap(nodes, 4);
+    const unbounded = traverseFrontier(map, [0], 4, cam, 2);
+    expect([...unbounded.selection.keys()].sort()).toEqual([1, 2]);
+
+    const job = new FrontierTraversalJob(map, [0], 4, cam, 2, Number.POSITIVE_INFINITY, {
+      maxFiles: 1,
+    });
+    while (!job.step(Number.POSITIVE_INFINITY).done) {
+      // Run to completion.
+    }
+    const { selection, count, budgetClamped, touched } = job.result;
+    // Refining node 1 or 2 would span chunk 0 (its sibling) plus a child
+    // chunk, so both stay as stand-ins and every ray is still covered once.
+    expect([...selection.keys()]).toEqual([0]);
+    expect(Array.from(selection.get(0) ?? []).sort((a, b) => a - b)).toEqual([1, 2]);
+    expect(count).toBe(2);
+    expect(budgetClamped).toBe(false);
+    expect(touched.size).toBe(0);
+
+    // Two files: node 1 refines into chunk 1; node 2 then refines too, because
+    // chunk 0 is released once both of its nodes have been replaced.
+    const two = new FrontierTraversalJob(map, [0], 4, cam, 2, Number.POSITIVE_INFINITY, {
+      maxFiles: 2,
+    });
+    while (!two.step(Number.POSITIVE_INFINITY).done) {
+      // Run to completion.
+    }
+    expect([...two.result.selection.keys()].sort()).toEqual([1, 2]);
+  });
+
   it('produces the synchronous cut when resumed after early demand', () => {
     const full = buildChunkMap(sampleTree(), 4);
     const partial = new Map([[0, full.get(0)!]]);

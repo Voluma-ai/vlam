@@ -167,6 +167,12 @@ export interface FrontierRescheduleMessage {
   readonly limit: number;
   /** Maximum drawn splats; enforced inside the traversal, never after. */
   readonly budget: number;
+  /**
+   * Chunk-page mode: maximum distinct chunk files one cut may span. A cut only
+   * publishes once all its files are GPU-resident beside the displayed cut, so
+   * a cut that fills every page leaves no room to bring in the next view.
+   */
+  readonly maxFiles?: number;
   /** Host-owned camera/configuration revision. Echoed by every demand reply. */
   readonly revision?: number;
   /** First-publish threshold for the current accepted draw allowance. */

@@ -268,6 +268,8 @@ const DEFAULT_RAD_INITIAL_DISPLAY_FRACTION = 0.5;
 const SLAB_PAGE_SPLATS = 65_536;
 /** Spark's desktop RAD residency target, bounded by the capture and device. */
 const RAD_CHUNK_PAGE_TARGET = 256;
+/** Physical chunk pages per page of cut: room for the next view beside the displayed one. */
+const RAD_CHUNK_PAGE_HEADROOM = 1.25;
 
 /**
  * Ceiling on the page-table cache floor. A `.rad` frontier refines only into
@@ -1134,6 +1136,13 @@ export class StreamedSplatMesh extends SplatMesh {
   private lastWorkerSnapshot: FrontierSnapshotReply | null = null;
   private nextSnapshotRequestId = 0;
   private pageTableHostCacheRevision = 0;
+  /**
+   * Decoded RAD chunks waiting for a full chunk-page budget's walk to finish.
+   * Installing one evicts a page, and a walk that started before the eviction
+   * selected that page: every candidate then missed a page and was rejected,
+   * so the displayed cut froze while fetches and evictions churned.
+   */
+  private readonly radChunkInstallQueue = new Map<number, SplatData>();
   private readonly snapshotWaiters = new Map<
     number,
     (snapshot: FrontierSnapshotReply | null) => void
@@ -2886,7 +2895,10 @@ export class StreamedSplatMesh extends SplatMesh {
         }
       } else if (plan.type === 'resizeSafe') this.applyIndexedResizeSafe(plan.capacity);
       else if (plan.type === 'snapshot') this.applyFrontierSnapshot(plan);
-      else this.applyFrontierPlan(plan);
+      else {
+        this.applyFrontierPlan(plan);
+        this.flushRadChunkInstallQueue();
+      }
     } catch (error) {
       this.failFrontierWorker(error);
     }
@@ -3126,6 +3138,7 @@ export class StreamedSplatMesh extends SplatMesh {
     this.pageTableInFlight = false;
     this.pendingWork = false;
     this.retrying.clear();
+    this.radChunkInstallQueue.clear();
     for (const { controller } of this.fetching.values()) controller.abort();
     this.frontierWorker?.terminate();
     if (this.frontierWorker) {
@@ -4280,6 +4293,7 @@ export class StreamedSplatMesh extends SplatMesh {
     this.resident.clear();
     this.staged.clear();
     this.pageTableCachedFiles.clear();
+    this.radChunkInstallQueue.clear();
     this.envHandle = undefined;
     this.envSplatCount = 0;
     super.dispose();
@@ -6607,6 +6621,7 @@ export class StreamedSplatMesh extends SplatMesh {
       ...this.pageTableFoveation,
       limit,
       budget: this.pageTableDrawBudget,
+      ...this.radChunkCutFileBound(),
       revision: this.demandGeneration,
       diagnostics: this.onPerformanceEvent !== undefined,
       initialPublishMinSplats: initialPublishMinSplats(
@@ -7351,7 +7366,11 @@ export class StreamedSplatMesh extends SplatMesh {
     const tenantCeiling = Math.max(1, Math.floor(this.radChunkSharedPoolPages / 1.25));
     return Math.max(
       1,
-      Math.min(allocator.capacityPages, tenantCeiling, Math.ceil(budgetPages * 1.25)),
+      Math.min(
+        allocator.capacityPages,
+        tenantCeiling,
+        Math.ceil(budgetPages * RAD_CHUNK_PAGE_HEADROOM),
+      ),
     );
   }
 
@@ -7441,6 +7460,48 @@ export class StreamedSplatMesh extends SplatMesh {
     }
   }
 
+  /**
+   * Page bound for a chunk-page cut that cannot keep the whole capture resident:
+   * the draw-budget pages the limit was sized from (limit / 1.25), leaving the
+   * rest free for the next view's chunks while the displayed cut stays pinned.
+   */
+  private radChunkCutFileBound(): { maxFiles?: number } {
+    const allocator = this.radChunkAllocator;
+    if (!this.radChunkResidency || !allocator) return {};
+    const limit = this.radChunkUsesSharedPool
+      ? this.radChunkSharedPageLimit()
+      : allocator.capacityPages;
+    if (limit >= this.scene.chunkUrls.length) return {};
+    return { maxFiles: Math.max(1, Math.floor(limit / RAD_CHUNK_PAGE_HEADROOM)) };
+  }
+
+  /** True when a full page budget has a page outside the displayed and pending cuts. */
+  private hasEvictableRadChunkPage(): boolean {
+    const protectedFiles = this.protectedRadChunkFiles();
+    for (const file of this.radChunkPages.keys()) if (!protectedFiles.has(file)) return true;
+    return false;
+  }
+
+  /** True when installing another chunk page would first evict one. */
+  private radChunkPagesFull(): boolean {
+    const allocator = this.radChunkAllocator;
+    if (!allocator) return false;
+    const limit = this.radChunkUsesSharedPool
+      ? this.radChunkSharedPageLimit()
+      : allocator.capacityPages;
+    return allocator.residentCount >= limit;
+  }
+
+  /** Installs chunks deferred during a walk, once its plan is applied and protected. */
+  private flushRadChunkInstallQueue(): void {
+    if (this.pageTableInFlight || this.radChunkInstallQueue.size === 0) return;
+    const queued = [...this.radChunkInstallQueue];
+    this.radChunkInstallQueue.clear();
+    if (this.disposed || this.pageTableDisposed) return;
+    for (const [file, data] of queued) this.forwardChunkToWorker(file, data);
+    this.pendingWork = true;
+  }
+
   /** Mirrors stable page presence to the traversal worker. */
   private syncRadChunkPages(): void {
     if (!this.radChunkResidency || !this.radChunkAllocator) return;
@@ -7482,6 +7543,10 @@ export class StreamedSplatMesh extends SplatMesh {
   private forwardChunkToWorker(file: number, data: SplatData): void {
     const tree = data.radTree;
     if (!tree) return;
+    if (this.radChunkResidency && this.pageTableInFlight && this.radChunkPagesFull()) {
+      this.radChunkInstallQueue.set(file, data);
+      return;
+    }
     if (!this.installRadChunkPage(file, data)) return;
     this.pageTableCachedFiles.add(file);
     this.pageTableHostCacheRevision++;
@@ -7676,6 +7741,7 @@ export class StreamedSplatMesh extends SplatMesh {
     if (
       this.cache.has(file) ||
       this.pageTableCachedFiles.has(file) ||
+      this.radChunkInstallQueue.has(file) ||
       this.fetching.has(file) ||
       this.fetching.size >= this.maxInflight
     ) {
@@ -7686,6 +7752,15 @@ export class StreamedSplatMesh extends SplatMesh {
       kind === 'priority' &&
       classicWant === undefined &&
       this.pageTableActiveFetches() >= 3
+    ) {
+      return;
+    }
+    // A chunk that cannot evict its way into a page would be decoded and dropped.
+    if (
+      this.radChunkResidency &&
+      file !== 0 &&
+      this.radChunkPagesFull() &&
+      !this.hasEvictableRadChunkPage()
     ) {
       return;
     }

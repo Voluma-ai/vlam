@@ -488,6 +488,67 @@ describe('page-table demand reconciliation', () => {
     expect(inner.protectedRadChunkFiles()).toEqual(new Set([0, 7, 8, 9]));
   });
 
+  function decodedChunk(count = 4) {
+    return {
+      count,
+      positions: new Float32Array(count * 3),
+      colors: new Uint8Array(count * 4),
+      covariances: new Float32Array(count * 6),
+      radTree: {
+        childCount: new Uint16Array(count),
+        childStart: new Uint32Array(count),
+        size: new Float32Array(count),
+      },
+    };
+  }
+
+  it('defers installing a chunk into full pages until the in-flight walk is applied', () => {
+    const { inner } = chunkPagesFixture();
+    const mesh = inner as typeof inner & {
+      forwardChunkToWorker: (file: number, data: ReturnType<typeof decodedChunk>) => void;
+      installRadChunkPage: (file: number) => boolean;
+      handleFrontierMessage: (plan: unknown) => void;
+      applyFrontierPlan: (plan: unknown) => void;
+      radChunkInstallQueue: Map<number, unknown>;
+    };
+    mesh.pageTableInFlight = true;
+    const install = vi.spyOn(mesh, 'installRadChunkPage').mockReturnValue(true);
+    const apply = vi.spyOn(mesh, 'applyFrontierPlan').mockImplementation(() => {
+      mesh.pageTableInFlight = false;
+    });
+
+    // Installing now would evict a page the running walk may have selected.
+    mesh.forwardChunkToWorker(5, decodedChunk());
+    expect(install).not.toHaveBeenCalled();
+    expect(mesh.radChunkInstallQueue.has(5)).toBe(true);
+    // A queued chunk is already downloaded: do not fetch it again.
+    mesh.requestChunk(5, 'priority');
+    expect(mesh.fetching.has(5)).toBe(false);
+
+    mesh.handleFrontierMessage({ type: 'plan', seq: 1 });
+    expect(apply).toHaveBeenCalledOnce();
+    expect(install).toHaveBeenCalledWith(5, expect.anything());
+    expect(mesh.radChunkInstallQueue.size).toBe(0);
+  });
+
+  it('bounds a chunk-page cut that cannot keep the capture resident', () => {
+    const { inner } = chunkPagesFixture();
+    inner.pageTableInFlight = false;
+    inner.lastPostedCamera = null;
+    inner.reschedulePageTable(
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0, 0, -1),
+      new THREE.Frustum(),
+      1000,
+    );
+    const posted = inner.frontierWorker.posted.filter(
+      (message): message is { type: string; maxFiles?: number } =>
+        (message as { type?: string }).type === 'reschedule',
+    );
+    // Two pages for a 30-chunk capture: leave one page for the next view.
+    expect(posted.at(-1)?.maxFiles).toBe(1);
+  });
+
   it('settles an unchanged budget-clamped cut without fetching more waiter pages', () => {
     const { inner } = chunkPagesFixture();
     inner.demandGeneration = 1;

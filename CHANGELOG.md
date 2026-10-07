@@ -21,6 +21,18 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- Streaming: a chunk-page `.rad` capture larger than its page budget no longer
+  freezes its displayed cut. A walk selects from the pages resident when it
+  starts, but chunks arriving during the walk were installed straight away and
+  each evicted a page; under steady fetching every candidate lost a dozen of
+  its pages before it returned, was rejected as `missing-page`, and the cut
+  never changed while chunks were fetched, installed and evicted forever
+  (`construction-timelap`: selection stuck, ~15 MB/s refetched). Chunks that
+  would evict now wait until the walk's plan is applied. A cut is also bounded
+  to the draw-budget pages (`maxFiles` = page limit / 1.25), so the displayed
+  cut can no longer pin every page and leave no room for the next view, and a
+  full page budget with nothing evictable stops fetching. Captures whose
+  chunks all fit their pages are not bounded.
 - Streaming: chunk-page `.rad` meshes keep refining while the camera moves.
   Every newly queued camera used to discard the last walk's wanted pages, so
   under a continuous orbit (auto-rotate) a large capture's fetch slots idled
