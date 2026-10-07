@@ -13,6 +13,7 @@ import {
   float,
   getViewPosition,
   interleavedGradientNoise,
+  lightShadowMatrix,
   mix,
   positionGeometry,
   screenCoordinate,
@@ -143,6 +144,13 @@ const coneInner = uniform(flashlight.angle * (1 - flashlight.penumbra));
 const beamRange = uniform(flashlight.distance);
 const STEPS = 48;
 const MAX_DISTANCE = 40;
+// The march also compares each step against the flashlight's shadow map, so a
+// column shadows the air behind it, not only the wall. three creates that map
+// on the first shadow draw, so the lookup starts on a placeholder set up the
+// same way (a comparison sampler) and is pointed at the real map each frame.
+const shadowPlaceholder = new THREE.DepthTexture(1, 1);
+shadowPlaceholder.compareFunction = THREE.LessEqualCompare;
+const shadowDepth = texture(shadowPlaceholder);
 
 const beam = Fn(() => {
   const depth = texture(relightTarget.depthTexture!, screenUV).x;
@@ -155,7 +163,8 @@ const beam = Fn(() => {
 
   Loop(STEPS, ({ i }) => {
     const s = float(i).add(jitter).mul(stepLength);
-    const toSample = cameraPosition.add(rayDir.mul(s)).sub(lightPos);
+    const point = cameraPosition.add(rayDir.mul(s));
+    const toSample = point.sub(lightPos);
     const d = toSample.length().max(1e-3);
     const cosAngle = toSample.div(d).dot(lightDir).clamp(-1, 1);
     const cone = smoothstep(coneOuter.cos(), coneInner.cos(), cosAngle);
@@ -165,8 +174,30 @@ const beam = Fn(() => {
     const range = d.div(beamRange).pow4().oneMinus().clamp().pow2();
     const falloff = range.div(d.mul(d).mul(0.08).add(1));
     const transmittance = exp(s.mul(fogDensity).negate());
+    // Project the step through the shadow camera the way three's shadow
+    // filters do (y flipped for WebGPU); outside the camera the step is lit.
+    const clip = lightShadowMatrix(flashlight).mul(vec4(point, 1));
+    const coord = clip.xyz.div(clip.w);
+    const inFrustum = coord.x
+      .greaterThanEqual(0)
+      .and(coord.x.lessThanEqual(1))
+      .and(coord.y.greaterThanEqual(0))
+      .and(coord.y.lessThanEqual(1))
+      .and(coord.z.lessThanEqual(1));
+    const unshadowed = inFrustum.select(
+      shadowDepth
+        .sample(vec2(coord.x, coord.y.oneMinus()))
+        .compare(coord.z.add(flashlight.shadow.bias)).x,
+      float(1),
+    );
     scattered.addAssign(
-      cone.mul(ring).mul(falloff).mul(transmittance).mul(fogDensity).mul(stepLength),
+      cone
+        .mul(ring)
+        .mul(falloff)
+        .mul(unshadowed)
+        .mul(transmittance)
+        .mul(fogDensity)
+        .mul(stepLength),
     );
   });
 
@@ -284,6 +315,8 @@ renderer.setAnimationLoop(() => {
   lightDir.value.copy(flashlight.target.position).sub(flashlight.position).normalize();
 
   renderRelightingFactorMap(renderer, relightScene, camera, relightTarget);
+  const shadowMap = flashlight.shadow.map?.depthTexture;
+  if (shadowMap && shadowDepth.value !== shadowMap) shadowDepth.value = shadowMap;
   splats.update(camera, renderer);
   renderer.render(scene, camera);
 

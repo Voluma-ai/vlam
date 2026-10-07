@@ -99,9 +99,28 @@ relightTarget.depthTexture = new THREE.DepthTexture(1, 1);
 ```
 
 At each of 48 jittered steps the shader asks: is this point inside the cone,
-how far is it from the light, and how much fog lies between it and the camera?
-It reads the same ring texture, so the rings appear in the air as nested cones.
-The quad draws additively after the main render.
+how far is it from the light, is it in the flashlight's shadow, and how much
+fog lies between it and the camera? It reads the same ring texture, so the
+rings appear in the air as nested cones. The quad draws additively after the
+main render.
+
+The shadow test reuses the map the relight fill already renders. Each step is
+projected through the light's shadow camera with `lightShadowMatrix` and
+compared against the map's depth, the way three's own shadow filters do, so a
+column cuts a dark gap through the beam in the air behind it, not only on the
+wall:
+
+```ts
+const clip = lightShadowMatrix(flashlight).mul(vec4(point, 1));
+const coord = clip.xyz.div(clip.w);
+const unshadowed = shadowDepth
+  .sample(vec2(coord.x, coord.y.oneMinus()))
+  .compare(coord.z.add(flashlight.shadow.bias)).x;
+```
+
+three creates the shadow map on the first shadow draw, after the beam material
+is built, so `shadowDepth` starts on a 1×1 placeholder with the same comparison
+sampler and is pointed at `flashlight.shadow.map.depthTexture` once it exists.
 
 ## Getting it to look right
 
@@ -109,17 +128,18 @@ The quad draws additively after the main render.
 runs along the cone and the fog glows evenly. That is what a real flashlight
 does. Put the light down (F) and step to the side to see the shaft.
 
-**Fog in the beam is not shadowed.** The march does not sample the flashlight's
-shadow map, so the beam carries on in the air behind a column; the proxy depth
-only stops it at the surface you are looking at. While the light is carried
-this is hardly visible, because the light sees almost exactly what you see.
+**Shadows in the air are only as good as the proxy.** The beam is shadowed by
+the collision mesh, not by the splats, so anything the proxy leaves out (thin
+railings, foliage) still lets the beam through. While the light is carried
+the shadows are hardly visible anyway, because the light sees almost exactly
+what you see; put it down and step aside to watch a column cut the shaft.
 
 **Fog brightens the beam too.** Fog density sets both the haze on the splats
 and how much the beam scatters, so thicker fog also makes the shaft brighter. A
 narrow, focused beam in thick fog can clip to white near the light.
 
-**Cost.** The march is 48 steps per pixel, each with one profile lookup, at
-full resolution. On a phone, render it into a half-resolution target and
+**Cost.** The march is 48 steps per pixel, each with one profile lookup and
+one shadow-map compare, at full resolution. On a phone, render it into a half-resolution target and
 upscale it, or lower `STEPS`.
 
 ## The code
