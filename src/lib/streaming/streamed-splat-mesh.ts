@@ -1,4 +1,5 @@
 import type { SplatLoadStatus } from '../loaders/loading';
+import { createRadTraceGate } from '../formats/rad/rad-trace-gate';
 import { validateBrushStroke } from '../selection/brush-stroke';
 import type { Lcc2QualityPolicy } from '../formats/lcc/lcc2';
 import {
@@ -1275,6 +1276,8 @@ export class StreamedSplatMesh extends SplatMesh {
    */
   private lodCommitBlockedBySort = false;
   private lastScheduleTime = -Infinity;
+  /** Heartbeat gate for the per-plan `[vlam:rad-*]` traces (see rad-trace-gate.ts). */
+  private readonly radTraceGate = createRadTraceGate();
   /** Reused leaf-coverage bitmap for {@link substituteCoverage}; grows only. */
   private coverageScratch: Uint8Array | undefined;
   /** Shared deadline so multiple swap groups use one per-update work allowance. */
@@ -2946,7 +2949,14 @@ export class StreamedSplatMesh extends SplatMesh {
         this.demandDiagnostics.firstReplacementSliceAt ??= performance.now();
       }
     }
-    if (this.onPerformanceEvent !== undefined) {
+    if (
+      this.onPerformanceEvent !== undefined &&
+      this.radTraceGate.allow(
+        'demand-main',
+        reply.wants.length > 0 || !reply.complete,
+        performance.now(),
+      )
+    ) {
       console.debug(
         '[vlam:rad-demand-main]',
         JSON.stringify({
@@ -6599,7 +6609,10 @@ export class StreamedSplatMesh extends SplatMesh {
       this.updateStageTimings.workerPostMs = endedAt - workerPostStartedAt;
       stageStartedAt = endedAt;
     }
-    if (this.onPerformanceEvent !== undefined) {
+    if (
+      this.onPerformanceEvent !== undefined &&
+      this.radTraceGate.allow('reschedule', false, performance.now())
+    ) {
       console.debug(
         '[vlam:rad-reschedule]',
         JSON.stringify({
@@ -6746,7 +6759,21 @@ export class StreamedSplatMesh extends SplatMesh {
         'worker-cancelled-candidate',
       );
     }
-    if (this.onPerformanceEvent !== undefined) {
+    // A plan that wants, moves, appends, evicts or cancels nothing is a
+    // camera-only no-op; those only get the heartbeat line.
+    const notablePlan =
+      plan.touched.length > 0 ||
+      plan.moveSlots.length > 0 ||
+      plan.appends.count > 0 ||
+      plan.evicted.length > 0 ||
+      (plan.candidateNewSlots ?? 0) > 0 ||
+      (plan.pendingFrontierSplats ?? 0) > 0 ||
+      plan.cancelledCandidateGeneration !== undefined ||
+      !plan.converged;
+    if (
+      this.onPerformanceEvent !== undefined &&
+      this.radTraceGate.allow('plan-main', notablePlan, performance.now())
+    ) {
       console.debug(
         '[vlam:rad-plan-main]',
         JSON.stringify({
@@ -7124,7 +7151,14 @@ export class StreamedSplatMesh extends SplatMesh {
       planTimings.worstApplyMs = planTimings.applyMs;
       planTimings.worstSplats = planTimings.moves + planTimings.appends;
     }
-    if (this.onPerformanceEvent !== undefined) {
+    if (
+      this.onPerformanceEvent !== undefined &&
+      this.radTraceGate.allow(
+        'plan-timing',
+        notablePlan || activeListMs > 0 || planTimings.applyMs >= 4,
+        performance.now(),
+      )
+    ) {
       console.debug(
         '[vlam:rad-plan-timing]',
         JSON.stringify({
@@ -7593,7 +7627,10 @@ export class StreamedSplatMesh extends SplatMesh {
     this.demandDiagnostics.activeRequestsBeforeReclamation = activeBefore;
     this.demandDiagnostics.activeRequestsAfterReclamation = this.pageTableActiveFetches();
     this.demandDiagnostics.hardRelocations++;
-    if (this.onPerformanceEvent !== undefined) {
+    if (
+      this.onPerformanceEvent !== undefined &&
+      this.radTraceGate.allow('reclaim', cancelled > 0 || retained.size > 0, performance.now())
+    ) {
       console.debug(
         '[vlam:rad-reclaim]',
         JSON.stringify({

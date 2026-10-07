@@ -229,7 +229,9 @@ export function createPostDepthOfField(
 
   /** Signed CoC (px) at a screen uv from the proxy depth under it. */
   const cocAt = (uv: Node<'vec2'>): Node<'float'> => {
-    const d = depthNode.sample(uv).level(float(0)).x;
+    // Implicit level, not `.level(0)`: three's GLSL builder does not narrow a
+    // depth texture's `textureLod()` to a float (see proxy-depth.ts).
+    const d = depthNode.sample(uv).x;
     const view = getViewPosition(uv, d, cameraProjectionMatrixInverse);
     // No hit (sky) or no proxy at all: the far background.
     const hit = d.lessThan(0.9999).and(uDepthActive.greaterThan(0));

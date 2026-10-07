@@ -33,7 +33,7 @@ import {
   type StreamedSplatPerformanceEvent,
 } from '../lib/streaming';
 import { computeProjection } from '../lib/projection/compute';
-import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '../lib/unified';
+import { UnifiedSplatMesh } from '../lib/unified';
 import {
   DEFAULT_CLASSIC_SPLATS_PER_SWAP,
   DEFAULT_PAGE_TABLE_WRITES_PER_PLAN,
@@ -2706,8 +2706,10 @@ async function main(): Promise<void> {
   // ?logo=stroke|full: the VLAM! mark built from synthetic splats, standing
   // in the scene (see vlam-logo.ts). It mounts once the scene is up, on the
   // courtyard preset for a known scene, at `?logoAt=x,y,z`, or on the floor at
-  // the scene's center, and faces the camera it was born under. WebGPU only:
-  // the WebGL2 fallback cannot sort it with the scene, so it stays hidden.
+  // the scene's center, and faces the camera it was born under. The mark never
+  // inter-sorts with the scene on either backend: the stroke is a depth-tested
+  // mesh and the fire draws on its own after the scene, occluded per splat by
+  // the proxy depth (see proxy-depth.ts), so it works on WebGL2 too.
   const logoParam = params.get('logo');
   const logoParts: 'stroke' | 'full' | null =
     logoParam === null ? null : logoParam === 'stroke' || logoParam === 'v' ? 'stroke' : 'full';
@@ -2917,8 +2919,6 @@ async function main(): Promise<void> {
       logo = null;
     }
   };
-  /** Set once the mark is turned down on a backend that cannot inter-sort it. */
-  let logoUnsupported = false;
   /** The stroke mesh (`vlam-balk.glb`) merged into one world-baked geometry. */
   const loadLogoStrokeGeometry = async (): Promise<THREE.BufferGeometry> => {
     const gltf = await new GLTFLoader().loadAsync(`${import.meta.env.BASE_URL}vlam-balk.glb`);
@@ -2938,16 +2938,7 @@ async function main(): Promise<void> {
     return merged;
   };
   const mountLogo = async (): Promise<void> => {
-    if (logoParts === null || logo || logoMounting || logoUnsupported) return;
-    // Without the unified draw (WebGL2) the mark and a streamed scene are
-    // separate transparent draws that never inter-sort: the mark paints over
-    // the pillars and its own layers mis-order. Hide it there until WebGL2
-    // gets a unified path (see ROADMAP.md).
-    if (!supportsUnifiedSplatMesh(renderer)) {
-      logoUnsupported = true;
-      console.info('VLAM! logo: hidden on the WebGL2 fallback (needs unified rendering).');
-      return;
-    }
+    if (logoParts === null || logo || logoMounting) return;
     logoMounting = true;
     try {
       const bitmap = await loadLogoBitmap(`${import.meta.env.BASE_URL}vlam.png`);
@@ -3068,7 +3059,7 @@ async function main(): Promise<void> {
   const completeViewReady = (): boolean => {
     if (!mounted || !(splats instanceof StreamedSplatMesh)) return true;
     // The mark mounts on the first frame after the hold; fog rebuilds around it.
-    if (logoParts !== null && !logoUnsupported && (!logo || logoMounting)) return false;
+    if (logoParts !== null && (!logo || logoMounting)) return false;
     if (effectMode === 'fog' && !fogMode) return false;
     if (logoDepth && collisionTilesForRelight && !logoFireOccluder) return false;
     // Refinement of the frozen pose: frontier converged and nothing in flight.

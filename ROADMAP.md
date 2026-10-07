@@ -148,16 +148,41 @@ selection features until their benefits are measured and visually validated.
   non-regression on WebGPU, WebGL2, and unified rendering.
 - **WebGL2 unified rendering with streamed sources** — `UnifiedSplatMesh` is
   WebGPU-only, and the WebGL2 fallback `MergedSplatMesh` only takes fully
-  loaded `SplatData`, so on WebGL2 a streamed scene and any added mesh draw as
-  separate transparent meshes that never inter-sort (the demo's `?logo=full`
-  mark in Tempel with `?backend=webgl` paints wholesale over the pillars, and
-  its stroke and fire mis-order against each other). Prototype a CPU path that
-  gathers the streamed mesh's resident cut plus static sources into one worker
-  sort and one draw. A demo-side stopgap is building the mark as one mesh so
-  at least its own layers sort together. **Acceptance:** correct occlusion
-  both ways between a streamed scene and a static source from every side on
-  WebGL2, with the worker sort cost and frame-time tails measured on
+  loaded `SplatData`, so on WebGL2 a streamed scene and any added splat mesh
+  draw as separate transparent meshes that never inter-sort: whichever draws
+  last paints wholesale over the other. The demo's `?logo=full` fire sidesteps
+  this on both backends by drawing after the scene with per-splat occlusion
+  against the collision proxy's depth, which only works for captures that have
+  a proxy and for an emissive source that may ignore the scene's own
+  modifiers. Prototype a CPU path that gathers the streamed mesh's resident
+  cut plus static sources into one worker sort and one draw, publishing the
+  sources' pool rows and the combined order together (the worker snapshot
+  boundary in `SplatMesh` generalized across sources). **Acceptance:** correct
+  occlusion both ways between a streamed scene and a static source from every
+  side on WebGL2, with the worker sort cost and frame-time tails measured on
   WebGL2-class devices, and no change to the WebGPU unified path.
+- **Pixel-budgeted SD for laptop-class GPUs (MacBook Air)** — SD caps the
+  render scale at 1 device pixel per CSS pixel with an adaptive floor of 0.8,
+  so it scales with the window, not the GPU: the Tempel fog demo in SD draws a
+  ~214k-pixel buffer on an iPhone 15 Pro (~60 fps) but 781k pixels in a
+  MacBook Air 13" window and 2.1M pixels in a QHD external-monitor window on
+  an M3 Air, whose fanless GPU is in the A17 Pro's class and throttles under
+  sustained load. Measured 2026-10-07 (Chrome 151, steady state): the same
+  Air hits 55 fps in a phone-sized window, 38 fps in its own window and 13 fps
+  in the QHD window with fog + logo, while a pinned `?pixelRatio=0.5` on the
+  QHD window recovered ~33 fps. Every fog-stack pass follows the drawing
+  buffer (full-resolution factor map with 1024² shadow maps per light, the
+  40-step shadowed beam march at half resolution, the fire volume at half
+  resolution, DoF at full plus half), and the integrated LCC tier also carries
+  1M splats where the phone tier carries 750k. Replace SD's ratio floor with an
+  absolute drawing-buffer pixel budget for fill-constrained devices (about 1M
+  pixels, so a QHD window renders near 0.5 and a laptop screen near 0.8),
+  let the fog, fire and DoF targets follow that cap, and consider a tighter
+  integrated LCC budget while an effect stack is active. **Acceptance:** fog
+  + logo on an M3 Air holds ≥30 fps steady state in a full QHD window and
+  ≥45 fps in the laptop's own window with no change on phones or discrete
+  desktops, measured with the rAF histogram (not the HUD's accumulated GPU
+  pass total), and SD's visible softness bounded at the chosen floor.
 
 ## External blockers
 

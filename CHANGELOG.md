@@ -19,6 +19,17 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Fixed
+
+- Streaming: the per-plan `[vlam:rad-*]` console traces emitted while
+  `onPerformanceEvent` is set are now gated by a per-tag heartbeat
+  (`rad-trace-gate.ts`): lines that carry demand, moves, appends, evictions,
+  cancellations or an unconverged frontier always print, while camera-only
+  no-op plans print at most once per second per tag. A `.rad` mesh under a
+  continuously moving camera re-plans every frame, so a host diagnostics mode
+  used to emit several hundred trace lines per second per mesh; with DevTools
+  or a CDP client attached that volume stalled the page within about a minute.
+
 ### Added
 
 - Demo: `?effects=dof` now runs as a screen-space pass when the capture has
@@ -41,12 +52,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `?logoHeight=`). Under `?effects=fog` the flame is an accent light.
   `?logoAnim=0` freezes it. On WebGPU the flame is a simulated volumetric fire
   (a GPU fluid solve in the flame's shape, after three's `webgpu_volume_fire`
-  example); `?fire=splat` keeps the splat flame instead. The mark is WebGPU-only
-  for now: the WebGL2 fallback cannot sort it with a streamed scene, so it
-  stays hidden there. The
-  stroke joins the fog and relight proxies as a mesh of its own shape, so the
-  flashlight and accent lights land on it, and the fire stops at the
-  collision proxy's depth so pillars occlude it.
+  example); `?fire=splat` keeps the splat flame instead, and the WebGL2
+  fallback always draws the splat flame. The stroke joins the fog and relight
+  proxies as a mesh of its own shape, so the flashlight and accent lights land
+  on it, and the fire stops at the collision proxy's depth so pillars occlude
+  it on both backends.
 
 - Shadow-factor relighting fill honours `SpotLight.map` (projected like
   three's own spot lights), and contributions take a radial `beamProfile`
