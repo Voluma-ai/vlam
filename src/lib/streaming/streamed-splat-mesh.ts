@@ -159,6 +159,13 @@ type RadPublicationDiagnostic = {
 
 const RAD_DIAGNOSTIC_RING_SIZE = 32;
 const RAD_DIAGNOSTIC_SAMPLE_SIZE = 4096;
+/**
+ * A page-table camera jump counts as a hard relocation once it exceeds this
+ * fraction of the capture's bounds diagonal (never less than one local unit).
+ * A fixed unit threshold treated every orbit frame of a centimetre-scale
+ * capture as a teleport, so smooth motion discarded each walk's wants.
+ */
+const HARD_RELOCATION_BOUNDS_FRACTION = 0.02;
 /** Bounds hidden LOD replacement preparation on the main thread while camera motion continues. */
 const INTERACTIVE_CLASSIC_STAGE_BUDGET_MS = 3;
 /** Limits any indivisible typed-array conversion inside that time budget. */
@@ -3065,14 +3072,13 @@ export class StreamedSplatMesh extends SplatMesh {
       for (const file of this.retrying.keys()) if (!keep.has(file)) this.retrying.delete(file);
     }
     if (!this.pageTableCachedFiles.has(0)) this.requestChunk(0, 'priority');
-    // A queued camera has superseded the worker's last demand. Its wants and
+    // A hard relocation has superseded the worker's last demand. Its wants and
     // touched files describe the old view; re-requesting them here would refill
-    // the slots that a hard relocation just reclaimed before the new walk can
-    // answer.
-    if (
-      this.radChunkResidency &&
-      (this.demandNeedsNewRevision || this.demandReadyGeneration !== this.demandGeneration)
-    ) {
+    // the slots that the relocation just reclaimed before the new walk can
+    // answer. Smooth motion also queues a newer camera on nearly every frame,
+    // but the last walk's bounded carryover still describes the view: dropping
+    // it there starved orbiting cameras of every page.
+    if (this.radChunkResidency && this.hardRelocationPending) {
       return;
     }
     for (const want of this.demandWants) this.requestChunk(want.file, 'priority');
@@ -6496,8 +6502,10 @@ export class StreamedSplatMesh extends SplatMesh {
       this.radChunkDemandSettledCamera = null;
       this.radChunkDemandSettledForward = null;
     }
+    const relocationDistance = this.hardRelocationDistance();
     const hardRelocation =
-      this.lastPostedCamera !== null && squaredDistance3(camera, this.lastPostedCamera) > 1;
+      this.lastPostedCamera !== null &&
+      squaredDistance3(camera, this.lastPostedCamera) > relocationDistance * relocationDistance;
     const firstHardRelocation =
       hardRelocation && !this.hardRelocationPending && this.pageTableReplacementSeq === null;
     if (demandChanged) {
@@ -6532,14 +6540,17 @@ export class StreamedSplatMesh extends SplatMesh {
     this.demandDiagnostics.requestedCameraPosition = camera;
     if (firstHardRelocation) this.reclaimStalePriorityFetches();
     const supersedeInFlight = this.pageTableInFlight && firstHardRelocation;
-    if (this.radChunkResidency && (this.demandNeedsNewRevision || supersedeInFlight)) {
-      // A new walk owns queued priority from this point. Let requests already
-      // on the wire finish, but do not let the previous cut refill their slots
-      // while JavaScript computes the replacement demand.
+    if (this.radChunkResidency && (firstHardRelocation || this.hardRelocationPending)) {
+      // A relocation's walk owns queued priority from this point. Let requests
+      // already on the wire finish, but do not let the previous cut refill
+      // their slots while JavaScript computes the replacement demand.
       this.demandWants = [];
       this.demandFirstSeen.clear();
       this.demandReadyGeneration = -1;
-    } else if (this.radChunkResidency && !this.pageTableInFlight) {
+    } else if (this.radChunkResidency) {
+      // Smooth motion queues a new walk on nearly every frame, and a large
+      // capture's walk can take most of a second. Carry the previous view's
+      // bounded wants over meanwhile so fetch slots do not idle until it lands.
       this.boundChunkPageCarryoverDemand();
     }
     this.reconcileDemand(
@@ -6567,7 +6578,7 @@ export class StreamedSplatMesh extends SplatMesh {
       this.demandDiagnostics.generation = this.demandGeneration;
       this.demandReadyGeneration = -1;
       this.demandNeedsNewRevision = false;
-      if (this.radChunkResidency) {
+      if (this.radChunkResidency && firstHardRelocation) {
         this.demandWants = [];
         this.demandFirstSeen.clear();
       }
@@ -7586,6 +7597,18 @@ export class StreamedSplatMesh extends SplatMesh {
     for (const entry of this.fetching.values()) {
       if (entry.kind === kind) entry.controller.abort();
     }
+  }
+
+  /** Camera translation, in local units, that supersedes the previous walk outright. */
+  private hardRelocationDistance(): number {
+    const bounds = this.scene.bounds;
+    if (bounds.isEmpty()) return 1;
+    const diagonal = Math.hypot(
+      bounds.max.x - bounds.min.x,
+      bounds.max.y - bounds.min.y,
+      bounds.max.z - bounds.min.z,
+    );
+    return Number.isFinite(diagonal) ? Math.max(1, diagonal * HARD_RELOCATION_BOUNDS_FRACTION) : 1;
   }
 
   /** Reclaims old-camera RAD priority slots after a translation-only cut. */

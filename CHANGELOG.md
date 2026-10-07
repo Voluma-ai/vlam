@@ -21,6 +21,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- Streaming: chunk-page `.rad` meshes keep refining while the camera moves.
+  Every newly queued camera used to discard the last walk's wanted pages, so
+  under a continuous orbit (auto-rotate) a large capture's fetch slots idled
+  between walks that each took most of a second, and the frontier stalled far
+  short of its draw budget. The last walk's bounded carryover now stays
+  fetchable during smooth motion; only a hard relocation drops it. A hard
+  relocation is now a jump beyond 2% of the capture's bounds diagonal (never
+  less than one local unit) rather than any move over one unit, which treated
+  every orbit frame of a centimetre-scale capture as a teleport and reclaimed
+  its in-flight fetches.
 - Streaming: the per-plan `[vlam:rad-*]` console traces emitted while
   `onPerformanceEvent` is set are now gated by a per-tag heartbeat
   (`rad-trace-gate.ts`): lines that carry demand, moves, appends, evictions,
