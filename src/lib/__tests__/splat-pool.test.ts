@@ -237,3 +237,39 @@ describe('SplatPool', () => {
     for (const data of three.backing.shPacked) expect(data).toHaveLength(three.capacity * 4);
   });
 });
+
+describe('SplatPool.reclaimRows', () => {
+  it('asks sibling tenants, never the requester, to shed until enough rows are free', () => {
+    const pool = new SplatPool({ capacity: 4 * SPLAT_DATA_TEXTURE_WIDTH });
+    const asked: string[] = [];
+    const tenant = (name: string, held: SplatPoolRange[]): SplatPoolTenant => ({
+      poolRanges: () => held,
+      relocatePoolRange: () => {},
+      onPoolCompacted: () => {},
+      shedPoolRows: (rows: number) => {
+        asked.push(name);
+        let freed = 0;
+        while (freed < rows && held.length > 0) {
+          const range = held.pop() as SplatPoolRange;
+          pool.releaseRows(range.startRow, range.rowCount);
+          freed += range.rowCount;
+        }
+        return freed;
+      },
+    });
+    const requesterRanges = [{ startRow: pool.allocateRows(2), rowCount: 2 }];
+    const siblingRanges = [
+      { startRow: pool.allocateRows(1), rowCount: 1 },
+      { startRow: pool.allocateRows(1), rowCount: 1 },
+    ];
+    const requester = tenant('requester', requesterRanges);
+    pool.register(requester);
+    pool.register(tenant('sibling', siblingRanges));
+    expect(pool.freeRows).toBe(0);
+
+    expect(pool.reclaimRows(requester, 1)).toBe(1);
+    expect(asked).toEqual(['sibling']);
+    expect(siblingRanges).toHaveLength(1);
+    expect(requesterRanges).toHaveLength(1);
+  });
+});

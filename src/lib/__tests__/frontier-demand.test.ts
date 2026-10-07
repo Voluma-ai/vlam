@@ -531,6 +531,32 @@ describe('page-table demand reconciliation', () => {
     expect(mesh.radChunkInstallQueue.size).toBe(0);
   });
 
+  it('releases a suspended chunk-page cut and stops fetching its detail', () => {
+    const { inner } = chunkPagesFixture();
+    const mesh = inner as typeof inner & {
+      setBudget: (budget: number) => number;
+      radChunkDisplayedFiles: Set<number>;
+      radChunkSuspended: boolean;
+      demandWants: { file: number; tier: number; priority: number }[];
+    };
+    mesh.pageTableDrawBudget = 8;
+    mesh.radChunkDisplayedGlobals = Uint32Array.from([0, 1, 4, 5]);
+    mesh.radChunkDisplayedFiles.add(0);
+    mesh.radChunkDisplayedFiles.add(1);
+    mesh.demandWants = [{ file: 5, tier: 0, priority: 1 }];
+
+    // The governor's suspended budget: the walk cannot publish anything that
+    // small, so without a release both pages would stay pinned.
+    mesh.setBudget(1);
+
+    expect(mesh.radChunkSuspended).toBe(true);
+    expect(mesh.radChunkDisplayedGlobals).toHaveLength(0);
+    expect(mesh.radChunkDisplayedFiles.size).toBe(0);
+    expect(mesh.demandWants).toEqual([]);
+    mesh.requestChunk(5, 'priority');
+    expect(mesh.fetching.has(5)).toBe(false);
+  });
+
   it('bounds a chunk-page cut that cannot keep the capture resident', () => {
     const { inner } = chunkPagesFixture();
     inner.pageTableInFlight = false;

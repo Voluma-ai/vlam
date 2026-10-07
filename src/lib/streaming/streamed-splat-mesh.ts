@@ -7858,8 +7858,7 @@ export class StreamedSplatMesh extends SplatMesh {
     if (
       this.radChunkResidency &&
       file !== 0 &&
-      (this.radChunkSuspended ||
-        (this.radChunkPagesFull() && !this.hasEvictableRadChunkPage()))
+      (this.radChunkSuspended || (this.radChunkPagesFull() && !this.hasEvictableRadChunkPage()))
     ) {
       return;
     }

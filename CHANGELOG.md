@@ -21,6 +21,17 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- Streaming: switching a split pane between large chunk-page `.rad` captures
+  no longer leaves the new capture coarse. A governor-suspended capture (budget
+  1, drawn in neither pane) kept its displayed cut and every page pinned,
+  because its walk cannot publish a cut that small, and the other pane's
+  capture held pages for its whole file; the shared pool filled and the next
+  capture stalled at a few pages. A suspended capture now releases its cut and
+  stops fetching until the governor restores its budget. In a shared pool a
+  cut is bounded to its budget's pages, and an install that finds the pool full
+  asks sibling tenants to shed pages outside their cuts
+  (`SplatPoolTenant.shedPoolRows`, `SplatPool.reclaimRows`), then evicts its
+  own, instead of throwing "SplatMesh capacity exceeded" and dropping the chunk.
 - Streaming: a chunk-page `.rad` capture larger than its page budget no longer
   freezes its displayed cut. A walk selects from the pages resident when it
   starts, but chunks arriving during the walk were installed straight away and
