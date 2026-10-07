@@ -14,6 +14,7 @@
  *  - worker → main `plan`      : packed splat writes for the current candidate.
  */
 import { FrontierPager, type PagerPlan } from './frontier-pager';
+import { createRadTraceGate } from './rad-trace-gate';
 import { IndexedFrontierPager } from './indexed-frontier-pager';
 import {
   createFrontierScratch,
@@ -109,6 +110,7 @@ let lastPublish = false;
 let lastInfeasibleKey: string | null = null;
 let lastSkipSamples: readonly FrontierSkipSample[] = [];
 let diagnosticsEnabled = false;
+const demandTraceGate = createRadTraceGate();
 let cacheRevision = 0;
 let lastRevision = 0;
 let lastBudget = 0;
@@ -369,7 +371,15 @@ function postDemand(
 ): void {
   const wants = rankTouched(lastTouched);
   demandRevision = revision;
-  if (diagnosticsEnabled) {
+  const discoveryQueuedCount = Math.max(0, discoveryQueue.length - discoveryCursor);
+  if (
+    diagnosticsEnabled &&
+    demandTraceGate.allow(
+      'demand',
+      wants.length > 0 || !complete || waiters.length > 0 || discoveryQueuedCount > 0,
+      performance.now(),
+    )
+  ) {
     console.debug(
       '[vlam:rad-demand]',
       JSON.stringify({
@@ -380,7 +390,7 @@ function postDemand(
         wants: wants.length,
         wantFiles: wants.slice(0, 16).map((want) => want.file),
         waiters: waiters.length,
-        discoveryQueued: Math.max(0, discoveryQueue.length - discoveryCursor),
+        discoveryQueued: discoveryQueuedCount,
       }),
     );
   }

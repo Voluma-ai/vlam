@@ -99,7 +99,11 @@ export function createProxyDepth(renderer: THREE.WebGPURenderer, downscale = 2):
         const clip = cameraProjectionMatrix.mul(vec4(ctx.viewCenter, 1));
         const ndc = clip.xy.div(clip.w);
         const uv = vec2(ndc.x.mul(0.5).add(0.5), ndc.y.mul(-0.5).add(0.5));
-        const depth = depthNode.sample(uv).level(float(0)).x;
+        // No explicit level: three's GLSL builder (r186) narrows a depth
+        // texture's `texture()` to its `.x` but leaves `textureLod()` a vec4,
+        // so `.level(0)` fails to compile on the WebGL2 fallback. The vertex
+        // stage has no derivatives, so the implicit sample is level 0 anyway.
+        const depth = depthNode.sample(uv).x;
         const hit = getViewPosition(uv, depth, cameraProjectionMatrixInverse);
         // View space looks down -z: behind means further negative. A float
         // mask on alpha rather than `visible`/`select`, which drop splats in
