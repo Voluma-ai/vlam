@@ -539,13 +539,14 @@ export async function createVolumetricFogMode(
           // The proxy's shadow map, projected the way three's shadow filters
           // do: the step is lit where it is nearer the light than the map
           // says, or where it lies outside the shadow camera (the cone test
-          // has already zeroed everything outside the light's frustum).
+          // has already zeroed everything outside the light's frustum). No
+          // depth bias: it guards surfaces against acne, and in the air it
+          // would leave a slab of lit fog behind every occluder (0.002 of
+          // depth is a quarter metre 8 m from the light, nearly a metre at 15).
           const clip = lightShadowMatrix(beam.light).mul(vec4(point, 1));
           const coord = clip.xyz.div(clip.w);
           const shadowUv = vec2(coord.x, coord.y.oneMinus());
-          const shadowZ = renderer.reversedDepthBuffer
-            ? coord.z.sub(beam.light.shadow.bias)
-            : coord.z.add(beam.light.shadow.bias);
+          const shadowZ = coord.z;
           const inFrustum = coord.x
             .greaterThanEqual(0)
             .and(coord.x.lessThanEqual(1))

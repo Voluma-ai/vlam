@@ -115,8 +115,12 @@ const clip = lightShadowMatrix(flashlight).mul(vec4(point, 1));
 const coord = clip.xyz.div(clip.w);
 const unshadowed = shadowDepth
   .sample(vec2(coord.x, coord.y.oneMinus()))
-  .compare(coord.z.add(flashlight.shadow.bias)).x;
+  .compare(coord.z).x;
 ```
+
+There is no depth bias on this compare. The bias on the light guards surfaces
+against acne; in the air it would leave a slab of lit fog just behind every
+occluder, a quarter metre or more at the distances a flashlight reaches.
 
 three creates the shadow map on the first shadow draw, after the beam material
 is built, so `shadowDepth` starts on a 1×1 placeholder with the same comparison
