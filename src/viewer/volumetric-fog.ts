@@ -10,8 +10,10 @@
  *    that runs through the fog layer;
  *  - a half-resolution pass ray-marches each pixel through every cone, over
  *    only the part of the ray inside the fog layer, and stops at the proxy's
- *    depth (splats do not write depth); a full-resolution pass adds it to the
- *    frame, with the glow around each accent lamp.
+ *    depth (splats do not write depth); each step is also checked against the
+ *    lights' shadow maps, so the proxy shadows the air behind it, not only
+ *    the surfaces; a full-resolution pass adds it to the frame, with the glow
+ *    around each accent lamp.
  */
 import * as THREE from 'three/webgpu';
 import {
@@ -26,6 +28,7 @@ import {
   float,
   getViewPosition,
   interleavedGradientNoise,
+  lightShadowMatrix,
   max,
   min,
   mix,
@@ -252,6 +255,13 @@ type BeamLight = {
   range: THREE.UniformNode<'float', number>;
   /** Glow around the source itself; 0 for the carried flashlight. */
   halo: number;
+  /**
+   * The light's shadow-map depth, compared along the march so the proxy
+   * shadows the fog. Bound to a placeholder until the factor pass has
+   * rendered the map (three creates it on the first shadow draw).
+   */
+  shadowDepth: THREE.TextureNode;
+  placeholder: THREE.DepthTexture;
 };
 
 export async function createVolumetricFogMode(
@@ -437,22 +447,41 @@ export async function createVolumetricFogMode(
   };
 
   // --- Light scattered by the fog --------------------------------------------
+  // Shadow lookups go through a comparison sampler, like three's own shadow
+  // filters: the placeholder is set up the way three sets up its shadow depth
+  // so the swap to the real map keeps the compiled bindings.
+  const depthCompare = renderer.reversedDepthBuffer
+    ? THREE.GreaterEqualCompare
+    : THREE.LessEqualCompare;
   const beamLight = (
     light: THREE.SpotLight,
     gain: number,
     ringStrength: number,
     halo: number,
-  ): BeamLight => ({
-    light,
-    pos: uniform(new THREE.Vector3()),
-    dir: uniform(new THREE.Vector3(0, 0, -1)),
-    outer: uniform(light.angle),
-    inner: uniform(light.angle * (1 - light.penumbra)),
-    gain: uniform(gain),
-    rings: uniform(ringStrength),
-    range: uniform(light.distance),
-    halo,
-  });
+  ): BeamLight => {
+    const placeholder = new THREE.DepthTexture(1, 1);
+    placeholder.compareFunction = depthCompare;
+    placeholder.minFilter = THREE.LinearFilter;
+    placeholder.magFilter = THREE.LinearFilter;
+    return {
+      light,
+      pos: uniform(new THREE.Vector3()),
+      dir: uniform(new THREE.Vector3(0, 0, -1)),
+      outer: uniform(light.angle),
+      inner: uniform(light.angle * (1 - light.penumbra)),
+      gain: uniform(gain),
+      rings: uniform(ringStrength),
+      range: uniform(light.distance),
+      halo,
+      shadowDepth: texture(placeholder),
+      placeholder,
+    };
+  };
+  /** Points the beam's shadow lookup at the map the factor pass rendered. */
+  const syncShadowMap = (beam: BeamLight): void => {
+    const depth = beam.light.shadow.map?.depthTexture ?? null;
+    if (depth !== null && beam.shadowDepth.value !== depth) beam.shadowDepth.value = depth;
+  };
   const beams = [
     beamLight(flashlight, FLASH_GAIN, FLASH_RINGS_DEFAULT, 0),
     ...accents.map((light, i) => beamLight(light, 8 * accentGain(i), 0, 1.2)),
@@ -507,8 +536,30 @@ export async function createVolumetricFogMode(
           const ring = mix(float(1), texture(rings, vec2(t, 0.5)).level(float(0)).r, beam.rings);
           const range = d.div(beam.range).pow4().oneMinus().clamp().pow2();
           const falloff = range.div(d.mul(d).mul(0.08).add(1));
+          // The proxy's shadow map, projected the way three's shadow filters
+          // do: the step is lit where it is nearer the light than the map
+          // says, or where it lies outside the shadow camera (the cone test
+          // has already zeroed everything outside the light's frustum).
+          const clip = lightShadowMatrix(beam.light).mul(vec4(point, 1));
+          const coord = clip.xyz.div(clip.w);
+          const shadowUv = vec2(coord.x, coord.y.oneMinus());
+          const shadowZ = renderer.reversedDepthBuffer
+            ? coord.z.sub(beam.light.shadow.bias)
+            : coord.z.add(beam.light.shadow.bias);
+          const inFrustum = coord.x
+            .greaterThanEqual(0)
+            .and(coord.x.lessThanEqual(1))
+            .and(coord.y.greaterThanEqual(0))
+            .and(coord.y.lessThanEqual(1))
+            .and(coord.z.lessThanEqual(1));
+          const unshadowed = inFrustum.select(
+            beam.shadowDepth.sample(shadowUv).compare(shadowZ).x,
+            float(1),
+          );
           const color = vec3(beam.light.color.r, beam.light.color.g, beam.light.color.b);
-          scattered.addAssign(color.mul(cone.mul(ring).mul(falloff).mul(weight).mul(beam.gain)));
+          scattered.addAssign(
+            color.mul(cone.mul(ring).mul(falloff).mul(unshadowed).mul(weight).mul(beam.gain)),
+          );
         }
       });
     });
@@ -762,6 +813,7 @@ export async function createVolumetricFogMode(
       renderRelightingFactorMap(renderer, lightScene, camera, factorTarget);
     },
     renderBeams() {
+      for (const beam of beams) syncShadowMap(beam);
       renderer.getDrawingBufferSize(bufferSize);
       beamTarget.setSize(
         Math.max(1, Math.ceil(bufferSize.x / BEAM_DOWNSCALE)),
@@ -833,6 +885,7 @@ export async function createVolumetricFogMode(
         pass.quad.geometry.dispose();
       }
       beamTarget.dispose();
+      for (const beam of beams) beam.placeholder.dispose();
       proxy.dispose();
       factorTarget.dispose();
       rings.dispose();

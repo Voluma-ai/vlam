@@ -85,6 +85,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- Demo `?effects=fog` and the *Flashlight in the fog* example: the beam march
+  now compares every step against the lights' shadow maps (the same maps the
+  relight fill uses), so a column shadows the fog behind it as well as the
+  wall. Before, only the surface lighting was occluded and the shaft carried
+  on through the air behind the column. The lookup is bound to a placeholder
+  depth texture until three has rendered the map, then swapped in place.
 - `git push` still runs the local Playwright checks. A failed preflight gate
   reprints the failed test names and error lines after the full log, so a Git
   UI that only keeps the tail still shows what to fix. The pinned Linux
