@@ -93,7 +93,7 @@ How VLAM! loads it (`buildLcc2Scene` → `StreamedScene.environment`, applied by
  **whole** as a single resident pool range, never scheduled by camera
  distance, never evicted, never refetched.
 - It sits **outside the LOD budget**, drawing from the pool's capacity
- headroom (the ~1.5× slack over the resident ceiling), so enabling it does
+ headroom (the 1.5× slack over the resident ceiling, 1.75× on a discrete desktop GPU), so enabling it does
  not steal detail from the LOD cut.
 - `StreamedSplatMesh.setEnvironmentEnabled(boolean)` shows/hides it live by
  flipping the pool range's active flag, instant, no refetch. Start hidden

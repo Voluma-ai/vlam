@@ -21,6 +21,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- Streaming: on a discrete desktop GPU, staged-swap pools are sized at 1.75×
+  the resident ceiling instead of 1.5×. A large view change keeps the outgoing
+  LOD set resident while the incoming one stages, peaking near 1.5× the budget,
+  so a 1.5× pool filled and compacted on every such swap (9–14 compactions on
+  one staircase walk at an 8M budget; none at 1.75×). Other devices, and any
+  GPU whose class was not probed, keep 1.5×; pass a `deviceProfile` with
+  `gpuClass: 'discrete'` to opt in.
 - Streaming: pool compaction no longer stalls for hundreds of milliseconds on
   WebGPU. Packing the pool marked every moved row for re-upload, so a nearly
   full pool (for example a tight budget while LOD groups swap) re-sent
