@@ -13,10 +13,13 @@ A WebGPU Gaussian Splat viewer for three.js.
 
 Local site and generated API: `npm run dev` [http://localhost:5170](http://localhost:5170)
 
-## Warning
+## Stability
 
-This is a pre-release not yet recommended for production. The API can still change in breaking ways before v1.0.
-
+`1.0.0` is a stable release. The public API follows
+[semantic versioning](https://semver.org/spec/v2.0.0.html): breaking changes
+only land in a major version and come with a [migration guide](site/migration.md).
+The experimental entries `@voluma/vlam/static-lod`, `@voluma/vlam/sorting/radix`
+and `@voluma/vlam/projection/compute` are excluded and may change in any release.
 
 ## Install
 

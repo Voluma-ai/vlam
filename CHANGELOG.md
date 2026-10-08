@@ -5,19 +5,34 @@ All notable changes to **VLAM!** are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Pre-1.0 versioning.** The public API may change between releases. **`1.0.0`**
-> is the stability contract (documented API, green CI, capability matrix,
-> critical device validation, demo policy, migration notes, release tag). Pin
-> an exact version until then.
->
+> **Versioning.** From `1.0.0` the public API follows semantic versioning:
+> breaking changes only land in a major release, are marked **Breaking** under
+> _Changed_, and come with a note in the [migration guide](site/migration.md).
+> Entries documented as `@experimental` (`@voluma/vlam/static-lod`,
+> `@voluma/vlam/sorting/radix`, `@voluma/vlam/projection/compute`) are outside
+> that guarantee and may change in any release.
 
 
 > **Git history.** The public repository starts at `0.2.0`. Earlier `0.0.x`
 > package.json bumps were internal: they are recorded below, not as tags. Do
-> not invent historical tags. Comparison links use commit history until tags
-> exist.
+> not invent historical tags.
 
 ## [Unreleased]
+
+## [1.0.0] - 2026-10-08
+
+### Changed
+
+- **Stable release.** `1.0.0` is code-identical to `0.14.0` and starts the
+  semantic-versioning contract: the public API of `@voluma/vlam` and its
+  documented subpaths is frozen, breaking changes only land in a major release
+  with a migration note, and the capability matrix in
+  [`docs/capabilities.md`](docs/capabilities.md) records the validated devices.
+  The experimental entries `@voluma/vlam/static-lod`,
+  `@voluma/vlam/sorting/radix` and `@voluma/vlam/projection/compute` stay
+  outside the guarantee.
+- The pre-release notices are gone from the README, the FAQ, the site hero,
+  the examples index and the generated API reference.
 
 ## [0.14.0] - 2026-10-08
 
@@ -2656,7 +2671,8 @@ The foundational releases, developed rapidly over two days. Highlights:
 - **GPU picking** (`M8`): `SplatMesh.pick(ndc, camera, renderer)`: asynchronous
  one-pixel depth pick returning a world-space center-plane hit.
 
-[Unreleased]: https://github.com/Voluma-ai/vlam/compare/v0.14.0...main
+[Unreleased]: https://github.com/Voluma-ai/vlam/compare/v1.0.0...main
+[1.0.0]: https://github.com/Voluma-ai/vlam/compare/v0.14.0...v1.0.0
 [0.14.0]: https://github.com/Voluma-ai/vlam/compare/v0.13.6...v0.14.0
 [0.13.6]: https://github.com/Voluma-ai/vlam/compare/v0.13.5...v0.13.6
 [0.13.5]: https://github.com/Voluma-ai/vlam/compare/v0.13.4...v0.13.5
