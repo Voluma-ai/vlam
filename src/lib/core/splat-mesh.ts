@@ -2093,7 +2093,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    */
   compact(): void {
     this.assertEditableStorage('compact');
-    this.pool.compact();
+    this.pool.compact(this.lastRenderer);
   }
 
   /** {@link SplatPoolTenant}: the ranges this mesh holds in the pool. */
@@ -2103,9 +2103,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
   /**
    * {@link SplatPoolTenant}: follow one range to its new rows. The pool has
-   * already moved the splat data; this moves what the mesh keys by pool row.
+   * already moved the splat data (on the GPU too when `movedOnGpu`); this
+   * moves what the mesh keys by pool row.
    */
-  relocatePoolRange(range: SplatPoolRange, targetRow: number): void {
+  relocatePoolRange(range: SplatPoolRange, targetRow: number, movedOnGpu = false): void {
     const record = range as RangeRecord;
     const width = SplatMesh.DATA_TEXTURE_WIDTH;
     // Channels are single-component and pool-row-aligned, so a range's channel
@@ -2120,7 +2121,26 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     }
     record.startRow = targetRow;
     record.start = targetRow * width;
-    this.markRowsWritten(targetRow, record.rowCount);
+    if (!movedOnGpu) this.markRowsWritten(targetRow, record.rowCount);
+  }
+
+  /**
+   * {@link SplatPoolTenant}: whether the GPU textures hold these rows' current
+   * data. Worker publication defers uploads behind captured snapshots keyed by
+   * row, so that path always re-uploads.
+   */
+  poolRowsResidentOnGpu(startRow: number, rowCount: number): boolean {
+    if (
+      this.workerPublicationEnabled ||
+      this.workerSnapshotInFlight ||
+      this.workerPublicationPending
+    ) {
+      return false;
+    }
+    const end = startRow + rowCount;
+    return !this.pendingUploadRows.some(
+      (row) => row.start < end && startRow < row.start + row.count,
+    );
   }
 
   /** Obsolete addresses were cleared centrally before this tenant rebuilds. */

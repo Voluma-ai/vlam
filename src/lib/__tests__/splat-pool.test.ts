@@ -11,7 +11,9 @@ import {
 class FakeTenant implements SplatPoolTenant {
   readonly ranges: SplatPoolRange[] = [];
   compactedCount = 0;
-  readonly relocations: { from: number; to: number }[] = [];
+  readonly relocations: { from: number; to: number; movedOnGpu?: boolean }[] = [];
+  /** Rows this tenant reports as already current on the GPU; null = hook absent. */
+  gpuResident: ((startRow: number, rowCount: number) => boolean) | null = null;
 
   constructor(private readonly pool: SplatPool) {
     pool.register(this);
@@ -27,9 +29,16 @@ class FakeTenant implements SplatPoolTenant {
   poolRanges(): Iterable<SplatPoolRange> {
     return this.ranges;
   }
-  relocatePoolRange(range: SplatPoolRange, targetRow: number): void {
-    this.relocations.push({ from: range.startRow, to: targetRow });
+  relocatePoolRange(range: SplatPoolRange, targetRow: number, movedOnGpu?: boolean): void {
+    this.relocations.push({
+      from: range.startRow,
+      to: targetRow,
+      ...(movedOnGpu === undefined ? {} : { movedOnGpu }),
+    });
     range.startRow = targetRow;
+  }
+  poolRowsResidentOnGpu(startRow: number, rowCount: number): boolean {
+    return this.gpuResident?.(startRow, rowCount) ?? false;
   }
   onPoolCompacted(): void {
     this.compactedCount++;
@@ -170,8 +179,8 @@ describe('SplatPool', () => {
     expect(b0.startRow).toBe(0);
     expect(b1.startRow).toBe(2);
     expect(b.relocations).toEqual([
-      { from: 2, to: 0 },
-      { from: 6, to: 2 },
+      { from: 2, to: 0, movedOnGpu: false },
+      { from: 6, to: 2, movedOnGpu: false },
     ]);
     // Every tenant rebuilds, including the one that moved nothing.
     expect(a.compactedCount).toBe(1);
@@ -235,6 +244,151 @@ describe('SplatPool', () => {
     expect(three.shPackedTextures).toHaveLength(4);
     expect(three.backing.shPacked).toHaveLength(4);
     for (const data of three.backing.shPacked) expect(data).toHaveLength(three.capacity * 4);
+  });
+});
+
+/** A WebGPU renderer stand-in whose device records copy commands. */
+function fakeWebGpuRenderer(pool: SplatPool, format = 'rgba32float') {
+  const copies: { kind: 'toBuffer' | 'toTexture'; texture: string; y: number; rows: number }[] = [];
+  const submits: unknown[] = [];
+  const gpuTextures = new Map<object, { label: string; format: string }>();
+  [...pool.coreTextures, ...pool.shPackedTextures].forEach((texture, i) =>
+    gpuTextures.set(texture, { label: `t${i}`, format: i === 1 ? 'rgba8unorm' : format }),
+  );
+  const device = {
+    createBuffer: (descriptor: { size: number }) => ({ size: descriptor.size, destroy: () => {} }),
+    createCommandEncoder: () => ({
+      copyTextureToBuffer: (
+        src: { texture: { label: string }; origin: { y: number } },
+        _l: unknown,
+        size: { height: number },
+      ) =>
+        copies.push({
+          kind: 'toBuffer',
+          texture: src.texture.label,
+          y: src.origin.y,
+          rows: size.height,
+        }),
+      copyBufferToTexture: (
+        _l: unknown,
+        dst: { texture: { label: string }; origin: { y: number } },
+        size: { height: number },
+      ) =>
+        copies.push({
+          kind: 'toTexture',
+          texture: dst.texture.label,
+          y: dst.origin.y,
+          rows: size.height,
+        }),
+      finish: () => ({}),
+    }),
+    queue: { submit: (buffers: unknown[]) => submits.push(...buffers) },
+  };
+  const renderer = {
+    backend: {
+      isWebGPUBackend: true,
+      device,
+      has: (texture: object) => gpuTextures.has(texture),
+      get: (texture: object) => ({ texture: gpuTextures.get(texture) }),
+    },
+    initTexture: () => {},
+  };
+  return { renderer: renderer as never, copies, submits };
+}
+
+describe('SplatPool.compact GPU relocation', () => {
+  const W = SPLAT_DATA_TEXTURE_WIDTH;
+
+  /** Rows 0-1 freed, B at rows 2-3 and 6-7 (A's 4-5 freed too). */
+  const fragmented = () => {
+    const pool = new SplatPool({ capacity: 10 * W });
+    const a = new FakeTenant(pool);
+    const b = new FakeTenant(pool);
+    const a0 = a.take(2);
+    const b0 = b.take(2);
+    const a1 = a.take(2);
+    const b1 = b.take(2);
+    for (const range of [a0, a1]) {
+      pool.releaseRows(range.startRow, range.rowCount);
+      a.ranges.splice(a.ranges.indexOf(range), 1);
+    }
+    return { pool, a, b, b0, b1 };
+  };
+
+  it('moves GPU-resident rows on the GPU in one submission instead of re-uploading them', () => {
+    const { pool, b, b0, b1 } = fragmented();
+    b.gpuResident = () => true;
+    const gpu = fakeWebGpuRenderer(pool);
+
+    pool.compact(gpu.renderer);
+
+    expect([b0.startRow, b1.startRow]).toEqual([0, 2]);
+    expect(b.relocations).toEqual([
+      { from: 2, to: 0, movedOnGpu: true },
+      { from: 6, to: 2, movedOnGpu: true },
+    ]);
+    expect(gpu.submits).toHaveLength(1);
+    // Each move stages every core texture through the scratch buffer, front to back.
+    const centers = gpu.copies.filter((copy) => copy.texture === 't0');
+    expect(centers).toEqual([
+      { kind: 'toBuffer', texture: 't0', y: 2, rows: 2 },
+      { kind: 'toTexture', texture: 't0', y: 0, rows: 2 },
+      { kind: 'toBuffer', texture: 't0', y: 6, rows: 2 },
+      { kind: 'toTexture', texture: 't0', y: 2, rows: 2 },
+    ]);
+    expect(new Set(gpu.copies.map((copy) => copy.texture))).toEqual(
+      new Set(['t0', 't1', 't2', 't3']),
+    );
+  });
+
+  it('keeps the CPU re-upload for rows whose latest writes have not reached the GPU', () => {
+    const { pool, b } = fragmented();
+    // The range at row 6 has a pending upload; the one at row 2 is current.
+    b.gpuResident = (startRow) => startRow !== 6;
+    const gpu = fakeWebGpuRenderer(pool);
+
+    pool.compact(gpu.renderer);
+
+    expect(b.relocations).toEqual([
+      { from: 2, to: 0, movedOnGpu: true },
+      { from: 6, to: 2, movedOnGpu: false },
+    ]);
+    expect(gpu.copies.every((copy) => copy.y === 0 || copy.y === 2)).toBe(true);
+  });
+
+  it('falls back to the CPU re-upload when a pool texture has no copyable GPU format', () => {
+    const { pool, b } = fragmented();
+    b.gpuResident = () => true;
+    const gpu = fakeWebGpuRenderer(pool, 'r32float');
+
+    pool.compact(gpu.renderer);
+
+    expect(b.relocations.every((move) => move.movedOnGpu === false)).toBe(true);
+    expect(gpu.submits).toHaveLength(0);
+  });
+
+  it('splits large ranges into scratch-sized hops that never read an overwritten row', () => {
+    const pool = new SplatPool({ capacity: 200 * W });
+    const a = new FakeTenant(pool);
+    const b = new FakeTenant(pool);
+    const a0 = a.take(10);
+    b.take(150);
+    pool.releaseRows(a0.startRow, a0.rowCount);
+    a.ranges.splice(0, 1);
+    b.gpuResident = () => true;
+    const gpu = fakeWebGpuRenderer(pool);
+
+    pool.compact(gpu.renderer);
+
+    const centers = gpu.copies.filter((copy) => copy.texture === 't0');
+    expect(centers).toEqual([
+      { kind: 'toBuffer', texture: 't0', y: 10, rows: 64 },
+      { kind: 'toTexture', texture: 't0', y: 0, rows: 64 },
+      { kind: 'toBuffer', texture: 't0', y: 74, rows: 64 },
+      { kind: 'toTexture', texture: 't0', y: 64, rows: 64 },
+      { kind: 'toBuffer', texture: 't0', y: 138, rows: 22 },
+      { kind: 'toTexture', texture: 't0', y: 128, rows: 22 },
+    ]);
   });
 });
 

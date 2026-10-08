@@ -21,6 +21,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- Streaming: pool compaction no longer stalls for hundreds of milliseconds on
+  WebGPU. Packing the pool marked every moved row for re-upload, so a nearly
+  full pool (for example a tight budget while LOD groups swap) re-sent
+  ~570 MB from CPU backing in one frame and then backed up the GPU queue.
+  Rows whose latest data is already on the GPU now move with GPU-side copies
+  in one submission; rows with pending CPU writes, the worker-publication
+  path, and WebGL2 keep the re-upload.
 - Streaming: switching a split pane between large chunk-page `.rad` captures
   no longer leaves the new capture coarse. A governor-suspended capture (budget
   1, drawn in neither pane) kept its displayed cut and every page pinned,
