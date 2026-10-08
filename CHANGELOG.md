@@ -19,6 +19,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-08
+
 ### Fixed
 
 - Streaming: on a discrete desktop GPU, staged-swap pools are sized at 1.75×
@@ -35,6 +37,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   Rows whose latest data is already on the GPU now move with GPU-side copies
   in one submission; rows with pending CPU writes, the worker-publication
   path, and WebGL2 keep the re-upload.
+
+## [0.13.6] - 2026-10-08
+
+### Fixed
+
 - Streaming: switching a split pane between large chunk-page `.rad` captures
   no longer leaves the new capture coarse. A governor-suspended capture (budget
   1, drawn in neither pane) kept its displayed cut and every page pinned,
@@ -68,6 +75,23 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   less than one local unit) rather than any move over one unit, which treated
   every orbit frame of a centimetre-scale capture as a teleport and reclaimed
   its in-flight fetches.
+
+## [0.13.5] - 2026-10-07
+
+### Changed
+
+- Demo: `?logo=full` / `?logo=stroke` now draws on the WebGL2 fallback as well.
+  The mark was WebGPU-only because the fallback cannot sort it with a streamed
+  scene; it now always draws the splat flame there, after the scene, with the
+  fire stopping at the collision proxy's depth so pillars occlude it on both
+  backends.
+- Demo `?effects=fog` and the *Flashlight in the fog* example: the beam march
+  compares against the shadow maps without the light's depth bias. That bias
+  guards surfaces against acne, and in the air it left a slab of lit fog
+  behind every occluder.
+
+### Fixed
+
 - Streaming: the per-plan `[vlam:rad-*]` console traces emitted while
   `onPerformanceEvent` is set are now gated by a per-tag heartbeat
   (`rad-trace-gate.ts`): lines that carry demand, moves, appends, evictions,
@@ -76,6 +100,60 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   continuously moving camera re-plans every frame, so a host diagnostics mode
   used to emit several hundred trace lines per second per mesh; with DevTools
   or a CDP client attached that volume stalled the page within about a minute.
+
+## [0.13.4] - 2026-10-07
+
+### Changed
+
+- Demo `?effects=fog` and the *Flashlight in the fog* example: the beam march
+  now compares every step against the lights' shadow maps (the same maps the
+  relight fill uses), so a column shadows the fog behind it as well as the
+  wall. Before, only the surface lighting was occluded and the shaft carried
+  on through the air behind the column. The lookup is bound to a placeholder
+  depth texture until three has rendered the map, then swapped in place.
+
+## [0.13.3] - 2026-10-06
+
+### Fixed
+
+- Demo: the logo stroke model (`vlam-balk.glb`) is served from the repo's
+  `assets/` folder, which is the demo's static root, so `?logo=` loads it in
+  the built site as well as the dev server.
+
+## [0.13.2] - 2026-10-06
+
+### Added
+
+- Demo: while the flashlight is lit, the scroll wheel focuses its beam, from
+  wide and dim to narrow and bright; ten notches sweep the range.
+
+### Changed
+
+- Demo: the `?logo=` stroke is a lit mesh loaded from `vlam-balk.glb` and
+  merged into one world-baked geometry, with its own relighting attachment,
+  instead of a synthetic splat source added to the unified mesh. The fog
+  effect's relighting accepts several targets so the stroke and the scene
+  share the flashlight and accent lights.
+
+## [0.13.1] - 2026-10-06
+
+### Changed
+
+- `UnifiedSplatMesh`: a source's fractional opacity (marker crossfades,
+  reveal fades) is applied live in the draw instead of being baked into the
+  gathered work buffer. Every fade step used to fail the gather cache, re-run
+  a full gather and force a sort outside the camera cadence, so a timeline
+  crossfade doubled GPU work and advanced only on gathered frames. The gather
+  now bakes only whether a live source draws at all, and the draw scales each
+  slice by its current opacity from a small range table refreshed every
+  frame, held or not. Up to eight sources fade live per frame; further ones
+  keep the re-gathering behaviour.
+- `git push` still runs the local Playwright checks. A failed preflight gate
+  reprints the failed test names and error lines after the full log, so a Git
+  UI that only keeps the tail still shows what to fix. The pinned Linux
+  container remains `npm run test:browser:linux` and is not part of the hook.
+
+## [0.13.0] - 2026-10-05
 
 ### Added
 
@@ -99,62 +177,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `?logoHeight=`). Under `?effects=fog` the flame is an accent light.
   `?logoAnim=0` freezes it. On WebGPU the flame is a simulated volumetric fire
   (a GPU fluid solve in the flame's shape, after three's `webgpu_volume_fire`
-  example); `?fire=splat` keeps the splat flame instead, and the WebGL2
-  fallback always draws the splat flame. The stroke joins the fog and relight
-  proxies as a mesh of its own shape, so the flashlight and accent lights land
-  on it, and the fire stops at the collision proxy's depth so pillars occlude
-  it on both backends.
-
-- Shadow-factor relighting fill honours `SpotLight.map` (projected like
-  three's own spot lights), and contributions take a radial `beamProfile`
-  texture plus a live `beamProfileStrength`, so textured beams such as
-  reflector rings or gobos need no flashlight-specific API.
-  `createRelightingBeamProfile(fn | samples)` bakes a profile texture.
-
-- Docs example *Flashlight in the fog*: a ringed `beamProfile` flashlight on
-  the streamed Tempel capture, with a fog modifier on the splats and a
-  ray-marched beam in the air.
-
-- Demo viewer: a *volumetric fog* effect. Low ground fog lit by a
-  camera-carried ringed flashlight (`F` puts it down; fog, rings and focus
-  sliders) and accent spot lights. On Tempel: a warm lamp slowly circling
-  the courtyard behind both pillar rings, plus a purple and a blue spot
-  crossing the courtyard.
-
-- `updateRelightingShadowFactorWeights(material, contributions)` retunes
-  contribution `intensity` / `fill` on a shadow-factor material in place.
-  Animated light intensity no longer needs a new material (and pipeline
-  compile) per frame.
-
-- `parseSpz` reads the SPZ header `antialiased` flag bit (`flags & 0x01`) and
-  reports it as `SplatData.antialias: true`, so a Mip-Splatting `.spz` gets the
-  same automatic 2D dilation and opacity compensation a flagged `.sog` already
-  did. Unflagged files leave the field unset and render exactly as before.
-
-- `SplatMesh.renderView(camera, renderer, target, { reuseShColor: true })`
-  draws the secondary view with the primary view's cached SH color instead of
-  re-evaluating SH for that camera, and leaves the cache valid for the next
-  `update()`. Without it, every secondary view (a per-frame mirror) discards
-  the cache and forces a pool-wide refresh. It only applies while the SH compute
-  cache is active and current; otherwise the view re-evaluates SH as before.
-  `UnifiedSplatMesh.renderView` accepts the option for signature parity and
-  ignores it. The demo exposes it as `?mirror=1&mirrorShReuse=1`.
+  example); `?fire=splat` keeps the splat flame instead. The mark is WebGPU-only
+  for now: the WebGL2 fallback cannot sort it with a streamed scene, so it
+  stays hidden there. The stroke joins the fog and relight proxies as a mesh
+  of its own shape, so the flashlight and accent lights land on it, and the
+  fire stops at the collision proxy's depth so pillars occlude it.
 
 ### Changed
 
-- Demo `?effects=fog` and the *Flashlight in the fog* example: the beam march
-  now compares every step against the lights' shadow maps (the same maps the
-  relight fill uses), so a column shadows the fog behind it as well as the
-  wall. Before, only the surface lighting was occluded and the shaft carried
-  on through the air behind the column. The lookup is bound to a placeholder
-  depth texture until three has rendered the map, then swapped in place, and
-  it compares without the light's depth bias: that bias guards surfaces
-  against acne, and in the air it left a slab of lit fog behind every
-  occluder.
-- `git push` still runs the local Playwright checks. A failed preflight gate
-  reprints the failed test names and error lines after the full log, so a Git
-  UI that only keeps the tail still shows what to fix. The pinned Linux
-  container remains `npm run test:browser:linux` and is not part of the hook.
 - Demo: HD no longer multisamples splat-only frames. A splat's quad edge is
   already transparent at 3σ, so renderer MSAA changed nothing in lossless
   captures (mean difference < 0.04/255 on Tempel, Kauz and goose) while
@@ -167,6 +197,72 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `setSession`, because three sizes the XR target from the renderer's sample
   count there). SD never multisamples; `?rendererAntialias=0/1` still pins
   the renderer for A/B. The HD/SD labels drop their MSAA wording.
+
+## [0.12.3] - 2026-10-05
+
+### Added
+
+- Shadow-factor relighting fill honours `SpotLight.map` (projected like
+  three's own spot lights), and contributions take a radial `beamProfile`
+  texture plus a live `beamProfileStrength`, so textured beams such as
+  reflector rings or gobos need no flashlight-specific API.
+  `createRelightingBeamProfile(fn | samples)` bakes a profile texture.
+- Docs example *Flashlight in the fog*: a ringed `beamProfile` flashlight on
+  the streamed Tempel capture, with a fog modifier on the splats and a
+  ray-marched beam in the air.
+- Demo viewer: a *volumetric fog* effect. Low ground fog lit by a
+  camera-carried ringed flashlight (`F` puts it down; fog, rings and focus
+  sliders) and accent spot lights. On Tempel: a warm lamp slowly circling
+  the courtyard behind both pillar rings, plus a purple and a blue spot
+  crossing the courtyard.
+
+## [0.12.2] - 2026-10-04
+
+### Added
+
+- `updateRelightingShadowFactorWeights(material, contributions)` retunes
+  contribution `intensity` / `fill` on a shadow-factor material in place.
+  Animated light intensity no longer needs a new material (and pipeline
+  compile) per frame.
+
+### Fixed
+
+- `createRelightingShadowFactorMaterial` skips the shadow lookup for lights
+  without `castShadow`. Each fill-only light used to bind a depth texture and
+  sampler, so ~16 of them exceeded WebGPU's default per-stage texture limit
+  and the pipeline failed to compile.
+
+## [0.12.1] - 2026-10-04
+
+### Added
+
+- `createRelightingShadowFactorMaterial` renders real `PointLight` cube
+  shadows through three's `pointShadow` node instead of the generic shadow
+  node, which reads a `target` that point lights do not have. The exported
+  constant `RELIGHTING_POINT_SHADOWS` (`true`) lets hosts feature-detect this
+  and fall back to a wide-`SpotLight` approximation on older builds. A
+  `PointLight` still needs a `target` stub, because three's shadow matrix
+  update reads `light.target` on frames without a shadow pass.
+
+## [0.12.0] - 2026-10-03
+
+### Added
+
+- `parseSpz` reads the SPZ header `antialiased` flag bit (`flags & 0x01`) and
+  reports it as `SplatData.antialias: true`, so a Mip-Splatting `.spz` gets the
+  same automatic 2D dilation and opacity compensation a flagged `.sog` already
+  did. Unflagged files leave the field unset and render exactly as before.
+- `SplatMesh.renderView(camera, renderer, target, { reuseShColor: true })`
+  draws the secondary view with the primary view's cached SH color instead of
+  re-evaluating SH for that camera, and leaves the cache valid for the next
+  `update()`. Without it, every secondary view (a per-frame mirror) discards
+  the cache and forces a pool-wide refresh. It only applies while the SH compute
+  cache is active and current; otherwise the view re-evaluates SH as before.
+  `UnifiedSplatMesh.renderView` accepts the option for signature parity and
+  ignores it. The demo exposes it as `?mirror=1&mirrorShReuse=1`.
+
+### Changed
+
 - The SH compute cache now accepts an owned dynamic pool (`StreamedSplatMesh`,
   dynamic-capacity `SplatMesh`) when `shEvaluation: 'compute'` is explicit.
   A standalone streamed mesh with SH otherwise evaluates SH per vertex every
@@ -179,17 +275,21 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
-- `createRelightingShadowFactorMaterial` skips the shadow lookup for lights
-  without `castShadow`. Each fill-only light used to bind a depth texture and
-  sampler, so ~16 of them exceeded WebGPU's default per-stage texture limit
-  and the pipeline failed to compile.
-
+- `SplatMesh` on a shared `SplatPool` rejects an append that would exceed the
+  mesh's own `{ capacity }` before any state changes. The per-mesh draw list
+  is sized by that capacity, not by the pool, so a shared-pool mesh can run
+  out of draw slots while the pool still has rows; the append used to throw
+  `RangeError: offset is out of bounds` after the range record, the row
+  writes and the channel fills were already committed, leaving an orphan
+  active record and rows the next `update()` uploaded. The error keeps the
+  documented "capacity exceeded" wording and names the mesh capacity, the
+  requested and active counts, and on a shared pool points out that the
+  limit is the mesh's own.
 - `UnifiedSplatMesh` with compute projection no longer draws the previous
   camera pose while a GPU sort still holds the submission gate: a camera-only
   move re-projects and re-sorts the already-gathered work buffer at once and
   the gate follows that replacement, while content changes keep coalescing
   until the buffer is free.
-
 - A camera move under a held sort gate with compute projection (standalone
   `SplatMesh` and `UnifiedSplatMesh`) now re-projects on the adaptive sort
   cadence instead of every held frame. The hold was the compute path's only
@@ -200,17 +300,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   cadence resolves to 0 ms (under 2M splats, or `sortIntervalMs: 0`) still
   re-project every held frame. A skipped held frame draws one pose behind
   until the gate releases or the cadence is due.
-
 - The native hardware probe renders a settle frame before reading unified
   vertex-path pixels: that path holds its first draw until the submitted GPU
   order completes, which the single-frame read had been reporting as an
   invisible splat.
-
 - The benchmark dev server archives results again: its archive endpoint
   still required result schema version 1 after the comparison pages moved to
   version 2, so every `/vlam-benchmark.html` run since then ended with
   "Could not archive results: HTTP 400".
-
 - `UnifiedSplatMesh` with compute projection no longer re-dispatches the
   projector and counting sort on every free frame of an idle scene. The
   dispatch is skipped while the view, projection, viewport, admitted count,
@@ -2559,7 +2656,19 @@ The foundational releases, developed rapidly over two days. Highlights:
 - **GPU picking** (`M8`): `SplatMesh.pick(ndc, camera, renderer)`: asynchronous
  one-pixel depth pick returning a world-space center-plane hit.
 
-[Unreleased]: https://github.com/Voluma-ai/vlam/compare/v0.11.5...main
+[Unreleased]: https://github.com/Voluma-ai/vlam/compare/v0.14.0...main
+[0.14.0]: https://github.com/Voluma-ai/vlam/compare/v0.13.6...v0.14.0
+[0.13.6]: https://github.com/Voluma-ai/vlam/compare/v0.13.5...v0.13.6
+[0.13.5]: https://github.com/Voluma-ai/vlam/compare/v0.13.4...v0.13.5
+[0.13.4]: https://github.com/Voluma-ai/vlam/compare/v0.13.3...v0.13.4
+[0.13.3]: https://github.com/Voluma-ai/vlam/compare/v0.13.2...v0.13.3
+[0.13.2]: https://github.com/Voluma-ai/vlam/compare/v0.13.1...v0.13.2
+[0.13.1]: https://github.com/Voluma-ai/vlam/compare/v0.13.0...v0.13.1
+[0.13.0]: https://github.com/Voluma-ai/vlam/compare/v0.12.3...v0.13.0
+[0.12.3]: https://github.com/Voluma-ai/vlam/compare/v0.12.2...v0.12.3
+[0.12.2]: https://github.com/Voluma-ai/vlam/compare/v0.12.1...v0.12.2
+[0.12.1]: https://github.com/Voluma-ai/vlam/compare/v0.12.0...v0.12.1
+[0.12.0]: https://github.com/Voluma-ai/vlam/compare/v0.11.5...v0.12.0
 [0.11.5]: https://github.com/Voluma-ai/vlam/compare/v0.11.4...v0.11.5
 [0.11.4]: https://github.com/Voluma-ai/vlam/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/Voluma-ai/vlam/compare/v0.11.2...v0.11.3
