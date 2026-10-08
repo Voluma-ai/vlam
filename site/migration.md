@@ -1,9 +1,19 @@
 # Migrating toward VLAM! 1.0
 
-This guide covers 0.x API changes, including the unreleased changes identified below. Keep the
-exact package version pinned until 1.0 is released.
+This guide covers 0.x API changes, newest first. Keep the exact package
+version pinned until 1.0 is released.
 
-## Unreleased: RAD options and loading integration
+## 0.12.0: SH fallback reasons
+
+The SH compute cache fallback reason `dynamic-or-shared-pool` is split into
+`shared-pool` and `auto-dynamic-pool`. A host that matched the old reason
+should match both. The automatic projection reason
+`auto-dynamic-or-shared-pool` is unchanged. An explicit
+`shEvaluation: 'compute'` now also enables the cache on owned dynamic pools
+(`StreamedSplatMesh`, dynamic-capacity `SplatMesh`); `'auto'` keeps them on
+vertex SH.
+
+## 0.11.3: RAD options and loading integration
 
 `buildRadScene` from `@voluma/vlam/formats/rad` replaces positional controls
 with one `RadSceneOptions` object extending `LodSourceOptions`:
