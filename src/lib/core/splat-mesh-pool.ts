@@ -15,6 +15,11 @@
 import * as THREE from 'three/webgpu';
 import { createSplatCenterTexture } from './splat-center-storage';
 import { dataTexturesUploaded, releaseDataTextureMirrors } from './data-texture-mirror';
+import {
+  relocatePoolRowsOnGpu,
+  resolvePoolGpuTextures,
+  type PoolRowMove,
+} from './pool-gpu-relocation';
 
 /**
  * Texels per row in every pool data texture.
@@ -130,7 +135,13 @@ export interface SplatPoolTenant {
    * already moved the splat data; the tenant moves anything else keyed by pool
    * row (per-splat channels) and records that those rows need re-uploading.
    */
-  relocatePoolRange(range: SplatPoolRange, targetRow: number): void;
+  relocatePoolRange(range: SplatPoolRange, targetRow: number, movedOnGpu?: boolean): void;
+  /**
+   * True when the GPU textures already hold this tenant's current data for
+   * these rows (nothing pending upload or held for a worker publication), so
+   * compaction may move them on the GPU. Omitted means never.
+   */
+  poolRowsResidentOnGpu?(startRow: number, rowCount: number): boolean;
   /** Called once after a compaction, so the tenant can rebuild draw state. */
   onPoolCompacted(): void;
   /**
@@ -425,7 +436,7 @@ export class SplatPool {
    * interchangeable pages that never need packing; vlam's ranges are variable
    * runs, so it packs instead.)
    */
-  compact(): void {
+  compact(renderer?: THREE.WebGPURenderer | null): void {
     const width = this.width;
     // Move in ascending row order so each target row is <= its current row and
     // no not-yet-moved range is ever overwritten. Ordering is global across
@@ -451,6 +462,27 @@ export class SplatPool {
     }
     placements.sort((a, b) => a.range.startRow - b.range.startRow);
 
+    // Moving rows the GPU already holds avoids re-uploading most of the pool
+    // from CPU backing (hundreds of MB, a multi-frame stall on large scenes).
+    // Rows with CPU writes not yet uploaded keep the re-upload path.
+    const gpu = resolvePoolGpuTextures(renderer, [...this.coreTextures, ...this.shPackedTextures]);
+    const gpuMoved = new Set<SplatPoolRange>();
+    if (gpu) {
+      const moves: PoolRowMove[] = [];
+      let packedRow = 0;
+      for (const { tenant, range } of placements) {
+        if (
+          range.startRow !== packedRow &&
+          tenant.poolRowsResidentOnGpu?.(range.startRow, range.rowCount) === true
+        ) {
+          moves.push({ fromRow: range.startRow, toRow: packedRow, rowCount: range.rowCount });
+          gpuMoved.add(range);
+        }
+        packedRow += range.rowCount;
+      }
+      relocatePoolRowsOnGpu(gpu.device, gpu.textures, width, moves);
+    }
+
     let targetRow = 0;
     for (const { tenant, range } of placements) {
       if (range.startRow !== targetRow) {
@@ -466,7 +498,7 @@ export class SplatPool {
         for (const group of this.backing.shPacked) group.copyWithin(to, from, from + length);
         // The tenant moves whatever else is keyed by pool row (channels) and
         // adopts the new start.
-        tenant.relocatePoolRange(range, targetRow);
+        tenant.relocatePoolRange(range, targetRow, gpuMoved.has(range));
       }
       targetRow += range.rowCount;
     }
