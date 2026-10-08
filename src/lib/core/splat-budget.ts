@@ -292,6 +292,32 @@ export function isFillConstrainedSplatDevice(
 }
 
 /**
+ * Pool capacity as a multiple of the resident ceiling for a streamed mesh.
+ *
+ * Indexed page-table needs two complete selections in reserved storage (2×).
+ * Staged swaps keep the outgoing LOD set resident until the incoming one is
+ * staged, so a large view change peaks near 1.5× the budget. On a discrete
+ * desktop GPU 1.75× leaves room for that overlap plus row fragmentation; at
+ * 1.5× the pool fills and every such swap compacts it. Every other device
+ * (phones, headsets, integrated GPUs sharing system memory, and a GPU whose
+ * class was never probed) keeps 1.5×; pass a `deviceProfile` with
+ * `gpuClass: 'discrete'` to opt in. Without staged swaps the slack only
+ * absorbs row-alignment waste (1.4×).
+ */
+export function streamedPoolCapacityFactor(options: {
+  pageTable: boolean;
+  stagedSwaps: boolean;
+  profile?: SplatDeviceProfile | undefined;
+}): number {
+  if (options.pageTable) return 2;
+  if (!options.stagedSwaps) return 1.4;
+  const profile = options.profile;
+  const discreteDesktop =
+    profile?.gpuClass === 'discrete' && profile.isMobile !== true && profile.isHeadset !== true;
+  return discreteDesktop ? 1.75 : 1.5;
+}
+
+/**
  * The cost class of a streamed format. Unknown and absent formats read as
  * `'sampled'`, which is the pre-existing behaviour for every caller that does
  * not name one.

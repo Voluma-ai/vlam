@@ -12,6 +12,7 @@ import {
   resolveSplatBudget,
   resolveXrSplatBudget,
   resolveCpuCacheBytes,
+  streamedPoolCapacityFactor,
   suggestAdaptivePixelRatio,
   ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES,
   type SplatDeviceProfile,
@@ -1007,5 +1008,37 @@ describe('estimateSplatPoolBytes', () => {
     expect(() => estimateSplatPoolBytes(Number.NaN)).toThrow(RangeError);
     expect(() => estimateSplatPoolBytes(1000, { capacityFactor: 0.9 })).toThrow(RangeError);
     expect(() => estimateSplatPoolBytes(1000, { capacityFactor: Infinity })).toThrow(RangeError);
+  });
+});
+
+describe('streamedPoolCapacityFactor', () => {
+  const desktop: SplatDeviceProfile = { isMobile: false, gpuClass: 'discrete' };
+  const phone: SplatDeviceProfile = { isMobile: true };
+  const laptopIgpu: SplatDeviceProfile = { isMobile: false, gpuClass: 'integrated' };
+
+  it('reserves room for the staged-swap overlap on desktop GPUs', () => {
+    // A large view change keeps the outgoing set resident: ~1.5x the budget.
+    expect(
+      streamedPoolCapacityFactor({ pageTable: false, stagedSwaps: true, profile: desktop }),
+    ).toBe(1.75);
+  });
+
+  it('keeps 1.5x on every device not known to be a discrete desktop GPU', () => {
+    const unprobed: SplatDeviceProfile = { isMobile: false };
+    const headset: SplatDeviceProfile = { isMobile: true, isHeadset: true, gpuClass: 'discrete' };
+    for (const profile of [phone, laptopIgpu, unprobed, headset, undefined]) {
+      expect(streamedPoolCapacityFactor({ pageTable: false, stagedSwaps: true, profile })).toBe(
+        1.5,
+      );
+    }
+  });
+
+  it('keeps the page-table and non-swap reservations whatever the device', () => {
+    for (const profile of [desktop, phone]) {
+      expect(streamedPoolCapacityFactor({ pageTable: true, stagedSwaps: true, profile })).toBe(2);
+      expect(streamedPoolCapacityFactor({ pageTable: false, stagedSwaps: false, profile })).toBe(
+        1.4,
+      );
+    }
   });
 });

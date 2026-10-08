@@ -516,7 +516,7 @@ still acknowledges the live generation so refinement is not stuck on the first
 cover. Distinguishes requested draw allowance, accepted
 draw allowance, and reserved storage: `reservedSlots ≥ 2 × acceptedDrawAllowance`
 including page rounding. Page-table construction uses a 2× capacity factor so
-that reservation can fit; other formats keep the 1.5× staged-swap slack. Device
+that reservation can fit; other formats keep the 1.5× staged-swap slack (1.75× on a discrete desktop GPU). Device
 or shared-pool limits reduce and report the accepted allowance through
 `setBudget` rather than publishing incomplete coverage. If even complete root
 coverage cannot fit, the worker reports capacity blockage and retries when

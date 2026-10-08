@@ -60,6 +60,7 @@ import {
   estimateSplatPoolBytes,
   recommendedRadMaxStdDev,
   resolveSplatBudget,
+  streamedPoolCapacityFactor,
   type SplatDeviceProfile,
 } from '../core/splat-budget';
 import { resolveXrView } from '../core/xr-view';
@@ -447,7 +448,7 @@ export interface StreamedSplatMeshOptions extends SplatMeshOptions {
    *
    * It is not free: the pool costs its *ceiling* in memory whether or not the
    * budget ever reaches it (~64 B of GPU pool plus ~56 B of CPU backing per
-   * splat, 1.5× for capacity slack). Price it with `estimateSplatPoolBytes`
+   * splat, 1.5× for capacity slack, 1.75× on a discrete desktop GPU). Price it with `estimateSplatPoolBytes`
    * before choosing - for several additional meshes the
    * sum of the ceilings is what has to fit, not the shared budget. A ceiling
    * around 1.5–2× a member's fair share is usually the right trade.
@@ -1654,13 +1655,11 @@ export class StreamedSplatMesh extends SplatMesh {
       : options.foveationMode === undefined
         ? undefined
         : resolveSplatFoveationMode(options.foveationMode);
-    // Indexed page-table needs two complete selections in reserved storage.
-    // Other formats keep the 1.5× staged-swap slack (1.4× when swaps are off).
-    const capacityFactor = isPageTableFoveation(resolvedFoveationMode)
-      ? 2
-      : options.experimentalStagedSwaps !== false
-        ? 1.5
-        : 1.4;
+    const capacityFactor = streamedPoolCapacityFactor({
+      pageTable: isPageTableFoveation(resolvedFoveationMode),
+      stagedSwaps: options.experimentalStagedSwaps !== false,
+      profile: deviceProfile,
+    });
     const requestedRadChunkResidency =
       format === 'rad' && experiments.radResidency === 'chunk-pages';
     const radResidencyDecision = requestedRadChunkResidency
