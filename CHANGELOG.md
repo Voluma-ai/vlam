@@ -8,9 +8,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 > **Versioning.** From `1.0.0` the public API follows semantic versioning:
 > breaking changes only land in a major release, are marked **Breaking** under
 > _Changed_, and come with a note in the [migration guide](site/migration.md).
-> Entries documented as `@experimental` (`@voluma/vlam/static-lod`,
-> `@voluma/vlam/sorting/radix`, `@voluma/vlam/projection/compute`) are outside
-> that guarantee and may change in any release.
+> Anything marked `@experimental` in the API reference is outside that
+> guarantee and may change in a minor release: today the
+> `@voluma/vlam/static-lod`, `@voluma/vlam/sorting/radix` and
+> `@voluma/vlam/projection/compute` entries, `MergedSplatMesh`, and the
+> `SplatMeshOptions` fields flagged as such. Diagnostics are also outside it:
+> the `StreamedSplatPerformanceEvent` payload, the `[vlam:*]` console traces
+> and the SH / projection fallback reason strings.
 
 
 > **Git history.** The public repository starts at `0.2.0`. Earlier `0.0.x`
@@ -28,9 +32,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   documented subpaths is frozen, breaking changes only land in a major release
   with a migration note, and the capability matrix in
   [`docs/capabilities.md`](docs/capabilities.md) records the validated devices.
-  The experimental entries `@voluma/vlam/static-lod`,
-  `@voluma/vlam/sorting/radix` and `@voluma/vlam/projection/compute` stay
-  outside the guarantee.
+  Anything marked `@experimental` in the API reference stays outside the
+  guarantee (the `static-lod`, `sorting/radix` and `projection/compute`
+  entries, `MergedSplatMesh`, and the flagged `SplatMeshOptions` fields), as
+  do diagnostics: the streaming performance-event payload, console traces and
+  fallback reason strings.
 - The pre-release notices are gone from the README, the FAQ, the site hero,
   the examples index and the generated API reference.
 

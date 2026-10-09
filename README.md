@@ -18,8 +18,11 @@ Local site and generated API: `npm run dev` [http://localhost:5170](http://local
 `1.0.0` is a stable release. The public API follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html): breaking changes
 only land in a major version and come with a [migration guide](site/migration.md).
-The experimental entries `@voluma/vlam/static-lod`, `@voluma/vlam/sorting/radix`
-and `@voluma/vlam/projection/compute` are excluded and may change in any release.
+Anything marked `@experimental` in the API reference (the `static-lod`,
+`sorting/radix` and `projection/compute` entries, `MergedSplatMesh` and the
+flagged mesh options) and the diagnostic surfaces (streaming performance
+events, console traces, fallback reason strings) are excluded and may change
+in a minor release.
 
 ## Install
 
