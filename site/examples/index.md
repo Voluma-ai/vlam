@@ -3,8 +3,6 @@
 Complete, runnable apps with explanations. Most run on the page from
 the same source file shown below.
 
-<PreReleaseNotice />
-
 ## Start here
 
 1. **[Your first viewer](/examples/first-viewer)**: load a capture with orbit controls.

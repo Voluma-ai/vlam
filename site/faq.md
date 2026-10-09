@@ -32,11 +32,17 @@ See [Get started](/get-started) for install and a minimal three.js example.
 <details class="faq">
 <summary>Is VLAM! ready for production?</summary>
 
-Not yet. VLAM! is a **pre-release**: the API can still change in breaking ways
-before v1.0, so an upgrade may require edits to your code.
+Yes. From v1.0.0 the public API follows semantic versioning: breaking changes
+only land in a major version and come with a [migration guide](/migration).
+Anything marked `@experimental` in the API reference (the `static-lod`,
+`sorting/radix` and `projection/compute` entries, `MergedSplatMesh` and the
+flagged mesh options) and the diagnostic surfaces (streaming performance
+events, console traces, fallback reason strings) are outside that guarantee
+and may change in a minor release.
 
-Use it for prototypes, demos and experiments today. If you do ship it, pin an
-exact version and read the release notes before you upgrade.
+Check the [capability matrix](https://github.com/Voluma-ai/vlam/blob/main/docs/capabilities.md)
+for the devices and browsers that have been validated, and read the release
+notes before a major upgrade.
 
 </details>
 

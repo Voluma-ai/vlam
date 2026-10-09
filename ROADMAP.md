@@ -7,10 +7,10 @@ Git history, not in this queue.
 
 ## Next
 
-- **1.0 stabilization** — freeze the API, finalize migration notes, changelog,
-  and release tag. The non-Pro iPhone 15 device gate is recorded in
-  `docs/capabilities.md`. Galaxy S7/WebGL2 remains a smoke-test floor, not a
-  performance target.
+- Nothing queued. `1.0.0` shipped the stability contract (frozen API,
+  migration guide, changelog, capability matrix with the non-Pro iPhone 15
+  gate; Galaxy S7/WebGL2 stays a smoke-test floor, not a performance target).
+  Promote an item from the opportunities below when work on it starts.
 
 ## Post-1.0 opportunities (optional)
 

@@ -1,7 +1,10 @@
-# Migrating toward VLAM! 1.0
+# Migrating to VLAM! 1.0
 
-This guide covers 0.x API changes, newest first. Keep the exact package
-version pinned until 1.0 is released.
+`1.0.0` is code-identical to `0.14.0`: a project on the latest 0.x release
+needs no changes. Earlier 0.x projects apply the sections below, newest first;
+start from the first section after your current version and work upward.
+From `1.0.0` the public API follows semantic versioning, so breaking changes
+only land in a major release, and each will get a section here.
 
 ## 0.12.0: SH fallback reasons
 
