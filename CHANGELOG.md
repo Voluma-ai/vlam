@@ -32,10 +32,22 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   boundary: every source's pending rows upload together with the combined
   order, so the previous complete frame stays visible meanwhile. Per-source
   opacity, visibility, placement, LOD alpha (`.rad` beside plain sources) and
-  packed-SH range are honoured; the mesh carries one `modifiers` stack of its
-  own instead of folding each source's. Browser check
+  packed-SH range are honoured. Browser check
   `pooled-unified.spec.ts` (both projects) verifies occlusion from either side,
   hide / fade / move / remove. Gate with `supportsPooledUnifiedSplatMesh`.
+- Pooled draw: per-source modifier stacks (`setSourceModifiers`), evaluated
+  in each source's local frame exactly as the compute path gathers them, so
+  marker SDF shapes, marker lights, main-splat shaders, reveals and fog draw on
+  WebGL2 as on WebGPU. Each distinct stack runs in a real branch on the
+  instance's source id: a splat pays for its own source's effects only (live
+  check, 8M LCC2 main plus one marker: the goose carrying 30 SDF suites cost
+  +0.8 ms of GPU time against +10.4 ms on the main). Shared inputs are
+  materialized before the branches; without that, three emitted them inside the
+  first branch and every other source read them uninitialized. Per-source
+  tables are packed into two uniform arrays sized to the live source count
+  (WebGL2 binds as few as 12 uniform blocks per vertex stage), and
+  `checkShaderBudget` reports the program's blocks and samplers against the
+  device limits so a host can fall back before a program fails to link.
 - Pooled draw frame cost: the order attributes use static usage (three
   re-uploads a `DynamicDrawUsage` attribute's whole array every frame, ~36 ms
   per frame on an 8M-splat pool), a camera-only re-sort of an unchanged scene
@@ -54,7 +66,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - The pooled draw lives entirely behind `@voluma/vlam/unified/pooled`, with
   its own inlined sort worker; a WebGPU host's core and unified bundles keep
   main's chunk layout (+558 B gzip on core for the hooks below). The bundle
-  check gates the pooled entry on its own chunk beyond core (12 kB) and fails
+  check gates the pooled entry on its own chunk beyond core (16 kB with the
+  source stacks) and fails
   if pooled code reaches the core or `./unified` graphs.
 - Core hooks the pooled draw needs, dormant otherwise: one `@internal`
   `SplatMesh.adoptPooledPublication` accessor over the existing worker

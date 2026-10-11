@@ -20,13 +20,14 @@
  *
  * Works on either backend (a WebGPU host would normally prefer the compute
  * path). Sources must be `editable` meshes drawing from the same pool.
- * Per-source modifier stacks are not evaluated here: the pooled mesh has one
- * {@link modifiers} list of its own, applied to every splat, plus per-source
- * opacity, LOD-alpha, placement and packed-SH range.
+ * Effects: each source's own stack ({@link setSourceModifiers}) runs in that
+ * source's local frame, as the compute path's gather does; the mesh's own
+ * {@link modifiers} then run on every splat in the drawn (world) frame; then
+ * per-source opacity. Placement, LOD alpha and packed-SH range are per source.
  */
 import * as THREE from 'three/webgpu';
 import type { WebGLRenderer } from 'three';
-import { attribute, uniform, uniformArray, vec4 } from 'three/tsl';
+import { attribute, uniform, vec4 } from 'three/tsl';
 // A value import on purpose: it makes this entry depend on everything
 // `SplatMesh` already pulls in, so Rollup keeps the core chunks exactly as a
 // WebGPU host loads them instead of splitting them around this entry's needs.
@@ -48,6 +49,14 @@ import { isFillConstrainedSplatDevice } from '../../core/splat-budget';
 import { clampDepthOfFieldSettings, type DepthOfFieldSettings } from '../../core/depth-of-field';
 import type { SplatModifier } from '../../core/splat-modifier';
 import { PooledSorter } from './pooled-sorter';
+import {
+  PooledSourceTables,
+  ROW_PARAMS,
+  ROW_SH_MAX,
+  ROW_SH_MIN,
+  SOURCE_DATA_ROWS,
+} from './pooled-source-tables';
+import { createSourceStacksModifier, groupSourceStacks } from './pooled-source-stacks';
 import type {
   UnifiedDrawPublicationSnapshot,
   UnifiedSplatPickResult,
@@ -59,8 +68,8 @@ export interface PooledUnifiedSplatMeshOptions {
   /** Camera-space ordering key for the combined sort. Default `'depth'`. */
   sortMetric?: SplatSortMetric;
   /**
-   * Source slots to allocate uniform tables for (matrix columns, opacity,
-   * LOD alpha, SH range). Default 64; at most 256 (one-byte source ids).
+   * Maximum registered sources. Default 64; at most 256 (one-byte source
+   * ids). Shader tables are sized to the live source count, not to this.
    */
   maxSources?: number;
   /** Whether sources composite in display (sRGB) space; every source must agree. Default `false`. */
@@ -74,6 +83,22 @@ export type PooledUnifiedSourceOptions = Pick<
   UnifiedSplatSourceOptions,
   'opacity' | 'visible' | 'priority'
 >;
+
+/**
+ * WebGL2 resource use of the pooled draw's vertex program, against the
+ * device's limits. Uniform arrays become std140 blocks there, and a vertex
+ * stage may bind as few as 12 of them; a program over a limit fails to link
+ * and draws nothing, so hosts check this and fall back.
+ */
+export interface PooledShaderBudget {
+  vertexUniformBlocks: number;
+  maxVertexUniformBlocks: number;
+  vertexSamplers: number;
+  maxVertexSamplers: number;
+  /** Material build this report describes. */
+  materialRevision: number;
+  ok: boolean;
+}
 
 /** CPU timings of the last {@link PooledUnifiedSplatMesh.update}. */
 export interface PooledUnifiedPerformanceTimings {
@@ -103,6 +128,10 @@ interface SourceRecord {
   /** Active-list token and content revision the in-flight or last capture used. */
   capturedActiveListVersion: number;
   capturedContentRevision: number;
+  /** The source's own stack, evaluated in its local frame. */
+  modifiers: readonly SplatModifier[];
+  /** Stored-alpha multiplier (2 for `.rad` LOD alpha). */
+  alphaScale: number;
 }
 
 interface CapturePart {
@@ -135,29 +164,7 @@ const SOURCE_ID_ATTRIBUTE = 'sourceId';
 const _identity = new THREE.Matrix4();
 const _viewSize = new THREE.Vector2();
 const _sortState = new THREE.Matrix4();
-
-/**
- * Per-source world matrices as a shader-visible array (four vec4 columns per
- * source, three's column-major order) plus the CPU copy the worker reads.
- */
-class SourceColumns {
-  readonly node: ReturnType<typeof uniformArray>;
-  readonly matrices: Float32Array;
-  private readonly columns: THREE.Vector4[];
-
-  constructor(count: number) {
-    this.matrices = new Float32Array(16 * count);
-    this.columns = Array.from({ length: 4 * count }, () => new THREE.Vector4());
-    for (let id = 0; id < count; id++) this.set(id, _identity);
-    this.node = uniformArray(this.columns, 'vec4');
-  }
-
-  set(id: number, matrix: THREE.Matrix4): void {
-    const e = matrix.elements;
-    this.matrices.set(e, id * 16);
-    for (let c = 0; c < 4; c++) (this.columns[id * 4 + c] as THREE.Vector4).fromArray(e, c * 4);
-  }
-}
+const _cameraWorld = new THREE.Vector3();
 
 /**
  * Whether `renderer` can drive a {@link PooledUnifiedSplatMesh}: any
@@ -182,15 +189,8 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
   private readonly sortMetric: SplatSortMetric;
   private readonly maxSources: number;
   private readonly srgbOutput: boolean;
-  private readonly matrices: SourceColumns;
-  private readonly opacityTable: number[];
-  private readonly opacityNode: ReturnType<typeof uniformArray>;
-  private readonly lodAlphaTable: number[];
-  private readonly lodAlphaNode: ReturnType<typeof uniformArray>;
-  private readonly shRangeMin: THREE.Vector3[];
-  private readonly shRangeMax: THREE.Vector3[];
-  private readonly shRangeMinNode: ReturnType<typeof uniformArray>;
-  private readonly shRangeMaxNode: ReturnType<typeof uniformArray>;
+  /** Packed per-source tables; replaced (and the material rebuilt) when they grow. */
+  private tables: PooledSourceTables;
   private readonly splatIndexAttribute: THREE.InstancedBufferAttribute;
   private readonly sourceIdAttribute: THREE.InstancedBufferAttribute;
   private readonly focal = uniform(new THREE.Vector2());
@@ -244,6 +244,10 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     minContribution: number;
   } | null = null;
   private materialBuilt = false;
+  /** A structural change (stacks, membership, table size) awaits the next update. */
+  private materialDirty = false;
+  private materialRevision = 0;
+  private shaderBudgetValue: PooledShaderBudget | null = null;
   /** Pool SH bands the material was built for; a late allocation rebuilds it. */
   private builtShBands: 0 | 1 | 2 | 3 = 0;
   private disposed = false;
@@ -300,15 +304,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     this.sortMetric = options.sortMetric ?? 'depth';
     this.maxSources = maxSources;
     this.srgbOutput = options.srgbOutput ?? false;
-    this.matrices = new SourceColumns(maxSources);
-    this.opacityTable = Array.from({ length: maxSources }, () => 0);
-    this.opacityNode = uniformArray(this.opacityTable, 'float');
-    this.lodAlphaTable = Array.from({ length: maxSources }, () => 0);
-    this.lodAlphaNode = uniformArray(this.lodAlphaTable, 'float');
-    this.shRangeMin = Array.from({ length: maxSources }, () => new THREE.Vector3());
-    this.shRangeMax = Array.from({ length: maxSources }, () => new THREE.Vector3());
-    this.shRangeMinNode = uniformArray(this.shRangeMin, 'vec3');
-    this.shRangeMaxNode = uniformArray(this.shRangeMax, 'vec3');
+    this.tables = new PooledSourceTables(PooledSourceTables.capacityFor(1, maxSources));
     this.splatIndexAttribute = splatIndexAttribute;
     this.sourceIdAttribute = sourceIdAttribute;
     this.sortScheduler = new WebGpuSortScheduler(
@@ -344,6 +340,70 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
   /** CPU timings of the last update. */
   get performanceTimings(): Readonly<PooledUnifiedPerformanceTimings> {
     return this.performanceTimingsValue;
+  }
+
+  /** The last {@link checkShaderBudget} report, or `null` before one ran. */
+  get shaderBudget(): Readonly<PooledShaderBudget> | null {
+    return this.shaderBudgetValue;
+  }
+
+  /** Increments on every material build; compare with {@link shaderBudget}. */
+  get shaderRevision(): number {
+    return this.materialRevision;
+  }
+
+  /**
+   * Sets the stack `source` draws through, evaluated in that source's local
+   * frame (pass the source mesh's own `modifiers`). Element-wise identical
+   * lists are a no-op; a change rebuilds the material on the next update.
+   * Uniform-only changes inside the modifiers never rebuild.
+   */
+  setSourceModifiers(source: SplatMesh, modifiers: readonly SplatModifier[]): void {
+    this.assertNotDisposed('setSourceModifiers');
+    const record = this.recordOf(source);
+    const current = record.modifiers;
+    if (
+      current.length === modifiers.length &&
+      current.every((modifier, i) => modifier === modifiers[i])
+    ) {
+      return;
+    }
+    record.modifiers = [...modifiers];
+    this.materialDirty = true;
+  }
+
+  /**
+   * Counts the uniform blocks and samplers the pooled vertex program binds on
+   * WebGL2 and compares them with the device's limits. Resolves `null` on a
+   * WebGPU backend (bind-group limits apply there instead). Compiles the
+   * current material if needed, so call it after a structural change rather
+   * than every frame; {@link shaderBudget} keeps the last report.
+   */
+  async checkShaderBudget(camera: THREE.Camera): Promise<PooledShaderBudget | null> {
+    const backend = this.renderer.backend as {
+      isWebGPUBackend?: boolean;
+      gl?: WebGL2RenderingContext;
+    };
+    const gl = backend.gl;
+    if (backend.isWebGPUBackend === true || !gl || !this.materialBuilt) return null;
+    const revision = this.materialRevision;
+    const scene = new THREE.Scene();
+    const { vertexShader } = await this.renderer.debug.getShaderAsync(scene, camera, this);
+    const source = String(vertexShader);
+    const vertexUniformBlocks = (source.match(/layout\(\s*std140\s*\)\s*uniform/g) ?? []).length;
+    const vertexSamplers = (source.match(/uniform\s+(?:\w+\s+)?[iu]?sampler\w*/g) ?? []).length;
+    const maxVertexUniformBlocks = gl.getParameter(gl.MAX_VERTEX_UNIFORM_BLOCKS) as number;
+    const maxVertexSamplers = gl.getParameter(gl.MAX_VERTEX_TEXTURE_IMAGE_UNITS) as number;
+    const report: PooledShaderBudget = {
+      vertexUniformBlocks,
+      maxVertexUniformBlocks,
+      vertexSamplers,
+      maxVertexSamplers,
+      materialRevision: revision,
+      ok: vertexUniformBlocks <= maxVertexUniformBlocks && vertexSamplers <= maxVertexSamplers,
+    };
+    if (revision === this.materialRevision) this.shaderBudgetValue = report;
+    return report;
   }
 
   /**
@@ -479,12 +539,13 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
       lastMatrix: new THREE.Matrix4().copy(view.matrixWorld),
       capturedActiveListVersion: -1,
       capturedContentRevision: -1,
+      modifiers: [],
+      // Multiplier recovering alpha from the stored byte: `.rad` halves it.
+      alphaScale: view.lodAlpha ? 2 : 1,
     };
     this.sources.push(record);
-    this.matrices.set(id, view.matrixWorld);
-    // Multiplier recovering alpha from the stored byte: `.rad` halves it.
-    this.lodAlphaTable[id] = view.lodAlpha ? 2 : 1;
-    this.opacityTable[id] = 0;
+    this.tables.setMatrix(id, view.matrixWorld);
+    this.tables.setParams(id, 0, record.alphaScale);
     this.writeShRange(record, view);
     source.visible = false;
     source.setUnifiedPickVisibility(visible);
@@ -508,6 +569,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     const [record] = this.sources.splice(index, 1);
     if (!record) return false;
     this.detachRecord(record);
+    if (record.modifiers.length > 0) this.materialDirty = true;
     this.noteMembershipChange();
     if (this.sources.length === 0) this.settings = null;
     return true;
@@ -559,12 +621,12 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
       record.view = view;
       if (!record.lastMatrix.equals(view.matrixWorld)) {
         record.lastMatrix.copy(view.matrixWorld);
-        this.matrices.set(record.id, view.matrixWorld);
+        this.tables.setMatrix(record.id, view.matrixWorld);
         contentChanged = true;
       }
       this.writeShRange(record, view);
       const drawn = record.visible && record.opacity > 0 && view.activeCount > 0;
-      this.opacityTable[record.id] = drawn ? record.opacity * view.revealMultiplier : 0;
+      this.tables.setOpacity(record.id, drawn ? record.opacity * view.revealMultiplier : 0);
       const changed =
         view.activeListVersion !== record.capturedActiveListVersion ||
         view.contentRevision !== record.capturedContentRevision;
@@ -584,8 +646,13 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
         this.bounds.union(view.worldBounds);
       }
     }
-    for (const id of this.quarantinedIds) this.opacityTable[id] = 0;
-    if (this.materialBuilt && this.builtShBands !== this.pool.packedShBands) this.rebuildMaterial();
+    for (const id of this.quarantinedIds) this.tables.setOpacity(id, 0);
+    if (
+      this.materialBuilt &&
+      (this.materialDirty || this.builtShBands !== this.pool.packedShBands)
+    ) {
+      this.rebuildMaterial();
+    }
 
     if (this.pending !== null) this.publishPending(renderer);
 
@@ -598,6 +665,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     if (xrView) _viewSize.set(xrView.width, xrView.height);
     else renderer.getDrawingBufferSize(_viewSize);
     this.writeViewUniforms(projectionCamera, _viewSize.x, _viewSize.y, sortCamera);
+    this.writeSourceCameras(sortCamera);
 
     const sortStartedAt = performance.now();
     if (contentChanged) this.sortScheduler.invalidateContent();
@@ -634,6 +702,10 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
       renderer.getDrawingBufferSize(_viewSize);
       this.writeViewUniforms(camera, _viewSize.x, _viewSize.y);
     }
+    // Source stacks read the camera in each source's frame; the primary
+    // values come back with the rest of the view uniforms below.
+    const sourceCameras = this.tables.snapshotCameraLocal();
+    this.writeSourceCameras(camera);
     const previousTarget = renderer.getRenderTarget();
     const wasVisible = this.visible;
     try {
@@ -644,6 +716,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
       this.visible = wasVisible;
       renderer.setRenderTarget(previousTarget);
       restore();
+      this.tables.restoreCameraLocal(sourceCameras);
     }
     return true;
   }
@@ -773,14 +846,32 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     if (this.nextId >= this.maxSources) {
       throw new Error(`PooledUnifiedSplatMesh: source limit reached (${this.maxSources}).`);
     }
-    return this.nextId++;
+    const id = this.nextId++;
+    if (id >= this.tables.capacity) {
+      // Tables are sized to the live count; growing replaces the uniform
+      // arrays, so the material binds the new ones on its next build.
+      this.tables = PooledSourceTables.grownFrom(
+        this.tables,
+        PooledSourceTables.capacityFor(id + 1, this.maxSources),
+      );
+      this.materialDirty = true;
+    }
+    return id;
+  }
+
+  /** Camera position in every source's local frame, for source stacks. */
+  private writeSourceCameras(camera: THREE.Camera): void {
+    camera.getWorldPosition(_cameraWorld);
+    for (const record of this.sources) {
+      this.tables.setCameraLocal(record.id, _cameraWorld, record.lastMatrix);
+    }
   }
 
   private detachRecord(record: SourceRecord): void {
     record.publication.release();
     record.source.visible = record.originalVisible;
     record.source.setUnifiedPickVisibility(null);
-    this.opacityTable[record.id] = 0;
+    this.tables.setOpacity(record.id, 0);
     // The installed order may still name this id; keep it out of reuse until
     // the next publication replaces that order.
     this.quarantinedIds.push(record.id);
@@ -825,11 +916,9 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     // contributes no SH term (sources without packed SH in an SH pool).
     const sh = view.sh;
     if (sh !== null && sh.mode === 'packed') {
-      this.shRangeMin[record.id]?.copy(sh.range.min.value);
-      this.shRangeMax[record.id]?.copy(sh.range.max.value);
+      this.tables.setShRange(record.id, sh.range.min.value, sh.range.max.value);
     } else {
-      this.shRangeMin[record.id]?.set(0, 0, 0);
-      this.shRangeMax[record.id]?.set(0, 0, 0);
+      this.tables.setShRange(record.id, null, null);
     }
   }
 
@@ -904,7 +993,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     sorter.sort(
       capture.requestId,
       modelView,
-      this.matrices.matrices,
+      this.tables.matrices,
       this.bounds,
       cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
       capture.list,
@@ -1086,7 +1175,16 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     // Per-source terms, all keyed by the instance's source id and built here
     // so the shared material graph only needs its generic hooks.
     const sourceId = asNode<'int'>(attribute<'float'>(SOURCE_ID_ATTRIBUTE, 'float').toInt());
-    const opacity = asNode<'float'>(this.opacityNode.element(sourceId));
+    const tables = this.tables;
+    const dataBase = sourceId.mul(SOURCE_DATA_ROWS);
+    const dataRow = (row: number) => asNode<'vec4'>(tables.dataNode.element(dataBase.add(row)));
+    const opacity = asNode<'float'>(dataRow(ROW_PARAMS).x);
+    const sourceStacks = createSourceStacksModifier({
+      groups: groupSourceStacks(this.sources),
+      sourceId,
+      columns: tables.columnsNode,
+      data: tables.dataNode,
+    });
     // Whole-source opacity, last in the stack (as the compute path applies it
     // after each source's own effects); `<= 0` drops the splat outright.
     const sourceOpacity: SplatModifier = (ctx) => ({
@@ -1100,8 +1198,8 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
             bands: this.pool.packedShBands,
             textures: this.pool.shPackedTextures,
             range: {
-              min: this.shRangeMinNode.element(sourceId) as unknown as Vec3Uniform,
-              max: this.shRangeMaxNode.element(sourceId) as unknown as Vec3Uniform,
+              min: asNode<'vec3'>(dataRow(ROW_SH_MIN).xyz) as unknown as Vec3Uniform,
+              max: asNode<'vec3'>(dataRow(ROW_SH_MAX).xyz) as unknown as Vec3Uniform,
             },
           }
         : null;
@@ -1113,8 +1211,8 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
         covarianceBTexture: this.pool.covarianceBTexture,
       },
       sh,
-      sourcePlacement: { sourceId, columns: this.matrices.node },
-      lodAlphaScale: asNode<'float'>(this.lodAlphaNode.element(sourceId)),
+      sourcePlacement: { sourceId, columns: tables.columnsNode },
+      lodAlphaScale: asNode<'float'>(dataRow(ROW_PARAMS).y),
       displayColorModifier: this.displayColorModifierValue,
       uniforms: {
         focal: this.focal,
@@ -1149,11 +1247,15 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
         lodAlpha: true,
       },
       channels: new Map(),
-      modifiers: [...this.modifierList, sourceOpacity],
+      // Source stacks first (each in its source's frame, as the compute path
+      // gathers them), then the mesh's own drawn-frame stack, then opacity.
+      modifiers: [...(sourceStacks ? [sourceStacks] : []), ...this.modifierList, sourceOpacity],
     };
     applySplatMaterialGraph(this.material as THREE.NodeMaterial, 'display', inputs);
     (this.material as THREE.Material).needsUpdate = true;
     this.materialBuilt = true;
+    this.materialDirty = false;
+    this.materialRevision++;
     this.builtShBands = this.pool.packedShBands;
   }
 }

@@ -56,9 +56,10 @@ const BUDGET_GZIP_BYTES = {
  * graph is therefore core plus its own chunks, and only the latter is its cost.
  */
 const OWN_BUDGET_GZIP_BYTES = {
-  // 10,184 B measured (pooled draw + its inlined sort worker) × 1.15, rounded
-  // to 1 kB.
-  './unified/pooled': 12_000,
+  // 13,617 B measured (pooled draw, its inlined sort worker, and per-source
+  // modifier stacks with their packed tables and WebGL2 budget check) × 1.15,
+  // rounded to 1 kB. Only WebGL2 hosts load this entry.
+  './unified/pooled': 16_000,
 };
 
 const COMPOSED_BUDGET_GZIP_BYTES = {

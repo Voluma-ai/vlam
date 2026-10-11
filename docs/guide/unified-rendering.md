@@ -66,11 +66,20 @@ known take that main's SH request instead of downgrading it.
 
 What differs:
 
-- **One modifier stack.** The pooled mesh evaluates its own `modifiers` list
-  for every splat; registered sources' stacks are not folded. Give it the
-  main's stack (`unified.modifiers = main.modifiers`) and drive whole-source
-  fades through `setSourceOpacity`. Modifiers that read per-splat channels
-  cannot build on it.
+- **Stacks are handed over explicitly.** Call
+  `unified.setSourceModifiers(source, source.modifiers)` for each source (every
+  frame is fine: an element-wise identical list is a no-op). Each stack runs in
+  its source's local frame, as the compute gather runs it, behind a branch on
+  the splat's source id, so a splat pays only for its own source's effects. The
+  pooled mesh's own `modifiers` then run on every splat in world space. Drive
+  whole-source fades through `setSourceOpacity`, not an opacity modifier.
+  Modifiers that read per-splat channels cannot build on it.
+- **Mind WebGL2's uniform blocks.** Three emits each `uniformArray` as its own
+  block and a vertex stage may bind as few as 12; many per-source effects
+  should keep their rows in one shared data texture. After a structural change,
+  `await unified.checkShaderBudget(camera)` compares the program's blocks and
+  samplers with the device limits; fall back to standalone draws when it
+  reports `ok: false`, since an over-budget program draws nothing.
 - **Publication is asynchronous.** Like a standalone WebGL2 mesh, a changed
   stream or camera waits one worker round trip; the previous complete frame
   stays up meanwhile. `renderView` draws a secondary view through the primary

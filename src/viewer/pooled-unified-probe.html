@@ -6,6 +6,7 @@
   <output data-testid="result"></output>
   <script type="module">
     import * as THREE from 'three/webgpu';
+    import { vec3, vec4 } from 'three/tsl';
     import { createWebGPURenderer, SplatMesh, SplatPool } from '../lib/core';
     import { PooledUnifiedSplatMesh } from '../lib/unified/pooled';
 
@@ -99,6 +100,33 @@
     blue.updateMatrixWorld();
     const moved = await sample(3, (SIZE >> 1) + 7);
     const movedCenter = await sample(3);
+    // A source-frame stack on blue only: green within 0.3 of blue's own local
+    // origin. It must follow blue to its moved placement and leave red alone.
+    // Both sources carry stacks that read the same derived inputs (normal,
+    // world center): a shared node emitted inside one source's branch must
+    // not leave the other source reading it uninitialized.
+    const neutral = (ctx) => ({
+      color: vec4(
+        ctx.color.rgb.add(ctx.normal.mul(0)).add(ctx.worldCenter.mul(0)),
+        ctx.color.a,
+      ),
+    });
+    pooled.setSourceModifiers(red, [neutral]);
+    pooled.setSourceModifiers(blue, [
+      neutral,
+      (ctx) => ({
+        color: vec4(
+          ctx.localCenter.length().lessThan(0.3).select(vec3(0, 1, 0), ctx.color.rgb),
+          ctx.color.a,
+        ),
+      }),
+    ]);
+    const stackMoved = await sample(3, (SIZE >> 1) + 7);
+    const stackRedCenter = await sample(3, (SIZE >> 1) - 4);
+    const budget = await pooled.checkShaderBudget(camera);
+    pooled.setSourceModifiers(blue, []);
+    pooled.setSourceModifiers(red, []);
+    const stackCleared = await sample(3, (SIZE >> 1) + 7);
     blue.position.x = 0;
     pooled.setSourceOpacity(blue, 0);
     const blueFaded = await sample(3);
@@ -115,6 +143,10 @@
       blueHidden,
       moved,
       movedCenter,
+      stackMoved,
+      stackRedCenter,
+      stackCleared,
+      budget,
       blueFaded,
       blueRemoved,
       blueStandaloneAgain: blue.visible === true,
