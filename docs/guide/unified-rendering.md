@@ -24,7 +24,81 @@ if (!supportsUnifiedSplatMesh(renderer)) {
 ```
 
 On WebGL2, standalone meshes remain first-class; for several fully loaded
-clouds there, `MergedSplatMesh` inter-sorts them in one shared pool.
+clouds there, `MergedSplatMesh` inter-sorts them in one shared pool, and for a
+streamed scene plus other meshes the pooled draw below does.
+
+## WebGL2: the pooled unified draw
+
+> **Experimental.** `@voluma/vlam/unified/pooled` is outside the v1.0
+> compatibility guarantee and may change in a minor release.
+
+`PooledUnifiedSplatMesh` (`@voluma/vlam/unified/pooled`, a separate entry so a
+WebGPU host never loads it) gives WebGL2 the same global order without compute
+passes. The trade: every source must draw from **one** `SplatPool` that the
+host allocates up front, because a single draw can only index one set of pool
+textures. The sources' exact active lists are concatenated into one worker
+sort keyed by each source's world matrix, and the resulting order feeds the
+draw's `splatIndex` / `sourceId` instance attributes - nothing is gathered or
+copied.
+
+```ts
+import { SplatPool } from '@voluma/vlam';
+import { supportsUnifiedSplatMesh } from '@voluma/vlam/unified';
+
+const pool = new SplatPool({ capacity: 6_000_000, allowLatePackedSh: true });
+const main = await StreamedSplatMesh.load('/city/lod-meta.json', { pool, budget: 4_000_000 });
+const statue = new SplatMesh(await loadSplatData('/statue.sog'), { pool });
+
+if (!supportsUnifiedSplatMesh(renderer)) {
+  const { PooledUnifiedSplatMesh } = await import('@voluma/vlam/unified/pooled');
+  const unified = new PooledUnifiedSplatMesh(renderer, pool, { sortMetric: 'depth' });
+  unified.addSource(main);
+  unified.addSource(statue, { opacity: 0.8 });
+  scene.add(unified); // each frame: unified.update(camera)
+}
+```
+
+What carries over from the compute path: `addSource` / `removeSource`,
+`setSourceVisible`, `setSourceOpacity`, `update`, `pick`, `setDepthOfField`,
+`displayColorModifier`, `getDrawPublicationSnapshot`, and the same
+compatibility rules (`srgbOutput`, `maxStdDev`, `antialias`, the projected
+filter profile and the contribution culls must agree). Per-source placement,
+LOD alpha (`.rad` next to plain sources) and packed-SH range are applied per
+source. `allowLatePackedSh` lets a pool created before the main's manifest is
+known take that main's SH request instead of downgrading it.
+
+What differs:
+
+- **Stacks are handed over explicitly.** Call
+  `unified.setSourceModifiers(source, source.modifiers)` for each source (every
+  frame is fine: an element-wise identical list is a no-op). Each stack runs in
+  its source's local frame, as the compute gather runs it, behind a branch on
+  the splat's source id, so a splat pays only for its own source's effects. The
+  pooled mesh's own `modifiers` then run on every splat in world space. Drive
+  whole-source fades through `setSourceOpacity`, not an opacity modifier.
+  Modifiers that read per-splat channels cannot build on it.
+- **Mind WebGL2's uniform blocks.** Three emits each `uniformArray` as its own
+  block and a vertex stage may bind as few as 12; many per-source effects
+  should keep their rows in one shared data texture. After a structural change,
+  `await unified.checkShaderBudget(camera)` compares the program's blocks and
+  samplers with the device limits. An over-budget program draws nothing, so on
+  `ok: false` hand every source an empty stack (`setSourceModifiers(source,
+  [])`): the scene keeps its one global order and loses only the per-source
+  effects. Falling back to separate draws instead would bring back the very
+  artifact this mesh exists to remove.
+- **Publication is asynchronous.** Like a standalone WebGL2 mesh, a changed
+  stream or camera waits one worker round trip; the previous complete frame
+  stays up meanwhile. `renderView` draws a secondary view through the primary
+  order rather than re-sorting.
+- **Capacity is the pool.** Nothing is ever dropped; size the pool for the
+  main's staged-swap headroom plus every marker.
+- **A source belongs to one pooled mesh at a time.** Two views that share a
+  camera (split panes) therefore do not get a mesh each: keep `setSourceVisible`
+  at the union of both views, call `update` once per frame, and flip
+  `unified.setSourceDrawMask(source, drawn)` before each view's draw. The mask
+  is one uniform write that leaves the installed order and any in-flight sort
+  alone, and a sorted list restricted to a subset stays sorted. On WebGPU
+  prefer `UnifiedSplatMesh`.
 
 ## Creating and registering sources
 

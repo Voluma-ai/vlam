@@ -7,6 +7,7 @@
     "../src/lib/relighting/index.ts",
     "../src/lib/streaming/index.ts",
     "../src/lib/unified/index.ts",
+    "../src/lib/unified/pooled/index.ts",
     "../src/lib/sorting/radix/index.ts",
     "../src/lib/projection/compute/index.ts",
     "../src/lib/selection/index.ts",

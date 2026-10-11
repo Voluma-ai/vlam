@@ -35,8 +35,8 @@ See [Get started](/get-started) for install and a minimal three.js example.
 Yes. From v1.0.0 the public API follows semantic versioning: breaking changes
 only land in a major version and come with a [migration guide](/migration).
 Anything marked `@experimental` in the API reference (the `static-lod`,
-`sorting/radix` and `projection/compute` entries, `MergedSplatMesh` and the
-flagged mesh options) and the diagnostic surfaces (streaming performance
+`sorting/radix`, `projection/compute` and `unified/pooled` entries,
+`MergedSplatMesh` and the flagged mesh and pool options) and the diagnostic surfaces (streaming performance
 events, console traces, fallback reason strings) are outside that guarantee
 and may change in a minor release.
 

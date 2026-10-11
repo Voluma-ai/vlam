@@ -1,6 +1,6 @@
 # Migrating to VLAM! 1.0
 
-`1.0.0` is code-identical to `0.14.0`: a project on the latest 0.x release
+`1.0.0` is code-identical to `0.15.0`: a project on the latest 0.x release
 needs no changes. Earlier 0.x projects apply the sections below, newest first;
 start from the first section after your current version and work upward.
 From `1.0.0` the public API follows semantic versioning, so breaking changes

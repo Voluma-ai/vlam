@@ -146,21 +146,18 @@ selection features until their benefits are measured and visually validated.
   **Acceptance:** same-camera reference captures outside and inside scene
   bounds, correct projected size and picked positions, and perspective
   non-regression on WebGPU, WebGL2, and unified rendering.
-- **WebGL2 unified rendering with streamed sources** — `UnifiedSplatMesh` is
-  WebGPU-only, and the WebGL2 fallback `MergedSplatMesh` only takes fully
-  loaded `SplatData`, so on WebGL2 a streamed scene and any added splat mesh
-  draw as separate transparent meshes that never inter-sort: whichever draws
-  last paints wholesale over the other. The demo's `?logo=full` fire sidesteps
-  this on both backends by drawing after the scene with per-splat occlusion
-  against the collision proxy's depth, which only works for captures that have
-  a proxy and for an emissive source that may ignore the scene's own
-  modifiers. Prototype a CPU path that gathers the streamed mesh's resident
-  cut plus static sources into one worker sort and one draw, publishing the
-  sources' pool rows and the combined order together (the worker snapshot
-  boundary in `SplatMesh` generalized across sources). **Acceptance:** correct
-  occlusion both ways between a streamed scene and a static source from every
-  side on WebGL2, with the worker sort cost and frame-time tails measured on
-  WebGL2-class devices, and no change to the WebGPU unified path.
+- **WebGL2 unified rendering with streamed sources** — shipped as
+  `PooledUnifiedSplatMesh` (`@voluma/vlam/unified/pooled`): every source
+  shares one `SplatPool`, their exact active lists go through one worker sort
+  keyed by each source's world matrix, and one draw reads the pool rows via
+  `splatIndex` / `sourceId` attributes; rows and order publish together. The
+  forced-WebGL2 browser check covers occlusion both ways, hide / fade / move /
+  remove, and the WebGPU compute path is untouched. Per-source modifier stacks
+  run branched in each source's frame. **Open:** the demo's `?logo=full` on
+  WebGL2; worker sort cost and frame-time tails on WebGL2-class phones with a
+  multi-million-splat streamed main; and evaluating stacks once per splat
+  instead of once per quad corner (a Spark-style generate pass), which only
+  matters when a source with millions of splats carries a heavy stack.
 - **Pixel-budgeted SD for laptop-class GPUs (MacBook Air)** — SD caps the
   render scale at 1 device pixel per CSS pixel with an adaptive floor of 0.8,
   so it scales with the window, not the GPU: the Tempel fog demo in SD draws a

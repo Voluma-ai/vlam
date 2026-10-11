@@ -379,6 +379,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private publishedActiveCount = 0;
   /** WebGL2 and explicit WebGPU worker sorts publish texture rows and order together. */
   private workerPublicationEnabled = false;
+  /** Pooled unified owner, if any. */
+  private pooledOwner: object | null = null;
   private workerPublicationGeneration = 0;
   private workerSnapshotInFlight: WorkerPublicationSnapshot | null = null;
   private workerPublicationPending: {
@@ -774,10 +776,15 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // important than retaining higher-order SH for one tenant. The mesh keeps
     // its own effective count so it never reads or writes the pool's SH
     // textures when its request is incompatible.
+    // A pool built with `allowLatePackedSh` takes the first SH request instead.
     const shMismatch =
       suppliedPool !== undefined &&
       packedShBands !== 0 &&
-      packedShBands !== suppliedPool.packedShBands;
+      packedShBands !== suppliedPool.packedShBands &&
+      !suppliedPool.allocatePackedSh(
+        packedShBands,
+        Math.ceil(shCoefficientCount(packedShBands) / 4),
+      );
     const effectivePackedShBands = shMismatch ? 0 : packedShBands;
     if (shMismatch) {
       const internalOptions = options as SplatMeshOptions & {
@@ -928,11 +935,12 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
     if (isStatic) {
       this.staticRange = this.appendRangeWithState(source, true);
-      // Constructor-time writes are covered by the textures' initial
-      // `needsUpdate` upload - the GPU cannot have seen them earlier. Any
-      // append after construction must go through the staging-copy path,
-      // because the backend may already have uploaded the textures by then.
-      this.pendingUploadRows = [];
+      // Constructor-time writes into this mesh's own pool are covered by the
+      // textures' initial `needsUpdate` upload - the GPU cannot have seen them
+      // earlier. A supplied (shared) pool may already be on the GPU, so its
+      // rows stay pending and reach it through the staging-copy path like any
+      // post-construction append.
+      if (ownsPool) this.pendingUploadRows = [];
       // Float16 GPU images are separate from the float32 backing: pack the
       // constructor write into the texture image before the initial upload.
       if (this.poolFloatTextures === 'float16') this.syncHalfFloatPoolImages();
@@ -1579,6 +1587,44 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     return true;
   }
 
+  /** @internal Hands the worker publication to `unified/pooled`. */
+  adoptPooledPublication(owner: object): PooledPublication {
+    // The owner captures this mesh's pending rows (without indices: it reads
+    // the live list itself), queues or restores them around its combined
+    // worker sort, and publishes them in the frame it installs that order.
+    if (this.pooledOwner && this.pooledOwner !== owner) {
+      throw new Error('SplatMesh: already drawn by another pooled unified mesh.');
+    }
+    this.pooledOwner = owner;
+    this.invalidateWorkerPublications();
+    this.enableWorkerPublicationBoundary();
+    return {
+      capture: () => this.captureWorkerPublication(false),
+      queue: (id) => {
+        this.queueWorkerPublication(id, EMPTY_INDICES);
+        return this.workerPublicationPending?.snapshot.generation === id;
+      },
+      restore: (id) => this.restoreWorkerPublication(id),
+      discard: () => this.invalidateWorkerPublications(),
+      publish: (renderer) => {
+        const pending = this.workerPublicationPending !== null;
+        this.prepareWorkerPublication(renderer, true);
+        // The owner draws these rows; this mesh's own list stays empty.
+        (this.geometry as THREE.InstancedBufferGeometry).instanceCount = 0;
+        return pending;
+      },
+      release: () => {
+        if (this.pooledOwner !== owner) return;
+        this.pooledOwner = null;
+        this.invalidateWorkerPublications();
+        this.publishedActiveCount = 0;
+        (this.geometry as THREE.InstancedBufferGeometry).instanceCount = 0;
+        this.sortedActiveListVersion = -1;
+        this.invalidateSort();
+      },
+    };
+  }
+
   /** Called when a matching order has been installed and is ready to draw. */
   protected onActiveListReady(_activeListVersion: number): void {}
 
@@ -2175,7 +2221,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (this.disposed) return;
     this.bindRenderingOnlyRenderer(renderer, 'update');
     this.lastRenderer = renderer;
-    if (options.sort === false && this.unifiedPickVisibility !== null) {
+    if (this.pooledOwner) {
+      this.enableWorkerPublicationBoundary();
+    } else if (options.sort === false && this.unifiedPickVisibility !== null) {
       // A registered unified source is gathered through its textures and the
       // unified renderer owns ordering. XR can also skip a standalone sort;
       // that must keep its existing worker publication boundary intact.
@@ -2205,6 +2253,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.sortSubmissionMarkedFrame = -1;
     if (
       this.workerPublicationEnabled &&
+      !this.pooledOwner &&
       this.activeCount === 0 &&
       !this.workerSnapshotInFlight &&
       !this.workerPublicationPending
@@ -2998,6 +3047,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.pooledOwner = null;
     this.invalidateWorkerPublications(false);
     super.dispose();
     if (this.shCacheRenderer) this.shCache?.dispose(this.shCacheRenderer);
@@ -3203,13 +3253,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * scenes (the historical streamed WebGL flash). This is deliberately not
    * folded into `flushPendingUploads` as a performance shortcut.
    */
-  private prepareWorkerPublication(renderer: THREE.WebGPURenderer): void {
+  private prepareWorkerPublication(renderer: THREE.WebGPURenderer, byOwner = false): void {
     if (!this.workerPublicationEnabled) {
       this.flushPendingUploads(renderer);
       return;
     }
     const publication = this.workerPublicationPending;
-    if (!publication) return;
+    // A pooled owner publishes in step with its combined order, never earlier.
+    if (!publication || (this.pooledOwner && !byOwner)) return;
     this.uploadCapturedPublication(renderer, publication.snapshot);
     // Rows land here, frames after the pool write that bumped
     // `contentRevision`. A SH cache refreshed in between read the old
@@ -3236,7 +3287,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * These copies are bounded by merged dirty rows, never a duplicate pool; they
    * must nevertheless remain immutable until the reply publishes.
    */
-  private captureWorkerPublication(): WorkerSortSnapshot | null {
+  private captureWorkerPublication(withIndices = true): WorkerSortSnapshot | null {
     if (this.workerSnapshotInFlight || this.workerPublicationPending) return null;
     const width = SplatMesh.DATA_TEXTURE_WIDTH;
     const coreRows = mergeUploadRows(this.pendingUploadRows).map((row) => {
@@ -3266,10 +3317,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       if (rows.length > 0) channels.set(name, rows);
     }
     const spans = this.currentWorkerSpans();
-    const activeIndices = (this.sourceIndexAttribute.array as Uint32Array).slice(
-      0,
-      this.activeCount,
-    );
+    const activeIndices = withIndices
+      ? (this.sourceIndexAttribute.array as Uint32Array).slice(0, this.activeCount)
+      : EMPTY_INDICES;
     const snapshot: WorkerPublicationSnapshot = {
       generation: ++this.workerPublicationGeneration,
       activeCount: this.activeCount,
@@ -4680,6 +4730,17 @@ export function getSplatPublicationToken(mesh: SplatMesh): number {
 }
 
 const _appendBox = new THREE.Box3();
+const EMPTY_INDICES = new Uint32Array(0);
+
+/** @internal What {@link SplatMesh.adoptPooledPublication} hands its owner. */
+export interface PooledPublication {
+  capture(): WorkerSortSnapshot | null;
+  queue(requestId: number): boolean;
+  restore(requestId: number): void;
+  discard(): void;
+  publish(renderer: THREE.WebGPURenderer): boolean;
+  release(): void;
+}
 const _uploadPosition = new THREE.Vector2();
 const _uploadSrcRegion = new THREE.Box2();
 const _queryLocal = new THREE.Vector3();

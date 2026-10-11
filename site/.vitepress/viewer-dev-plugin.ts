@@ -56,6 +56,7 @@ export function vlamPackageAliases(fromRoot: string) {
     { find: '@voluma/vlam/streaming', replacement: lib('streaming/index.ts') },
     { find: '@voluma/vlam/selection', replacement: lib('selection/index.ts') },
     { find: '@voluma/vlam/loaders', replacement: lib('loaders/index.ts') },
+    { find: '@voluma/vlam/unified/pooled', replacement: lib('unified/pooled/index.ts') },
     { find: '@voluma/vlam/unified', replacement: lib('unified/index.ts') },
     { find: '@voluma/vlam/effects', replacement: lib('effects/index.ts') },
     { find: '@voluma/vlam', replacement: lib('core/index.ts') },

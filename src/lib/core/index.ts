@@ -10,6 +10,7 @@
  *  - `@voluma/vlam/static-lod` - {@link StaticLodSplatMesh}
  *  - `@voluma/vlam/streaming` - {@link StreamedSplatMesh}, budget governors
  *  - `@voluma/vlam/unified` - {@link UnifiedSplatMesh}
+ *  - `@voluma/vlam/unified/pooled` - experimental WebGL2 pooled unified draw
  *  - `@voluma/vlam/sorting/radix` - experimental radixSort/exactSort strategies
  *  - `@voluma/vlam/projection/compute` - experimental computeProjection strategy
  *  - `@voluma/vlam/selection` - volume select and partition

@@ -19,8 +19,8 @@ Local site and generated API: `npm run dev` [http://localhost:5170](http://local
 [semantic versioning](https://semver.org/spec/v2.0.0.html): breaking changes
 only land in a major version and come with a [migration guide](site/migration.md).
 Anything marked `@experimental` in the API reference (the `static-lod`,
-`sorting/radix` and `projection/compute` entries, `MergedSplatMesh` and the
-flagged mesh options) and the diagnostic surfaces (streaming performance
+`sorting/radix`, `projection/compute` and `unified/pooled` entries,
+`MergedSplatMesh` and the flagged mesh and pool options) and the diagnostic surfaces (streaming performance
 events, console traces, fallback reason strings) are excluded and may change
 in a minor release.
 

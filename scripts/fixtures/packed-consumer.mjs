@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { SplatMesh, createWebGPURenderer } from '@voluma/vlam';
 import { loadSplatData } from '@voluma/vlam/loaders';
 import { UnifiedSplatMesh } from '@voluma/vlam/unified';
+import { PooledUnifiedSplatMesh } from '@voluma/vlam/unified/pooled';
 import { radixSort } from '@voluma/vlam/sorting/radix';
 import { computeProjection } from '@voluma/vlam/projection/compute';
 
@@ -9,6 +10,7 @@ assert.equal(typeof SplatMesh, 'function');
 assert.equal(typeof createWebGPURenderer, 'function');
 assert.equal(typeof loadSplatData, 'function');
 assert.equal(typeof UnifiedSplatMesh, 'function');
+assert.equal(typeof PooledUnifiedSplatMesh, 'function');
 assert.equal(typeof radixSort, 'function');
 assert.equal(typeof computeProjection, 'function');
 

@@ -16,6 +16,7 @@ import * as loaders from '../loaders';
 import * as staticLod from '../static-lod';
 import * as streaming from '../streaming';
 import * as unified from '../unified';
+import * as pooled from '../unified/pooled';
 import * as radixSorting from '../sorting/radix';
 import * as computeProjection from '../projection/compute';
 import * as selection from '../selection';
@@ -308,6 +309,10 @@ describe('public API surface (@voluma/vlam/unified)', () => {
     expectTypeOf<unified.UnifiedSplatMeshOptions>().toBeObject();
     expectTypeOf<unified.UnifiedSplatSourceOptions>().toBeObject();
     expectTypeOf<unified.UnifiedSplatPickResult['source']>().toEqualTypeOf<vlam.SplatMesh>();
+    expect(typeof pooled.PooledUnifiedSplatMesh).toBe('function');
+    expect(typeof pooled.supportsPooledUnifiedSplatMesh).toBe('function');
+    expectTypeOf<pooled.PooledUnifiedSplatMeshOptions>().toBeObject();
+    expectTypeOf<pooled.PooledUnifiedSourceOptions>().toBeObject();
     expect('UnifiedSplatRenderer' in unified).toBe(false);
     expect('supportsUnifiedSplatRenderer' in unified).toBe(false);
   });

@@ -10,9 +10,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 > _Changed_, and come with a note in the [migration guide](site/migration.md).
 > Anything marked `@experimental` in the API reference is outside that
 > guarantee and may change in a minor release: today the
-> `@voluma/vlam/static-lod`, `@voluma/vlam/sorting/radix` and
-> `@voluma/vlam/projection/compute` entries, `MergedSplatMesh`, and the
-> `SplatMeshOptions` fields flagged as such. Diagnostics are also outside it:
+> `@voluma/vlam/static-lod`, `@voluma/vlam/sorting/radix`,
+> `@voluma/vlam/projection/compute` and `@voluma/vlam/unified/pooled` entries,
+> `MergedSplatMesh`, and the `SplatMeshOptions` and `SplatPoolOptions` fields
+> flagged as such. Diagnostics are also outside it:
 > the `StreamedSplatPerformanceEvent` payload, the `[vlam:*]` console traces
 > and the SH / projection fallback reason strings.
 
@@ -23,22 +24,100 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-10-08
+## [1.0.0] - 2026-10-11
 
 ### Changed
 
-- **Stable release.** `1.0.0` is code-identical to `0.14.0` and starts the
+- **Stable release.** `1.0.0` is code-identical to `0.15.0` and starts the
   semantic-versioning contract: the public API of `@voluma/vlam` and its
   documented subpaths is frozen, breaking changes only land in a major release
   with a migration note, and the capability matrix in
   [`docs/capabilities.md`](docs/capabilities.md) records the validated devices.
   Anything marked `@experimental` in the API reference stays outside the
-  guarantee (the `static-lod`, `sorting/radix` and `projection/compute`
-  entries, `MergedSplatMesh`, and the flagged `SplatMeshOptions` fields), as
-  do diagnostics: the streaming performance-event payload, console traces and
-  fallback reason strings.
+  guarantee (the `static-lod`, `sorting/radix`, `projection/compute` and
+  `unified/pooled` entries, `MergedSplatMesh`, and the flagged
+  `SplatMeshOptions` and `SplatPoolOptions` fields, including
+  `allowLatePackedSh`), as do diagnostics: the streaming performance-event
+  payload, console traces and fallback reason strings.
+- The `unified/pooled` entry and `SplatPool`'s `allowLatePackedSh`, both new
+  in `0.15.0`, are marked `@experimental`; `SplatPool.allocatePackedSh`, only
+  called by `SplatMesh`, is `@internal`.
 - The pre-release notices are gone from the README, the FAQ, the site hero,
   the examples index and the generated API reference.
+
+## [0.15.0] - 2026-10-11
+
+### Added
+
+- `@voluma/vlam/unified/pooled`: `PooledUnifiedSplatMesh`, one CPU-sorted draw
+  over every splat source that shares a `SplatPool`, for WebGL2 hosts where
+  `UnifiedSplatMesh` (compute gather + GPU sort) is unavailable. The sources'
+  exact active lists are concatenated into one worker sort keyed by each
+  source's world matrix, and the result draws the pool rows directly through
+  `splatIndex` / `sourceId` instance attributes - no gather, no copy. A streamed
+  main and static or streamed markers now inter-sort on WebGL2 instead of the
+  later draw painting wholesale over the other. Publication keeps the worker
+  boundary: every source's pending rows upload together with the combined
+  order, so the previous complete frame stays visible meanwhile. Per-source
+  opacity, visibility, placement, LOD alpha (`.rad` beside plain sources) and
+  packed-SH range are honoured. Browser check
+  `pooled-unified.spec.ts` (both projects) verifies occlusion from either side,
+  hide / fade / move / remove. Gate with `supportsPooledUnifiedSplatMesh`.
+- Pooled draw: `setSourceDrawMask(source, drawn)`, a per-view draw mask that
+  is a uniform write only. Unlike `setSourceVisible` / `setSourceOpacity` it
+  never changes membership, so the installed order and an in-flight sort
+  survive; views that share a camera (split panes) keep one mesh sorted over
+  the union and flip the mask before each draw. Masked sources are not picked.
+- Pooled draw: per-source modifier stacks (`setSourceModifiers`), evaluated
+  in each source's local frame exactly as the compute path gathers them, so
+  marker SDF shapes, marker lights, main-splat shaders, reveals and fog draw on
+  WebGL2 as on WebGPU. Each distinct stack runs in a real branch on the
+  instance's source id: a splat pays for its own source's effects only (live
+  check, 8M LCC2 main plus one marker: the goose carrying 30 SDF suites cost
+  +0.8 ms of GPU time against +10.4 ms on the main). Shared inputs are
+  materialized before the branches; without that, three emitted them inside the
+  first branch and every other source read them uninitialized. Per-source
+  tables are packed into two uniform arrays sized to the live source count
+  (WebGL2 binds as few as 12 uniform blocks per vertex stage), and
+  `checkShaderBudget` reports the program's blocks and samplers against the
+  device limits so a host can fall back before a program fails to link.
+- Pooled draw frame cost: the order attributes use static usage (three
+  re-uploads a `DynamicDrawUsage` attribute's whole array every frame, ~36 ms
+  per frame on an 8M-splat pool), a camera-only re-sort of an unchanged scene
+  sends no index list (the pooled worker keeps the last transferred one),
+  per-sort source ids are one byte and transferred, and the worker answers
+  with a float order ready for the `splatIndex` attribute.
+  Measured on an 8M LCC2 main plus one marker under a scripted orbit, forced
+  WebGL2: frames over 33 ms went from every frame to 1 in 600, fewer than the
+  standalone WebGL2 draws of the same scene (7 in 550).
+- `SplatPool`: `allowLatePackedSh` lets a pool created with no packed SH take
+  the first tenant's SH request (`allocatePackedSh`), for a scene pool built
+  before the main capture's bands are known.
+
+### Changed
+
+- The pooled draw lives entirely behind `@voluma/vlam/unified/pooled`, with
+  its own inlined sort worker; a WebGPU host's core and unified bundles keep
+  main's chunk layout (+558 B gzip on core for the hooks below). The bundle
+  check gates the pooled entry on its own chunk beyond core (16 kB with the
+  source stacks) and fails
+  if pooled code reaches the core or `./unified` graphs.
+- Core hooks the pooled draw needs, dormant otherwise: one `@internal`
+  `SplatMesh.adoptPooledPublication` accessor over the existing worker
+  publication; `SplatSourcePlacement.sourceId` (a caller-built source id) and
+  `lodAlphaScale` (per-splat `.rad` alpha recovery) in the shared material
+  graph. Per-source opacity is a modifier and the SH range a node, both built
+  by the pooled module.
+- The CPU sort worker's radix pass moved to `core/sort-worker-kernel.ts`,
+  shared by the standalone and pooled workers; the standalone protocol is
+  unchanged.
+
+### Fixed
+
+- A fully loaded `SplatMesh` constructed into a shared pool that other
+  tenants had already uploaded never sent its constructor-time rows to the
+  GPU (it assumed the pool's initial upload would carry them). Those rows now
+  stay pending and upload through the staging path like any later append.
 
 ## [0.14.0] - 2026-10-08
 
