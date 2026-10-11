@@ -19,6 +19,60 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Added
+
+- `@voluma/vlam/unified/pooled`: `PooledUnifiedSplatMesh`, one CPU-sorted draw
+  over every splat source that shares a `SplatPool`, for WebGL2 hosts where
+  `UnifiedSplatMesh` (compute gather + GPU sort) is unavailable. The sources'
+  exact active lists are concatenated into one worker sort keyed by each
+  source's world matrix, and the result draws the pool rows directly through
+  `splatIndex` / `sourceId` instance attributes - no gather, no copy. A streamed
+  main and static or streamed markers now inter-sort on WebGL2 instead of the
+  later draw painting wholesale over the other. Publication keeps the worker
+  boundary: every source's pending rows upload together with the combined
+  order, so the previous complete frame stays visible meanwhile. Per-source
+  opacity, visibility, placement, LOD alpha (`.rad` beside plain sources) and
+  packed-SH range are honoured; the mesh carries one `modifiers` stack of its
+  own instead of folding each source's. Browser check
+  `pooled-unified.spec.ts` (both projects) verifies occlusion from either side,
+  hide / fade / move / remove. Gate with `supportsPooledUnifiedSplatMesh`.
+- Pooled draw frame cost: the order attributes use static usage (three
+  re-uploads a `DynamicDrawUsage` attribute's whole array every frame, ~36 ms
+  per frame on an 8M-splat pool), a camera-only re-sort of an unchanged scene
+  sends no index list (the pooled worker keeps the last transferred one),
+  per-sort source ids are one byte and transferred, and the worker answers
+  with a float order ready for the `splatIndex` attribute.
+  Measured on an 8M LCC2 main plus one marker under a scripted orbit, forced
+  WebGL2: frames over 33 ms went from every frame to 1 in 600, fewer than the
+  standalone WebGL2 draws of the same scene (7 in 550).
+- `SplatPool`: `allowLatePackedSh` lets a pool created with no packed SH take
+  the first tenant's SH request (`allocatePackedSh`), for a scene pool built
+  before the main capture's bands are known.
+
+### Changed
+
+- The pooled draw lives entirely behind `@voluma/vlam/unified/pooled`, with
+  its own inlined sort worker; a WebGPU host's core and unified bundles keep
+  main's chunk layout (+558 B gzip on core for the hooks below). The bundle
+  check gates the pooled entry on its own chunk beyond core (12 kB) and fails
+  if pooled code reaches the core or `./unified` graphs.
+- Core hooks the pooled draw needs, dormant otherwise: one `@internal`
+  `SplatMesh.adoptPooledPublication` accessor over the existing worker
+  publication; `SplatSourcePlacement.sourceId` (a caller-built source id) and
+  `lodAlphaScale` (per-splat `.rad` alpha recovery) in the shared material
+  graph. Per-source opacity is a modifier and the SH range a node, both built
+  by the pooled module.
+- The CPU sort worker's radix pass moved to `core/sort-worker-kernel.ts`,
+  shared by the standalone and pooled workers; the standalone protocol is
+  unchanged.
+
+### Fixed
+
+- A fully loaded `SplatMesh` constructed into a shared pool that other
+  tenants had already uploaded never sent its constructor-time rows to the
+  GPU (it assumed the pool's initial upload would carry them). Those rows now
+  stay pending and upload through the staging path like any later append.
+
 ## [0.14.0] - 2026-10-08
 
 ### Fixed

@@ -165,6 +165,12 @@ export interface SplatPoolOptions {
   floatTextures?: 'float32' | 'float16';
   /** Bands of per-splat (non-palette) SH to allocate for; 0 disables. */
   packedShBands?: 0 | 1 | 2 | 3;
+  /**
+   * With `packedShBands` 0, the first tenant that requests packed SH
+   * allocates the SH textures then ({@link SplatPool.allocatePackedSh}): for a
+   * scene pool created before its main capture's bands are known.
+   */
+  allowLatePackedSh?: boolean;
   /** Packed-SH coefficient count for `packedShBands`, supplied by the caller
    * so this module stays free of the SH packing tables. */
   packedShTextureCount?: number;
@@ -227,6 +233,7 @@ export class SplatPool {
   private activeSlotByPoolIndexValue: Uint32Array;
   private poolIndexTemplate: Uint32Array | null = null;
   private cpuMirrorsReleasedValue = false;
+  private lateShAllowed: boolean;
 
   constructor(options: SplatPoolOptions) {
     if (!(options.capacity > 0)) throw new Error('SplatPool capacity must be positive.');
@@ -235,6 +242,7 @@ export class SplatPool {
     const texelCount = this.width * this.rows;
     this.floatTextures = options.floatTextures === 'float16' ? 'float16' : 'float32';
     this.packedShBands = options.packedShBands ?? 0;
+    this.lateShAllowed = options.allowLatePackedSh === true && this.packedShBands === 0;
     const floatType = this.floatTextures === 'float16' ? THREE.HalfFloatType : THREE.FloatType;
 
     this.backing = {
@@ -277,6 +285,22 @@ export class SplatPool {
     this.freeRowSpans = [{ start: 0, count: this.rows }];
     this.activeSlotByPoolIndexValue = new Uint32Array(texelCount);
     this.activeSlotByPoolIndexValue.fill(0xffffffff);
+  }
+
+  /** Late packed SH (`allowLatePackedSh`); `true` when the pool holds `bands`. */
+  allocatePackedSh(bands: 1 | 2 | 3, textureCount: number): boolean {
+    // Rows already written keep neutral (zero) SH words.
+    if (this.packedShBands !== 0) return this.packedShBands === bands;
+    if (!this.lateShAllowed || this.cpuMirrorsReleasedValue) return false;
+    this.lateShAllowed = false;
+    const texels = this.width * this.rows * 4;
+    this.backing.shPacked = Array.from({ length: textureCount }, () => new Uint32Array(texels));
+    const self = this as { -readonly [K in keyof SplatPool]: SplatPool[K] };
+    self.shPackedTextures = this.backing.shPacked.map((data) =>
+      createIntegerDataTexture(data, this.width, this.rows),
+    );
+    self.packedShBands = bands;
+    return true;
   }
 
   /** Pool index → packed active-list slot. */

@@ -109,8 +109,10 @@ export interface SplatMaterialTextures {
  * the modifier stack) and the frame view-dependent SH is evaluated in.
  */
 export interface SplatSourcePlacement {
-  /** Pool-aligned source id channel. */
-  sourceIdTexture: THREE.DataTexture;
+  /** Pool-aligned source id channel; unused when {@link sourceId} is given. */
+  sourceIdTexture?: THREE.DataTexture;
+  /** Caller-built source id, e.g. a per-instance attribute (`unified/pooled`). */
+  sourceId?: THREE.Node<'int'>;
   /** Four column vectors per source world matrix. */
   columns: ReturnType<typeof uniformArray>;
 }
@@ -271,6 +273,11 @@ export interface SplatMaterialBuildInputs {
    * evaluated in the source's own frame.
    */
   sourcePlacement: SplatSourcePlacement | null;
+  /**
+   * Multiplier recovering `.rad` LOD alpha from the stored byte (default 2).
+   * A per-splat node lets one graph draw `.rad` and plain sources together.
+   */
+  lodAlphaScale?: THREE.Node<'float'>;
   /** Optional display-only RGB transform; omitted means no extra graph work. */
   displayColorModifier: DisplayColorModifier | null;
   /**
@@ -432,7 +439,8 @@ export function applySplatMaterialGraph(
   const placed = placement
     ? sourceWorldTransform(
         placement.columns,
-        asNode<'int'>(textureLoad(placement.sourceIdTexture, splatTexel).r.toInt()),
+        placement.sourceId ??
+          asNode<'int'>(textureLoad(placement.sourceIdTexture, splatTexel).r.toInt()),
         asNode<'vec3'>(poolCenter),
       )
     : null;
@@ -558,6 +566,7 @@ export function applySplatMaterialGraph(
   // computed in the vertex stage and used by both the quad extent and the
   // fragment falloff. Only present with `lodAlpha`, so other formats are byte-
   // identical.
+  const lodAlphaScale = inputs.lodAlphaScale ?? float(2);
   const vAdjustedStdDev = settings.lodAlpha
     ? varying(float(settings.maxStdDev), 'vAdjustedStdDev')
     : null;
@@ -584,7 +593,7 @@ export function applySplatMaterialGraph(
       opacityCompensation.assign(cachedParameters.x);
       if (vAdjustedStdDev && vAlpha2) {
         vAdjustedStdDev.assign(cachedParameters.y);
-        vAlpha2.assign(colorAfterSh.a.mul(2));
+        vAlpha2.assign(colorAfterSh.a.mul(lodAlphaScale));
         vVisualOpacity?.assign(float(1));
       }
       const pixelOffset = cachedAxes.xy
@@ -705,7 +714,7 @@ export function applySplatMaterialGraph(
       let stdDev: THREE.Node<'float'> = float(settings.maxStdDev);
       if (settings.lodAlpha && vAdjustedStdDev && vAlpha2) {
         const encodedOriginal = asNode<'float'>(colorAfterSh.a);
-        const alpha2 = asNode<'float'>(encodedOriginal.mul(2.0));
+        const alpha2 = asNode<'float'>(encodedOriginal.mul(lodAlphaScale));
         stdDev = radSplatStdDev(alpha2, float(settings.maxStdDev));
         vAdjustedStdDev.assign(stdDev);
         vAlpha2.assign(alpha2);
@@ -748,7 +757,7 @@ export function applySplatMaterialGraph(
       // Live DoF: drop splats whose faded peak is invisible (see
       // `SplatContributionDof`); a no-op branch while the aperture is 0.
       const dofVisible = isSplatContributionVisible(
-        asNode<'float'>(settings.lodAlpha ? stack.color.a.mul(2) : stack.color.a),
+        asNode<'float'>(settings.lodAlpha ? stack.color.a.mul(lodAlphaScale) : stack.color.a),
         majorAxis,
         minorAxis,
         0,

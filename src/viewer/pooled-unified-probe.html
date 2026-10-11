@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" />
+  <title>VLAM pooled unified probe</title>
+  <canvas id="canvas" width="64" height="64"></canvas>
+  <output data-testid="result"></output>
+  <script type="module">
+    import * as THREE from 'three/webgpu';
+    import { createWebGPURenderer, SplatMesh, SplatPool } from '../lib/core';
+    import { PooledUnifiedSplatMesh } from '../lib/unified/pooled';
+
+    // One static source and one dynamic-capacity source (the streamed stand-in:
+    // its rows are appended after construction, so they travel through the
+    // worker publication boundary) share a pool and draw through one pooled
+    // sort. Center-pixel samples from both sides tell whether the nearer
+    // source is composited in front, whichever source registered first.
+    const SIZE = 64;
+    const params = new URLSearchParams(location.search);
+    const requested = params.get('backend');
+    const output = document.querySelector('[data-testid="result"]');
+    const fail = (error) => {
+      output.textContent = JSON.stringify({ error: String(error?.stack ?? error) });
+    };
+    addEventListener('error', (event) => fail(event.error ?? event.message));
+    addEventListener('unhandledrejection', (event) => fail(event.reason));
+    if (requested !== 'webgpu' && requested !== 'webgl2') {
+      throw new Error(`Unknown backend: ${requested}`);
+    }
+
+    const renderer = await createWebGPURenderer({
+      canvas: document.querySelector('#canvas'),
+      antialias: false,
+      forceWebGL: requested === 'webgl2',
+      requireWebGpu: requested === 'webgpu',
+    });
+    renderer.setSize(SIZE, SIZE, false);
+    renderer.setClearColor(0x000000, 1);
+    await renderer.init();
+    const backend = renderer.backend.isWebGPUBackend ? 'webgpu' : 'webgl2';
+    if (backend !== requested) throw new Error(`Requested ${requested}, initialized ${backend}.`);
+
+    const splat = (color, z) => ({
+      count: 1,
+      positions: new Float32Array([0, 0, z]),
+      colors: new Uint8Array([...color, 255]),
+      covariances: new Float32Array([0.04, 0, 0, 0.04, 0, 0.04]),
+    });
+    const pool = new SplatPool({ capacity: 3 * 2048 });
+    // Registered first, drawn last on a naive per-mesh path: the far source.
+    const red = new SplatMesh(splat([255, 0, 0], 0), { pool });
+    red.position.z = 0.1;
+    const blue = new SplatMesh({ capacity: 2048 }, { pool });
+    blue.position.z = -0.1;
+    const scene = new THREE.Scene();
+    const pooled = new PooledUnifiedSplatMesh(renderer, pool);
+    pooled.addSource(red, { opacity: 0.6 });
+    pooled.addSource(blue, { opacity: 0.6 });
+    scene.add(pooled);
+    blue.appendRange(splat([0, 0, 255], 0));
+    const standaloneHidden = !red.visible && !blue.visible;
+
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 10);
+    const target = new THREE.RenderTarget(SIZE, SIZE, { type: THREE.UnsignedByteType });
+    const frame = () => {
+      pooled.update(camera);
+      renderer.setRenderTarget(target);
+      renderer.clear();
+      renderer.render(scene, camera);
+      renderer.setRenderTarget(null);
+    };
+    const settle = async () => {
+      // The worker order lands asynchronously; publish and draw until the
+      // installed order renders, then once more so uploads are presented.
+      const start = pooled.getDrawPublicationSnapshot().publicationRevision;
+      for (let i = 0; i < 120; i++) {
+        frame();
+        await new Promise((resolve) => setTimeout(resolve, 16));
+        const snapshot = pooled.getDrawPublicationSnapshot();
+        if (snapshot.ready && snapshot.publicationRevision > start) break;
+      }
+      frame();
+    };
+    const sample = async (z, x = SIZE >> 1, y = SIZE >> 1) => {
+      camera.position.set(0, 0, z);
+      camera.lookAt(0, 0, 0);
+      camera.updateMatrixWorld();
+      await settle();
+      const pixel = await renderer.readRenderTargetPixelsAsync(target, x, y, 1, 1);
+      return [pixel[0], pixel[1], pixel[2], pixel[3]];
+    };
+
+    const fromPositiveZ = await sample(3);
+    const positiveCount = pooled.getDrawPublicationSnapshot().instanceCount;
+    const fromNegativeZ = await sample(-3);
+    pooled.setSourceVisible(blue, false);
+    const blueHidden = await sample(3);
+    pooled.setSourceVisible(blue, true);
+    blue.position.x = 0.25;
+    blue.updateMatrixWorld();
+    const moved = await sample(3, (SIZE >> 1) + 7);
+    const movedCenter = await sample(3);
+    blue.position.x = 0;
+    pooled.setSourceOpacity(blue, 0);
+    const blueFaded = await sample(3);
+    pooled.setSourceOpacity(blue, 0.6);
+    pooled.removeSource(blue);
+    const blueRemoved = await sample(3);
+
+    output.textContent = JSON.stringify({
+      backend,
+      standaloneHidden,
+      positiveCount,
+      fromPositiveZ,
+      fromNegativeZ,
+      blueHidden,
+      moved,
+      movedCenter,
+      blueFaded,
+      blueRemoved,
+      blueStandaloneAgain: blue.visible === true,
+    });
+  </script>
+</html>

@@ -24,7 +24,61 @@ if (!supportsUnifiedSplatMesh(renderer)) {
 ```
 
 On WebGL2, standalone meshes remain first-class; for several fully loaded
-clouds there, `MergedSplatMesh` inter-sorts them in one shared pool.
+clouds there, `MergedSplatMesh` inter-sorts them in one shared pool, and for a
+streamed scene plus other meshes the pooled draw below does.
+
+## WebGL2: the pooled unified draw
+
+`PooledUnifiedSplatMesh` (`@voluma/vlam/unified/pooled`, a separate entry so a
+WebGPU host never loads it) gives WebGL2 the same global order without compute
+passes. The trade: every source must draw from **one** `SplatPool` that the
+host allocates up front, because a single draw can only index one set of pool
+textures. The sources' exact active lists are concatenated into one worker
+sort keyed by each source's world matrix, and the resulting order feeds the
+draw's `splatIndex` / `sourceId` instance attributes - nothing is gathered or
+copied.
+
+```ts
+import { SplatPool } from '@voluma/vlam';
+import { supportsUnifiedSplatMesh } from '@voluma/vlam/unified';
+
+const pool = new SplatPool({ capacity: 6_000_000, allowLatePackedSh: true });
+const main = await StreamedSplatMesh.load('/city/lod-meta.json', { pool, budget: 4_000_000 });
+const statue = new SplatMesh(await loadSplatData('/statue.sog'), { pool });
+
+if (!supportsUnifiedSplatMesh(renderer)) {
+  const { PooledUnifiedSplatMesh } = await import('@voluma/vlam/unified/pooled');
+  const unified = new PooledUnifiedSplatMesh(renderer, pool, { sortMetric: 'depth' });
+  unified.addSource(main);
+  unified.addSource(statue, { opacity: 0.8 });
+  scene.add(unified); // each frame: unified.update(camera)
+}
+```
+
+What carries over from the compute path: `addSource` / `removeSource`,
+`setSourceVisible`, `setSourceOpacity`, `update`, `pick`, `setDepthOfField`,
+`displayColorModifier`, `getDrawPublicationSnapshot`, and the same
+compatibility rules (`srgbOutput`, `maxStdDev`, `antialias`, the projected
+filter profile and the contribution culls must agree). Per-source placement,
+LOD alpha (`.rad` next to plain sources) and packed-SH range are applied per
+source. `allowLatePackedSh` lets a pool created before the main's manifest is
+known take that main's SH request instead of downgrading it.
+
+What differs:
+
+- **One modifier stack.** The pooled mesh evaluates its own `modifiers` list
+  for every splat; registered sources' stacks are not folded. Give it the
+  main's stack (`unified.modifiers = main.modifiers`) and drive whole-source
+  fades through `setSourceOpacity`. Modifiers that read per-splat channels
+  cannot build on it.
+- **Publication is asynchronous.** Like a standalone WebGL2 mesh, a changed
+  stream or camera waits one worker round trip; the previous complete frame
+  stays up meanwhile. `renderView` draws a secondary view through the primary
+  order rather than re-sorting.
+- **Capacity is the pool.** Nothing is ever dropped; size the pool for the
+  main's staged-swap headroom plus every marker.
+- A source may belong to one pooled mesh at a time; on WebGPU prefer
+  `UnifiedSplatMesh`.
 
 ## Creating and registering sources
 
