@@ -43,6 +43,8 @@ const BUDGET_GZIP_BYTES = {
   // Keep the existing unified ceiling: its post-split graph is 78,994 B and
   // must not be enlarged to hide a reintroduced optional implementation.
   './unified': 80_000,
+  // CPU-sorted pooled draw: no gather/compute code; keep it small and apart.
+  './unified/pooled': 24_000,
   // 17,944 B and 18,814 B measured respectively × 1.15, rounded to 1 kB.
   './sorting/radix': 21_000,
   './projection/compute': 22_000,
@@ -209,6 +211,13 @@ mustNotContain(
   'automatic compute projection policy belongs in /projection/compute',
 );
 mustNotContain('./unified', 'RadixSorter', 'radix sorting belongs in /sorting/radix');
+mustNotContain(
+  './unified',
+  'PooledUnifiedSplatMesh',
+  'the pooled CPU draw belongs in /unified/pooled',
+);
+mustNotContain('.', 'PooledUnifiedSplatMesh', 'the pooled CPU draw belongs in /unified/pooled');
+mustNotContain('./unified/pooled', 'WorkBufferGather', 'compute gather belongs in /unified');
 mustNotContain(
   './unified',
   'ProjectedSplatPipeline',

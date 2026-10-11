@@ -13,6 +13,8 @@ export interface WorkerSortSnapshot {
   readonly requestId: number;
   readonly spans: Uint32Array;
   readonly indices: Uint32Array;
+  /** Source id per entry of {@link indices} (pooled unified sorts only). */
+  readonly indexSources?: Float32Array;
   /** Center deltas captured with the snapshot, not live pool views. */
   readonly centerWrites: readonly {
     start: number;
@@ -104,6 +106,7 @@ export class WorkerSorter implements SplatSorter {
       modelView: new Float32Array(modelView.elements),
       spans,
       indices: snapshot?.indices,
+      ...(snapshot?.indexSources ? { indexSources: snapshot.indexSources } : {}),
       matrices: this.host.perSource ? new Float32Array(this.host.perSource.matrices) : undefined,
       sortRange: intersectSortRange(
         sceneSortRange(modelView, bounds, this.sortMetric),
@@ -147,7 +150,7 @@ export class WorkerSorter implements SplatSorter {
       );
       const start = row.start * width;
       const count = row.count * width;
-      const sourceIds = this.host.perSource?.sourceIds.slice(start, start + count);
+      const sourceIds = this.host.perSource?.sourceIds?.slice(start, start + count);
       const message: SortWorkerRequest = { type: 'write', start, centers, sourceIds };
       this.worker.postMessage(message, [centers.buffer]);
     }
@@ -181,7 +184,7 @@ export class WorkerSorter implements SplatSorter {
     // writing it would flag a post-dispose GPU upload on the dead draw list.
     if (this.disposed) return;
     if (this.host.onOrderReady) {
-      this.host.onOrderReady(message.requestId, order);
+      this.host.onOrderReady(message.requestId, order, message.orderSources);
       return;
     }
     // A reply computed against an outdated active set must not overwrite the
@@ -227,9 +230,12 @@ export interface WorkerSorterHost {
   readonly rowWidth: number;
   /** The pool's centers backing array (vec4 stride; xyz used). */
   readonly centers: Float32Array;
-  /** Source metadata for a unified pool; omitted for a normal mesh. */
+  /**
+   * Source metadata for a unified pool; omitted for a normal mesh. A pooled
+   * host that sends `indexSources` with every snapshot may omit `sourceIds`.
+   */
   readonly perSource?: {
-    readonly sourceIds: Float32Array;
+    readonly sourceIds?: Float32Array;
     readonly matrices: Float32Array;
   };
   readonly splatIndexAttribute: THREE.InstancedBufferAttribute;
@@ -247,8 +253,11 @@ export interface WorkerSorterHost {
    * resync - not patch - it on the next active-list mutation.
    */
   onOrderApplied?(): void;
-  /** Queues a completed immutable snapshot; the host publishes it before drawing. */
-  onOrderReady?(requestId: number, order: Uint32Array): void;
+  /**
+   * Queues a completed immutable snapshot; the host publishes it before drawing.
+   * `orderSources` echoes the snapshot's `indexSources` in draw order.
+   */
+  onOrderReady?(requestId: number, order: Uint32Array, orderSources?: Float32Array): void;
   /** Restores dirty coverage after an asynchronous worker failure. */
   onSortFailure?(requestId: number): void;
 }

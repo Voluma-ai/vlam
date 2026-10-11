@@ -109,10 +109,28 @@ export interface SplatMaterialTextures {
  * the modifier stack) and the frame view-dependent SH is evaluated in.
  */
 export interface SplatSourcePlacement {
-  /** Pool-aligned source id channel. */
-  sourceIdTexture: THREE.DataTexture;
+  /** Pool-aligned source id channel (`MergedSplatMesh`). One of the two id sources. */
+  sourceIdTexture?: THREE.DataTexture;
+  /**
+   * Name of a per-instance float attribute carrying the source id, written in
+   * draw order next to `splatIndex` (pooled unified draws).
+   */
+  sourceIdAttribute?: string;
   /** Four column vectors per source world matrix. */
   columns: ReturnType<typeof uniformArray>;
+  /**
+   * Per-source tables for a draw whose sources differ in more than placement
+   * (pooled unified draws). Each is a `uniformArray` indexed by source id.
+   */
+  perSource?: {
+    /** Display opacity multiplier; `<= 0` skips the source's splats. */
+    opacity: ReturnType<typeof uniformArray>;
+    /** `1` for a Spark LOD-alpha (`.rad`) source whose stored alpha is halved, else `0`. */
+    lodAlpha: ReturnType<typeof uniformArray>;
+    /** Packed-SH dequantization range (vec3); `min = max = 0` yields no SH term. */
+    shRangeMin: ReturnType<typeof uniformArray>;
+    shRangeMax: ReturnType<typeof uniformArray>;
+  };
 }
 
 /**
@@ -429,13 +447,40 @@ export function applySplatMaterialGraph(
   // overwrite the placement - the fold replaces those fields, it does not
   // accumulate them.
   const placement = inputs.sourcePlacement;
-  const placed = placement
-    ? sourceWorldTransform(
-        placement.columns,
-        asNode<'int'>(textureLoad(placement.sourceIdTexture, splatTexel).r.toInt()),
-        asNode<'vec3'>(poolCenter),
-      )
+  if (placement && !placement.sourceIdTexture && !placement.sourceIdAttribute) {
+    throw new Error('applySplatMaterialGraph: source placement needs a texture or attribute id.');
+  }
+  const sourceId = placement
+    ? placement.sourceIdTexture
+      ? asNode<'int'>(textureLoad(placement.sourceIdTexture, splatTexel).r.toInt())
+      : asNode<'int'>(attribute<'float'>(placement.sourceIdAttribute as string, 'float').toInt())
     : null;
+  const placed =
+    placement && sourceId
+      ? sourceWorldTransform(placement.columns, sourceId, asNode<'vec3'>(poolCenter))
+      : null;
+  // Per-source tables (pooled unified draws). Opacity reaches the fragment
+  // stage as a varying; LOD-alpha decides the stored-alpha scale per source so
+  // `.rad` and ordinary sources can share one graph with `settings.lodAlpha`.
+  const perSource = placement?.perSource ?? null;
+  const sourceOpacity =
+    perSource && sourceId ? varying(asNode<'float'>(perSource.opacity.element(sourceId))) : null;
+  const storedAlphaScale: THREE.Node<'float'> | null =
+    perSource && sourceId
+      ? asNode<'float'>(
+          asNode<'float'>(perSource.lodAlpha.element(sourceId)).greaterThan(0.5).select(2.0, 1.0),
+        )
+      : null;
+  const shWithSourceRange: SplatShInputs | null =
+    sh !== null && sh.mode === 'packed' && perSource && sourceId
+      ? {
+          ...sh,
+          range: {
+            min: asNode<'vec3'>(perSource.shRangeMin.element(sourceId)) as unknown as Vec3Uniform,
+            max: asNode<'vec3'>(perSource.shRangeMax.element(sourceId)) as unknown as Vec3Uniform,
+          },
+        }
+      : sh;
   /** Splat center in mesh-local space: the pool texel, or its placed position. */
   const localCenter = placed ? placed.worldCenter : asNode<'vec3'>(poolCenter);
   const projectedClip = inputs.projected
@@ -466,7 +511,7 @@ export function applySplatMaterialGraph(
               .mul(localCenter.sub(uniforms.localCameraPosition))
               .normalize();
           })();
-          return evaluateSplatSh(sh, textures, splatTexel, direction);
+          return evaluateSplatSh(shWithSourceRange ?? sh, textures, splatTexel, direction);
         })()
       : null;
   const shSum = uncachedShSum;
@@ -602,7 +647,9 @@ export function applySplatMaterialGraph(
     // the viewport before fetching/projecting covariance. The exact footprint
     // test below remains authoritative for centers inside this broad bound.
     const inFrustum = isSplatCenterInFrustum(clipCenter, uniforms.frustumMargin);
-    const isVisible = stack.visible === null ? inFrustum : inFrustum.and(stack.visible);
+    const stackVisible = stack.visible === null ? inFrustum : inFrustum.and(stack.visible);
+    const isVisible =
+      sourceOpacity === null ? stackVisible : stackVisible.and(sourceOpacity.greaterThan(0.0));
 
     If(isVisible, () => {
       if (viewDepthVarying) viewDepthVarying.assign(viewCenter.z.negate());
@@ -705,7 +752,7 @@ export function applySplatMaterialGraph(
       let stdDev: THREE.Node<'float'> = float(settings.maxStdDev);
       if (settings.lodAlpha && vAdjustedStdDev && vAlpha2) {
         const encodedOriginal = asNode<'float'>(colorAfterSh.a);
-        const alpha2 = asNode<'float'>(encodedOriginal.mul(2.0));
+        const alpha2 = asNode<'float'>(encodedOriginal.mul(storedAlphaScale ?? float(2.0)));
         stdDev = radSplatStdDev(alpha2, float(settings.maxStdDev));
         vAdjustedStdDev.assign(stdDev);
         vAlpha2.assign(alpha2);
@@ -748,7 +795,9 @@ export function applySplatMaterialGraph(
       // Live DoF: drop splats whose faded peak is invisible (see
       // `SplatContributionDof`); a no-op branch while the aperture is 0.
       const dofVisible = isSplatContributionVisible(
-        asNode<'float'>(settings.lodAlpha ? stack.color.a.mul(2) : stack.color.a),
+        asNode<'float'>(
+          settings.lodAlpha ? stack.color.a.mul(storedAlphaScale ?? float(2.0)) : stack.color.a,
+        ),
         majorAxis,
         minorAxis,
         0,
@@ -889,7 +938,11 @@ export function applySplatMaterialGraph(
         // True Gaussian falloff. |quadPosition| = 1 is `maxStdDev` σ from center.
         opacity = gaussianSplatOpacity(squaredDistance, gaussianExponent, splatColor.a);
       }
-      const alpha = opacity.mul(opacityCompensation).mul(revealMultiplier);
+      const alpha = (
+        sourceOpacity === null
+          ? opacity.mul(opacityCompensation).mul(revealMultiplier)
+          : opacity.mul(opacityCompensation).mul(revealMultiplier).mul(sourceOpacity)
+      ).toVar();
       // Custom fragmentNode bypasses Three's alpha test. Keep RAD culling
       // opt-in through the material's live threshold (zero by default).
       if (settings.lodAlpha) Discard(alpha.lessThan(materialAlphaTest));
@@ -932,7 +985,10 @@ export function applySplatMaterialGraph(
       } else {
         gaussian = gaussianSplatOpacity(squaredDistance, gaussianExponent, splatColor.a);
       }
-      const alpha = gaussian.mul(opacityCompensation).mul(revealMultiplier);
+      const alpha =
+        sourceOpacity === null
+          ? gaussian.mul(opacityCompensation).mul(revealMultiplier)
+          : gaussian.mul(opacityCompensation).mul(revealMultiplier).mul(sourceOpacity);
       Discard(alpha.lessThan(pick.alphaThreshold));
 
       // 24-bit normalized linear view depth → RGB; alpha marks a hit.

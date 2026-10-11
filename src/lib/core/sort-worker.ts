@@ -60,10 +60,11 @@ function sortByDepth(
   modelView: Float32Array,
   spans: Uint32Array,
   indices: Uint32Array | undefined,
+  indexSources: Float32Array | undefined,
   matrices: Float32Array | undefined,
   sortMetric: 'depth' | 'radial',
   sortRange: SplatSortRange | undefined,
-): Uint32Array {
+): { order: Uint32Array; orderSources: Float32Array | undefined } {
   // Depth needs row 2; radial distance uses all three camera-space rows.
   const m0 = modelView[0] as number;
   const m4 = modelView[4] as number;
@@ -99,7 +100,7 @@ function sortByDepth(
   for (let cursor = 0; cursor < activeCount; cursor++) {
     const i = poolIndexes[cursor] as number;
     const p = i * 4;
-    const source = sourceIds[i] as number;
+    const source = indexSources ? (indexSources[cursor] as number) : (sourceIds[i] as number);
     const matrix = matrices ? source * 16 : 0;
     const x = centers[p] as number;
     const y = centers[p + 1] as number;
@@ -186,7 +187,13 @@ function sortByDepth(
 
   const order = new Uint32Array(activeCount);
   for (let i = 0; i < activeCount; i++) order[i] = poolIndexes[src[i] as number] as number;
-  return order;
+  if (!indexSources) return { order, orderSources: undefined };
+  // The draw reads a source id per instance, so permute the request's ids
+  // alongside the pool indices rather than making the main thread look each
+  // one up again against a pool-sized table.
+  const orderSources = new Float32Array(activeCount);
+  for (let i = 0; i < activeCount; i++) orderSources[i] = indexSources[src[i] as number] as number;
+  return { order, orderSources };
 }
 
 self.onmessage = (event: MessageEvent<SortWorkerRequest>) => {
@@ -201,14 +208,20 @@ self.onmessage = (event: MessageEvent<SortWorkerRequest>) => {
     if (message.sourceIds) sourceIds.set(message.sourceIds, message.start);
     return;
   }
-  const order = sortByDepth(
+  const { order, orderSources } = sortByDepth(
     message.modelView,
     message.spans,
     message.indices,
+    message.indexSources,
     message.matrices,
     message.sortMetric,
     message.sortRange,
   );
-  const reply: OrderMessage = { type: 'order', requestId: message.requestId, order };
-  (self as unknown as Worker).postMessage(reply, [order.buffer]);
+  const reply: OrderMessage = orderSources
+    ? { type: 'order', requestId: message.requestId, order, orderSources }
+    : { type: 'order', requestId: message.requestId, order };
+  (self as unknown as Worker).postMessage(
+    reply,
+    orderSources ? [order.buffer, orderSources.buffer] : [order.buffer],
+  );
 };

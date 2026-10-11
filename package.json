@@ -71,6 +71,10 @@
       "types": "./dist/unified/index.d.ts",
       "import": "./dist/unified.js"
     },
+    "./unified/pooled": {
+      "types": "./dist/unified/pooled/index.d.ts",
+      "import": "./dist/unified/pooled.js"
+    },
     "./sorting/radix": {
       "types": "./dist/sorting/radix/index.d.ts",
       "import": "./dist/sorting/radix.js"

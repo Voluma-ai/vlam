@@ -36,6 +36,12 @@ export interface SortMessage {
   spans: Uint32Array;
   /** Exact active pool-index list for a captured publication. */
   indices?: Uint32Array;
+  /**
+   * Source id per entry of {@link indices}, for a pooled unified sort whose
+   * sources share one pool but carry their own `matrices`. Overrides the
+   * pool-indexed `sourceIds` written through {@link WriteMessage}.
+   */
+  indexSources?: Float32Array;
   /** Optional column-major source matrices, four columns per source. */
   matrices?: Float32Array;
   /** Pre-intersected scene/camera key range; clamps invisible outliers. */
@@ -48,6 +54,8 @@ export interface OrderMessage {
   requestId: number;
   /** Active pool splat indices, ordered back-to-front. */
   order: Uint32Array;
+  /** Source id per entry of {@link order}; present when the request sent `indexSources`. */
+  orderSources?: Float32Array;
 }
 
 export type SortWorkerRequest = InitMessage | WriteMessage | SortMessage;

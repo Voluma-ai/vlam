@@ -1,0 +1,1041 @@
+/**
+ * One CPU-sorted draw over several splat sources that share a {@link SplatPool}.
+ *
+ * {@link UnifiedSplatMesh} needs compute passes (gather + GPU sort), so it is
+ * WebGPU-only. This is the WebGL2 answer to the same artifact: two meshes
+ * drawn separately are two transparent draws, each sorted only within itself,
+ * so whichever draws last paints wholesale over the other. Here every source
+ * is a tenant of **one** pool, so a single draw can index all of their rows;
+ * the sources' exact active lists are concatenated into one worker sort keyed
+ * by each source's own world matrix, and the result is drawn as one instanced
+ * mesh whose `splatIndex` / `sourceId` attributes come straight from the
+ * worker. No data is gathered or copied: the draw reads the pool textures the
+ * sources already filled.
+ *
+ * Publication keeps the worker-path boundary of `SplatMesh`: every source's
+ * pending texture rows are captured together with the combined index list,
+ * and the rows upload only when the matching order comes back. Until then the
+ * previous complete frame stays visible. Sources keep streaming meanwhile;
+ * their later changes go into the next capture.
+ *
+ * Works on either backend (a WebGPU host would normally prefer the compute
+ * path). Sources must be `editable` meshes drawing from the same pool.
+ * Per-source modifier stacks are not evaluated here: the pooled mesh has one
+ * {@link modifiers} list of its own, applied to every splat, plus per-source
+ * opacity, LOD-alpha, placement and packed-SH range.
+ */
+import * as THREE from 'three/webgpu';
+import type { WebGLRenderer } from 'three';
+import { uniform, uniformArray } from 'three/tsl';
+import { SplatMesh, type SplatPickOptions } from '../../core/splat-mesh';
+import type { UnifiedSourceView, SplatSortMetric } from '../../core/splat-mesh-types';
+import { SplatPool, SPLAT_DATA_TEXTURE_WIDTH } from '../../core/splat-mesh-pool';
+import { WorkerSorter, type WorkerSortSnapshot } from '../../core/worker-sorter';
+import {
+  applySplatMaterialGraph,
+  type SplatMaterialBuildInputs,
+  type SplatShInputs,
+  type DisplayColorModifier,
+} from '../../core/splat-mesh-material';
+import { SourceMatrixArray, MAX_MERGED_SPLAT_SOURCES } from '../../core/source-transform';
+import { WebGpuSortScheduler } from '../../core/sort-scheduler';
+import { cameraVisibleSortRange, radialSortState } from '../../core/splat-sort-bounds';
+import { updateSplatFrustumMargin } from '../../core/splat-frustum';
+import { resolveXrView } from '../../core/xr-view';
+import { isFillConstrainedSplatDevice } from '../../core/splat-budget';
+import { clampDepthOfFieldSettings, type DepthOfFieldSettings } from '../../core/depth-of-field';
+import type { SplatModifier } from '../../core/splat-modifier';
+import type {
+  UnifiedDrawPublicationSnapshot,
+  UnifiedSplatPickResult,
+  UnifiedSplatSourceOptions,
+} from '../unified-splat-mesh';
+
+/** Construction options for a {@link PooledUnifiedSplatMesh}. */
+export interface PooledUnifiedSplatMeshOptions {
+  /** Camera-space ordering key for the combined sort. Default `'depth'`. */
+  sortMetric?: SplatSortMetric;
+  /**
+   * Source slots to allocate uniform tables for (matrix columns, opacity,
+   * LOD alpha, SH range). Default 64; at most {@link MAX_MERGED_SPLAT_SOURCES}.
+   */
+  maxSources?: number;
+  /** Whether sources composite in display (sRGB) space; every source must agree. Default `false`. */
+  srgbOutput?: boolean;
+  /** Minimum interval between worker sorts under camera motion, ms. Default adaptive. */
+  sortIntervalMs?: number;
+}
+
+/** Registration settings for one source; same shape as the compute path's. */
+export type PooledUnifiedSourceOptions = Pick<
+  UnifiedSplatSourceOptions,
+  'opacity' | 'visible' | 'priority'
+>;
+
+/** CPU timings of the last {@link PooledUnifiedSplatMesh.update}. */
+export interface PooledUnifiedPerformanceTimings {
+  totalMs: number;
+  sortSubmitMs: number;
+  sortSubmitted: boolean;
+  sortSubmissions: number;
+  sourceCount: number;
+  /** Splats in the last captured sort request. */
+  activeCount: number;
+  /** Splats currently drawn (last installed order). */
+  instanceCount: number;
+  /** Worker round trip of the last completed sort, ms. */
+  lastSortLatencyMs: number;
+}
+
+interface SourceRecord {
+  source: SplatMesh;
+  id: number;
+  opacity: number;
+  visible: boolean;
+  originalVisible: boolean;
+  view: UnifiedSourceView | null;
+  lastMatrix: THREE.Matrix4;
+  /** Active-list token and content revision the in-flight or last capture used. */
+  capturedActiveListVersion: number;
+  capturedContentRevision: number;
+}
+
+interface CapturePart {
+  record: SourceRecord;
+  requestId: number;
+  activeListVersion: number;
+  /** The source's exact active indices at capture (an immutable copy). */
+  indices: Uint32Array;
+}
+
+interface PendingPublication {
+  parts: readonly CapturePart[];
+  order: Uint32Array;
+  orderSources: Float32Array;
+}
+
+interface InstalledPublication {
+  parts: readonly { record: SourceRecord; activeListVersion: number }[];
+  count: number;
+  revision: number;
+  rendered: boolean;
+}
+
+const EMPTY_SPANS = new Uint32Array(0);
+const DEFAULT_MAX_SOURCES = 64;
+const SOURCE_ID_ATTRIBUTE = 'sourceId';
+const _identity = new THREE.Matrix4();
+const _viewSize = new THREE.Vector2();
+const _sortState = new THREE.Matrix4();
+
+/**
+ * Whether `renderer` can drive a {@link PooledUnifiedSplatMesh}: any
+ * initialized three `WebGPURenderer` backend, WebGL2 included.
+ */
+export function supportsPooledUnifiedSplatMesh(renderer: object): boolean {
+  return typeof (renderer as { backend?: unknown }).backend === 'object';
+}
+
+/**
+ * One pool, one worker sort, one draw, dynamic tenants - see the module
+ * overview. Register sources that already draw from `pool`; the pooled mesh
+ * hides them, owns their publication, and draws their rows itself.
+ *
+ * @experimental May change in a minor release.
+ */
+export class PooledUnifiedSplatMesh extends THREE.Mesh {
+  readonly pool: SplatPool;
+  private readonly renderer: THREE.WebGPURenderer;
+  private readonly sortMetric: SplatSortMetric;
+  private readonly maxSources: number;
+  private readonly srgbOutput: boolean;
+  private readonly matrices: SourceMatrixArray;
+  private readonly opacityTable: number[];
+  private readonly opacityNode: ReturnType<typeof uniformArray>;
+  private readonly lodAlphaTable: number[];
+  private readonly lodAlphaNode: ReturnType<typeof uniformArray>;
+  private readonly shRangeMin: THREE.Vector3[];
+  private readonly shRangeMax: THREE.Vector3[];
+  private readonly shRangeMinNode: ReturnType<typeof uniformArray>;
+  private readonly shRangeMaxNode: ReturnType<typeof uniformArray>;
+  private readonly splatIndexAttribute: THREE.InstancedBufferAttribute;
+  private readonly sourceIdAttribute: THREE.InstancedBufferAttribute;
+  private readonly focal = uniform(new THREE.Vector2());
+  private readonly viewport = uniform(new THREE.Vector2(1, 1));
+  private readonly frustumMargin = uniform(new THREE.Vector2());
+  private readonly localCameraPosition = uniform(new THREE.Vector3());
+  private readonly pixelScaleLimit = uniform(0);
+  private readonly revealMultiplier = uniform(1);
+  private readonly dofFocusDistance = uniform(10);
+  private readonly dofAperture = uniform(0);
+  private readonly screenBandMin = uniform(0);
+  private readonly screenBandMax = uniform(0);
+  private readonly shRangePlaceholder = {
+    min: uniform(new THREE.Vector3()),
+    max: uniform(new THREE.Vector3()),
+  };
+  private readonly sortScheduler: WebGpuSortScheduler;
+  private readonly bounds = new THREE.Sphere();
+  private readonly lastSortedState = new THREE.Matrix4();
+  private readonly sources: SourceRecord[] = [];
+  private readonly freeIds: number[] = [];
+  private nextId = 0;
+  /** Ids freed since the last installed order; reusable once that order is replaced. */
+  private quarantinedIds: number[] = [];
+  private sorter: WorkerSorter | null = null;
+  private inFlight: {
+    requestId: number;
+    parts: readonly CapturePart[];
+    membership: number;
+  } | null = null;
+  private pending: PendingPublication | null = null;
+  private installed: InstalledPublication | null = null;
+  private membership = 0;
+  private publicationRevision = 0;
+  private renderedPublicationRevision = -1;
+  private lastCaptureCount = 0;
+  private pendingMirrorRows: { start: number; count: number }[] = [];
+  private modifierList: readonly SplatModifier[] = [];
+  private displayColorModifierValue: DisplayColorModifier | null = null;
+  private settings: {
+    maxStdDev: number;
+    minSplatSizePx: number;
+    antialias: boolean;
+    projectedFilterProfile: 'default' | 'lcc';
+    minPixelSize: number;
+    minContribution: number;
+  } | null = null;
+  private materialBuilt = false;
+  private disposed = false;
+  private readonly performanceTimingsValue: PooledUnifiedPerformanceTimings = {
+    totalMs: 0,
+    sortSubmitMs: 0,
+    sortSubmitted: false,
+    sortSubmissions: 0,
+    sourceCount: 0,
+    activeCount: 0,
+    instanceCount: 0,
+    lastSortLatencyMs: Number.NaN,
+  };
+
+  constructor(
+    renderer: THREE.WebGPURenderer,
+    pool: SplatPool,
+    options: PooledUnifiedSplatMeshOptions = {},
+  ) {
+    const maxSources = Math.max(
+      1,
+      Math.min(MAX_MERGED_SPLAT_SOURCES, Math.floor(options.maxSources ?? DEFAULT_MAX_SOURCES)),
+    );
+    // One quad instanced per drawn splat, exactly as `SplatMesh` builds it.
+    const geometry = new THREE.InstancedBufferGeometry();
+    geometry.setIndex([0, 1, 2, 0, 2, 3]);
+    geometry.setAttribute(
+      'position',
+      new THREE.BufferAttribute(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]), 3),
+    );
+    // Draw-order attributes written from the worker reply. The pool bounds the
+    // combined active count, so both are pool-sized (8 B per pool splat).
+    const splatIndexAttribute = new THREE.InstancedBufferAttribute(
+      new Float32Array(pool.capacity),
+      1,
+    );
+    splatIndexAttribute.setUsage(THREE.DynamicDrawUsage);
+    const sourceIdAttribute = new THREE.InstancedBufferAttribute(
+      new Float32Array(pool.capacity),
+      1,
+    );
+    sourceIdAttribute.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute('splatIndex', splatIndexAttribute);
+    geometry.setAttribute(SOURCE_ID_ATTRIBUTE, sourceIdAttribute);
+    geometry.instanceCount = 0;
+    super(geometry, new THREE.NodeMaterial());
+    if (pool.cpuMirrorsReleased) {
+      throw new Error('PooledUnifiedSplatMesh: the pool released its CPU mirrors.');
+    }
+    this.renderer = renderer;
+    this.pool = pool;
+    this.sortMetric = options.sortMetric ?? 'depth';
+    this.maxSources = maxSources;
+    this.srgbOutput = options.srgbOutput ?? false;
+    this.matrices = new SourceMatrixArray(maxSources);
+    this.opacityTable = Array.from({ length: maxSources }, () => 0);
+    this.opacityNode = uniformArray(this.opacityTable, 'float');
+    this.lodAlphaTable = Array.from({ length: maxSources }, () => 0);
+    this.lodAlphaNode = uniformArray(this.lodAlphaTable, 'float');
+    this.shRangeMin = Array.from({ length: maxSources }, () => new THREE.Vector3());
+    this.shRangeMax = Array.from({ length: maxSources }, () => new THREE.Vector3());
+    this.shRangeMinNode = uniformArray(this.shRangeMin, 'vec3');
+    this.shRangeMaxNode = uniformArray(this.shRangeMax, 'vec3');
+    this.splatIndexAttribute = splatIndexAttribute;
+    this.sourceIdAttribute = sourceIdAttribute;
+    this.sortScheduler = new WebGpuSortScheduler(
+      options.sortIntervalMs,
+      isFillConstrainedSplatDevice(),
+    );
+    // Sources are posed; this mesh stays at identity (world centers come from
+    // the per-source matrices in the shader and in the worker).
+    this.matrixAutoUpdate = false;
+    this.frustumCulled = false;
+  }
+
+  /** Splats the shared pool can hold; the combined draw never exceeds it. */
+  get capacity(): number {
+    return this.pool.capacity;
+  }
+
+  /** Number of registered sources. */
+  get sourceCount(): number {
+    return this.sources.length;
+  }
+
+  /** Parity with `UnifiedSplatMesh`: a pooled draw never drops a source. */
+  get droppedSourceCount(): number {
+    return 0;
+  }
+
+  /** Parity with `UnifiedSplatMesh`: a pooled draw never drops splats. */
+  get droppedSplatCount(): number {
+    return 0;
+  }
+
+  /** CPU timings of the last update. */
+  get performanceTimings(): Readonly<PooledUnifiedPerformanceTimings> {
+    return this.performanceTimingsValue;
+  }
+
+  /**
+   * The one modifier stack applied to every drawn splat. Sources' own stacks
+   * are not evaluated by this draw; `ctx.sourceCenter` is the pool-local
+   * center and `ctx.localCenter` the placed world center. Modifiers reading
+   * per-splat channels are not supported here (the pooled mesh defines none).
+   */
+  get modifiers(): readonly SplatModifier[] {
+    return this.modifierList;
+  }
+
+  set modifiers(value: readonly SplatModifier[]) {
+    const unchanged =
+      value.length === this.modifierList.length &&
+      value.every((modifier, i) => modifier === this.modifierList[i]);
+    if (unchanged) return;
+    const previous = this.modifierList;
+    this.modifierList = [...value];
+    try {
+      this.rebuildMaterial();
+    } catch (error) {
+      this.modifierList = previous;
+      this.rebuildMaterial();
+      throw error;
+    }
+  }
+
+  /** Optional RGB transform in the display fragment; replacing it rebuilds the material. */
+  get displayColorModifier(): DisplayColorModifier | null {
+    return this.displayColorModifierValue;
+  }
+
+  set displayColorModifier(modifier: DisplayColorModifier | null) {
+    if (modifier === this.displayColorModifierValue) return;
+    this.displayColorModifierValue = modifier;
+    this.rebuildMaterial();
+  }
+
+  /** Core projected-2D depth of field on the pooled draw. Live uniforms. */
+  setDepthOfField(settings: Partial<DepthOfFieldSettings>): void {
+    const next = clampDepthOfFieldSettings(settings, this.getDepthOfField());
+    this.dofFocusDistance.value = next.focusDistance;
+    this.dofAperture.value = next.aperture;
+  }
+
+  /** Current core DoF uniforms (`aperture === 0` means off). */
+  getDepthOfField(): DepthOfFieldSettings {
+    return { focusDistance: this.dofFocusDistance.value, aperture: this.dofAperture.value };
+  }
+
+  /**
+   * Registers a source drawing from this mesh's pool. The source is hidden
+   * from the regular scene draw and hands its worker publication to this mesh.
+   *
+   * @throws when the source draws from another pool, is render-only or a
+   *   `MergedSplatMesh`, disagrees with the first source's draw settings, or
+   *   the source table is full.
+   */
+  addSource(source: SplatMesh, options: PooledUnifiedSourceOptions = {}): void {
+    this.assertNotDisposed('addSource');
+    if (this.sources.some((record) => record.source === source)) return;
+    if (source.storageMode === 'render-only') {
+      throw new Error('PooledUnifiedSplatMesh: storageMode "render-only" sources cannot join.');
+    }
+    const view = source.getUnifiedSourceView();
+    if (view.hasSourcePlacement) {
+      throw new Error(
+        'PooledUnifiedSplatMesh: a MergedSplatMesh already places its own sources; ' +
+          'add its sources individually.',
+      );
+    }
+    if (view.centersTexture !== this.pool.centersTexture) {
+      throw new Error(
+        'PooledUnifiedSplatMesh: every source must draw from the pool this mesh was built on.',
+      );
+    }
+    if (view.srgbOutput !== this.srgbOutput) {
+      throw new Error(
+        "PooledUnifiedSplatMesh: every source must use the mesh's srgbOutput setting.",
+      );
+    }
+    if (this.settings === null) {
+      this.settings = {
+        maxStdDev: view.maxStdDev,
+        minSplatSizePx: view.minSplatSizePx,
+        antialias: view.antialias,
+        projectedFilterProfile: view.projectedFilterProfile,
+        minPixelSize: view.minPixelSize,
+        minContribution: view.minContribution,
+      };
+    } else {
+      const s = this.settings;
+      if (s.maxStdDev !== view.maxStdDev) {
+        throw new Error(
+          'PooledUnifiedSplatMesh: every source must use the same maxStdDev setting.',
+        );
+      }
+      if (s.minSplatSizePx !== view.minSplatSizePx) {
+        throw new Error(
+          'PooledUnifiedSplatMesh: every source must use the same minSplatSizePx setting.',
+        );
+      }
+      if (s.antialias !== view.antialias) {
+        throw new Error(
+          'PooledUnifiedSplatMesh: every source must use the same antialias setting.',
+        );
+      }
+      if (s.projectedFilterProfile !== view.projectedFilterProfile) {
+        throw new Error(
+          'PooledUnifiedSplatMesh: every source must use the same projected filter profile.',
+        );
+      }
+      if (s.minPixelSize !== view.minPixelSize || s.minContribution !== view.minContribution) {
+        throw new Error(
+          'PooledUnifiedSplatMesh: every source must use the same contribution-culling settings.',
+        );
+      }
+    }
+    const id = this.allocateId();
+    const visible = options.visible ?? source.visible;
+    const record: SourceRecord = {
+      source,
+      id,
+      opacity: options.opacity ?? 1,
+      visible,
+      originalVisible: source.visible,
+      view: null,
+      lastMatrix: new THREE.Matrix4().copy(view.matrixWorld),
+      capturedActiveListVersion: -1,
+      capturedContentRevision: -1,
+    };
+    source.adoptPooledUnifiedPublication(this);
+    this.sources.push(record);
+    this.matrices.set(id, view.matrixWorld);
+    this.lodAlphaTable[id] = view.lodAlpha ? 1 : 0;
+    this.opacityTable[id] = 0;
+    this.writeShRange(record, view);
+    source.visible = false;
+    source.setUnifiedPickVisibility(visible);
+    // Rows this source wrote before joining are already in the pool backing;
+    // a sorter created earlier mirrored them at construction only if they
+    // existed then. Resend them with the next request to be safe.
+    if (this.sorter !== null) {
+      for (const range of source.poolRanges()) {
+        this.pendingMirrorRows.push({ start: range.startRow, count: range.rowCount });
+      }
+    }
+    if (!this.materialBuilt) this.rebuildMaterial();
+    this.noteMembershipChange();
+  }
+
+  /** Unregisters a source and restores its standalone draw. */
+  removeSource(source: SplatMesh): boolean {
+    this.assertNotDisposed('removeSource');
+    const index = this.sources.findIndex((record) => record.source === source);
+    if (index < 0) return false;
+    const [record] = this.sources.splice(index, 1);
+    if (!record) return false;
+    this.detachRecord(record);
+    this.noteMembershipChange();
+    if (this.sources.length === 0) this.settings = null;
+    return true;
+  }
+
+  /**
+   * Whole-source display opacity. Values `<= 0` skip the source's splats in
+   * the draw at once (uniform), without waiting for a new order.
+   */
+  setSourceOpacity(source: SplatMesh, opacity: number): void {
+    this.assertNotDisposed('setSourceOpacity');
+    const record = this.recordOf(source);
+    const wasDrawn = record.opacity > 0;
+    record.opacity = opacity;
+    if (wasDrawn !== opacity > 0) this.noteMembershipChange();
+  }
+
+  /** Shows or hides a source without changing its residency. */
+  setSourceVisible(source: SplatMesh, visible: boolean): void {
+    this.assertNotDisposed('setSourceVisible');
+    const record = this.recordOf(source);
+    if (record.visible === visible) return;
+    record.visible = visible;
+    record.source.setUnifiedPickVisibility(visible);
+    this.noteMembershipChange();
+  }
+
+  /** Updates, captures, publishes and requests a combined sort. Call before rendering. */
+  update(camera: THREE.PerspectiveCamera): void {
+    if (this.disposed) return;
+    const startedAt = performance.now();
+    const renderer = this.renderer;
+    const timings = this.performanceTimingsValue;
+    timings.sortSubmitted = false;
+    timings.sortSubmitMs = 0;
+    // Children take the application camera: streamed sources resolve XR and
+    // schedule their LOD for themselves; `sort: false` keeps their own
+    // publication idle (this mesh owns it).
+    for (const record of this.sources) record.source.update(camera, renderer, { sort: false });
+    camera.updateMatrixWorld();
+    this.matrix.identity();
+    this.matrixWorld.identity();
+
+    let contentChanged = this.sortScheduler.hasPendingForce();
+    this.bounds.makeEmpty();
+    let boundsEmpty = true;
+    for (const record of this.sources) {
+      const view = record.source.getUnifiedSourceView();
+      record.view = view;
+      if (!record.lastMatrix.equals(view.matrixWorld)) {
+        record.lastMatrix.copy(view.matrixWorld);
+        this.matrices.set(record.id, view.matrixWorld);
+        contentChanged = true;
+      }
+      this.writeShRange(record, view);
+      const drawn = record.visible && record.opacity > 0 && view.activeCount > 0;
+      this.opacityTable[record.id] = drawn ? record.opacity * view.revealMultiplier : 0;
+      if (!drawn) continue;
+      if (
+        view.activeListVersion !== record.capturedActiveListVersion ||
+        view.contentRevision !== record.capturedContentRevision
+      ) {
+        contentChanged = true;
+      }
+      if (boundsEmpty) {
+        this.bounds.copy(view.worldBounds);
+        boundsEmpty = false;
+      } else {
+        this.bounds.union(view.worldBounds);
+      }
+    }
+    for (const id of this.quarantinedIds) this.opacityTable[id] = 0;
+
+    if (this.pending !== null) this.publishPending(renderer);
+
+    // View uniforms: drawing-buffer size, or the XR eye's. One sort from the
+    // head serves both eyes, as `SplatMesh` does.
+    const xrView = resolveXrView(camera, renderer);
+    this.sortScheduler.setXrJitterTolerance(xrView !== null);
+    const projectionCamera: THREE.Camera = xrView?.eye ?? camera;
+    const sortCamera: THREE.Camera = xrView?.head ?? camera;
+    if (xrView) _viewSize.set(xrView.width, xrView.height);
+    else renderer.getDrawingBufferSize(_viewSize);
+    this.writeViewUniforms(projectionCamera, _viewSize.x, _viewSize.y, sortCamera);
+
+    const sortStartedAt = performance.now();
+    if (contentChanged) this.sortScheduler.invalidateContent();
+    timings.sortSubmitted = this.requestSortIfNeeded(sortCamera, projectionCamera);
+    timings.sortSubmitMs = performance.now() - sortStartedAt;
+    timings.sortSubmissions = this.sorter?.submissionCount ?? 0;
+    timings.sourceCount = this.sources.length;
+    timings.activeCount = this.lastCaptureCount;
+    timings.instanceCount = (this.geometry as THREE.InstancedBufferGeometry).instanceCount;
+    timings.lastSortLatencyMs = this.sorter?.snapshot().lastLatencyMs ?? Number.NaN;
+    timings.totalMs = performance.now() - startedAt;
+  }
+
+  /**
+   * Draws the current combined order into `target` from another camera. The
+   * worker order is asynchronous, so a secondary view draws through the
+   * primary order rather than re-sorting (the documented WebGL2 behaviour of
+   * standalone meshes). Returns `false` when nothing is published yet.
+   */
+  renderView(
+    camera: THREE.PerspectiveCamera,
+    renderer: THREE.WebGPURenderer,
+    target: THREE.RenderTarget | null = null,
+  ): boolean {
+    if (this.disposed) return false;
+    if (renderer !== this.renderer) {
+      throw new Error('PooledUnifiedSplatMesh: renderView must use its construction renderer.');
+    }
+    if ((this.geometry as THREE.InstancedBufferGeometry).instanceCount === 0) return false;
+    camera.updateMatrixWorld();
+    const restore = this.captureView();
+    if (target) this.writeViewUniforms(camera, target.width, target.height);
+    else {
+      renderer.getDrawingBufferSize(_viewSize);
+      this.writeViewUniforms(camera, _viewSize.x, _viewSize.y);
+    }
+    const previousTarget = renderer.getRenderTarget();
+    const wasVisible = this.visible;
+    try {
+      this.visible = true;
+      renderer.setRenderTarget(target);
+      renderer.render(this, camera);
+    } finally {
+      this.visible = wasVisible;
+      renderer.setRenderTarget(previousTarget);
+      restore();
+    }
+    return true;
+  }
+
+  /**
+   * Picks the frontmost visible splat under an NDC coordinate across every
+   * drawn source, through each source's own depth-tested pick pass.
+   */
+  async pick(
+    ndc: THREE.Vector2,
+    camera: THREE.Camera,
+    options?: SplatPickOptions,
+  ): Promise<UnifiedSplatPickResult | null> {
+    if (this.disposed) return null;
+    const candidates = this.sources.filter((record) => record.visible && record.opacity > 0);
+    if (candidates.length === 0) return null;
+    const hits = await Promise.all(
+      candidates.map(async (record) => {
+        const opacity = record.opacity;
+        const hit = await record.source.pick(ndc, camera, this.renderer, {
+          ...options,
+          alphaThreshold: (options?.alphaThreshold ?? 0.1) / opacity,
+        });
+        return hit === null ? null : { record, opacity, hit };
+      }),
+    );
+    if (this.disposed) return null;
+    let best: UnifiedSplatPickResult | null = null;
+    for (const result of hits) {
+      if (result === null) continue;
+      const { record, opacity, hit } = result;
+      if (!this.sources.includes(record) || !record.visible || record.opacity !== opacity) continue;
+      if (best === null || hit.distance < best.distance) {
+        best = { source: record.source, point: hit.point, distance: hit.distance };
+      }
+    }
+    return best;
+  }
+
+  /** Whether a primary draw has rendered the latest installed publication. */
+  getDrawPublicationSnapshot(): UnifiedDrawPublicationSnapshot {
+    const installed = this.installed;
+    const instanceCount = (this.geometry as THREE.InstancedBufferGeometry).instanceCount;
+    return {
+      ready:
+        installed !== null &&
+        this.renderedPublicationRevision === installed.revision &&
+        installed.count > 0 &&
+        instanceCount === installed.count,
+      publicationRevision: this.publicationRevision,
+      renderedPublicationRevision: this.renderedPublicationRevision,
+      contentRevision: this.publicationRevision,
+      orderRevision: this.publicationRevision,
+      sourceCount: this.sources.length,
+      activeCount: installed?.count ?? 0,
+      instanceCount,
+      computeProjection: false,
+    };
+  }
+
+  override onAfterRender(
+    _renderer: WebGLRenderer,
+    _scene: THREE.Scene,
+    _camera: THREE.Camera,
+  ): void {
+    const installed = this.installed;
+    if (this.disposed || installed === null || installed.rendered) return;
+    installed.rendered = true;
+    this.renderedPublicationRevision = installed.revision;
+    // Sources learn of the rendered frame off the render traversal, as the
+    // compute path does, so a streamed source may continue its staged swap.
+    queueMicrotask(() => {
+      if (this.disposed || this.installed !== installed) return;
+      for (const part of installed.parts) {
+        if (this.sources.includes(part.record)) {
+          part.record.source.notifyUnifiedPublication(part.activeListVersion);
+        }
+      }
+    });
+  }
+
+  /** Releases every source back to its standalone draw and frees the draw resources. */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    for (const record of this.sources) this.detachRecord(record);
+    this.sources.length = 0;
+    this.sorter?.dispose();
+    this.sorter = null;
+    this.inFlight = null;
+    this.pending = null;
+    this.installed = null;
+    this.geometry.dispose();
+    (this.material as THREE.Material).dispose();
+  }
+
+  // --- internals ---
+
+  private assertNotDisposed(method: string): void {
+    if (this.disposed) throw new Error(`PooledUnifiedSplatMesh.${method}: mesh was disposed.`);
+  }
+
+  private recordOf(source: SplatMesh): SourceRecord {
+    const record = this.sources.find((entry) => entry.source === source);
+    if (!record) throw new Error('PooledUnifiedSplatMesh: source is not registered.');
+    return record;
+  }
+
+  private allocateId(): number {
+    const reused = this.freeIds.pop();
+    if (reused !== undefined) return reused;
+    if (this.nextId >= this.maxSources) {
+      throw new Error(`PooledUnifiedSplatMesh: source limit reached (${this.maxSources}).`);
+    }
+    return this.nextId++;
+  }
+
+  private detachRecord(record: SourceRecord): void {
+    record.source.releasePooledUnifiedPublication(this);
+    record.source.visible = record.originalVisible;
+    record.source.setUnifiedPickVisibility(null);
+    this.opacityTable[record.id] = 0;
+    // The installed order may still name this id; keep it out of reuse until
+    // the next publication replaces that order.
+    this.quarantinedIds.push(record.id);
+  }
+
+  /**
+   * Membership (which sources' splats belong in the combined list) changed:
+   * an in-flight order would draw a stale set, and a pending one too.
+   */
+  private noteMembershipChange(): void {
+    this.membership++;
+    if (this.pending !== null) {
+      for (const part of this.pending.parts) {
+        part.record.source.discardPooledUnifiedPublication();
+      }
+      this.pending = null;
+    }
+    this.sortScheduler.invalidateContent();
+  }
+
+  private writeShRange(record: SourceRecord, view: UnifiedSourceView): void {
+    const sh = view.sh;
+    if (sh !== null && sh.mode === 'packed') {
+      this.shRangeMin[record.id]?.copy(sh.range.min.value);
+      this.shRangeMax[record.id]?.copy(sh.range.max.value);
+    } else {
+      this.shRangeMin[record.id]?.set(0, 0, 0);
+      this.shRangeMax[record.id]?.set(0, 0, 0);
+    }
+  }
+
+  private writeViewUniforms(
+    camera: THREE.Camera,
+    viewportX: number,
+    viewportY: number,
+    positionCamera: THREE.Camera = camera,
+  ): void {
+    this.viewport.value.set(viewportX, viewportY);
+    updateSplatFrustumMargin(
+      this.viewport.value,
+      this.frustumMargin.value,
+      this.settings?.minSplatSizePx ?? 0,
+    );
+    const projection = camera.projectionMatrix.elements;
+    this.focal.value.set((projection[0] * viewportX) / 2, (projection[5] * viewportY) / 2);
+    // This mesh is at identity, so the local camera position is the world one.
+    positionCamera.getWorldPosition(this.localCameraPosition.value);
+  }
+
+  private captureView(): () => void {
+    const viewport = this.viewport.value.clone();
+    const focal = this.focal.value.clone();
+    const margin = this.frustumMargin.value.clone();
+    const position = this.localCameraPosition.value.clone();
+    return () => {
+      this.viewport.value.copy(viewport);
+      this.focal.value.copy(focal);
+      this.frustumMargin.value.copy(margin);
+      this.localCameraPosition.value.copy(position);
+    };
+  }
+
+  private requestSortIfNeeded(sortCamera: THREE.Camera, projectionCamera: THREE.Camera): boolean {
+    let total = 0;
+    for (const record of this.sources) {
+      if (record.visible && record.opacity > 0 && record.view !== null) {
+        total += record.view.activeCount;
+      }
+    }
+    if (total === 0) {
+      // Nothing to draw: drop the installed order rather than keep drawing
+      // sources that have since emptied or hidden.
+      if (this.installed !== null && this.pending === null && this.inFlight === null) {
+        this.installOrder([], new Uint32Array(0), new Float32Array(0));
+      }
+      return false;
+    }
+    const modelView = sortCamera.matrixWorldInverse;
+    const sortState =
+      this.sortMetric === 'radial'
+        ? radialSortState(_identity, sortCamera.matrixWorld, _sortState)
+        : modelView;
+    // The worker has no cadence of its own; one request is in flight at a
+    // time. Re-sort when the camera's sort key moved or content changed.
+    if (!this.sortScheduler.hasPendingForce() && sortState.equals(this.lastSortedState)) {
+      return false;
+    }
+    this.sorter ??= this.createSorter();
+    if (
+      this.sorter.sort(
+        modelView,
+        total,
+        this.bounds,
+        cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
+      )
+    ) {
+      this.lastSortedState.copy(sortState);
+      this.sortScheduler.markAccepted(0);
+      return true;
+    }
+    return false;
+  }
+
+  private createSorter(): WorkerSorter {
+    return new WorkerSorter(
+      {
+        capacity: this.pool.capacity,
+        rowWidth: SPLAT_DATA_TEXTURE_WIDTH,
+        centers: this.pool.backing.centers,
+        perSource: { matrices: this.matrices.matrices },
+        splatIndexAttribute: this.splatIndexAttribute,
+        takeDirtyRows: () => [],
+        getActiveSpans: () => EMPTY_SPANS,
+        captureSnapshot: () => this.captureSnapshot(),
+        hasPendingPublication: () => this.pending !== null,
+        onOrderReady: (requestId, order, orderSources) =>
+          this.onOrderReady(requestId, order, orderSources),
+        onSortFailure: (requestId) => this.onSortFailure(requestId),
+      },
+      this.sortMetric,
+    );
+  }
+
+  /** One combined immutable capture across every drawn source. */
+  private captureSnapshot(): WorkerSortSnapshot | null {
+    if (this.inFlight !== null || this.pending !== null) return null;
+    const parts: CapturePart[] = [];
+    const centerWrites: { start: number; centers: Float32Array; sourceIds?: Float32Array }[] = [];
+    let total = 0;
+    for (const record of this.sources) {
+      const view = record.view;
+      if (!record.visible || record.opacity <= 0 || view === null || view.activeCount === 0) {
+        continue;
+      }
+      const capture = record.source.capturePooledUnifiedPublication();
+      if (capture === null) {
+        // A source could not capture (its own boundary is busy). Release the
+        // others so none of them holds a snapshot nobody will publish.
+        for (const part of parts)
+          part.record.source.restorePooledUnifiedPublication(part.requestId);
+        return null;
+      }
+      parts.push({
+        record,
+        requestId: capture.requestId,
+        activeListVersion: capture.activeListVersion,
+        indices: capture.indices,
+      });
+      record.capturedActiveListVersion = capture.activeListVersion;
+      record.capturedContentRevision = capture.contentRevision;
+      for (const row of capture.centerWrites) centerWrites.push(row);
+      total += capture.indices.length;
+    }
+    const indices = new Uint32Array(total);
+    const indexSources = new Float32Array(total);
+    let cursor = 0;
+    for (const part of parts) {
+      indices.set(part.indices, cursor);
+      indexSources.fill(part.record.id, cursor, cursor + part.indices.length);
+      cursor += part.indices.length;
+    }
+    // Rows written before a source joined: resend their centers so the worker
+    // mirror matches the pool backing it sorts from.
+    const width = SPLAT_DATA_TEXTURE_WIDTH;
+    for (const row of this.pendingMirrorRows) {
+      const start = row.start * width * 4;
+      const end = (row.start + row.count) * width * 4;
+      centerWrites.push({
+        start: row.start * width,
+        centers: this.pool.backing.centers.slice(start, end),
+      });
+    }
+    this.pendingMirrorRows = [];
+    const requestId = ++this.nextRequestId;
+    this.inFlight = { requestId, parts, membership: this.membership };
+    this.lastCaptureCount = total;
+    return { requestId, spans: EMPTY_SPANS, indices, indexSources, centerWrites };
+  }
+
+  private nextRequestId = 0;
+
+  private onOrderReady(requestId: number, order: Uint32Array, orderSources?: Float32Array): void {
+    const inFlight = this.inFlight;
+    if (inFlight === null || inFlight.requestId !== requestId || this.disposed) return;
+    this.inFlight = null;
+    const stale = inFlight.membership !== this.membership || orderSources === undefined;
+    if (stale) {
+      for (const part of inFlight.parts) {
+        part.record.source.restorePooledUnifiedPublication(part.requestId);
+      }
+      this.sortScheduler.invalidateContent();
+      return;
+    }
+    let complete = true;
+    for (const part of inFlight.parts) {
+      if (!part.record.source.queuePooledUnifiedPublication(part.requestId)) complete = false;
+    }
+    if (!complete) {
+      // Some source dropped its capture (strategy change, dispose): its rows
+      // would be missing under this order. Discard the whole publication.
+      for (const part of inFlight.parts) part.record.source.discardPooledUnifiedPublication();
+      this.sortScheduler.invalidateContent();
+      return;
+    }
+    this.pending = { parts: inFlight.parts, order, orderSources };
+  }
+
+  private onSortFailure(requestId: number): void {
+    const inFlight = this.inFlight;
+    if (inFlight === null || inFlight.requestId !== requestId) return;
+    this.inFlight = null;
+    for (const part of inFlight.parts) {
+      part.record.source.restorePooledUnifiedPublication(part.requestId);
+    }
+    this.sortScheduler.invalidateContent();
+  }
+
+  /** Uploads every captured source row, then installs the matching order. */
+  private publishPending(renderer: THREE.WebGPURenderer): void {
+    const pending = this.pending;
+    if (pending === null) return;
+    this.pending = null;
+    const published: { record: SourceRecord; activeListVersion: number }[] = [];
+    for (const part of pending.parts) {
+      const version = part.record.source.publishPooledUnifiedPublication(renderer);
+      if (version !== null) published.push({ record: part.record, activeListVersion: version });
+    }
+    this.installOrder(published, pending.order, pending.orderSources);
+  }
+
+  private installOrder(
+    parts: readonly { record: SourceRecord; activeListVersion: number }[],
+    order: Uint32Array,
+    orderSources: Float32Array,
+  ): void {
+    const count = order.length;
+    const indexes = this.splatIndexAttribute.array as Float32Array;
+    const ids = this.sourceIdAttribute.array as Float32Array;
+    indexes.set(order, 0);
+    ids.set(orderSources, 0);
+    this.splatIndexAttribute.clearUpdateRanges();
+    this.sourceIdAttribute.clearUpdateRanges();
+    if (count > 0) {
+      this.splatIndexAttribute.addUpdateRange(0, count);
+      this.sourceIdAttribute.addUpdateRange(0, count);
+    }
+    this.splatIndexAttribute.needsUpdate = true;
+    this.sourceIdAttribute.needsUpdate = true;
+    (this.geometry as THREE.InstancedBufferGeometry).instanceCount = count;
+    this.installed = { parts, count, revision: ++this.publicationRevision, rendered: false };
+    // Ids the old order still named are free again.
+    for (const id of this.quarantinedIds) this.freeIds.push(id);
+    this.quarantinedIds = [];
+  }
+
+  private rebuildMaterial(): void {
+    const settings = this.settings;
+    if (settings === null) return;
+    const sh: SplatShInputs | null =
+      this.pool.packedShBands !== 0
+        ? {
+            mode: 'packed',
+            bands: this.pool.packedShBands,
+            textures: this.pool.shPackedTextures,
+            range: this.shRangePlaceholder,
+          }
+        : null;
+    const inputs: SplatMaterialBuildInputs = {
+      textures: {
+        centersTexture: this.pool.centersTexture,
+        colorsTexture: this.pool.colorsTexture,
+        covarianceATexture: this.pool.covarianceATexture,
+        covarianceBTexture: this.pool.covarianceBTexture,
+      },
+      sh,
+      sourcePlacement: {
+        sourceIdAttribute: SOURCE_ID_ATTRIBUTE,
+        columns: this.matrices.node,
+        perSource: {
+          opacity: this.opacityNode,
+          lodAlpha: this.lodAlphaNode,
+          shRangeMin: this.shRangeMinNode,
+          shRangeMax: this.shRangeMaxNode,
+        },
+      },
+      displayColorModifier: this.displayColorModifierValue,
+      uniforms: {
+        focal: this.focal,
+        viewport: this.viewport,
+        frustumMargin: this.frustumMargin,
+        localCameraPosition: this.localCameraPosition,
+        pixelScaleLimit: this.pixelScaleLimit,
+        revealMultiplier: this.revealMultiplier,
+        dofFocusDistance: this.dofFocusDistance,
+        dofAperture: this.dofAperture,
+        screenBandMin: this.screenBandMin,
+        screenBandMax: this.screenBandMax,
+      },
+      pick: null,
+      settings: {
+        maxStdDev: settings.maxStdDev,
+        minSplatSizePx: settings.minSplatSizePx,
+        antialias: settings.antialias,
+        projectedFilterProfile: settings.projectedFilterProfile,
+        srgbOutput: this.srgbOutput,
+        // Explicit culls carry the sources' resolved values; the profile itself
+        // must not add any on top.
+        performanceProfile: 'quality',
+        minPixelSize: settings.minPixelSize,
+        minContribution: settings.minContribution,
+        // Streamed cuts already selected their splats; no band or frontier
+        // cull runs in a unified draw (the compute path gathers none either).
+        foveationMode: 'page-table',
+        // Always on: the per-source table decides which sources store halved
+        // alpha, and a plain source through this path reproduces the Gaussian.
+        lodAlpha: true,
+      },
+      channels: new Map(),
+      modifiers: this.modifierList,
+    };
+    applySplatMaterialGraph(this.material as THREE.NodeMaterial, 'display', inputs);
+    (this.material as THREE.Material).needsUpdate = true;
+    this.materialBuilt = true;
+  }
+}
