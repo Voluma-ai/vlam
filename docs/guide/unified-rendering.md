@@ -78,8 +78,11 @@ What differs:
   block and a vertex stage may bind as few as 12; many per-source effects
   should keep their rows in one shared data texture. After a structural change,
   `await unified.checkShaderBudget(camera)` compares the program's blocks and
-  samplers with the device limits; fall back to standalone draws when it
-  reports `ok: false`, since an over-budget program draws nothing.
+  samplers with the device limits. An over-budget program draws nothing, so on
+  `ok: false` hand every source an empty stack (`setSourceModifiers(source,
+  [])`): the scene keeps its one global order and loses only the per-source
+  effects. Falling back to separate draws instead would bring back the very
+  artifact this mesh exists to remove.
 - **Publication is asynchronous.** Like a standalone WebGL2 mesh, a changed
   stream or camera waits one worker round trip; the previous complete frame
   stays up meanwhile. `renderView` draws a secondary view through the primary
