@@ -781,10 +781,16 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // important than retaining higher-order SH for one tenant. The mesh keeps
     // its own effective count so it never reads or writes the pool's SH
     // textures when its request is incompatible.
+    // A pool built with `allowLatePackedSh` takes the first SH request instead
+    // (a host's scene pool created before the main capture's bands are known).
     const shMismatch =
       suppliedPool !== undefined &&
       packedShBands !== 0 &&
-      packedShBands !== suppliedPool.packedShBands;
+      packedShBands !== suppliedPool.packedShBands &&
+      !suppliedPool.allocatePackedSh(
+        packedShBands,
+        Math.ceil(shCoefficientCount(packedShBands) / 4),
+      );
     const effectivePackedShBands = shMismatch ? 0 : packedShBands;
     if (shMismatch) {
       const internalOptions = options as SplatMeshOptions & {
@@ -935,11 +941,12 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
     if (isStatic) {
       this.staticRange = this.appendRangeWithState(source, true);
-      // Constructor-time writes are covered by the textures' initial
-      // `needsUpdate` upload - the GPU cannot have seen them earlier. Any
-      // append after construction must go through the staging-copy path,
-      // because the backend may already have uploaded the textures by then.
-      this.pendingUploadRows = [];
+      // Constructor-time writes into this mesh's own pool are covered by the
+      // textures' initial `needsUpdate` upload - the GPU cannot have seen them
+      // earlier. A supplied (shared) pool may already be on the GPU, so its
+      // rows stay pending and reach it through the staging-copy path like any
+      // post-construction append.
+      if (ownsPool) this.pendingUploadRows = [];
       // Float16 GPU images are separate from the float32 backing: pack the
       // constructor write into the texture image before the initial upload.
       if (this.poolFloatTextures === 'float16') this.syncHalfFloatPoolImages();

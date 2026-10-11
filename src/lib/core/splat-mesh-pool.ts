@@ -165,6 +165,13 @@ export interface SplatPoolOptions {
   floatTextures?: 'float32' | 'float16';
   /** Bands of per-splat (non-palette) SH to allocate for; 0 disables. */
   packedShBands?: 0 | 1 | 2 | 3;
+  /**
+   * With `packedShBands` 0, let the first tenant that requests packed SH
+   * allocate the pool's SH textures then (see {@link SplatPool.allocatePackedSh}).
+   * For a scene pool created before its main capture's SH bands are known.
+   * Default `false`: a supplied pool's memory envelope is authoritative.
+   */
+  allowLatePackedSh?: boolean;
   /** Packed-SH coefficient count for `packedShBands`, supplied by the caller
    * so this module stays free of the SH packing tables. */
   packedShTextureCount?: number;
@@ -202,13 +209,15 @@ export class SplatPool {
   readonly width = SPLAT_DATA_TEXTURE_WIDTH;
   readonly rows: number;
   readonly floatTextures: 'float32' | 'float16';
-  readonly packedShBands: 0 | 1 | 2 | 3;
   readonly backing: SplatPoolBacking;
   readonly centersTexture: THREE.DataTexture;
   readonly colorsTexture: THREE.DataTexture;
   readonly covarianceATexture: THREE.DataTexture;
   readonly covarianceBTexture: THREE.DataTexture;
-  readonly shPackedTextures: readonly THREE.DataTexture[];
+  /** Whether {@link allocatePackedSh} may still allocate SH textures. */
+  readonly allowsLatePackedSh: boolean;
+  private packedShBandsValue: 0 | 1 | 2 | 3;
+  private shPackedTexturesValue: readonly THREE.DataTexture[];
   /** Free row spans, sorted by start row. Mutated in place by the allocator. */
   freeRowSpans: RowSpan[];
   private readonly tenants = new Set<SplatPoolTenant>();
@@ -234,7 +243,8 @@ export class SplatPool {
     assertPoolRowsFitDevice(this.rows, options.maxTextureSize ?? 0, this.width);
     const texelCount = this.width * this.rows;
     this.floatTextures = options.floatTextures === 'float16' ? 'float16' : 'float32';
-    this.packedShBands = options.packedShBands ?? 0;
+    this.packedShBandsValue = options.packedShBands ?? 0;
+    this.allowsLatePackedSh = options.allowLatePackedSh === true && this.packedShBandsValue === 0;
     const floatType = this.floatTextures === 'float16' ? THREE.HalfFloatType : THREE.FloatType;
 
     this.backing = {
@@ -271,12 +281,43 @@ export class SplatPool {
       this.rows,
       THREE.FloatType,
     );
-    this.shPackedTextures = this.backing.shPacked.map((data) =>
+    this.shPackedTexturesValue = this.backing.shPacked.map((data) =>
       createIntegerDataTexture(data, this.width, this.rows),
     );
     this.freeRowSpans = [{ start: 0, count: this.rows }];
     this.activeSlotByPoolIndexValue = new Uint32Array(texelCount);
     this.activeSlotByPoolIndexValue.fill(0xffffffff);
+  }
+
+  /** Bands of per-splat packed SH the pool holds textures for (0 = none). */
+  get packedShBands(): 0 | 1 | 2 | 3 {
+    return this.packedShBandsValue;
+  }
+
+  /** The pool's packed-SH textures; empty without packed SH. */
+  get shPackedTextures(): readonly THREE.DataTexture[] {
+    return this.shPackedTexturesValue;
+  }
+
+  /**
+   * Allocates packed-SH textures after construction, for a pool created with
+   * `allowLatePackedSh`. Rows already written hold neutral (zero) words.
+   * Returns `true` when the pool now holds exactly `bands`: either this call
+   * allocated them or they were already there.
+   */
+  allocatePackedSh(bands: 1 | 2 | 3, textureCount: number): boolean {
+    if (this.packedShBandsValue !== 0) return this.packedShBandsValue === bands;
+    if (!this.allowsLatePackedSh || this.cpuMirrorsReleasedValue) return false;
+    const texelCount = this.width * this.rows;
+    this.backing.shPacked = Array.from(
+      { length: Math.max(1, Math.floor(textureCount)) },
+      () => new Uint32Array(texelCount * 4),
+    );
+    this.shPackedTexturesValue = this.backing.shPacked.map((data) =>
+      createIntegerDataTexture(data, this.width, this.rows),
+    );
+    this.packedShBandsValue = bands;
+    return true;
   }
 
   /** Pool index → packed active-list slot. */

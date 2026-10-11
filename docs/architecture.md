@@ -62,6 +62,7 @@ src/
  static-lod/ → `@voluma/vlam/static-lod`
  streaming/ → `@voluma/vlam/streaming` (StreamedSplatMesh, governors, LOD)
  unified/ → `@voluma/vlam/unified`
+ unified/pooled/ → `@voluma/vlam/unified/pooled` (WebGL2-capable pooled draw)
  sorting/radix/ → `@voluma/vlam/sorting/radix` (`radixSort`, `exactSort`)
  projection/compute/ → `@voluma/vlam/projection/compute`
  selection/ → `@voluma/vlam/selection`
@@ -100,6 +101,7 @@ src/
 
  -- unified/ --
  unified-splat-mesh.ts UnifiedSplatMesh: one WebGPU draw over registered meshes
+ pooled/pooled-unified-splat-mesh.ts PooledUnifiedSplatMesh: one CPU-sorted draw over meshes sharing a pool (WebGL2)
 
  -- streaming/ --
  streamed-splat-mesh.ts LOD streaming pool; dynamic-imports RAD/LCC/frontier

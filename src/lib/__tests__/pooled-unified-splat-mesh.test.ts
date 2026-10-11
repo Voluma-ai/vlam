@@ -270,6 +270,50 @@ describe('PooledUnifiedSplatMesh', () => {
     pool.dispose();
   });
 
+  it('publishes an empty or hidden source without a worker round trip and acknowledges its render', async () => {
+    sent.length = 0;
+    const renderer = mockRenderer();
+    const pool = new SplatPool({ capacity: 2 * W });
+    const main = new SplatMesh({ capacity: W }, { pool });
+    const hidden = new SplatMesh(splat(), { pool });
+    const ready = vi.spyOn(
+      main as unknown as { onActiveListReady(v: number): void },
+      'onActiveListReady',
+    );
+    const rendered = vi.spyOn(main, 'notifyUnifiedPublication');
+    const hiddenReady = vi.spyOn(
+      hidden as unknown as { onActiveListReady(v: number): void },
+      'onActiveListReady',
+    );
+    const pooled = new PooledUnifiedSplatMesh(renderer, pool);
+    pooled.addSource(main);
+    pooled.addSource(hidden, { visible: false });
+    const camera = cameraAt(3);
+    // Nothing is drawn, so no sort is requested - yet both sources' active
+    // lists are acknowledged the way a standalone worker mesh acknowledges an
+    // empty publication, which streamed sources wait for before staging.
+    pooled.update(camera);
+    expect(sent.filter((message) => message.type === 'sort')).toHaveLength(0);
+    expect(ready).toHaveBeenCalledTimes(1);
+    expect(hiddenReady).toHaveBeenCalledTimes(1);
+    pooled.onAfterRender(renderer as never, new THREE.Scene(), camera);
+    await Promise.resolve();
+    expect(rendered).toHaveBeenCalledTimes(1);
+    // A hidden source keeps publishing its row changes as it streams.
+    hidden.visible = false;
+    expect(instanceCount(pooled)).toBe(0);
+    // Once the main has splats it joins the worker cycle.
+    main.appendRange(splat(2));
+    pooled.update(camera);
+    pooled.update(camera);
+    expect(drawList(pooled).indices).toHaveLength(2);
+    expect(ready).toHaveBeenCalledTimes(2);
+    pooled.dispose();
+    main.dispose();
+    hidden.dispose();
+    pool.dispose();
+  });
+
   it('skips a source with zero opacity in the combined list and keeps it pickable only while visible', () => {
     sent.length = 0;
     const renderer = mockRenderer();

@@ -58,6 +58,7 @@ and [`architecture.md`](architecture.md).
 | Surface-aware brush selection | ✅ CPU reference; surface/through × center/±3σ footprint | ✅ same | ✅ classic streamed and RAD page-table LOD replay geometry | `brush-stroke`, streamed channel tests | thin edges, anisotropic grazing, large RAD replacement |
 | Position queries (`queryNearest`, `queryHeight`) | ✅ | ✅ |, (per-source mesh) | `splat-mesh.query`, `streamed-splat-mesh.query` | query harness |
 | Multi-view exact sort (`renderView`) | ✅ | ⚠️ async worker; sequential views | ⚠️ WebGPU: per-view gather+sort | `splat-mesh.render-view` | `?mirror=1` |
+| Pooled unified draw (`PooledUnifiedSplatMesh`, sources in one `SplatPool`, one worker sort) | ⚠️ works, prefer compute path | ✅ streamed + static sources inter-sort | ⚠️ one modifier stack, async publication | `pooled-unified-splat-mesh.test.ts`, browser `pooled-unified.spec.ts` (both projects) | `?backend=webgl` host scenes with markers |
 | Fully loaded multi-cloud (`MergedSplatMesh`) | ✅ | ✅ inter-sort |, (fast path) | `merged-splat-mesh.test.ts` | overlap readback |
 | Heterogeneous `UnifiedSplatMesh` | ✅ | ❌ | ✅ fully loaded + streamed sources | `unified-splat-mesh.test.ts` · `src/viewer/unified-harness.html` | harness + streamed/SH pixel gates |
 | `revealPreset` / `wgslFn` effects | ✅ | ❌ | ⚠️ per-source modifiers at gather | `effects.test.ts` | WebGPU only |
@@ -180,8 +181,9 @@ the version you install (`>= 0.186.0` is the peer range).
 **What the WebGL2 fallback costs you.** It is a first-class fallback for
 standalone rendering, static `SplatMesh`, streamed `StreamedSplatMesh`,
 static `MergedSplatMesh` inter-sort, picking, and spatial queries all work, but
-not full parity: no heterogeneous `UnifiedSplatMesh`, no `wgslFn`-only
-effect presets such as `revealPreset` and synchronous per-view ordering. Its
+not full parity: no compute `UnifiedSplatMesh` (sources sharing one pool get
+the CPU-sorted `PooledUnifiedSplatMesh` instead), no `wgslFn`-only effect
+presets such as `revealPreset` and synchronous per-view ordering. Its
 async worker sort deliberately delays a changed stream until a full snapshot
 can publish; it retains the previous complete scene rather than flickering.
 The exact list is the [WebGL2 scope statement](#webgl2-scope-statement) below.
@@ -538,7 +540,11 @@ inter-sort, picking, and position queries. It is **not** full feature parity:
 - No heterogeneous `UnifiedSplatMesh` (no CPU gather implementation).
  Gate with `supportsUnifiedSplatMesh(renderer)`, it answers `false` on
  WebGL2 and before the backend is initialized, so check it after renderer
- init and fall back to standalone meshes / static `MergedSplatMesh`.
+ init. For several sources that share one `SplatPool` - a streamed main plus
+ static or streamed markers - `PooledUnifiedSplatMesh`
+ (`@voluma/vlam/unified/pooled`) restores one global CPU-sorted draw; it
+ folds one modifier stack rather than each source's. Otherwise fall back to
+ standalone meshes / static `MergedSplatMesh`.
 - No `revealPreset` / other `wgslFn`-only presets.
 - Multi-view uses async worker sort between sequential draws.
 - Streamed LCC / Streamed SOG / RAD publish CPU-worker snapshots

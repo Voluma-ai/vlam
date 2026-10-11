@@ -144,6 +144,8 @@ export function supportsPooledUnifiedSplatMesh(renderer: object): boolean {
  * @experimental May change in a minor release.
  */
 export class PooledUnifiedSplatMesh extends THREE.Mesh {
+  /** Type marker for hosts that cannot import this module eagerly. */
+  readonly isPooledUnifiedSplatMesh = true as const;
   readonly pool: SplatPool;
   private readonly renderer: THREE.WebGPURenderer;
   private readonly sortMetric: SplatSortMetric;
@@ -195,6 +197,8 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
   private renderedPublicationRevision = -1;
   private lastCaptureCount = 0;
   private pendingMirrorRows: { start: number; count: number }[] = [];
+  /** Undrawn sources published outside the worker cycle, awaiting a rendered-frame acknowledgement. */
+  private renderAcks: { record: SourceRecord; activeListVersion: number }[] = [];
   private modifierList: readonly SplatModifier[] = [];
   private displayColorModifierValue: DisplayColorModifier | null = null;
   private settings: {
@@ -206,6 +210,8 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     minContribution: number;
   } | null = null;
   private materialBuilt = false;
+  /** Pool SH bands the material was built for; a late allocation rebuilds it. */
+  private builtShBands: 0 | 1 | 2 | 3 = 0;
   private disposed = false;
   private readonly performanceTimingsValue: PooledUnifiedPerformanceTimings = {
     totalMs: 0,
@@ -519,13 +525,18 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
       this.writeShRange(record, view);
       const drawn = record.visible && record.opacity > 0 && view.activeCount > 0;
       this.opacityTable[record.id] = drawn ? record.opacity * view.revealMultiplier : 0;
-      if (!drawn) continue;
-      if (
+      const changed =
         view.activeListVersion !== record.capturedActiveListVersion ||
-        view.contentRevision !== record.capturedContentRevision
-      ) {
-        contentChanged = true;
+        view.contentRevision !== record.capturedContentRevision;
+      if (!drawn) {
+        // Nothing of this source is in the draw list, so its rows and active
+        // list can publish right away, without the worker: a streamed source
+        // still waits for that acknowledgement to continue staging (an empty
+        // main at startup, a hidden marker that keeps streaming).
+        if (changed) this.publishUndrawn(record, view, renderer);
+        continue;
       }
+      if (changed) contentChanged = true;
       if (boundsEmpty) {
         this.bounds.copy(view.worldBounds);
         boundsEmpty = false;
@@ -534,6 +545,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
       }
     }
     for (const id of this.quarantinedIds) this.opacityTable[id] = 0;
+    if (this.materialBuilt && this.builtShBands !== this.pool.packedShBands) this.rebuildMaterial();
 
     if (this.pending !== null) this.publishPending(renderer);
 
@@ -657,17 +669,30 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     _scene: THREE.Scene,
     _camera: THREE.Camera,
   ): void {
+    if (this.disposed) return;
+    const acks = this.renderAcks;
+    if (acks.length > 0) this.renderAcks = [];
     const installed = this.installed;
-    if (this.disposed || installed === null || installed.rendered) return;
-    installed.rendered = true;
-    this.renderedPublicationRevision = installed.revision;
+    const firstRender = installed !== null && !installed.rendered;
+    if (installed !== null && firstRender) {
+      installed.rendered = true;
+      this.renderedPublicationRevision = installed.revision;
+    }
+    if (!firstRender && acks.length === 0) return;
     // Sources learn of the rendered frame off the render traversal, as the
     // compute path does, so a streamed source may continue its staged swap.
     queueMicrotask(() => {
-      if (this.disposed || this.installed !== installed) return;
-      for (const part of installed.parts) {
-        if (this.sources.includes(part.record)) {
-          part.record.source.notifyUnifiedPublication(part.activeListVersion);
+      if (this.disposed) return;
+      if (firstRender && installed !== null && this.installed === installed) {
+        for (const part of installed.parts) {
+          if (this.sources.includes(part.record)) {
+            part.record.source.notifyUnifiedPublication(part.activeListVersion);
+          }
+        }
+      }
+      for (const ack of acks) {
+        if (this.sources.includes(ack.record)) {
+          ack.record.source.notifyUnifiedPublication(ack.activeListVersion);
         }
       }
     });
@@ -684,6 +709,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     this.inFlight = null;
     this.pending = null;
     this.installed = null;
+    this.renderAcks = [];
     this.geometry.dispose();
     (this.material as THREE.Material).dispose();
   }
@@ -732,6 +758,23 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
       this.pending = null;
     }
     this.sortScheduler.invalidateContent();
+  }
+
+  /** Captures and publishes a source that contributes nothing to the draw list. */
+  private publishUndrawn(
+    record: SourceRecord,
+    view: UnifiedSourceView,
+    renderer: THREE.WebGPURenderer,
+  ): void {
+    const capture = record.source.capturePooledUnifiedPublication();
+    // `null`: an earlier capture of this source is still in a worker cycle
+    // (it was drawn when captured); that cycle publishes it.
+    if (capture === null) return;
+    if (!record.source.queuePooledUnifiedPublication(capture.requestId)) return;
+    const version = record.source.publishPooledUnifiedPublication(renderer);
+    record.capturedActiveListVersion = view.activeListVersion;
+    record.capturedContentRevision = view.contentRevision;
+    if (version !== null) this.renderAcks.push({ record, activeListVersion: version });
   }
 
   private writeShRange(record: SourceRecord, view: UnifiedSourceView): void {
@@ -1037,5 +1080,6 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     applySplatMaterialGraph(this.material as THREE.NodeMaterial, 'display', inputs);
     (this.material as THREE.Material).needsUpdate = true;
     this.materialBuilt = true;
+    this.builtShBands = this.pool.packedShBands;
   }
 }
