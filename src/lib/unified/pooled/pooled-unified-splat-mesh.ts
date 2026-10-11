@@ -26,18 +26,20 @@
  */
 import * as THREE from 'three/webgpu';
 import type { WebGLRenderer } from 'three';
-import { uniform, uniformArray } from 'three/tsl';
-import { SplatMesh, type SplatPickOptions } from '../../core/splat-mesh';
+import { attribute, uniform, uniformArray, vec4 } from 'three/tsl';
+// A value import on purpose: it makes this entry depend on everything
+// `SplatMesh` already pulls in, so Rollup keeps the core chunks exactly as a
+// WebGPU host loads them instead of splitting them around this entry's needs.
+import { SplatMesh, type PooledPublication, type SplatPickOptions } from '../../core/splat-mesh';
 import type { UnifiedSourceView, SplatSortMetric } from '../../core/splat-mesh-types';
 import { SplatPool, SPLAT_DATA_TEXTURE_WIDTH } from '../../core/splat-mesh-pool';
-import { WorkerSorter, type WorkerSortSnapshot } from '../../core/worker-sorter';
 import {
   applySplatMaterialGraph,
   type SplatMaterialBuildInputs,
   type SplatShInputs,
   type DisplayColorModifier,
 } from '../../core/splat-mesh-material';
-import { SourceMatrixArray, MAX_MERGED_SPLAT_SOURCES } from '../../core/source-transform';
+import { asNode, type Vec3Uniform } from '../../core/splat-material-types';
 import { WebGpuSortScheduler } from '../../core/sort-scheduler';
 import { cameraVisibleSortRange, radialSortState } from '../../core/splat-sort-bounds';
 import { updateSplatFrustumMargin } from '../../core/splat-frustum';
@@ -45,6 +47,7 @@ import { resolveXrView } from '../../core/xr-view';
 import { isFillConstrainedSplatDevice } from '../../core/splat-budget';
 import { clampDepthOfFieldSettings, type DepthOfFieldSettings } from '../../core/depth-of-field';
 import type { SplatModifier } from '../../core/splat-modifier';
+import { PooledSorter } from './pooled-sorter';
 import type {
   UnifiedDrawPublicationSnapshot,
   UnifiedSplatPickResult,
@@ -57,7 +60,7 @@ export interface PooledUnifiedSplatMeshOptions {
   sortMetric?: SplatSortMetric;
   /**
    * Source slots to allocate uniform tables for (matrix columns, opacity,
-   * LOD alpha, SH range). Default 64; at most {@link MAX_MERGED_SPLAT_SOURCES}.
+   * LOD alpha, SH range). Default 64; at most 256 (one-byte source ids).
    */
   maxSources?: number;
   /** Whether sources composite in display (sRGB) space; every source must agree. Default `false`. */
@@ -89,6 +92,8 @@ export interface PooledUnifiedPerformanceTimings {
 
 interface SourceRecord {
   source: SplatMesh;
+  /** The source's worker publication, driven by this mesh. */
+  publication: PooledPublication;
   id: number;
   opacity: number;
   visible: boolean;
@@ -113,7 +118,7 @@ interface CapturePart {
 
 interface PendingPublication {
   parts: readonly CapturePart[];
-  order: Uint32Array | Float32Array;
+  order: Float32Array;
   orderSources: Uint8Array;
 }
 
@@ -124,12 +129,35 @@ interface InstalledPublication {
   rendered: boolean;
 }
 
-const EMPTY_SPANS = new Uint32Array(0);
 const DEFAULT_MAX_SOURCES = 64;
+const MAX_SOURCES = 256;
 const SOURCE_ID_ATTRIBUTE = 'sourceId';
 const _identity = new THREE.Matrix4();
 const _viewSize = new THREE.Vector2();
 const _sortState = new THREE.Matrix4();
+
+/**
+ * Per-source world matrices as a shader-visible array (four vec4 columns per
+ * source, three's column-major order) plus the CPU copy the worker reads.
+ */
+class SourceColumns {
+  readonly node: ReturnType<typeof uniformArray>;
+  readonly matrices: Float32Array;
+  private readonly columns: THREE.Vector4[];
+
+  constructor(count: number) {
+    this.matrices = new Float32Array(16 * count);
+    this.columns = Array.from({ length: 4 * count }, () => new THREE.Vector4());
+    for (let id = 0; id < count; id++) this.set(id, _identity);
+    this.node = uniformArray(this.columns, 'vec4');
+  }
+
+  set(id: number, matrix: THREE.Matrix4): void {
+    const e = matrix.elements;
+    this.matrices.set(e, id * 16);
+    for (let c = 0; c < 4; c++) (this.columns[id * 4 + c] as THREE.Vector4).fromArray(e, c * 4);
+  }
+}
 
 /**
  * Whether `renderer` can drive a {@link PooledUnifiedSplatMesh}: any
@@ -154,7 +182,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
   private readonly sortMetric: SplatSortMetric;
   private readonly maxSources: number;
   private readonly srgbOutput: boolean;
-  private readonly matrices: SourceMatrixArray;
+  private readonly matrices: SourceColumns;
   private readonly opacityTable: number[];
   private readonly opacityNode: ReturnType<typeof uniformArray>;
   private readonly lodAlphaTable: number[];
@@ -175,10 +203,6 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
   private readonly dofAperture = uniform(0);
   private readonly screenBandMin = uniform(0);
   private readonly screenBandMax = uniform(0);
-  private readonly shRangePlaceholder = {
-    min: uniform(new THREE.Vector3()),
-    max: uniform(new THREE.Vector3()),
-  };
   private readonly sortScheduler: WebGpuSortScheduler;
   private readonly bounds = new THREE.Sphere();
   private readonly lastSortedState = new THREE.Matrix4();
@@ -187,7 +211,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
   private nextId = 0;
   /** Ids freed since the last installed order; reusable once that order is replaced. */
   private quarantinedIds: number[] = [];
-  private sorter: WorkerSorter | null = null;
+  private sorter: PooledSorter | null = null;
   private inFlight: {
     requestId: number;
     parts: readonly CapturePart[];
@@ -241,7 +265,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
   ) {
     const maxSources = Math.max(
       1,
-      Math.min(MAX_MERGED_SPLAT_SOURCES, Math.floor(options.maxSources ?? DEFAULT_MAX_SOURCES)),
+      Math.min(MAX_SOURCES, Math.floor(options.maxSources ?? DEFAULT_MAX_SOURCES)),
     );
     // One quad instanced per drawn splat, exactly as `SplatMesh` builds it.
     const geometry = new THREE.InstancedBufferGeometry();
@@ -276,7 +300,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     this.sortMetric = options.sortMetric ?? 'depth';
     this.maxSources = maxSources;
     this.srgbOutput = options.srgbOutput ?? false;
-    this.matrices = new SourceMatrixArray(maxSources);
+    this.matrices = new SourceColumns(maxSources);
     this.opacityTable = Array.from({ length: maxSources }, () => 0);
     this.opacityNode = uniformArray(this.opacityTable, 'float');
     this.lodAlphaTable = Array.from({ length: maxSources }, () => 0);
@@ -382,6 +406,9 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
   addSource(source: SplatMesh, options: PooledUnifiedSourceOptions = {}): void {
     this.assertNotDisposed('addSource');
     if (this.sources.some((record) => record.source === source)) return;
+    if (!(source instanceof SplatMesh)) {
+      throw new TypeError('PooledUnifiedSplatMesh: sources must be SplatMesh instances.');
+    }
     if (source.storageMode === 'render-only') {
       throw new Error('PooledUnifiedSplatMesh: storageMode "render-only" sources cannot join.');
     }
@@ -443,6 +470,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     const visible = options.visible ?? source.visible;
     const record: SourceRecord = {
       source,
+      publication: source.adoptPooledPublication(this),
       id,
       opacity: options.opacity ?? 1,
       visible,
@@ -452,10 +480,10 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
       capturedActiveListVersion: -1,
       capturedContentRevision: -1,
     };
-    source.adoptPooledUnifiedPublication(this);
     this.sources.push(record);
     this.matrices.set(id, view.matrixWorld);
-    this.lodAlphaTable[id] = view.lodAlpha ? 1 : 0;
+    // Multiplier recovering alpha from the stored byte: `.rad` halves it.
+    this.lodAlphaTable[id] = view.lodAlpha ? 2 : 1;
     this.opacityTable[id] = 0;
     this.writeShRange(record, view);
     source.visible = false;
@@ -579,7 +607,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     timings.sourceCount = this.sources.length;
     timings.activeCount = this.lastCaptureCount;
     timings.instanceCount = (this.geometry as THREE.InstancedBufferGeometry).instanceCount;
-    timings.lastSortLatencyMs = this.sorter?.snapshot().lastLatencyMs ?? Number.NaN;
+    timings.lastSortLatencyMs = this.sorter?.lastLatencyMs ?? Number.NaN;
     timings.totalMs = performance.now() - startedAt;
   }
 
@@ -749,7 +777,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
   }
 
   private detachRecord(record: SourceRecord): void {
-    record.source.releasePooledUnifiedPublication(this);
+    record.publication.release();
     record.source.visible = record.originalVisible;
     record.source.setUnifiedPickVisibility(null);
     this.opacityTable[record.id] = 0;
@@ -768,9 +796,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     // under the previous membership.
     this.retainedParts = null;
     if (this.pending !== null) {
-      for (const part of this.pending.parts) {
-        part.record.source.discardPooledUnifiedPublication();
-      }
+      for (const part of this.pending.parts) part.record.publication.discard();
       this.pending = null;
     }
     this.sortScheduler.invalidateContent();
@@ -782,18 +808,21 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     view: UnifiedSourceView,
     renderer: THREE.WebGPURenderer,
   ): void {
-    const capture = record.source.capturePooledUnifiedPublication();
+    const { publication } = record;
+    const capture = publication.capture();
     // `null`: an earlier capture of this source is still in a worker cycle
     // (it was drawn when captured); that cycle publishes it.
-    if (capture === null) return;
-    if (!record.source.queuePooledUnifiedPublication(capture.requestId)) return;
-    const version = record.source.publishPooledUnifiedPublication(renderer);
+    if (capture === null || !publication.queue(capture.requestId)) return;
     record.capturedActiveListVersion = view.activeListVersion;
     record.capturedContentRevision = view.contentRevision;
-    if (version !== null) this.renderAcks.push({ record, activeListVersion: version });
+    if (publication.publish(renderer)) {
+      this.renderAcks.push({ record, activeListVersion: view.activeListVersion });
+    }
   }
 
   private writeShRange(record: SourceRecord, view: UnifiedSourceView): void {
+    // Packed SH dequantizes over each source's own range; `min = max = 0`
+    // contributes no SH term (sources without packed SH in an SH pool).
     const sh = view.sh;
     if (sh !== null && sh.mode === 'packed') {
       this.shRangeMin[record.id]?.copy(sh.range.min.value);
@@ -846,7 +875,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
       // Nothing to draw: drop the installed order rather than keep drawing
       // sources that have since emptied or hidden.
       if (this.installed !== null && this.pending === null && this.inFlight === null) {
-        this.installOrder([], new Uint32Array(0), new Uint8Array(0));
+        this.installOrder([], new Float32Array(0), new Uint8Array(0));
       }
       return false;
     }
@@ -855,50 +884,46 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
       this.sortMetric === 'radial'
         ? radialSortState(_identity, sortCamera.matrixWorld, _sortState)
         : modelView;
-    // The worker has no cadence of its own; one request is in flight at a
-    // time. Re-sort when the camera's sort key moved or content changed.
+    // One request in flight, and none while a finished order awaits
+    // publication. Re-sort when the camera's sort key moved or content changed.
+    if (this.inFlight !== null || this.pending !== null) return false;
     if (!this.sortScheduler.hasPendingForce() && sortState.equals(this.lastSortedState)) {
       return false;
     }
-    this.sorter ??= this.createSorter();
-    if (
-      this.sorter.sort(
-        modelView,
-        total,
-        this.bounds,
-        cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
-      )
-    ) {
-      this.lastSortedState.copy(sortState);
-      this.sortScheduler.markAccepted(0);
-      return true;
-    }
-    return false;
-  }
-
-  private createSorter(): WorkerSorter {
-    return new WorkerSorter(
-      {
-        capacity: this.pool.capacity,
-        rowWidth: SPLAT_DATA_TEXTURE_WIDTH,
-        centers: this.pool.backing.centers,
-        perSource: { matrices: this.matrices.matrices },
-        splatIndexAttribute: this.splatIndexAttribute,
-        takeDirtyRows: () => [],
-        getActiveSpans: () => EMPTY_SPANS,
-        captureSnapshot: () => this.captureSnapshot(),
-        hasPendingPublication: () => this.pending !== null,
-        onOrderReady: (requestId, order, orderSources) =>
-          this.onOrderReady(requestId, order, orderSources),
-        onSortFailure: (requestId) => this.onSortFailure(requestId),
-      },
+    const sorter = (this.sorter ??= new PooledSorter(
+      this.pool.capacity,
+      this.pool.backing.centers,
       this.sortMetric,
+      (requestId, order, orderSources) => this.onOrderReady(requestId, order, orderSources),
+      (requestId) => this.onSortFailure(requestId),
+    ));
+    if (sorter.busy) return false;
+    const capture = this.capture(sorter);
+    if (capture === null) return false;
+    sorter.write(capture.centerWrites);
+    sorter.sort(
+      capture.requestId,
+      modelView,
+      this.matrices.matrices,
+      this.bounds,
+      cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
+      capture.list,
     );
+    this.lastSortedState.copy(sortState);
+    this.sortScheduler.markAccepted(0);
+    return true;
   }
 
-  /** One combined immutable capture across every drawn source. */
-  private captureSnapshot(): WorkerSortSnapshot | null {
-    if (this.inFlight !== null || this.pending !== null) return null;
+  /**
+   * One combined capture across every drawn source: each source's pending rows
+   * plus, unless the worker already holds the identical list, the concatenated
+   * active indices and their source ids.
+   */
+  private capture(sorter: PooledSorter): {
+    requestId: number;
+    centerWrites: { start: number; centers: Float32Array }[];
+    list?: { indices: Uint32Array; indexSources: Uint8Array };
+  } | null {
     const drawn: SourceRecord[] = [];
     for (const record of this.sources) {
       const view = record.view;
@@ -907,11 +932,11 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
       }
     }
     // Same drawn sources at the same versions as the list the worker holds:
-    // skip every index copy and let the worker sort its retained list again.
+    // send no indices and let the worker sort its retained list again.
     const retained = this.retainedParts;
     const reuse =
       retained !== null &&
-      this.sorter?.canReuseIndices === true &&
+      sorter.retainsIndices &&
       retained.length === drawn.length &&
       retained.every((entry, i) => {
         const record = drawn[i] as SourceRecord;
@@ -923,44 +948,41 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
         );
       });
     const parts: CapturePart[] = [];
-    const centerWrites: { start: number; centers: Float32Array; sourceIds?: Float32Array }[] = [];
+    const centerWrites: { start: number; centers: Float32Array }[] = [];
     let total = 0;
     for (const record of drawn) {
       const view = record.view as UnifiedSourceView;
-      // Never let the source copy its own list: the concatenation below reads
-      // the live list in this same synchronous pass, so one copy serves both.
-      const capture = record.source.capturePooledUnifiedPublication({ indices: false });
-      if (capture === null) {
+      const snapshot = record.publication.capture();
+      if (snapshot === null) {
         // A source could not capture (its own boundary is busy). Release the
         // others so none of them holds a snapshot nobody will publish.
-        for (const part of parts)
-          part.record.source.restorePooledUnifiedPublication(part.requestId);
+        for (const part of parts) part.record.publication.restore(part.requestId);
         return null;
       }
       parts.push({
         record,
-        requestId: capture.requestId,
-        activeListVersion: capture.activeListVersion,
+        requestId: snapshot.requestId,
+        activeListVersion: view.activeListVersion,
+        // The live list, read in this same synchronous pass: one copy below.
         indices: (view.sourceIndex.array as Uint32Array).subarray(0, view.activeCount),
       });
-      record.capturedActiveListVersion = capture.activeListVersion;
-      record.capturedContentRevision = capture.contentRevision;
-      for (const row of capture.centerWrites) centerWrites.push(row);
+      record.capturedActiveListVersion = view.activeListVersion;
+      record.capturedContentRevision = view.contentRevision;
+      for (const row of snapshot.centerWrites) centerWrites.push(row);
       total += view.activeCount;
     }
-    let indices = EMPTY_SPANS;
-    let indexSources: Uint8Array | undefined;
+    let list: { indices: Uint32Array; indexSources: Uint8Array } | undefined;
     if (!reuse) {
-      indices = new Uint32Array(total);
-      // One byte per entry (ids stay below MAX_MERGED_SPLAT_SOURCES); both arrays
-      // are built fresh here and handed to the worker by transfer, not copied.
-      indexSources = new Uint8Array(total);
+      // Built fresh and handed to the worker by transfer; it keeps them.
+      const indices = new Uint32Array(total);
+      const indexSources = new Uint8Array(total);
       let cursor = 0;
       for (const part of parts) {
         indices.set(part.indices, cursor);
         indexSources.fill(part.record.id, cursor, cursor + part.indices.length);
         cursor += part.indices.length;
       }
+      list = { indices, indexSources };
       this.retainedParts = parts.map((part) => ({
         record: part.record,
         activeListVersion: part.activeListVersion,
@@ -982,52 +1004,28 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     const requestId = ++this.nextRequestId;
     this.inFlight = { requestId, parts, membership: this.membership };
     this.lastCaptureCount = total;
-    return reuse
-      ? {
-          requestId,
-          spans: EMPTY_SPANS,
-          indices,
-          centerWrites,
-          reuseIndices: true,
-          orderAsFloat: true,
-        }
-      : {
-          requestId,
-          spans: EMPTY_SPANS,
-          indices,
-          ...(indexSources ? { indexSources } : {}),
-          centerWrites,
-          transferIndices: true,
-          orderAsFloat: true,
-        };
+    return list ? { requestId, centerWrites, list } : { requestId, centerWrites };
   }
 
   private nextRequestId = 0;
 
-  private onOrderReady(
-    requestId: number,
-    order: Uint32Array | Float32Array,
-    orderSources?: Uint8Array,
-  ): void {
+  private onOrderReady(requestId: number, order: Float32Array, orderSources: Uint8Array): void {
     const inFlight = this.inFlight;
     if (inFlight === null || inFlight.requestId !== requestId || this.disposed) return;
     this.inFlight = null;
-    const stale = inFlight.membership !== this.membership || orderSources === undefined;
-    if (stale) {
-      for (const part of inFlight.parts) {
-        part.record.source.restorePooledUnifiedPublication(part.requestId);
-      }
+    if (inFlight.membership !== this.membership) {
+      for (const part of inFlight.parts) part.record.publication.restore(part.requestId);
       this.sortScheduler.invalidateContent();
       return;
     }
     let complete = true;
     for (const part of inFlight.parts) {
-      if (!part.record.source.queuePooledUnifiedPublication(part.requestId)) complete = false;
+      if (!part.record.publication.queue(part.requestId)) complete = false;
     }
     if (!complete) {
       // Some source dropped its capture (strategy change, dispose): its rows
       // would be missing under this order. Discard the whole publication.
-      for (const part of inFlight.parts) part.record.source.discardPooledUnifiedPublication();
+      for (const part of inFlight.parts) part.record.publication.discard();
       this.sortScheduler.invalidateContent();
       return;
     }
@@ -1038,9 +1036,8 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     const inFlight = this.inFlight;
     if (inFlight === null || inFlight.requestId !== requestId) return;
     this.inFlight = null;
-    for (const part of inFlight.parts) {
-      part.record.source.restorePooledUnifiedPublication(part.requestId);
-    }
+    for (const part of inFlight.parts) part.record.publication.restore(part.requestId);
+    this.retainedParts = null;
     this.sortScheduler.invalidateContent();
   }
 
@@ -1051,15 +1048,16 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     this.pending = null;
     const published: { record: SourceRecord; activeListVersion: number }[] = [];
     for (const part of pending.parts) {
-      const version = part.record.source.publishPooledUnifiedPublication(renderer);
-      if (version !== null) published.push({ record: part.record, activeListVersion: version });
+      if (part.record.publication.publish(renderer)) {
+        published.push({ record: part.record, activeListVersion: part.activeListVersion });
+      }
     }
     this.installOrder(published, pending.order, pending.orderSources);
   }
 
   private installOrder(
     parts: readonly { record: SourceRecord; activeListVersion: number }[],
-    order: Uint32Array | Float32Array,
+    order: Float32Array,
     orderSources: Uint8Array,
   ): void {
     const count = order.length;
@@ -1085,13 +1083,26 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
   private rebuildMaterial(): void {
     const settings = this.settings;
     if (settings === null) return;
+    // Per-source terms, all keyed by the instance's source id and built here
+    // so the shared material graph only needs its generic hooks.
+    const sourceId = asNode<'int'>(attribute<'float'>(SOURCE_ID_ATTRIBUTE, 'float').toInt());
+    const opacity = asNode<'float'>(this.opacityNode.element(sourceId));
+    // Whole-source opacity, last in the stack (as the compute path applies it
+    // after each source's own effects); `<= 0` drops the splat outright.
+    const sourceOpacity: SplatModifier = (ctx) => ({
+      color: asNode<'vec4'>(vec4(ctx.color.rgb, ctx.color.a.mul(opacity))),
+      visible: asNode<'bool'>(ctx.visible.and(opacity.greaterThan(0))),
+    });
     const sh: SplatShInputs | null =
       this.pool.packedShBands !== 0
         ? {
             mode: 'packed',
             bands: this.pool.packedShBands,
             textures: this.pool.shPackedTextures,
-            range: this.shRangePlaceholder,
+            range: {
+              min: this.shRangeMinNode.element(sourceId) as unknown as Vec3Uniform,
+              max: this.shRangeMaxNode.element(sourceId) as unknown as Vec3Uniform,
+            },
           }
         : null;
     const inputs: SplatMaterialBuildInputs = {
@@ -1102,16 +1113,8 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
         covarianceBTexture: this.pool.covarianceBTexture,
       },
       sh,
-      sourcePlacement: {
-        sourceIdAttribute: SOURCE_ID_ATTRIBUTE,
-        columns: this.matrices.node,
-        perSource: {
-          opacity: this.opacityNode,
-          lodAlpha: this.lodAlphaNode,
-          shRangeMin: this.shRangeMinNode,
-          shRangeMax: this.shRangeMaxNode,
-        },
-      },
+      sourcePlacement: { sourceId, columns: this.matrices.node },
+      lodAlphaScale: asNode<'float'>(this.lodAlphaNode.element(sourceId)),
       displayColorModifier: this.displayColorModifierValue,
       uniforms: {
         focal: this.focal,
@@ -1140,12 +1143,13 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
         // Streamed cuts already selected their splats; no band or frontier
         // cull runs in a unified draw (the compute path gathers none either).
         foveationMode: 'page-table',
-        // Always on: the per-source table decides which sources store halved
-        // alpha, and a plain source through this path reproduces the Gaussian.
+        // Always on: `lodAlphaScale` decides per source whether the stored
+        // alpha is halved, and a plain source through this path reproduces
+        // the Gaussian.
         lodAlpha: true,
       },
       channels: new Map(),
-      modifiers: this.modifierList,
+      modifiers: [...this.modifierList, sourceOpacity],
     };
     applySplatMaterialGraph(this.material as THREE.NodeMaterial, 'display', inputs);
     (this.material as THREE.Material).needsUpdate = true;

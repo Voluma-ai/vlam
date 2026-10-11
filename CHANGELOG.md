@@ -39,9 +39,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - Pooled draw frame cost: the order attributes use static usage (three
   re-uploads a `DynamicDrawUsage` attribute's whole array every frame, ~36 ms
   per frame on an 8M-splat pool), a camera-only re-sort of an unchanged scene
-  sends no index list (the worker keeps the last transferred one,
-  `reuseIndices`), per-sort source ids are one byte and transferred, and the
-  worker answers with a float order ready for the `splatIndex` attribute.
+  sends no index list (the pooled worker keeps the last transferred one),
+  per-sort source ids are one byte and transferred, and the worker answers
+  with a float order ready for the `splatIndex` attribute.
   Measured on an 8M LCC2 main plus one marker under a scripted orbit, forced
   WebGL2: frames over 33 ms went from every frame to 1 in 600, fewer than the
   standalone WebGL2 draws of the same scene (7 in 550).
@@ -51,13 +51,20 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
-- `SplatMesh` gains `@internal` hooks (`adoptPooledUnifiedPublication` and
-  friends) through which a pooled owner captures, queues, publishes and
-  restores the mesh's worker snapshot; the shared material graph accepts an
-  attribute-based source id plus per-source opacity / LOD-alpha / SH-range
-  tables; the sort worker takes per-request `indexSources` and answers with
-  `orderSources`. All three stay dormant for standalone and compute-unified
-  draws.
+- The pooled draw lives entirely behind `@voluma/vlam/unified/pooled`, with
+  its own inlined sort worker; a WebGPU host's core and unified bundles keep
+  main's chunk layout (+558 B gzip on core for the hooks below). The bundle
+  check gates the pooled entry on its own chunk beyond core (12 kB) and fails
+  if pooled code reaches the core or `./unified` graphs.
+- Core hooks the pooled draw needs, dormant otherwise: one `@internal`
+  `SplatMesh.adoptPooledPublication` accessor over the existing worker
+  publication; `SplatSourcePlacement.sourceId` (a caller-built source id) and
+  `lodAlphaScale` (per-splat `.rad` alpha recovery) in the shared material
+  graph. Per-source opacity is a modifier and the SH range a node, both built
+  by the pooled module.
+- The CPU sort worker's radix pass moved to `core/sort-worker-kernel.ts`,
+  shared by the standalone and pooled workers; the standalone protocol is
+  unchanged.
 
 ### Fixed
 

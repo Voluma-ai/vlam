@@ -43,12 +43,22 @@ const BUDGET_GZIP_BYTES = {
   // Keep the existing unified ceiling: its post-split graph is 78,994 B and
   // must not be enlarged to hide a reintroduced optional implementation.
   './unified': 80_000,
-  // CPU-sorted pooled draw: no gather/compute code; keep it small and apart.
-  './unified/pooled': 24_000,
   // 17,944 B and 18,814 B measured respectively × 1.15, rounded to 1 kB.
   './sorting/radix': 21_000,
   './projection/compute': 22_000,
   './selection': 20_000,
+};
+
+/**
+ * Entries gated on what they add on top of the core graph. The WebGL2-only
+ * pooled draw imports `SplatMesh` as a value so it depends on every core chunk
+ * and Rollup keeps the core chunk layout of a WebGPU host unchanged; its full
+ * graph is therefore core plus its own chunks, and only the latter is its cost.
+ */
+const OWN_BUDGET_GZIP_BYTES = {
+  // 10,184 B measured (pooled draw + its inlined sort worker) × 1.15, rounded
+  // to 1 kB.
+  './unified/pooled': 12_000,
 };
 
 const COMPOSED_BUDGET_GZIP_BYTES = {
@@ -217,6 +227,12 @@ mustNotContain(
   'the pooled CPU draw belongs in /unified/pooled',
 );
 mustNotContain('.', 'PooledUnifiedSplatMesh', 'the pooled CPU draw belongs in /unified/pooled');
+mustNotContain('.', 'pooled sort worker', 'the pooled sort worker belongs in /unified/pooled');
+mustNotContain(
+  './unified',
+  'pooled sort worker',
+  'the pooled sort worker belongs in /unified/pooled',
+);
 mustNotContain('./unified/pooled', 'WorkBufferGather', 'compute gather belongs in /unified');
 mustNotContain(
   './unified',
@@ -342,6 +358,25 @@ for (const [name, budget] of Object.entries(COMPOSED_BUDGET_GZIP_BYTES)) {
   if (gzip > budget) {
     failures.push(
       `${name}: gzip size exceeds budget by ${(gzip - budget).toLocaleString()} B ` +
+        `(${gzip.toLocaleString()} > ${budget.toLocaleString()})`,
+    );
+  }
+}
+
+for (const [name, budget] of Object.entries(OWN_BUDGET_GZIP_BYTES)) {
+  const core = new Set(graphOf('.').chunks);
+  const own = graphOf(name).chunks.filter((chunk) => !core.has(chunk));
+  const gzip = own.reduce(
+    (sum, chunk) => sum + gzipSync(readFileSync(chunk), { level: 9 }).length,
+    0,
+  );
+  const pct = ((gzip / budget) * 100).toFixed(1);
+  console.log(
+    `\n${name} own budget (beyond core): ${budget.toLocaleString()} B gzip (${pct}% used)`,
+  );
+  if (gzip > budget) {
+    failures.push(
+      `${name}: own gzip size exceeds budget by ${(gzip - budget).toLocaleString()} B ` +
         `(${gzip.toLocaleString()} > ${budget.toLocaleString()})`,
     );
   }

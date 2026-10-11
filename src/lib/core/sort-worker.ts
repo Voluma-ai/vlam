@@ -1,7 +1,8 @@
 /**
  * Web Worker that depth-sorts the active splats of a pool back-to-front for
- * correct alpha blending. Uses a 16-bit counting sort (O(n)), which
- * comfortably sorts a million splats per frame on the CPU.
+ * correct alpha blending, through the shared radix kernel
+ * (`sort-worker-kernel.ts`), which comfortably sorts a million splats per
+ * frame on the CPU.
  *
  * The worker mirrors the pool's centers texture (vec4 stride, xyz used) so
  * it can sort any subset: the main thread sends written rows once, then per
@@ -25,50 +26,34 @@ export type {
 } from './sort-worker-protocol';
 import type { OrderMessage, SortWorkerRequest } from './sort-worker-protocol';
 import type { SplatSortRange } from './splat-sort-bounds';
-
-const RADIX = 65536; // 16-bit digit
-/** Spark-compatible unsigned 32-bit depth key. Two stable 16-bit passes keep
- * the active-list first-touch order for equal keys. */
-const KEY_MAX = 0xffffffff;
+import { radixOrderByDepth } from './sort-worker-kernel';
 
 let centers: Float32Array = new Float32Array(0);
 let sourceIds: Float32Array = new Float32Array(0);
-/** The last transferred index list, kept for `reuseIndices` requests. */
-let retainedIndices: Uint32Array | null = null;
-let retainedIndexSources: Uint8Array | undefined;
-const counts = new Uint32Array(RADIX);
 
 // Per-sort working arrays, grown to the largest active count seen and reused
-// across sorts (like `counts`) - a per-frame sort of a large pool otherwise
-// allocates five arrays per message. Only `order` is freshly allocated each
-// sort: its buffer is transferred to the main thread.
+// across sorts - a per-frame sort of a large pool otherwise allocates them per
+// message. Only `order` is freshly allocated each sort: its buffer is
+// transferred to the main thread. The radix kernel keeps its own scratch.
 let scratchCapacity = 0;
 let poolIndexes = new Uint32Array(0);
 let depths = new Float32Array(0);
-let keys = new Uint32Array(0);
-let srcScratch = new Uint32Array(0);
-let dstScratch = new Uint32Array(0);
 
 function ensureScratch(activeCount: number): void {
   if (activeCount <= scratchCapacity) return;
   scratchCapacity = activeCount;
   poolIndexes = new Uint32Array(activeCount);
   depths = new Float32Array(activeCount);
-  keys = new Uint32Array(activeCount);
-  srcScratch = new Uint32Array(activeCount);
-  dstScratch = new Uint32Array(activeCount);
 }
 
 function sortByDepth(
   modelView: Float32Array,
   spans: Uint32Array,
   indices: Uint32Array | undefined,
-  indexSources: Uint8Array | undefined,
   matrices: Float32Array | undefined,
   sortMetric: 'depth' | 'radial',
   sortRange: SplatSortRange | undefined,
-  orderAsFloat: boolean,
-): { order: Uint32Array | Float32Array; orderSources: Uint8Array | undefined } {
+): Uint32Array {
   // Depth needs row 2; radial distance uses all three camera-space rows.
   const m0 = modelView[0] as number;
   const m4 = modelView[4] as number;
@@ -104,7 +89,7 @@ function sortByDepth(
   for (let cursor = 0; cursor < activeCount; cursor++) {
     const i = poolIndexes[cursor] as number;
     const p = i * 4;
-    const source = indexSources ? (indexSources[cursor] as number) : (sourceIds[i] as number);
+    const source = sourceIds[i] as number;
     const matrix = matrices ? source * 16 : 0;
     const x = centers[p] as number;
     const y = centers[p + 1] as number;
@@ -143,63 +128,18 @@ function sortByDepth(
     }
   }
 
-  // Two-pass 16-bit LSD radix sort on a 32-bit depth key. Ascending
-  // view-space z means most-negative (farthest) splats come first:
-  // back-to-front. A single 16-bit pass tied thousands of near splats
-  // together, which popped as the camera moved. `keys` and `poolIndexes`
-  // are parallel arrays indexed by active position; we radix-sort the
-  // active positions, then emit their pool indices.
-  const rangeMin = sortRange?.min ?? minDepth;
-  const rangeMax = sortRange?.max ?? maxDepth;
-  const depthScale = KEY_MAX / (rangeMax - rangeMin || 1);
-  let src = srcScratch;
-  for (let i = 0; i < activeCount; i++) {
-    // Clamp before uint conversion: distant RAD outliers used to overflow and
-    // wrap their 24-bit key back into visible depth buckets.
-    keys[i] = Math.floor(
-      Math.min(Math.max(((depths[i] as number) - rangeMin) * depthScale, 0), KEY_MAX),
-    );
-    src[i] = i;
-  }
+  // `poolIndexes` and `depths` are parallel arrays indexed by active position;
+  // the kernel orders the active positions, then we emit their pool indices.
+  const positions = radixOrderByDepth(
+    depths,
+    activeCount,
+    sortRange?.min ?? minDepth,
+    sortRange?.max ?? maxDepth,
+  );
 
-  let dst = dstScratch;
-  for (let shift = 0; shift < 32; shift += 16) {
-    counts.fill(0);
-    for (let i = 0; i < activeCount; i++) {
-      const digit = ((keys[src[i] as number] as number) >>> shift) & 0xffff;
-      counts[digit] = (counts[digit] as number) + 1;
-    }
-    let runningTotal = 0;
-    for (let b = 0; b < RADIX; b++) {
-      const c = counts[b] as number;
-      counts[b] = runningTotal;
-      runningTotal += c;
-    }
-    for (let i = 0; i < activeCount; i++) {
-      const position = src[i] as number;
-      const digit = ((keys[position] as number) >>> shift) & 0xffff;
-      const target = counts[digit] as number;
-      dst[target] = position;
-      counts[digit] = target + 1;
-    }
-    [src, dst] = [dst, src];
-  }
-  // Two 16-bit passes swap twice, so src/dst end on their original scratch;
-  // keep the module references in step regardless of the pass count.
-  srcScratch = src;
-  dstScratch = dst;
-
-  // A float order feeds a float `splatIndex` attribute without a conversion
-  // pass on the main thread; pool indices stay exact below 2^24.
-  const order = orderAsFloat ? new Float32Array(activeCount) : new Uint32Array(activeCount);
-  for (let i = 0; i < activeCount; i++) order[i] = poolIndexes[src[i] as number] as number;
-  if (!indexSources) return { order, orderSources: undefined };
-  // The draw reads a source id per instance, so permute the request's ids
-  // alongside the pool indices rather than making the main thread look each
-  // one up again against a pool-sized table.
-  const orderSources = new Uint8Array(activeCount);
-  for (let i = 0; i < activeCount; i++) orderSources[i] = indexSources[src[i] as number] as number;
-  return { order, orderSources };
+  const order = new Uint32Array(activeCount);
+  for (let i = 0; i < activeCount; i++) order[i] = poolIndexes[positions[i] as number] as number;
+  return order;
 }
 
 self.onmessage = (event: MessageEvent<SortWorkerRequest>) => {
@@ -214,34 +154,14 @@ self.onmessage = (event: MessageEvent<SortWorkerRequest>) => {
     if (message.sourceIds) sourceIds.set(message.sourceIds, message.start);
     return;
   }
-  let indices = message.indices;
-  let indexSources = message.indexSources;
-  if (message.reuseIndices) {
-    if (retainedIndices === null) {
-      throw new Error('sort worker: reuseIndices without a retained index list.');
-    }
-    indices = retainedIndices;
-    indexSources = retainedIndexSources;
-  } else if (indices && indexSources) {
-    // A pooled request owns its arrays (transferred); keep them for reuse.
-    retainedIndices = indices;
-    retainedIndexSources = indexSources;
-  }
-  const { order, orderSources } = sortByDepth(
+  const order = sortByDepth(
     message.modelView,
     message.spans,
-    indices,
-    indexSources,
+    message.indices,
     message.matrices,
     message.sortMetric,
     message.sortRange,
-    message.orderAsFloat === true,
   );
-  const reply: OrderMessage = orderSources
-    ? { type: 'order', requestId: message.requestId, order, orderSources }
-    : { type: 'order', requestId: message.requestId, order };
-  (self as unknown as Worker).postMessage(
-    reply,
-    orderSources ? [order.buffer, orderSources.buffer] : [order.buffer],
-  );
+  const reply: OrderMessage = { type: 'order', requestId: message.requestId, order };
+  (self as unknown as Worker).postMessage(reply, [order.buffer]);
 };

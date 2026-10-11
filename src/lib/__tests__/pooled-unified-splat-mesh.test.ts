@@ -3,7 +3,10 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { writeCovariance, type SplatData } from '../core/splat-data';
 import { SplatMesh } from '../core/splat-mesh';
 import { SplatPool, SPLAT_DATA_TEXTURE_WIDTH } from '../core/splat-mesh-pool';
-import type { OrderMessage, SortWorkerRequest } from '../core/sort-worker-protocol';
+import type {
+  PooledOrderMessage as OrderMessage,
+  PooledSortRequest as SortWorkerRequest,
+} from '../unified/pooled/pooled-sort-protocol';
 import {
   PooledUnifiedSplatMesh,
   supportsPooledUnifiedSplatMesh,
@@ -11,7 +14,7 @@ import {
 
 /**
  * The pooled unified draw against the real CPU sort worker, driven
- * synchronously: `globalThis.self` is stubbed so `sort-worker.ts` installs its
+ * synchronously: `globalThis.self` is stubbed so `pooled-sort-worker.ts` installs its
  * handler on it, and a fake `Worker` relays messages both ways on the main
  * thread (replies can be held to simulate worker latency).
  */
@@ -60,8 +63,8 @@ beforeAll(async () => {
     },
   };
   (globalThis as { self?: unknown }).self = selfStub;
-  await import('../core/sort-worker');
-  if (!selfStub.onmessage) throw new Error('sort-worker did not install a message handler');
+  await import('../unified/pooled/pooled-sort-worker');
+  if (!selfStub.onmessage) throw new Error('pooled-sort-worker did not install a message handler');
   (globalThis as { Worker?: unknown }).Worker = FakeWorker;
 });
 
@@ -165,7 +168,8 @@ describe('PooledUnifiedSplatMesh', () => {
     pooled.addSource(far);
     expect(near.visible).toBe(false);
     expect(far.visible).toBe(false);
-    expect(near.pooledUnifiedPublicationOwner).toBe(pooled);
+    // Owned: another pooled draw cannot adopt the same source.
+    expect(() => near.adoptPooledPublication({})).toThrow(/another pooled/);
 
     const camera = cameraAt(3);
     // Frame 1: sources update, the combined capture is sent and (synchronously)
@@ -205,9 +209,9 @@ describe('PooledUnifiedSplatMesh', () => {
     const behind = cameraAt(-3);
     pooled.update(behind);
     const reused = lastSort();
-    expect(reused.reuseIndices).toBe(true);
+
     expect(reused.indices).toBeUndefined();
-    expect(reused.orderAsFloat).toBe(true);
+
     pooled.update(behind);
     expect(drawList(pooled)).toEqual({ indices: [0, W], sources: [0, 1] });
 
@@ -218,7 +222,8 @@ describe('PooledUnifiedSplatMesh', () => {
 
     pooled.dispose();
     expect(near.visible).toBe(true);
-    expect(near.pooledUnifiedPublicationOwner).toBeNull();
+    // Released: a new owner may adopt it.
+    expect(() => near.adoptPooledPublication({}).release()).not.toThrow();
     near.dispose();
     far.dispose();
     pool.dispose();
@@ -277,7 +282,7 @@ describe('PooledUnifiedSplatMesh', () => {
     // Removal restores the source's standalone draw and frees its slot.
     expect(pooled.removeSource(b)).toBe(true);
     expect(b.visible).toBe(true);
-    expect(b.pooledUnifiedPublicationOwner).toBeNull();
+    expect(() => b.adoptPooledPublication({}).release()).not.toThrow();
     expect(pooled.removeSource(b)).toBe(false);
     pooled.dispose();
     a.dispose();

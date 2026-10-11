@@ -13,20 +13,6 @@ export interface WorkerSortSnapshot {
   readonly requestId: number;
   readonly spans: Uint32Array;
   readonly indices: Uint32Array;
-  /** Source id per entry of {@link indices} (pooled unified sorts only). */
-  readonly indexSources?: Uint8Array;
-  /**
-   * Hand `indices` / `indexSources` to the worker by transfer instead of
-   * copying them: the host built them for this request and reads them no more.
-   */
-  readonly transferIndices?: boolean;
-  /**
-   * Sort the previous request's (transferred) index list again; `indices`
-   * then carries nothing. Only valid when {@link WorkerSorter.canReuseIndices}.
-   */
-  readonly reuseIndices?: boolean;
-  /** Ask for a `Float32Array` order. */
-  readonly orderAsFloat?: boolean;
   /** Center deltas captured with the snapshot, not live pool views. */
   readonly centerWrites: readonly {
     start: number;
@@ -67,8 +53,6 @@ export class WorkerSorter implements SplatSorter {
   private lastLatencyMs = Number.NaN;
   private inFlightRequestId: number | null = null;
   private nextRequestId = 0;
-  /** A transferred index list the worker still holds, available to `reuseIndices`. */
-  private retainedIndexCount = -1;
 
   constructor(host: WorkerSorterHost, sortMetric: SplatSortMetric = 'depth') {
     this.host = host;
@@ -113,38 +97,21 @@ export class WorkerSorter implements SplatSorter {
     else this.pushCenters(this.host.takeDirtyRows());
     const spans = snapshot?.spans ?? this.host.getActiveSpans();
     this.sentSpans = spans;
-    const reuse = snapshot?.reuseIndices === true;
-    if (reuse && this.retainedIndexCount < 0) {
-      throw new Error('WorkerSorter: reuseIndices without a retained index list.');
-    }
     const message: SortWorkerRequest = {
       type: 'sort',
       requestId,
       sortMetric: this.sortMetric,
       modelView: new Float32Array(modelView.elements),
       spans,
-      ...(reuse ? { reuseIndices: true } : { indices: snapshot?.indices }),
-      ...(!reuse && snapshot?.indexSources ? { indexSources: snapshot.indexSources } : {}),
-      ...(snapshot?.orderAsFloat ? { orderAsFloat: true } : {}),
+      indices: snapshot?.indices,
       matrices: this.host.perSource ? new Float32Array(this.host.perSource.matrices) : undefined,
       sortRange: intersectSortRange(
         sceneSortRange(modelView, bounds, this.sortMetric),
         visibleRange,
       ),
     };
-    const transfer: ArrayBuffer[] = [];
-    if (!reuse && snapshot?.transferIndices && snapshot.indexSources) {
-      transfer.push(snapshot.indices.buffer as ArrayBuffer);
-      transfer.push(snapshot.indexSources.buffer as ArrayBuffer);
-      this.retainedIndexCount = snapshot.indices.length;
-    }
-    this.worker.postMessage(message, transfer);
+    this.worker.postMessage(message);
     return true;
-  }
-
-  /** Whether the worker holds a transferred pooled index list to sort again. */
-  get canReuseIndices(): boolean {
-    return this.retainedIndexCount >= 0;
   }
 
   /** Internal timing diagnostics used by the demo's opt-in XR A/B harness. */
@@ -180,7 +147,7 @@ export class WorkerSorter implements SplatSorter {
       );
       const start = row.start * width;
       const count = row.count * width;
-      const sourceIds = this.host.perSource?.sourceIds?.slice(start, start + count);
+      const sourceIds = this.host.perSource?.sourceIds.slice(start, start + count);
       const message: SortWorkerRequest = { type: 'write', start, centers, sourceIds };
       this.worker.postMessage(message, [centers.buffer]);
     }
@@ -214,7 +181,7 @@ export class WorkerSorter implements SplatSorter {
     // writing it would flag a post-dispose GPU upload on the dead draw list.
     if (this.disposed) return;
     if (this.host.onOrderReady) {
-      this.host.onOrderReady(message.requestId, order, message.orderSources);
+      this.host.onOrderReady(message.requestId, order);
       return;
     }
     // A reply computed against an outdated active set must not overwrite the
@@ -260,12 +227,9 @@ export interface WorkerSorterHost {
   readonly rowWidth: number;
   /** The pool's centers backing array (vec4 stride; xyz used). */
   readonly centers: Float32Array;
-  /**
-   * Source metadata for a unified pool; omitted for a normal mesh. A pooled
-   * host that sends `indexSources` with every snapshot may omit `sourceIds`.
-   */
+  /** Source metadata for a unified pool; omitted for a normal mesh. */
   readonly perSource?: {
-    readonly sourceIds?: Float32Array;
+    readonly sourceIds: Float32Array;
     readonly matrices: Float32Array;
   };
   readonly splatIndexAttribute: THREE.InstancedBufferAttribute;
@@ -283,15 +247,8 @@ export interface WorkerSorterHost {
    * resync - not patch - it on the next active-list mutation.
    */
   onOrderApplied?(): void;
-  /**
-   * Queues a completed immutable snapshot; the host publishes it before drawing.
-   * `orderSources` echoes the snapshot's `indexSources` in draw order.
-   */
-  onOrderReady?(
-    requestId: number,
-    order: Uint32Array | Float32Array,
-    orderSources?: Uint8Array,
-  ): void;
+  /** Queues a completed immutable snapshot; the host publishes it before drawing. */
+  onOrderReady?(requestId: number, order: Uint32Array): void;
   /** Restores dirty coverage after an asynchronous worker failure. */
   onSortFailure?(requestId: number): void;
 }

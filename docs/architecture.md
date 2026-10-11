@@ -98,10 +98,12 @@ src/
  radix-sorter.ts experimental GPU radix sorter; inject via `radixSort()` / `exactSort()`
  worker-sorter.ts CPU counting sort in a worker (WebGL2 fallback)
  sort-worker.ts the worker script behind worker-sorter
+ sort-worker-kernel.ts radix depth-order pass shared by both CPU sort workers
 
  -- unified/ --
  unified-splat-mesh.ts UnifiedSplatMesh: one WebGPU draw over registered meshes
  pooled/pooled-unified-splat-mesh.ts PooledUnifiedSplatMesh: one CPU-sorted draw over meshes sharing a pool (WebGL2)
+ pooled/pooled-sorter.ts, pooled-sort-worker.ts its own CPU sort worker (index-list reuse, float order)
 
  -- streaming/ --
  streamed-splat-mesh.ts LOD streaming pool; dynamic-imports RAD/LCC/frontier

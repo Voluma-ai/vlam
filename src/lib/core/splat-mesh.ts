@@ -379,13 +379,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private publishedActiveCount = 0;
   /** WebGL2 and explicit WebGPU worker sorts publish texture rows and order together. */
   private workerPublicationEnabled = false;
-  /**
-   * A pooled unified mesh that captures and publishes this mesh's worker
-   * snapshots itself (`@voluma/vlam/unified/pooled`). While set, this mesh
-   * keeps the publication boundary (rows stay pending until the owner's
-   * combined order lands) but never sorts, uploads, or publishes on its own.
-   */
-  private pooledUnifiedOwner: object | null = null;
+  /** Pooled unified owner, if any. */
+  private pooledOwner: object | null = null;
   private workerPublicationGeneration = 0;
   private workerSnapshotInFlight: WorkerPublicationSnapshot | null = null;
   private workerPublicationPending: {
@@ -781,8 +776,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     // important than retaining higher-order SH for one tenant. The mesh keeps
     // its own effective count so it never reads or writes the pool's SH
     // textures when its request is incompatible.
-    // A pool built with `allowLatePackedSh` takes the first SH request instead
-    // (a host's scene pool created before the main capture's bands are known).
+    // A pool built with `allowLatePackedSh` takes the first SH request instead.
     const shMismatch =
       suppliedPool !== undefined &&
       packedShBands !== 0 &&
@@ -1593,6 +1587,44 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     return true;
   }
 
+  /** @internal Hands the worker publication to `unified/pooled`. */
+  adoptPooledPublication(owner: object): PooledPublication {
+    // The owner captures this mesh's pending rows (without indices: it reads
+    // the live list itself), queues or restores them around its combined
+    // worker sort, and publishes them in the frame it installs that order.
+    if (this.pooledOwner && this.pooledOwner !== owner) {
+      throw new Error('SplatMesh: already drawn by another pooled unified mesh.');
+    }
+    this.pooledOwner = owner;
+    this.invalidateWorkerPublications();
+    this.enableWorkerPublicationBoundary();
+    return {
+      capture: () => this.captureWorkerPublication(false),
+      queue: (id) => {
+        this.queueWorkerPublication(id, EMPTY_INDICES);
+        return this.workerPublicationPending?.snapshot.generation === id;
+      },
+      restore: (id) => this.restoreWorkerPublication(id),
+      discard: () => this.invalidateWorkerPublications(),
+      publish: (renderer) => {
+        const pending = this.workerPublicationPending !== null;
+        this.prepareWorkerPublication(renderer, true);
+        // The owner draws these rows; this mesh's own list stays empty.
+        (this.geometry as THREE.InstancedBufferGeometry).instanceCount = 0;
+        return pending;
+      },
+      release: () => {
+        if (this.pooledOwner !== owner) return;
+        this.pooledOwner = null;
+        this.invalidateWorkerPublications();
+        this.publishedActiveCount = 0;
+        (this.geometry as THREE.InstancedBufferGeometry).instanceCount = 0;
+        this.sortedActiveListVersion = -1;
+        this.invalidateSort();
+      },
+    };
+  }
+
   /** Called when a matching order has been installed and is ready to draw. */
   protected onActiveListReady(_activeListVersion: number): void {}
 
@@ -2189,10 +2221,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (this.disposed) return;
     this.bindRenderingOnlyRenderer(renderer, 'update');
     this.lastRenderer = renderer;
-    if (this.pooledUnifiedOwner !== null) {
-      // A pooled unified owner sorts one combined active list on the CPU and
-      // publishes this mesh's captured rows together with that order, so the
-      // boundary stays up whatever the backend; the owner drives it.
+    if (this.pooledOwner) {
       this.enableWorkerPublicationBoundary();
     } else if (options.sort === false && this.unifiedPickVisibility !== null) {
       // A registered unified source is gathered through its textures and the
@@ -2224,7 +2253,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.sortSubmissionMarkedFrame = -1;
     if (
       this.workerPublicationEnabled &&
-      this.pooledUnifiedOwner === null &&
+      !this.pooledOwner &&
       this.activeCount === 0 &&
       !this.workerSnapshotInFlight &&
       !this.workerPublicationPending
@@ -3017,8 +3046,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    */
   dispose(): void {
     if (this.disposed) return;
-    this.pooledUnifiedOwner = null;
     this.disposed = true;
+    this.pooledOwner = null;
     this.invalidateWorkerPublications(false);
     super.dispose();
     if (this.shCacheRenderer) this.shCache?.dispose(this.shCacheRenderer);
@@ -3224,16 +3253,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * scenes (the historical streamed WebGL flash). This is deliberately not
    * folded into `flushPendingUploads` as a performance shortcut.
    */
-  private prepareWorkerPublication(renderer: THREE.WebGPURenderer): void {
+  private prepareWorkerPublication(renderer: THREE.WebGPURenderer, byOwner = false): void {
     if (!this.workerPublicationEnabled) {
       this.flushPendingUploads(renderer);
       return;
     }
-    // The owner publishes through `publishPooledUnifiedPublication`, in step
-    // with its combined draw order; nothing here may run ahead of it.
-    if (this.pooledUnifiedOwner !== null) return;
     const publication = this.workerPublicationPending;
-    if (!publication) return;
+    // A pooled owner publishes in step with its combined order, never earlier.
+    if (!publication || (this.pooledOwner && !byOwner)) return;
     this.uploadCapturedPublication(renderer, publication.snapshot);
     // Rows land here, frames after the pool write that bumped
     // `contentRevision`. A SH cache refreshed in between read the old
@@ -3260,7 +3287,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * These copies are bounded by merged dirty rows, never a duplicate pool; they
    * must nevertheless remain immutable until the reply publishes.
    */
-  private captureWorkerPublication(includeIndices = true): WorkerSortSnapshot | null {
+  private captureWorkerPublication(withIndices = true): WorkerSortSnapshot | null {
     if (this.workerSnapshotInFlight || this.workerPublicationPending) return null;
     const width = SplatMesh.DATA_TEXTURE_WIDTH;
     const coreRows = mergeUploadRows(this.pendingUploadRows).map((row) => {
@@ -3290,10 +3317,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       if (rows.length > 0) channels.set(name, rows);
     }
     const spans = this.currentWorkerSpans();
-    // A pooled owner re-sorting an unchanged list skips the 4 B/splat copy.
-    const activeIndices = includeIndices
+    const activeIndices = withIndices
       ? (this.sourceIndexAttribute.array as Uint32Array).slice(0, this.activeCount)
-      : EMPTY_ORDER;
+      : EMPTY_INDICES;
     const snapshot: WorkerPublicationSnapshot = {
       generation: ++this.workerPublicationGeneration,
       activeCount: this.activeCount,
@@ -3317,129 +3343,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         ),
       })),
     };
-  }
-
-  /**
-   * Hands this mesh's worker publication boundary to a pooled unified mesh.
-   * Any standalone snapshot is dropped and its rows requeued, so the owner's
-   * first capture carries everything that is still pending upload.
-   *
-   * @internal
-   */
-  adoptPooledUnifiedPublication(owner: object): void {
-    if (this.pooledUnifiedOwner === owner) return;
-    if (this.pooledUnifiedOwner !== null) {
-      throw new Error('SplatMesh: already publishing through another pooled unified mesh.');
-    }
-    if (this.storageModeValue === 'render-only') {
-      throw new Error('SplatMesh: storageMode "render-only" cannot join a pooled unified draw.');
-    }
-    this.pooledUnifiedOwner = owner;
-    this.invalidateWorkerPublications();
-    this.enableWorkerPublicationBoundary();
-  }
-
-  /**
-   * Returns the publication boundary to this mesh. Nothing is drawn until the
-   * mesh's own next worker publication lands; the owner's rows are requeued.
-   *
-   * @internal
-   */
-  releasePooledUnifiedPublication(owner: object): void {
-    if (this.pooledUnifiedOwner !== owner) return;
-    this.pooledUnifiedOwner = null;
-    this.invalidateWorkerPublications();
-    this.publishedActiveCount = 0;
-    (this.geometry as THREE.InstancedBufferGeometry).instanceCount = 0;
-    this.drawListSorted = false;
-    this.sortedActiveListVersion = -1;
-    this.invalidateSort();
-  }
-
-  /** @internal The pooled owner, if any. */
-  get pooledUnifiedPublicationOwner(): object | null {
-    return this.pooledUnifiedOwner;
-  }
-
-  /**
-   * Captures this mesh's current CPU scene for an owner-driven worker sort:
-   * the exact active indices plus the pending row writes, both immutable until
-   * the owner queues or restores them. `null` while an earlier capture is still
-   * in flight or awaiting publication.
-   *
-   * @internal
-   */
-  capturePooledUnifiedPublication(options: { indices?: boolean } = {}): {
-    requestId: number;
-    activeListVersion: number;
-    contentRevision: number;
-    /** Empty when the owner asked for no indices (re-sorting an unchanged list). */
-    indices: Uint32Array;
-    centerWrites: readonly { start: number; centers: Float32Array }[];
-  } | null {
-    if (this.pooledUnifiedOwner === null || this.disposed) return null;
-    const snapshot = this.captureWorkerPublication(options.indices !== false);
-    if (!snapshot) return null;
-    return {
-      requestId: snapshot.requestId,
-      activeListVersion: this.activeListVersion,
-      contentRevision: this.contentRevision,
-      indices: snapshot.indices,
-      centerWrites: snapshot.centerWrites,
-    };
-  }
-
-  /**
-   * Moves the captured snapshot `requestId` from in flight to pending; the
-   * owner publishes it with {@link publishPooledUnifiedPublication}. `false`
-   * when that capture no longer exists (strategy change, dispose).
-   *
-   * @internal
-   */
-  queuePooledUnifiedPublication(requestId: number): boolean {
-    this.queueWorkerPublication(requestId, EMPTY_ORDER);
-    return this.workerPublicationPending?.snapshot.generation === requestId;
-  }
-
-  /**
-   * Drops the in-flight capture `requestId` and requeues its rows for a later
-   * capture (an owner discarding a stale sort).
-   *
-   * @internal
-   */
-  restorePooledUnifiedPublication(requestId: number): void {
-    this.restoreWorkerPublication(requestId);
-  }
-
-  /**
-   * Drops a pending (already ordered) owner capture, requeuing its rows for a
-   * later capture: the owner discards a combined order it can no longer draw.
-   *
-   * @internal
-   */
-  discardPooledUnifiedPublication(): void {
-    if (this.pooledUnifiedOwner === null) return;
-    this.invalidateWorkerPublications();
-  }
-
-  /**
-   * Uploads the pending captured rows and marks that active list as ready.
-   * The owner installs the matching combined order in the same frame. Returns
-   * the published active-list token, or `null` with nothing pending.
-   *
-   * @internal
-   */
-  publishPooledUnifiedPublication(renderer: THREE.WebGPURenderer): number | null {
-    const publication = this.workerPublicationPending;
-    if (!publication || this.pooledUnifiedOwner === null || this.disposed) return null;
-    this.uploadCapturedPublication(renderer, publication.snapshot);
-    this.shCache?.invalidate();
-    this.publishedActiveCount = publication.snapshot.activeCount;
-    this.sortedActiveListVersion = publication.snapshot.activeListVersion;
-    this.drawListSorted = true;
-    this.workerPublicationPending = null;
-    this.onActiveListReady(publication.snapshot.activeListVersion);
-    return publication.snapshot.activeListVersion;
   }
 
   private currentWorkerSpans(): Uint32Array {
@@ -4799,8 +4702,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           onOrderApplied: () => {
             this.drawListSorted = true;
           },
-          onOrderReady: (requestId, order) =>
-            this.queueWorkerPublication(requestId, order as Uint32Array),
+          onOrderReady: (requestId, order) => this.queueWorkerPublication(requestId, order),
           onSortFailure: (requestId) => this.restoreWorkerPublication(requestId),
         },
         this.sortMetric,
@@ -4828,8 +4730,17 @@ export function getSplatPublicationToken(mesh: SplatMesh): number {
 }
 
 const _appendBox = new THREE.Box3();
-/** Pooled unified publications carry no per-mesh order; the owner draws. */
-const EMPTY_ORDER = new Uint32Array(0);
+const EMPTY_INDICES = new Uint32Array(0);
+
+/** @internal What {@link SplatMesh.adoptPooledPublication} hands its owner. */
+export interface PooledPublication {
+  capture(): WorkerSortSnapshot | null;
+  queue(requestId: number): boolean;
+  restore(requestId: number): void;
+  discard(): void;
+  publish(renderer: THREE.WebGPURenderer): boolean;
+  release(): void;
+}
 const _uploadPosition = new THREE.Vector2();
 const _uploadSrcRegion = new THREE.Box2();
 const _queryLocal = new THREE.Vector3();
