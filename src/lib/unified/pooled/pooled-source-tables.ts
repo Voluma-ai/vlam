@@ -12,7 +12,10 @@ import { uniformArray } from 'three/tsl';
 
 /** vec4 rows per source in {@link PooledSourceTables.dataNode}. */
 export const SOURCE_DATA_ROWS = 7;
-/** Row: x = display opacity, y = stored-alpha multiplier (2 for `.rad`). */
+/**
+ * Row: x = display opacity, y = stored-alpha multiplier (2 for `.rad`),
+ * z = draw mask (1 drawn, 0 masked; {@link PooledSourceTables.setDrawMask}).
+ */
 export const ROW_PARAMS = 0;
 /** Rows: packed-SH dequantization range (xyz). */
 export const ROW_SH_MIN = 1;
@@ -80,11 +83,16 @@ export class PooledSourceTables {
   }
 
   setParams(id: number, opacity: number, alphaScale: number): void {
-    this.row(id, ROW_PARAMS).set(opacity, alphaScale, 0, 0);
+    this.row(id, ROW_PARAMS).set(opacity, alphaScale, 1, 0);
   }
 
   setOpacity(id: number, opacity: number): void {
     this.row(id, ROW_PARAMS).x = opacity;
+  }
+
+  /** Draw mask for one source; independent of opacity so neither write disturbs the other. */
+  setDrawMask(id: number, drawn: boolean): void {
+    this.row(id, ROW_PARAMS).z = drawn ? 1 : 0;
   }
 
   setShRange(id: number, min: THREE.Vector3 | null, max: THREE.Vector3 | null): void {

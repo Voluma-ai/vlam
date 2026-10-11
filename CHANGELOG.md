@@ -35,6 +35,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   packed-SH range are honoured. Browser check
   `pooled-unified.spec.ts` (both projects) verifies occlusion from either side,
   hide / fade / move / remove. Gate with `supportsPooledUnifiedSplatMesh`.
+- Pooled draw: `setSourceDrawMask(source, drawn)`, a per-view draw mask that
+  is a uniform write only. Unlike `setSourceVisible` / `setSourceOpacity` it
+  never changes membership, so the installed order and an in-flight sort
+  survive; views that share a camera (split panes) keep one mesh sorted over
+  the union and flip the mask before each draw. Masked sources are not picked.
 - Pooled draw: per-source modifier stacks (`setSourceModifiers`), evaluated
   in each source's local frame exactly as the compute path gathers them, so
   marker SDF shapes, marker lights, main-splat shaders, reveals and fog draw on

@@ -24,6 +24,10 @@
  * source's local frame, as the compute path's gather does; the mesh's own
  * {@link modifiers} then run on every splat in the drawn (world) frame; then
  * per-source opacity. Placement, LOD alpha and packed-SH range are per source.
+ *
+ * Several views that share one camera (split panes) draw different subsets of
+ * the same sorted set through {@link setSourceDrawMask}: membership stays the
+ * union, and the mask is a uniform write that leaves the order alone.
  */
 import * as THREE from 'three/webgpu';
 import type { WebGLRenderer } from 'three';
@@ -122,6 +126,8 @@ interface SourceRecord {
   id: number;
   opacity: number;
   visible: boolean;
+  /** Per-view draw mask ({@link PooledUnifiedSplatMesh.setSourceDrawMask}); never membership. */
+  drawMask: boolean;
   originalVisible: boolean;
   view: UnifiedSourceView | null;
   lastMatrix: THREE.Matrix4;
@@ -534,6 +540,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
       id,
       opacity: options.opacity ?? 1,
       visible,
+      drawMask: true,
       originalVisible: source.visible,
       view: null,
       lastMatrix: new THREE.Matrix4().copy(view.matrixWorld),
@@ -595,6 +602,23 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     record.visible = visible;
     record.source.setUnifiedPickVisibility(visible);
     this.noteMembershipChange();
+  }
+
+  /**
+   * Draws or skips a source in the next draw **without** changing membership.
+   * Unlike {@link setSourceVisible} and {@link setSourceOpacity}, the installed
+   * order and any in-flight sort survive: the mask is one uniform write and
+   * takes effect on the next render. Use it to draw different subsets of one
+   * sorted set, for example two split panes that share the camera (keep the
+   * union visible, flip the mask before each pane). Masked sources are not
+   * picked. Defaults to drawn; the mask is dropped with the source.
+   */
+  setSourceDrawMask(source: SplatMesh, drawn: boolean): void {
+    this.assertNotDisposed('setSourceDrawMask');
+    const record = this.recordOf(source);
+    if (record.drawMask === drawn) return;
+    record.drawMask = drawn;
+    this.tables.setDrawMask(record.id, drawn);
   }
 
   /** Updates, captures, publishes and requests a combined sort. Call before rendering. */
@@ -731,7 +755,9 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     options?: SplatPickOptions,
   ): Promise<UnifiedSplatPickResult | null> {
     if (this.disposed) return null;
-    const candidates = this.sources.filter((record) => record.visible && record.opacity > 0);
+    const candidates = this.sources.filter(
+      (record) => record.visible && record.drawMask && record.opacity > 0,
+    );
     if (candidates.length === 0) return null;
     const hits = await Promise.all(
       candidates.map(async (record) => {
@@ -1178,7 +1204,9 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     const tables = this.tables;
     const dataBase = sourceId.mul(SOURCE_DATA_ROWS);
     const dataRow = (row: number) => asNode<'vec4'>(tables.dataNode.element(dataBase.add(row)));
-    const opacity = asNode<'float'>(dataRow(ROW_PARAMS).x);
+    // Display opacity times the per-view draw mask (setSourceDrawMask).
+    const params = dataRow(ROW_PARAMS);
+    const opacity = asNode<'float'>(asNode<'float'>(params.x).mul(asNode<'float'>(params.z)));
     const sourceStacks = createSourceStacksModifier({
       groups: groupSourceStacks(this.sources),
       sourceId,

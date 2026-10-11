@@ -89,8 +89,13 @@ What differs:
   order rather than re-sorting.
 - **Capacity is the pool.** Nothing is ever dropped; size the pool for the
   main's staged-swap headroom plus every marker.
-- A source may belong to one pooled mesh at a time; on WebGPU prefer
-  `UnifiedSplatMesh`.
+- **A source belongs to one pooled mesh at a time.** Two views that share a
+  camera (split panes) therefore do not get a mesh each: keep `setSourceVisible`
+  at the union of both views, call `update` once per frame, and flip
+  `unified.setSourceDrawMask(source, drawn)` before each view's draw. The mask
+  is one uniform write that leaves the installed order and any in-flight sort
+  alone, and a sorted list restricted to a subset stays sorted. On WebGPU
+  prefer `UnifiedSplatMesh`.
 
 ## Creating and registering sources
 
