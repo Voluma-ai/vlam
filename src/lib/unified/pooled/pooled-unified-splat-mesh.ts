@@ -104,14 +104,17 @@ interface CapturePart {
   record: SourceRecord;
   requestId: number;
   activeListVersion: number;
-  /** The source's exact active indices at capture (an immutable copy). */
+  /**
+   * The source's live active-list prefix at capture. Valid only inside the
+   * synchronous capture that copies it into the combined request.
+   */
   indices: Uint32Array;
 }
 
 interface PendingPublication {
   parts: readonly CapturePart[];
-  order: Uint32Array;
-  orderSources: Float32Array;
+  order: Uint32Array | Float32Array;
+  orderSources: Uint8Array;
 }
 
 interface InstalledPublication {
@@ -196,6 +199,13 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
   private publicationRevision = 0;
   private renderedPublicationRevision = -1;
   private lastCaptureCount = 0;
+  /**
+   * What the worker's retained index list describes: the drawn records, in
+   * order, with the versions they were captured at. A camera-only re-sort of
+   * the same list sends no indices at all.
+   */
+  private retainedParts:
+    { record: SourceRecord; activeListVersion: number; contentRevision: number }[] | null = null;
   private pendingMirrorRows: { start: number; count: number }[] = [];
   /** Undrawn sources published outside the worker cycle, awaiting a rendered-frame acknowledgement. */
   private renderAcks: { record: SourceRecord; activeListVersion: number }[] = [];
@@ -242,16 +252,18 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     );
     // Draw-order attributes written from the worker reply. The pool bounds the
     // combined active count, so both are pool-sized (8 B per pool splat).
+    // Default (static) usage on purpose: three's `Attributes.update` re-sends a
+    // `DynamicDrawUsage` attribute's whole array every frame, which here is
+    // 2 × 82 MB per frame on an 8M pool (~36 ms of CPU). With static usage the
+    // version bump at publication uploads just the installed prefix.
     const splatIndexAttribute = new THREE.InstancedBufferAttribute(
       new Float32Array(pool.capacity),
       1,
     );
-    splatIndexAttribute.setUsage(THREE.DynamicDrawUsage);
     const sourceIdAttribute = new THREE.InstancedBufferAttribute(
       new Float32Array(pool.capacity),
       1,
     );
-    sourceIdAttribute.setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute('splatIndex', splatIndexAttribute);
     geometry.setAttribute(SOURCE_ID_ATTRIBUTE, sourceIdAttribute);
     geometry.instanceCount = 0;
@@ -706,6 +718,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     this.sources.length = 0;
     this.sorter?.dispose();
     this.sorter = null;
+    this.retainedParts = null;
     this.inFlight = null;
     this.pending = null;
     this.installed = null;
@@ -751,6 +764,9 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
    */
   private noteMembershipChange(): void {
     this.membership++;
+    // Source ids can be reassigned after a removal; never reuse a list built
+    // under the previous membership.
+    this.retainedParts = null;
     if (this.pending !== null) {
       for (const part of this.pending.parts) {
         part.record.source.discardPooledUnifiedPublication();
@@ -830,7 +846,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
       // Nothing to draw: drop the installed order rather than keep drawing
       // sources that have since emptied or hidden.
       if (this.installed !== null && this.pending === null && this.inFlight === null) {
-        this.installOrder([], new Uint32Array(0), new Float32Array(0));
+        this.installOrder([], new Uint32Array(0), new Uint8Array(0));
       }
       return false;
     }
@@ -883,15 +899,37 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
   /** One combined immutable capture across every drawn source. */
   private captureSnapshot(): WorkerSortSnapshot | null {
     if (this.inFlight !== null || this.pending !== null) return null;
+    const drawn: SourceRecord[] = [];
+    for (const record of this.sources) {
+      const view = record.view;
+      if (record.visible && record.opacity > 0 && view !== null && view.activeCount > 0) {
+        drawn.push(record);
+      }
+    }
+    // Same drawn sources at the same versions as the list the worker holds:
+    // skip every index copy and let the worker sort its retained list again.
+    const retained = this.retainedParts;
+    const reuse =
+      retained !== null &&
+      this.sorter?.canReuseIndices === true &&
+      retained.length === drawn.length &&
+      retained.every((entry, i) => {
+        const record = drawn[i] as SourceRecord;
+        const view = record.view as UnifiedSourceView;
+        return (
+          entry.record === record &&
+          entry.activeListVersion === view.activeListVersion &&
+          entry.contentRevision === view.contentRevision
+        );
+      });
     const parts: CapturePart[] = [];
     const centerWrites: { start: number; centers: Float32Array; sourceIds?: Float32Array }[] = [];
     let total = 0;
-    for (const record of this.sources) {
-      const view = record.view;
-      if (!record.visible || record.opacity <= 0 || view === null || view.activeCount === 0) {
-        continue;
-      }
-      const capture = record.source.capturePooledUnifiedPublication();
+    for (const record of drawn) {
+      const view = record.view as UnifiedSourceView;
+      // Never let the source copy its own list: the concatenation below reads
+      // the live list in this same synchronous pass, so one copy serves both.
+      const capture = record.source.capturePooledUnifiedPublication({ indices: false });
       if (capture === null) {
         // A source could not capture (its own boundary is busy). Release the
         // others so none of them holds a snapshot nobody will publish.
@@ -903,20 +941,31 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
         record,
         requestId: capture.requestId,
         activeListVersion: capture.activeListVersion,
-        indices: capture.indices,
+        indices: (view.sourceIndex.array as Uint32Array).subarray(0, view.activeCount),
       });
       record.capturedActiveListVersion = capture.activeListVersion;
       record.capturedContentRevision = capture.contentRevision;
       for (const row of capture.centerWrites) centerWrites.push(row);
-      total += capture.indices.length;
+      total += view.activeCount;
     }
-    const indices = new Uint32Array(total);
-    const indexSources = new Float32Array(total);
-    let cursor = 0;
-    for (const part of parts) {
-      indices.set(part.indices, cursor);
-      indexSources.fill(part.record.id, cursor, cursor + part.indices.length);
-      cursor += part.indices.length;
+    let indices = EMPTY_SPANS;
+    let indexSources: Uint8Array | undefined;
+    if (!reuse) {
+      indices = new Uint32Array(total);
+      // One byte per entry (ids stay below MAX_MERGED_SPLAT_SOURCES); both arrays
+      // are built fresh here and handed to the worker by transfer, not copied.
+      indexSources = new Uint8Array(total);
+      let cursor = 0;
+      for (const part of parts) {
+        indices.set(part.indices, cursor);
+        indexSources.fill(part.record.id, cursor, cursor + part.indices.length);
+        cursor += part.indices.length;
+      }
+      this.retainedParts = parts.map((part) => ({
+        record: part.record,
+        activeListVersion: part.activeListVersion,
+        contentRevision: part.record.capturedContentRevision,
+      }));
     }
     // Rows written before a source joined: resend their centers so the worker
     // mirror matches the pool backing it sorts from.
@@ -933,12 +982,33 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     const requestId = ++this.nextRequestId;
     this.inFlight = { requestId, parts, membership: this.membership };
     this.lastCaptureCount = total;
-    return { requestId, spans: EMPTY_SPANS, indices, indexSources, centerWrites };
+    return reuse
+      ? {
+          requestId,
+          spans: EMPTY_SPANS,
+          indices,
+          centerWrites,
+          reuseIndices: true,
+          orderAsFloat: true,
+        }
+      : {
+          requestId,
+          spans: EMPTY_SPANS,
+          indices,
+          ...(indexSources ? { indexSources } : {}),
+          centerWrites,
+          transferIndices: true,
+          orderAsFloat: true,
+        };
   }
 
   private nextRequestId = 0;
 
-  private onOrderReady(requestId: number, order: Uint32Array, orderSources?: Float32Array): void {
+  private onOrderReady(
+    requestId: number,
+    order: Uint32Array | Float32Array,
+    orderSources?: Uint8Array,
+  ): void {
     const inFlight = this.inFlight;
     if (inFlight === null || inFlight.requestId !== requestId || this.disposed) return;
     this.inFlight = null;
@@ -989,8 +1059,8 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
 
   private installOrder(
     parts: readonly { record: SourceRecord; activeListVersion: number }[],
-    order: Uint32Array,
-    orderSources: Float32Array,
+    order: Uint32Array | Float32Array,
+    orderSources: Uint8Array,
   ): void {
     const count = order.length;
     const indexes = this.splatIndexAttribute.array as Float32Array;

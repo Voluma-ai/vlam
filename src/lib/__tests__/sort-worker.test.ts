@@ -60,7 +60,7 @@ function sortAndReceive(
   send({ type: 'sort', requestId: 1, modelView, spans, indices, sortMetric, sortRange });
   expect(replies).toHaveLength(1);
   expect(replies[0]!.type).toBe('order');
-  return replies[0]!.order;
+  return replies[0]!.order as Uint32Array;
 }
 
 function writeSourceIds(sourceIds: Float32Array): void {

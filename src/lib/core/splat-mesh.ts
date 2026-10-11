@@ -3260,7 +3260,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    * These copies are bounded by merged dirty rows, never a duplicate pool; they
    * must nevertheless remain immutable until the reply publishes.
    */
-  private captureWorkerPublication(): WorkerSortSnapshot | null {
+  private captureWorkerPublication(includeIndices = true): WorkerSortSnapshot | null {
     if (this.workerSnapshotInFlight || this.workerPublicationPending) return null;
     const width = SplatMesh.DATA_TEXTURE_WIDTH;
     const coreRows = mergeUploadRows(this.pendingUploadRows).map((row) => {
@@ -3290,10 +3290,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       if (rows.length > 0) channels.set(name, rows);
     }
     const spans = this.currentWorkerSpans();
-    const activeIndices = (this.sourceIndexAttribute.array as Uint32Array).slice(
-      0,
-      this.activeCount,
-    );
+    // A pooled owner re-sorting an unchanged list skips the 4 B/splat copy.
+    const activeIndices = includeIndices
+      ? (this.sourceIndexAttribute.array as Uint32Array).slice(0, this.activeCount)
+      : EMPTY_ORDER;
     const snapshot: WorkerPublicationSnapshot = {
       generation: ++this.workerPublicationGeneration,
       activeCount: this.activeCount,
@@ -3369,15 +3369,16 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
    *
    * @internal
    */
-  capturePooledUnifiedPublication(): {
+  capturePooledUnifiedPublication(options: { indices?: boolean } = {}): {
     requestId: number;
     activeListVersion: number;
     contentRevision: number;
+    /** Empty when the owner asked for no indices (re-sorting an unchanged list). */
     indices: Uint32Array;
     centerWrites: readonly { start: number; centers: Float32Array }[];
   } | null {
     if (this.pooledUnifiedOwner === null || this.disposed) return null;
-    const snapshot = this.captureWorkerPublication();
+    const snapshot = this.captureWorkerPublication(options.indices !== false);
     if (!snapshot) return null;
     return {
       requestId: snapshot.requestId,
@@ -4798,7 +4799,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           onOrderApplied: () => {
             this.drawListSorted = true;
           },
-          onOrderReady: (requestId, order) => this.queueWorkerPublication(requestId, order),
+          onOrderReady: (requestId, order) =>
+            this.queueWorkerPublication(requestId, order as Uint32Array),
           onSortFailure: (requestId) => this.restoreWorkerPublication(requestId),
         },
         this.sortMetric,

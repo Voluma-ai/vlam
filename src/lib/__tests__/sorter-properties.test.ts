@@ -389,7 +389,7 @@ function sortAndReceive(modelView: Float32Array, spans: Uint32Array): Uint32Arra
   replies.length = 0;
   send({ type: 'sort', requestId: 1, sortMetric: 'depth', modelView, spans });
   expect(replies).toHaveLength(1);
-  return replies[0]!.order;
+  return replies[0]!.order as Uint32Array;
 }
 
 function activePoolIndices(spans: readonly [number, number][]): number[] {

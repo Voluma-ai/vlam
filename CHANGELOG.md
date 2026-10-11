@@ -36,6 +36,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   own instead of folding each source's. Browser check
   `pooled-unified.spec.ts` (both projects) verifies occlusion from either side,
   hide / fade / move / remove. Gate with `supportsPooledUnifiedSplatMesh`.
+- Pooled draw frame cost: the order attributes use static usage (three
+  re-uploads a `DynamicDrawUsage` attribute's whole array every frame, ~36 ms
+  per frame on an 8M-splat pool), a camera-only re-sort of an unchanged scene
+  sends no index list (the worker keeps the last transferred one,
+  `reuseIndices`), per-sort source ids are one byte and transferred, and the
+  worker answers with a float order ready for the `splatIndex` attribute.
+  Measured on an 8M LCC2 main plus one marker under a scripted orbit, forced
+  WebGL2: frames over 33 ms went from every frame to 1 in 600, fewer than the
+  standalone WebGL2 draws of the same scene (7 in 550).
 - `SplatPool`: `allowLatePackedSh` lets a pool created with no packed SH take
   the first tenant's SH request (`allocatePackedSh`), for a scene pool built
   before the main capture's bands are known.

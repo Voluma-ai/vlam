@@ -182,6 +182,15 @@ describe('PooledUnifiedSplatMesh', () => {
     // Frame 2: publication - the far source draws first.
     pooled.update(camera);
     expect(instanceCount(pooled)).toBe(2);
+    // Static usage: three re-sends a DynamicDrawUsage attribute's whole array
+    // every frame (2 × 4 B per pool splat), which cost ~36 ms/frame at 8M.
+    const geometry = pooled.geometry as THREE.InstancedBufferGeometry;
+    expect((geometry.getAttribute('splatIndex') as THREE.BufferAttribute).usage).toBe(
+      THREE.StaticDrawUsage,
+    );
+    expect((geometry.getAttribute('sourceId') as THREE.BufferAttribute).usage).toBe(
+      THREE.StaticDrawUsage,
+    );
     expect(drawList(pooled)).toEqual({ indices: [W, 0], sources: [1, 0] });
     expect(instanceCount(near)).toBe(0);
     expect(near.activeSplatCount).toBe(1);
@@ -191,8 +200,14 @@ describe('PooledUnifiedSplatMesh', () => {
     expect(pooled.getDrawPublicationSnapshot().ready).toBe(true);
 
     // Camera on the other side: the order flips after the next round trip.
+    // Nothing changed in either source, so the worker re-sorts the index
+    // list it retained from the first request.
     const behind = cameraAt(-3);
     pooled.update(behind);
+    const reused = lastSort();
+    expect(reused.reuseIndices).toBe(true);
+    expect(reused.indices).toBeUndefined();
+    expect(reused.orderAsFloat).toBe(true);
     pooled.update(behind);
     expect(drawList(pooled)).toEqual({ indices: [0, W], sources: [0, 1] });
 

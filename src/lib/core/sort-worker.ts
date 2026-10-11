@@ -33,6 +33,9 @@ const KEY_MAX = 0xffffffff;
 
 let centers: Float32Array = new Float32Array(0);
 let sourceIds: Float32Array = new Float32Array(0);
+/** The last transferred index list, kept for `reuseIndices` requests. */
+let retainedIndices: Uint32Array | null = null;
+let retainedIndexSources: Uint8Array | undefined;
 const counts = new Uint32Array(RADIX);
 
 // Per-sort working arrays, grown to the largest active count seen and reused
@@ -60,11 +63,12 @@ function sortByDepth(
   modelView: Float32Array,
   spans: Uint32Array,
   indices: Uint32Array | undefined,
-  indexSources: Float32Array | undefined,
+  indexSources: Uint8Array | undefined,
   matrices: Float32Array | undefined,
   sortMetric: 'depth' | 'radial',
   sortRange: SplatSortRange | undefined,
-): { order: Uint32Array; orderSources: Float32Array | undefined } {
+  orderAsFloat: boolean,
+): { order: Uint32Array | Float32Array; orderSources: Uint8Array | undefined } {
   // Depth needs row 2; radial distance uses all three camera-space rows.
   const m0 = modelView[0] as number;
   const m4 = modelView[4] as number;
@@ -185,13 +189,15 @@ function sortByDepth(
   srcScratch = src;
   dstScratch = dst;
 
-  const order = new Uint32Array(activeCount);
+  // A float order feeds a float `splatIndex` attribute without a conversion
+  // pass on the main thread; pool indices stay exact below 2^24.
+  const order = orderAsFloat ? new Float32Array(activeCount) : new Uint32Array(activeCount);
   for (let i = 0; i < activeCount; i++) order[i] = poolIndexes[src[i] as number] as number;
   if (!indexSources) return { order, orderSources: undefined };
   // The draw reads a source id per instance, so permute the request's ids
   // alongside the pool indices rather than making the main thread look each
   // one up again against a pool-sized table.
-  const orderSources = new Float32Array(activeCount);
+  const orderSources = new Uint8Array(activeCount);
   for (let i = 0; i < activeCount; i++) orderSources[i] = indexSources[src[i] as number] as number;
   return { order, orderSources };
 }
@@ -208,14 +214,28 @@ self.onmessage = (event: MessageEvent<SortWorkerRequest>) => {
     if (message.sourceIds) sourceIds.set(message.sourceIds, message.start);
     return;
   }
+  let indices = message.indices;
+  let indexSources = message.indexSources;
+  if (message.reuseIndices) {
+    if (retainedIndices === null) {
+      throw new Error('sort worker: reuseIndices without a retained index list.');
+    }
+    indices = retainedIndices;
+    indexSources = retainedIndexSources;
+  } else if (indices && indexSources) {
+    // A pooled request owns its arrays (transferred); keep them for reuse.
+    retainedIndices = indices;
+    retainedIndexSources = indexSources;
+  }
   const { order, orderSources } = sortByDepth(
     message.modelView,
     message.spans,
-    message.indices,
-    message.indexSources,
+    indices,
+    indexSources,
     message.matrices,
     message.sortMetric,
     message.sortRange,
+    message.orderAsFloat === true,
   );
   const reply: OrderMessage = orderSources
     ? { type: 'order', requestId: message.requestId, order, orderSources }
