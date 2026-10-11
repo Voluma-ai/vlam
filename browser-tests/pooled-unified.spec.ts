@@ -32,6 +32,16 @@ test('pooled unified draw composites the nearer source in front from either side
     blueHidden: number[];
     moved: number[];
     movedCenter: number[];
+    stackMoved: number[];
+    stackRedCenter: number[];
+    stackCleared: number[];
+    budget: {
+      vertexUniformBlocks: number;
+      maxVertexUniformBlocks: number;
+      vertexSamplers: number;
+      maxVertexSamplers: number;
+      ok: boolean;
+    } | null;
     blueFaded: number[];
     blueRemoved: number[];
     blueStandaloneAgain: boolean;
@@ -55,5 +65,20 @@ test('pooled unified draw composites the nearer source in front from either side
   // and no longer contributes at the center.
   expect(value.moved[2]!).toBeGreaterThan(8);
   expect(value.movedCenter[2]!).toBeLessThan(value.fromPositiveZ[2]!);
+  // Blue's own stack runs in blue's frame: its splat turns green where blue
+  // now sits, and clearing the stack restores blue.
+  expect(value.stackMoved[1]!).toBeGreaterThan(value.stackMoved[2]!);
+  expect(value.stackMoved[1]!).toBeGreaterThan(8);
+  // Red's own stack branch still draws red beside the moved blue.
+  expect(value.stackRedCenter[0]!).toBeGreaterThan(60);
+  expect(value.stackCleared[1]!).toBeLessThan(8);
+  expect(value.stackCleared[2]!).toBeGreaterThan(8);
+  if (backend === 'webgl2') {
+    expect(value.budget?.ok).toBe(true);
+    expect(value.budget!.vertexUniformBlocks).toBeGreaterThan(0);
+    expect(value.budget!.vertexUniformBlocks).toBeLessThanOrEqual(6);
+  } else {
+    expect(value.budget).toBeNull();
+  }
   expect(value.blueStandaloneAgain).toBe(true);
 });

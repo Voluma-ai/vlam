@@ -3,6 +3,8 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { writeCovariance, type SplatData } from '../core/splat-data';
 import { SplatMesh } from '../core/splat-mesh';
 import { SplatPool, SPLAT_DATA_TEXTURE_WIDTH } from '../core/splat-mesh-pool';
+import { ROW_PARAMS, SOURCE_DATA_ROWS } from '../unified/pooled/pooled-source-tables';
+import type { SplatContext, SplatModifier } from '../core/splat-modifier';
 import type {
   PooledOrderMessage as OrderMessage,
   PooledSortRequest as SortWorkerRequest,
@@ -116,6 +118,16 @@ function drawList(mesh: PooledUnifiedSplatMesh): { indices: number[]; sources: n
     (geometry.getAttribute('sourceId').array as Float32Array).subarray(0, count),
   );
   return { indices, sources };
+}
+
+/** The per-source params row (opacity, alpha scale, draw mask) the shader reads for source `id`. */
+function paramsRow(mesh: PooledUnifiedSplatMesh, id: number): THREE.Vector4 {
+  const tables = (mesh as unknown as { tables: { dataNode: { array: THREE.Vector4[] } } }).tables;
+  return tables.dataNode.array[id * SOURCE_DATA_ROWS + ROW_PARAMS] as THREE.Vector4;
+}
+
+function sortRequestCount(): number {
+  return sent.filter((message) => message.type === 'sort').length;
 }
 
 function lastSort(): Extract<SortWorkerRequest, { type: 'sort' }> {
@@ -353,6 +365,199 @@ describe('PooledUnifiedSplatMesh', () => {
     pooled.dispose();
     a.dispose();
     b.dispose();
+    pool.dispose();
+  });
+});
+
+describe('PooledUnifiedSplatMesh draw mask', () => {
+  it('masks a source for the next draw without a new sort or a discarded order', () => {
+    sent.length = 0;
+    const renderer = mockRenderer();
+    const pool = new SplatPool({ capacity: 2 * W });
+    const a = new SplatMesh(splat(), { pool });
+    const b = new SplatMesh(splat(), { pool });
+    const pooled = new PooledUnifiedSplatMesh(renderer, pool);
+    pooled.addSource(a);
+    pooled.addSource(b);
+    const camera = cameraAt(3);
+    pooled.update(camera);
+    pooled.update(camera);
+    expect(drawList(pooled).sources.sort()).toEqual([0, 1]);
+    expect(paramsRow(pooled, 1).z).toBe(1);
+    const sorts = sortRequestCount();
+
+    // A mask is a uniform write: membership, the installed order and the
+    // worker's retained list are untouched.
+    pooled.setSourceDrawMask(b, false);
+    expect(paramsRow(pooled, 1).z).toBe(0);
+    expect(paramsRow(pooled, 0).z).toBe(1);
+    pooled.update(camera);
+    expect(sortRequestCount()).toBe(sorts);
+    expect(drawList(pooled).sources.sort()).toEqual([0, 1]);
+    // Opacity writes keep the mask and vice versa (same table row).
+    pooled.setSourceOpacity(b, 0.5);
+    pooled.update(camera);
+    expect(paramsRow(pooled, 1).x).toBeCloseTo(0.5);
+    expect(paramsRow(pooled, 1).z).toBe(0);
+    pooled.setSourceDrawMask(b, true);
+    pooled.setSourceDrawMask(b, true);
+    expect(paramsRow(pooled, 1).z).toBe(1);
+    expect(paramsRow(pooled, 1).x).toBeCloseTo(0.5);
+    pooled.update(camera);
+    expect(sortRequestCount()).toBe(sorts);
+
+    // Masking while a sort is in flight does not invalidate it (a membership
+    // change would: see the discard test above).
+    holdReplies = true;
+    try {
+      camera.position.set(0.5, 0, 3);
+      camera.lookAt(0, 0, 0);
+      camera.updateMatrixWorld();
+      pooled.update(camera);
+      expect(sortRequestCount()).toBe(sorts + 1);
+      pooled.setSourceDrawMask(a, false);
+      flushReplies();
+      pooled.update(camera);
+      expect(instanceCount(pooled)).toBe(2);
+    } finally {
+      holdReplies = false;
+    }
+    pooled.dispose();
+    a.dispose();
+    b.dispose();
+    pool.dispose();
+  });
+
+  it('picks only through sources the mask draws', async () => {
+    const renderer = mockRenderer();
+    const pool = new SplatPool({ capacity: 2 * W });
+    const a = new SplatMesh(splat(), { pool });
+    const b = new SplatMesh(splat(), { pool });
+    const hit = { point: new THREE.Vector3(), distance: 1 };
+    a.pick = vi.fn(async () => hit);
+    b.pick = vi.fn(async () => hit);
+    const pooled = new PooledUnifiedSplatMesh(renderer, pool);
+    pooled.addSource(a);
+    pooled.addSource(b);
+    pooled.setSourceDrawMask(b, false);
+    const camera = cameraAt(3);
+    const result = await pooled.pick(new THREE.Vector2(0, 0), camera);
+    expect(result?.source).toBe(a);
+    expect(a.pick).toHaveBeenCalledTimes(1);
+    expect(b.pick).not.toHaveBeenCalled();
+    pooled.dispose();
+    a.dispose();
+    b.dispose();
+    pool.dispose();
+  });
+});
+
+describe('PooledUnifiedSplatMesh source stacks', () => {
+  type Internals = {
+    tables: {
+      capacity: number;
+      dataNode: { array: THREE.Vector4[] };
+      columnsNode: { array: THREE.Vector4[] };
+    };
+    shaderRevision: number;
+  };
+  const internals = (mesh: PooledUnifiedSplatMesh) => mesh as unknown as Internals;
+
+  it('groups sources by stack contents and skips empty stacks', async () => {
+    const { groupSourceStacks } = await import('../unified/pooled/pooled-source-stacks');
+    const a: SplatModifier = () => ({});
+    const b: SplatModifier = () => ({});
+    const groups = groupSourceStacks([
+      { id: 0, modifiers: [a, b] },
+      { id: 1, modifiers: [] },
+      { id: 2, modifiers: [a, b] },
+      { id: 3, modifiers: [b, a] },
+    ]);
+    expect(groups.map((group) => group.ids)).toEqual([[0, 2], [3]]);
+  });
+
+  it('evaluates a source stack in that source frame and rebuilds only on structural change', () => {
+    const renderer = mockRenderer();
+    const pool = new SplatPool({ capacity: 2 * W });
+    const main = new SplatMesh(splat(), { pool });
+    const marker = new SplatMesh(splat(), { pool });
+    marker.position.set(4, 0, 0);
+    marker.scale.setScalar(2);
+    marker.updateMatrixWorld();
+    const pooled = new PooledUnifiedSplatMesh(renderer, pool);
+    pooled.addSource(main);
+    pooled.addSource(marker);
+    const camera = cameraAt(3);
+    pooled.update(camera);
+    const builtBefore = internals(pooled).shaderRevision;
+
+    const seen: SplatContext[] = [];
+    const tint: SplatModifier = (ctx) => {
+      seen.push(ctx);
+      return {};
+    };
+    const stack = [tint];
+    pooled.setSourceModifiers(marker, stack);
+    pooled.update(camera);
+    expect(internals(pooled).shaderRevision).toBe(builtBefore + 1);
+    // The fold remaps the frame: local = pre-placement pool center.
+    const ctx = seen.at(-1) as SplatContext;
+    expect(ctx.localCenter).toBe(ctx.sourceCenter);
+
+    // Same contents (new array): no rebuild. A uniform-only change never asks.
+    pooled.setSourceModifiers(marker, [tint]);
+    pooled.update(camera);
+    expect(internals(pooled).shaderRevision).toBe(builtBefore + 1);
+
+    // The camera reaches the source's frame through its inverse placement:
+    // world (0,0,3) relative to a source at x=4 scaled 2 is (-2, 0, 1.5).
+    const data = internals(pooled).tables.dataNode.array;
+    const markerId = 1;
+    const cameraRow = data[markerId * 7 + 3] as THREE.Vector4;
+    expect([cameraRow.x, cameraRow.y, cameraRow.z]).toEqual([-2, 0, 1.5]);
+    // Inverse linear columns: a uniform 2× scale inverts to 0.5.
+    expect((data[markerId * 7 + 4] as THREE.Vector4).x).toBeCloseTo(0.5);
+
+    pooled.setSourceModifiers(marker, []);
+    pooled.update(camera);
+    expect(internals(pooled).shaderRevision).toBe(builtBefore + 2);
+    pooled.dispose();
+    main.dispose();
+    marker.dispose();
+    pool.dispose();
+  });
+
+  it('sizes the per-source tables to the live source count', () => {
+    const renderer = mockRenderer();
+    const pool = new SplatPool({ capacity: 4 * W });
+    const meshes = [0, 1, 2].map(() => new SplatMesh(splat(), { pool }));
+    const pooled = new PooledUnifiedSplatMesh(renderer, pool, { maxSources: 64 });
+    pooled.addSource(meshes[0] as SplatMesh);
+    pooled.addSource(meshes[1] as SplatMesh);
+    expect(internals(pooled).tables.capacity).toBe(2);
+    expect(internals(pooled).tables.columnsNode.array).toHaveLength(8);
+    const camera = cameraAt(3);
+    pooled.update(camera);
+    const revision = internals(pooled).shaderRevision;
+    pooled.addSource(meshes[2] as SplatMesh);
+    expect(internals(pooled).tables.capacity).toBe(4);
+    pooled.update(camera);
+    expect(internals(pooled).shaderRevision).toBe(revision + 1);
+    pooled.dispose();
+    for (const mesh of meshes) mesh.dispose();
+    pool.dispose();
+  });
+
+  it('reports no WebGL2 shader budget on a WebGPU backend', async () => {
+    const renderer = mockRenderer(true);
+    const pool = new SplatPool({ capacity: W });
+    const mesh = new SplatMesh(splat(), { pool });
+    const pooled = new PooledUnifiedSplatMesh(renderer, pool);
+    pooled.addSource(mesh);
+    await expect(pooled.checkShaderBudget(cameraAt(3))).resolves.toBeNull();
+    expect(pooled.shaderBudget).toBeNull();
+    pooled.dispose();
+    mesh.dispose();
     pool.dispose();
   });
 });

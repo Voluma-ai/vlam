@@ -152,11 +152,12 @@ selection features until their benefits are measured and visually validated.
   keyed by each source's world matrix, and one draw reads the pool rows via
   `splatIndex` / `sourceId` attributes; rows and order publish together. The
   forced-WebGL2 browser check covers occlusion both ways, hide / fade / move /
-  remove, and the WebGPU compute path is untouched. **Open:** per-source
-  modifier stacks (the pooled draw folds one stack; marker-only shader effects
-  do not draw there), the demo's `?logo=full` on WebGL2, and worker sort cost /
-  frame-time tails measured on WebGL2-class devices with a multi-million-splat
-  streamed main.
+  remove, and the WebGPU compute path is untouched. Per-source modifier stacks
+  run branched in each source's frame. **Open:** the demo's `?logo=full` on
+  WebGL2; worker sort cost and frame-time tails on WebGL2-class phones with a
+  multi-million-splat streamed main; and evaluating stacks once per splat
+  instead of once per quad corner (a Spark-style generate pass), which only
+  matters when a source with millions of splats carries a heavy stack.
 - **Pixel-budgeted SD for laptop-class GPUs (MacBook Air)** — SD caps the
   render scale at 1 device pixel per CSS pixel with an adaptive floor of 0.8,
   so it scales with the window, not the GPU: the Tempel fog demo in SD draws a

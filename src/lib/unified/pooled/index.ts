@@ -17,4 +17,5 @@ export {
   type PooledUnifiedSplatMeshOptions,
   type PooledUnifiedSourceOptions,
   type PooledUnifiedPerformanceTimings,
+  type PooledShaderBudget,
 } from './pooled-unified-splat-mesh';

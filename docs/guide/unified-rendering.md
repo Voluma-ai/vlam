@@ -66,19 +66,36 @@ known take that main's SH request instead of downgrading it.
 
 What differs:
 
-- **One modifier stack.** The pooled mesh evaluates its own `modifiers` list
-  for every splat; registered sources' stacks are not folded. Give it the
-  main's stack (`unified.modifiers = main.modifiers`) and drive whole-source
-  fades through `setSourceOpacity`. Modifiers that read per-splat channels
-  cannot build on it.
+- **Stacks are handed over explicitly.** Call
+  `unified.setSourceModifiers(source, source.modifiers)` for each source (every
+  frame is fine: an element-wise identical list is a no-op). Each stack runs in
+  its source's local frame, as the compute gather runs it, behind a branch on
+  the splat's source id, so a splat pays only for its own source's effects. The
+  pooled mesh's own `modifiers` then run on every splat in world space. Drive
+  whole-source fades through `setSourceOpacity`, not an opacity modifier.
+  Modifiers that read per-splat channels cannot build on it.
+- **Mind WebGL2's uniform blocks.** Three emits each `uniformArray` as its own
+  block and a vertex stage may bind as few as 12; many per-source effects
+  should keep their rows in one shared data texture. After a structural change,
+  `await unified.checkShaderBudget(camera)` compares the program's blocks and
+  samplers with the device limits. An over-budget program draws nothing, so on
+  `ok: false` hand every source an empty stack (`setSourceModifiers(source,
+  [])`): the scene keeps its one global order and loses only the per-source
+  effects. Falling back to separate draws instead would bring back the very
+  artifact this mesh exists to remove.
 - **Publication is asynchronous.** Like a standalone WebGL2 mesh, a changed
   stream or camera waits one worker round trip; the previous complete frame
   stays up meanwhile. `renderView` draws a secondary view through the primary
   order rather than re-sorting.
 - **Capacity is the pool.** Nothing is ever dropped; size the pool for the
   main's staged-swap headroom plus every marker.
-- A source may belong to one pooled mesh at a time; on WebGPU prefer
-  `UnifiedSplatMesh`.
+- **A source belongs to one pooled mesh at a time.** Two views that share a
+  camera (split panes) therefore do not get a mesh each: keep `setSourceVisible`
+  at the union of both views, call `update` once per frame, and flip
+  `unified.setSourceDrawMask(source, drawn)` before each view's draw. The mask
+  is one uniform write that leaves the installed order and any in-flight sort
+  alone, and a sorted list restricted to a subset stays sorted. On WebGPU
+  prefer `UnifiedSplatMesh`.
 
 ## Creating and registering sources
 
