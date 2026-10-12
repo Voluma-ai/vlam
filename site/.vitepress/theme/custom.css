@@ -81,33 +81,6 @@
   padding-bottom: 0 !important;
 }
 
-/* Pre-release notice. Uses VitePress' built-in warning tokens so it tracks the
-   light/dark theme without a bespoke palette. */
-.vlam-warning {
-  margin: 0 0 24px;
-  padding: 12px 16px;
-  border: 1px solid var(--vp-c-warning-3);
-  border-radius: 8px;
-  background: var(--vp-c-warning-soft);
-  color: var(--vp-c-text-2);
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-.vlam-warning strong {
-  color: var(--vp-c-warning-1);
-}
-
-/* Hero variant: shrinks to its text so it stays centred under the buttons. */
-.vlam-warning--hero {
-  display: inline-block;
-  max-width: 40rem;
-  margin: 0 auto 20px;
-  padding: 8px 14px;
-  font-size: 12.8px;
-  text-align: left;
-}
-
 /* Version badge beside the nav bar title. The nav title is a full-height
    centred flex row, so `flex-end` would drop the badge to the bottom of the
    header; nudging the centred box down by half the font-size difference puts

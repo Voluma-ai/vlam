@@ -29,6 +29,9 @@ streamed scene plus other meshes the pooled draw below does.
 
 ## WebGL2: the pooled unified draw
 
+> **Experimental.** `@voluma/vlam/unified/pooled` is outside the v1.0
+> compatibility guarantee and may change in a minor release.
+
 `PooledUnifiedSplatMesh` (`@voluma/vlam/unified/pooled`, a separate entry so a
 WebGPU host never loads it) gives WebGL2 the same global order without compute
 passes. The trade: every source must draw from **one** `SplatPool` that the

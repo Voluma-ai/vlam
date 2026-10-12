@@ -16,8 +16,6 @@ title: VLAM!
       <a class="vlam-btn" href="/get-started">Get started</a>
       <a class="vlam-btn vlam-btn-ghost" href="/demo/?scene=%2Fremote%2Fvoluma%2Fcultural-heritage%2FTempel%2FTempel.lcc2&sunCity=Athens&fpv=1&orbit=0&effects=fog&logo=full&cameraPosition=-8.125064%2C1.388029%2C-38.339206&cameraTarget=-7.335471%2C1.494982%2C-36.504784" target="_self">Open demo</a>
     </p>
-    <br/>
-    <PreReleaseNotice variant="hero" />
   </header>
 
   <section class="vlam-embed" aria-label="Interactive viewer">

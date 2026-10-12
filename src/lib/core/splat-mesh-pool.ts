@@ -167,8 +167,10 @@ export interface SplatPoolOptions {
   packedShBands?: 0 | 1 | 2 | 3;
   /**
    * With `packedShBands` 0, the first tenant that requests packed SH
-   * allocates the SH textures then ({@link SplatPool.allocatePackedSh}): for a
-   * scene pool created before its main capture's bands are known.
+   * allocates the SH textures then: for a scene pool created before its main
+   * capture's bands are known.
+   *
+   * @experimental Not covered by the v1.0 compatibility guarantee.
    */
   allowLatePackedSh?: boolean;
   /** Packed-SH coefficient count for `packedShBands`, supplied by the caller
@@ -287,7 +289,7 @@ export class SplatPool {
     this.activeSlotByPoolIndexValue.fill(0xffffffff);
   }
 
-  /** Late packed SH (`allowLatePackedSh`); `true` when the pool holds `bands`. */
+  /** @internal Late packed SH (`allowLatePackedSh`); `true` when the pool holds `bands`. */
   allocatePackedSh(bands: 1 | 2 | 3, textureCount: number): boolean {
     // Rows already written keep neutral (zero) SH words.
     if (this.packedShBands !== 0) return this.packedShBands === bands;

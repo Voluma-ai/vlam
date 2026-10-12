@@ -175,6 +175,8 @@ const _cameraWorld = new THREE.Vector3();
 /**
  * Whether `renderer` can drive a {@link PooledUnifiedSplatMesh}: any
  * initialized three `WebGPURenderer` backend, WebGL2 included.
+ *
+ * @experimental May change in a minor release.
  */
 export function supportsPooledUnifiedSplatMesh(renderer: object): boolean {
   return typeof (renderer as { backend?: unknown }).backend === 'object';

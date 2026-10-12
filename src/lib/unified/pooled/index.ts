@@ -9,8 +9,12 @@
  * only where the compute path is unavailable ({@link supportsUnifiedSplatMesh}
  * answers `false`); hosts on WebGPU keep `UnifiedSplatMesh`.
  *
+ * This entire entry is experimental and excluded from the v1.0 compatibility
+ * guarantee: it may change in a minor release.
+ *
  * @module unified/pooled
  */
+/** @experimental Not covered by the v1.0 compatibility guarantee. */
 export {
   PooledUnifiedSplatMesh,
   supportsPooledUnifiedSplatMesh,
