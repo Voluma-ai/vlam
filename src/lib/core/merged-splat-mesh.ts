@@ -93,8 +93,6 @@ interface SourceRecord extends SourceBounds {
 /**
  * One pool, one global sort, many independently-posed splat sources - see the
  * module overview above for the artifact this exists to remove.
- *
- * @experimental May change in a minor release.
  */
 export class MergedSplatMesh extends SplatMesh {
   private readonly matrices: SourceMatrixArray;

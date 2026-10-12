@@ -189,9 +189,8 @@ export interface SplatMeshOptions {
    * `@voluma/vlam/sorting/radix`. The strings `'radix'` and `'exact'` are not
    * accepted; they used to fall through to counting sort.
    * Merged pools honor the same strategy, applying each source's live
-   * placement before computing its key for the global sort.
-   *
-   * @experimental Radix strategies may change in a minor release.
+   * placement before computing its key for the global sort. The option
+   * itself is stable; only the radix factories carry the experimental marker.
    */
   sortStrategy?: SplatSortStrategy;
   /**
