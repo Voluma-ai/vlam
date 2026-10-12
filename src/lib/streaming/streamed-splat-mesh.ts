@@ -22,6 +22,7 @@ import {
   validateLodScale,
   type ClassicFetchWant,
   type SwapGroup,
+  swapGroupReleasesSplats,
 } from './streamed-splat-mesh-utils';
 import { DEFAULT_PAGE_TABLE_WRITES_PER_PLAN } from './streaming-defaults';
 export * from './streamed-splat-mesh-utils';
@@ -4714,6 +4715,16 @@ export class StreamedSplatMesh extends SplatMesh {
       this.applyRadWave(groups, liveRuns, now, pendingFetches);
     } else {
       let appended = 0;
+      // LCC2 ranks in-view refinements first, so they spend this tick's append
+      // cap before any out-of-view coarsening is reached. While the cut is over
+      // budget that starves the groups that would shrink it: their old fine
+      // runs stay resident while new detail keeps arriving, and a turning
+      // camera holds the active set 20-50% above budget (more draw and sort
+      // work every frame). A group whose coarse adds free more than they add
+      // gets its own allowance while over budget, so refinement keeps its
+      // pace and releases still land.
+      const releaseLane = lcc2Groups && !holding && this.activeSplatCount > this.budgetValue;
+      let releaseAppended = 0;
       // Leaf-interval overlap already joins every replacement to its old
       // coverage. Independent regions must never wait for a global wave.
       for (const group of groups) {
@@ -4789,13 +4800,16 @@ export class StreamedSplatMesh extends SplatMesh {
           this.pendingWork = true;
           continue;
         }
+        const releases = releaseLane && swapGroupReleasesSplats(group);
+        const used = releases ? releaseAppended : appended;
         const forceStage =
           holding ||
           (!classicLccGroups && missing.length > 0) ||
           (this.stagedSwapsEnabled && group.addCount > this.appendCap);
         if (forceStage && this.canStageGroup(group)) {
-          const stagedNow = this.stageGroup(group, now, Math.max(0, this.appendCap - appended));
-          appended += stagedNow;
+          const stagedNow = this.stageGroup(group, now, Math.max(0, this.appendCap - used));
+          if (releases) releaseAppended += stagedNow;
+          else appended += stagedNow;
           if (
             !group.adds.every((run) => this.staged.get(runKey(run))?.uploadedCount === run.count)
           ) {
@@ -4819,7 +4833,7 @@ export class StreamedSplatMesh extends SplatMesh {
         // (splitting it would break region atomicity), so a single group larger
         // than the cap is deliberately let through when it comes first - the
         // one-frame hitch beats never applying it at all.
-        if (!holding && appended > 0 && appended + group.addCount > this.appendCap) {
+        if (!holding && used > 0 && used + group.addCount > this.appendCap) {
           this.pendingWork = true;
           continue;
         }
@@ -4834,7 +4848,8 @@ export class StreamedSplatMesh extends SplatMesh {
           this.pendingWork = true; // transient pool pressure; retry next tick
           continue;
         }
-        appended += group.addCount;
+        if (releases) releaseAppended += group.addCount;
+        else appended += group.addCount;
       }
       this.retireHeldTicks = 0;
     }

@@ -23,6 +23,25 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Changed
+
+- **Faster radial radix sort.** GPU radix sorts with the `radial` metric now
+  use a 16-bit key warped toward the camera (`1 - sqrt(1 - u)`), so they run
+  four passes instead of six. Near-camera steps stay sub-millimetre (about
+  0.5 mm at 1 m in a 300 m range); far steps grow to about 1 cm at 300 m.
+  `depth` and exact sorts keep their 24- and 32-bit keys. Measured on an
+  8M-splat LCC2 scene (RTX 3090): sort GPU time 7.3-8.9 ms → 4.1-4.9 ms.
+
+### Fixed
+
+- **LCC2 active set no longer overshoots the budget while turning.** In-view
+  refinements used the per-tick append cap before out-of-view coarsening was
+  reached, so old fine detail stayed resident and a turning camera held the
+  active set 15-55% above budget. While over budget, swap groups that free
+  more splats than they add now get their own per-tick allowance. On the same
+  scene the peak while turning fell from 8.9-12.4M to 8.1-9.0M splats and
+  render GPU time by about 15%.
+
 ## [1.1.0] - 2026-10-12
 
 ### Changed

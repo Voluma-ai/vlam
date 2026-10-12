@@ -33,6 +33,8 @@ import type { SplatSortMetric } from './splat-mesh-types';
 import { releaseRendererAttributes, type PerSourceSortTransform } from './compute-sorter';
 import { sourceWorldTransform } from './splat-mesh-material';
 import {
+  RADIAL_RADIX_KEY_BITS,
+  RADIAL_RADIX_KEY_MAX,
   RADIX_BITS_PER_PASS,
   RADIX_EXACT_KEY_BITS,
   RADIX_KEY_BITS,
@@ -89,6 +91,8 @@ export class RadixSorter implements SplatSorter {
   /** Exact mode avoids scene-bounds quantization entirely. */
   private readonly exactDepth: boolean;
   private readonly sortMetric: SplatSortMetric;
+  /** Largest quantized key; radial keys are narrower (see RADIAL_RADIX_KEY_BITS). */
+  private readonly keyMax: number;
 
   constructor(options: {
     renderer: THREE.WebGPURenderer;
@@ -120,7 +124,11 @@ export class RadixSorter implements SplatSorter {
     this.sortMetric = options.sortMetric ?? 'depth';
     const exactDepth = options.exactDepth === true;
     this.exactDepth = exactDepth;
-    const passCount = radixPassCount(exactDepth ? RADIX_EXACT_KEY_BITS : RADIX_KEY_BITS);
+    const radialKey = !exactDepth && this.sortMetric === 'radial';
+    this.keyMax = radialKey ? RADIAL_RADIX_KEY_MAX : RADIX_KEY_MAX;
+    const passCount = radixPassCount(
+      exactDepth ? RADIX_EXACT_KEY_BITS : radialKey ? RADIAL_RADIX_KEY_BITS : RADIX_KEY_BITS,
+    );
     this.passCount = passCount;
     const groupCount = Math.ceil(capacity / ELEMENTS_PER_WORKGROUP);
     const histogramLength = DIGIT_COUNT * groupCount;
@@ -206,6 +214,16 @@ export class RadixSorter implements SplatSorter {
             .equal(uint(0))
             .select(uint(0x80000000), uint(0xffffffff));
           keysA.element(instanceIndex).assign(bits.bitXor(mask));
+        } else if (radialKey) {
+          // Mirrors quantizeRadialKey: u = 1 is the nearest depth in range.
+          const u = depth
+            .sub(this.depthMin)
+            .mul(this.depthScale)
+            .div(RADIAL_RADIX_KEY_MAX)
+            .clamp(0, 1);
+          keysA
+            .element(instanceIndex)
+            .assign(float(1).sub(float(1).sub(u).sqrt()).mul(RADIAL_RADIX_KEY_MAX).toUint());
         } else {
           keysA
             .element(instanceIndex)
@@ -390,7 +408,7 @@ export class RadixSorter implements SplatSorter {
         visibleRange,
       );
       this.depthMin.value = range.min;
-      this.depthScale.value = RADIX_KEY_MAX / (range.max - range.min || 1);
+      this.depthScale.value = this.keyMax / (range.max - range.min || 1);
     }
     this.stages[0]!.count = activeCount;
     this.stages[this.stages.length - 1]!.count = activeCount;

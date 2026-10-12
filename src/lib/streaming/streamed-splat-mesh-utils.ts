@@ -17,6 +17,13 @@ export interface SwapGroup {
   addCount: number;
 }
 
+/** Whether applying `group` leaves fewer resident splats than it replaces. */
+export function swapGroupReleasesSplats(group: SwapGroup): boolean {
+  let removed = 0;
+  for (const [, entry] of group.removes) removed += entry.run.count;
+  return removed > group.addCount;
+}
+
 /**
  * One swap group per run for the startup hold. The mesh is invisible, so L0
  * cell-atomicity is unnecessary; committing slice-by-slice lets the hold finish
