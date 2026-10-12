@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildSwapGroups, groupPriority } from '../streaming/streamed-splat-mesh';
+import {
+  buildSwapGroups,
+  groupPriority,
+  swapGroupReleasesSplats,
+} from '../streaming/streamed-splat-mesh';
 import type { LodRun } from '../streaming/lod-scheduler';
 
 /**
@@ -150,5 +154,18 @@ describe('swap group ordering', () => {
     for (const other of others) {
       expect(groupPriority(other)).toBeLessThan(groupPriority(pureRemoval));
     }
+  });
+});
+
+describe('swapGroupReleasesSplats', () => {
+  it('flags a coarse replacement that frees more splats than it adds', () => {
+    expect(swapGroupReleasesSplats(group([run(1, 0, 1)], 4))).toBe(true);
+    expect(swapGroupReleasesSplats(group([], 2))).toBe(true);
+  });
+
+  it('does not flag refinements or equal-size swaps', () => {
+    expect(swapGroupReleasesSplats(group([run(0, 0, 4)], 1))).toBe(false);
+    expect(swapGroupReleasesSplats(group([run(0, 0, 2)], 2))).toBe(false);
+    expect(swapGroupReleasesSplats(group([run(0, 0, 1)], 0))).toBe(false);
   });
 });

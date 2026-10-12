@@ -13,6 +13,15 @@ export const RADIX_BUCKETS = 1 << RADIX_BITS_PER_PASS;
 export const RADIX_PASS_COUNT = RADIX_KEY_BITS / RADIX_BITS_PER_PASS;
 export const RADIX_KEY_MAX = (1 << RADIX_KEY_BITS) - 1;
 
+/**
+ * Radial keys are warped toward the camera, so 16 bits keep sub-millimetre
+ * steps near the viewer (about 0.5 mm at 1 m in a 300 m range, where a
+ * uniform 24-bit key spends most of its codes on far, sparse depths) and
+ * the sorter runs four passes instead of six.
+ */
+export const RADIAL_RADIX_KEY_BITS = 16;
+export const RADIAL_RADIX_KEY_MAX = (1 << RADIAL_RADIX_KEY_BITS) - 1;
+
 /** Number of four-bit passes required for one unsigned radix key width. */
 export function radixPassCount(keyBits: number): number {
   if (!Number.isInteger(keyBits) || keyBits <= 0 || keyBits % RADIX_BITS_PER_PASS !== 0) {
@@ -82,4 +91,16 @@ export function stableRadixSortReference(
     [inputValues, outputValues] = [outputValues, inputValues];
   }
   return inputValues;
+}
+
+/**
+ * CPU reference for the GPU radial key. `depth` is the negated radial
+ * distance (nearer is larger), and `u = 1` is the nearest depth in range.
+ * `1 - sqrt(1 - u)` is monotonic, with its finest steps at the camera.
+ */
+export function quantizeRadialKey(depth: number, minimum: number, maximum: number): number {
+  const span = maximum - minimum;
+  if (!Number.isFinite(depth) || !Number.isFinite(span) || span <= 0) return 0;
+  const u = Math.min(1, Math.max(0, (depth - minimum) / span));
+  return Math.floor((1 - Math.sqrt(1 - u)) * RADIAL_RADIX_KEY_MAX);
 }
