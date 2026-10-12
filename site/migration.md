@@ -71,7 +71,8 @@ suitable limits itself.
 
 ## Strategies and effects
 
-GPU radix sorting and compute projection are experimental factory options.
+GPU radix sorting is a stable factory option; compute projection is an
+experimental one.
 Import `radixSort()` or `exactSort()` from
 `@voluma/vlam/sorting/radix`, and `computeProjection()` from
 `@voluma/vlam/projection/compute`. The strings `'radix'` and `'exact'`

@@ -10,12 +10,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 > _Changed_, and come with a note in the [migration guide](site/migration.md).
 > Anything marked `@experimental` in the API reference is outside that
 > guarantee and may change in a minor release: today the
-> `@voluma/vlam/static-lod`, `@voluma/vlam/sorting/radix`,
-> `@voluma/vlam/projection/compute` and `@voluma/vlam/unified/pooled` entries,
-> `MergedSplatMesh`, and the `SplatMeshOptions` and `SplatPoolOptions` fields
-> flagged as such. Diagnostics are also outside it:
-> the `StreamedSplatPerformanceEvent` payload, the `[vlam:*]` console traces
-> and the SH / projection fallback reason strings.
+> `@voluma/vlam/projection/compute` strategy, the `@voluma/vlam/unified/pooled`
+> entry, `SplatMesh.getUnifiedSourceView()`, and `SplatMeshOptions.foveationMode`.
+> The `[vlam:*]` console
+> traces and the SH / projection fallback reason strings are diagnostic output,
+> not API.
 
 
 > **Git history.** The public repository starts at `0.2.0`. Earlier `0.0.x`
@@ -23,6 +22,31 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 > not invent historical tags.
 
 ## [Unreleased]
+
+### Changed
+
+- **Narrower experimental surface.** `MergedSplatMesh`, the `static-lod` entry
+  (`StaticLodSplatMesh`, its options and progress types),
+  `SplatPoolOptions.allowLatePackedSh`, the `sortStrategy` option and the
+  `StreamedSplatPerformanceEvent` payload are now covered by the semantic
+  versioning guarantee; the event payload may gain fields in a minor release,
+  as any object type may. Console traces and fallback reason strings stay
+  diagnostic output outside the API.
+- **Strategies and tuning options promoted.** `radixSort()` / `exactSort()`
+  from `@voluma/vlam/sorting/radix`, and the `storageMode`, `shEvaluation`,
+  `foveationTargetPx`, `foveationDrawBudget`, `maxSplatAspect` and `lodAlpha`
+  mesh options are now covered by the semantic-versioning guarantee. Their
+  implementations, defaults and `auto` device heuristics may still be retuned
+  in a minor release; the names and accepted values will not be removed before
+  `2.0`. `@experimental` now remains only on `@voluma/vlam/projection/compute`,
+  `@voluma/vlam/unified/pooled`, `getUnifiedSourceView()` and `foveationMode`.
+
+### Fixed
+
+- Playwright's Vite server starts without file watchers, so `git push`
+  preflight no longer dies with `EMFILE` on a machine that already runs
+  `npm run dev` or other Vite processes. A failed preflight trailer now also
+  keeps `[WebServer]` errors, which is how that class of failure shows up.
 
 ## [1.0.0] - 2026-10-11
 

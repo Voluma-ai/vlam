@@ -169,8 +169,6 @@ export interface SplatPoolOptions {
    * With `packedShBands` 0, the first tenant that requests packed SH
    * allocates the SH textures then: for a scene pool created before its main
    * capture's bands are known.
-   *
-   * @experimental Not covered by the v1.0 compatibility guarantee.
    */
   allowLatePackedSh?: boolean;
   /** Packed-SH coefficient count for `packedShBands`, supplied by the caller

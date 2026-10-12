@@ -26,8 +26,10 @@ export function failureSummary(output) {
       }
       continue;
     }
+    // Vite's Playwright webServer prefixes every line with `[WebServer]`.
+    const diagnostic = trimmed.replace(/^\[[^\]]+\]\s+/, '');
     if (
-      /^(?:Error|AssertionError|RangeError|TypeError|TimeoutError):/.test(trimmed) ||
+      /^(?:Error|AssertionError|RangeError|TypeError|TimeoutError):/.test(diagnostic) ||
       /\berror TS\d+:/.test(trimmed) ||
       /^\d+:\d+\s+error\b/.test(trimmed) ||
       /^FAIL\s+/.test(trimmed)

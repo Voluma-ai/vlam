@@ -2,7 +2,6 @@ import type { RadTreeData, SplatData, SplatPackedShData, SplatShData } from '../
 import { shCoefficientCount } from '../core/sh-pack';
 
 /** Progress emitted while a static scene is spatially ordered and merged. */
-/** @experimental Excluded from the v1.0 compatibility guarantee. */
 export interface StaticLodBuildProgress {
   readonly completed: number;
   readonly total: number;

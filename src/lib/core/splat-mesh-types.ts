@@ -137,7 +137,7 @@ export interface SplatMeshOptions {
    * recovering from device loss because the released CPU data cannot be
    * uploaded again.
    *
-   * @experimental Measure the target scene and device before opting in.
+   * @remarks Measure the target scene and device before opting in.
    */
   storageMode?: SplatStorageMode;
   /**
@@ -155,7 +155,7 @@ export interface SplatMeshOptions {
    * skips SH and the vertex stage samples the cached color. Unsupported paths,
    * modifiers, XR and insufficient device limits retain vertex SH.
    * Does not change SH bands, visual quality or sorting cadence.
-   * @experimental Validate the device, browser and workload before opting in.
+   * @remarks Validate the device, browser and workload before opting in.
    */
   shEvaluation?: 'auto' | 'vertex' | 'compute';
   /**
@@ -184,14 +184,12 @@ export interface SplatMeshOptions {
    * Spark comparison is load speed and LOD quality, not Spark's async
    * sort cadence. Worker-sorted views publish data, count, and order together
    * after the worker reply, so streaming changes become visible asynchronously
-   * but never expose a mismatched intermediate scene. Experimental radix
+   * but never expose a mismatched intermediate scene. Radix
    * strategies are supplied by `radixSort()` and `exactSort()` from
    * `@voluma/vlam/sorting/radix`. The strings `'radix'` and `'exact'` are not
    * accepted; they used to fall through to counting sort.
    * Merged pools honor the same strategy, applying each source's live
    * placement before computing its key for the global sort.
-   *
-   * @experimental Radix strategies may change in a minor release.
    */
   sortStrategy?: SplatSortStrategy;
   /**
@@ -331,7 +329,8 @@ export interface SplatMeshOptions {
    *   on-screen detail. Requires the streamed `.rad` machinery; on a plain
    *   `SplatMesh` it has no worker to drive it.
    *
-   * @experimental `.rad` foveation option; may change in a minor release.
+   * @experimental The set of modes may change in a minor release; the
+   * numeric and boolean foveation options are stable.
    */
   foveationMode?: SplatFoveationMode;
   /**
@@ -343,8 +342,6 @@ export interface SplatMeshOptions {
    * to trade sharpness for fill rate on weak GPUs.
    * Acts as the *finest* bound: the adaptive limit coarsens above it to hold the
    * draw budget but never dips below it.
-   *
-   * @experimental `.rad` foveation option; may change in a minor release.
    */
   foveationTargetPx?: number;
   /**
@@ -353,8 +350,6 @@ export interface SplatMeshOptions {
    * self-adjusts - coarsening when the estimated drawn count exceeds this - so
    * frame cost stays bounded as detail streams in. Default
    * {@link DEFAULT_FOVEATION_DRAW_BUDGET}. Only used in `'frontier'` mode.
-   *
-   * @experimental `.rad` foveation option; may change in a minor release.
    */
   foveationDrawBudget?: number;
   /**
@@ -362,8 +357,6 @@ export interface SplatMeshOptions {
    * anisotropic Gaussian (a flat 3DGS disk edge-on, or an expansion-enlarged
    * coarse LOD node) otherwise projects to a long needle; this bounds its drawn
    * length to `maxSplatAspect`× its width. Baked into the material graph.
-   *
-   * @experimental `.rad` foveation option; may change in a minor release.
    */
   maxSplatAspect?: number;
   /**
@@ -373,8 +366,6 @@ export interface SplatMeshOptions {
    * super-Gaussian falloff. Visual fades and alpha modifiers scale the completed
    * fragment after that classification; they must not change node type or shape.
    * Set for foveated `.rad`.
-   *
-   * @experimental `.rad` foveation option; may change in a minor release.
    */
   lodAlpha?: boolean;
   /**

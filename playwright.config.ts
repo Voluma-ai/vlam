@@ -51,5 +51,9 @@ export default defineConfig({
       : 'npx vite --host 127.0.0.1 --port 4173',
     url: 'http://127.0.0.1:4173/src/viewer/backend-probe.html',
     reuseExistingServer: !process.env.CI,
+    // Tests do not hot-reload. A watching Vite competes with `npm run dev`,
+    // Cursor, and other local tools for Linux inotify instances and dies with
+    // EMFILE before any browser check runs.
+    env: { VLAM_PLAYWRIGHT: '1' },
   },
 });
