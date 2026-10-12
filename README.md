@@ -7,7 +7,7 @@
 [![demo](https://img.shields.io/badge/demo-live-4c1.svg)](https://vlam.voluma.ai)
 [![license](https://img.shields.io/github/license/Voluma-ai/vlam.svg)](./LICENSE)
 
-A WebGPU/TSL Gaussian Splat viewer for three.js.
+A WebGPU Gaussian Splat viewer for three.js, extensible with TSL shader modifiers.
 
 **Docs and demo:** [https://vlam.voluma.ai](https://vlam.voluma.ai) · [get started](site/get-started.md) · [guides](docs/guide/README.md)
 
