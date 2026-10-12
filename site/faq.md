@@ -34,11 +34,12 @@ See [Get started](/get-started) for install and a minimal three.js example.
 
 Yes. From v1.0.0 the public API follows semantic versioning: breaking changes
 only land in a major version and come with a [migration guide](/migration).
-Anything marked `@experimental` in the API reference (the `static-lod`,
-`sorting/radix`, `projection/compute` and `unified/pooled` entries,
-`MergedSplatMesh` and the flagged mesh and pool options) and the diagnostic surfaces (streaming performance
-events, console traces, fallback reason strings) are outside that guarantee
-and may change in a minor release.
+Anything marked `@experimental` in the API reference is outside that
+guarantee and may change in a minor release: the `sorting/radix` and
+`projection/compute` strategies, the `unified/pooled` entry, the raw
+`getUnifiedSourceView()` layout, and the `storageMode`, `shEvaluation` and
+`.rad` foveation mesh options. Console traces and fallback reason strings are
+diagnostic output, not API.
 
 Check the [capability matrix](https://github.com/Voluma-ai/vlam/blob/main/docs/capabilities.md)
 for the devices and browsers that have been validated, and read the release

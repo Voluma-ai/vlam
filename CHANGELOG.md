@@ -10,12 +10,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 > _Changed_, and come with a note in the [migration guide](site/migration.md).
 > Anything marked `@experimental` in the API reference is outside that
 > guarantee and may change in a minor release: today the
-> `@voluma/vlam/static-lod`, `@voluma/vlam/sorting/radix`,
-> `@voluma/vlam/projection/compute` and `@voluma/vlam/unified/pooled` entries,
-> `MergedSplatMesh`, and the `SplatMeshOptions` and `SplatPoolOptions` fields
-> flagged as such. Diagnostics are also outside it:
-> the `StreamedSplatPerformanceEvent` payload, the `[vlam:*]` console traces
-> and the SH / projection fallback reason strings.
+> `@voluma/vlam/sorting/radix` and `@voluma/vlam/projection/compute`
+> strategies, the `@voluma/vlam/unified/pooled` entry,
+> `SplatMesh.getUnifiedSourceView()`, and the `storageMode`, `shEvaluation`
+> and `.rad` foveation fields of `SplatMeshOptions`. The `[vlam:*]` console
+> traces and the SH / projection fallback reason strings are diagnostic output,
+> not API.
 
 
 > **Git history.** The public repository starts at `0.2.0`. Earlier `0.0.x`
@@ -23,6 +23,19 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 > not invent historical tags.
 
 ## [Unreleased]
+
+### Changed
+
+- **Narrower experimental surface.** `MergedSplatMesh`, the `static-lod` entry
+  (`StaticLodSplatMesh`, its options and progress types),
+  `SplatPoolOptions.allowLatePackedSh`, the `sortStrategy` option and the
+  `StreamedSplatPerformanceEvent` payload are now covered by the semantic
+  versioning guarantee; the event payload may gain fields in a minor release,
+  as any object type may. `@experimental` remains on the `sorting/radix` and
+  `projection/compute` strategies, the `unified/pooled` entry,
+  `getUnifiedSourceView()`, and the `storageMode`, `shEvaluation` and `.rad`
+  foveation mesh options. Console traces and fallback reason strings stay
+  diagnostic output outside the API.
 
 ## [1.0.0] - 2026-10-11
 

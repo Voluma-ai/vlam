@@ -1,8 +1,8 @@
-# Experimental static LOD generation
+# Static LOD generation
 
-`@voluma/vlam/static-lod` remains available for experiments. Every export on
-this subpath, including `StaticLodSplatMesh`, its options, and progress types,
-is explicitly excluded from VLAM! 1.0 compatibility guarantees.
+`@voluma/vlam/static-lod` builds a merged LOD hierarchy for a fully decoded
+capture. `StaticLodSplatMesh`, its options, and its progress types follow the
+semantic-versioning guarantee; the worker-side build functions are internal.
 
 `StaticLodSplatMesh.load()` decodes the entire capture before it can build a
 merged hierarchy. Construction also needs temporary hierarchy structures and

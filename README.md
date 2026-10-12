@@ -18,11 +18,11 @@ Local site and generated API: `npm run dev` [http://localhost:5170](http://local
 `1.0.0` is a stable release. The public API follows
 [semantic versioning](https://semver.org/spec/v2.0.0.html): breaking changes
 only land in a major version and come with a [migration guide](site/migration.md).
-Anything marked `@experimental` in the API reference (the `static-lod`,
-`sorting/radix`, `projection/compute` and `unified/pooled` entries,
-`MergedSplatMesh` and the flagged mesh and pool options) and the diagnostic surfaces (streaming performance
-events, console traces, fallback reason strings) are excluded and may change
-in a minor release.
+Anything marked `@experimental` in the API reference may change in a minor
+release: the `sorting/radix` and `projection/compute` strategies, the
+`unified/pooled` entry, the raw `getUnifiedSourceView()` layout, and the
+`storageMode`, `shEvaluation` and `.rad` foveation mesh options. Console traces
+and fallback reason strings are diagnostic output, not API.
 
 ## Install
 
