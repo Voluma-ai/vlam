@@ -65,13 +65,18 @@ export default defineConfig({
     ],
   },
   define: { __VLAM_EXPERIMENT__: JSON.stringify(variant) },
-  ...(process.env.VLAM_DEV_HTTPS === '1'
+  ...(process.env.VLAM_PLAYWRIGHT || process.env.VLAM_DEV_HTTPS === '1'
     ? {
         server: {
-          https: {
-            key: readFileSync(resolve(root, 'localhost+5-key.pem')),
-            cert: readFileSync(resolve(root, 'localhost+5.pem')),
-          },
+          ...(process.env.VLAM_PLAYWRIGHT ? { watch: null } : {}),
+          ...(process.env.VLAM_DEV_HTTPS === '1'
+            ? {
+                https: {
+                  key: readFileSync(resolve(root, 'localhost+5-key.pem')),
+                  cert: readFileSync(resolve(root, 'localhost+5.pem')),
+                },
+              }
+            : {}),
         },
       }
     : {}),

@@ -39,4 +39,14 @@ src/lib/unified/live-opacity.ts(12,5): error TS2322: Type 'number' is not assign
   it('falls back to the transcript tail when nothing matches', () => {
     expect(failureSummary('build failed\nexit 1\n')).toBe('build failed\nexit 1');
   });
+
+  it('keeps Vite webServer errors behind the Playwright prefix', () => {
+    const output = `
+[WebServer] Error: EMFILE: too many open files, watch '/home/jack/Repos/vlam/vite.config.ts'
+Error: Process from config.webServer was not able to start. Exit code: 1
+`;
+    const summary = failureSummary(output);
+    expect(summary).toContain('EMFILE');
+    expect(summary).toContain('Process from config.webServer');
+  });
 });

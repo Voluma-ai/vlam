@@ -95,7 +95,7 @@ src/
  compute-sorter.ts GPU counting sort, 8 TSL compute passes (WebGPU)
  projected-splat-pipeline.ts experimental project-once cull, dense list + indirect args
  radix-sort.ts radix constants + reference CPU sort (verification)
- radix-sorter.ts experimental GPU radix sorter; inject via `radixSort()` / `exactSort()`
+ radix-sorter.ts GPU radix sorter; inject via `radixSort()` / `exactSort()`
  worker-sorter.ts CPU counting sort in a worker (WebGL2 fallback)
  sort-worker.ts the worker script behind worker-sorter
  sort-worker-kernel.ts radix depth-order pass shared by both CPU sort workers

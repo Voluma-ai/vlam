@@ -42,5 +42,6 @@ export default defineConfig({
     command: 'npx vite --host 127.0.0.1 --port 4174',
     url: 'http://127.0.0.1:4174/src/viewer/projection-probe.html',
     reuseExistingServer: !process.env.CI,
+    env: { VLAM_PLAYWRIGHT: '1' },
   },
 });
