@@ -41,6 +41,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   `2.0`. `@experimental` now remains only on `@voluma/vlam/projection/compute`,
   `@voluma/vlam/unified/pooled`, `getUnifiedSourceView()` and `foveationMode`.
 
+### Fixed
+
+- Playwright's Vite server starts without file watchers, so `git push`
+  preflight no longer dies with `EMFILE` on a machine that already runs
+  `npm run dev` or other Vite processes. A failed preflight trailer now also
+  keeps `[WebServer]` errors, which is how that class of failure shows up.
+
 ## [1.0.0] - 2026-10-11
 
 ### Changed

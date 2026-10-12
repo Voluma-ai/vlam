@@ -61,6 +61,7 @@ function memoryBenchmarkIsolation(): Plugin {
 export default defineConfig({
   base: viewerBase,
   plugins: [memoryBenchmarkIsolation(), flattenViewerHtml()],
+  ...(process.env.VLAM_PLAYWRIGHT ? { server: { watch: null } } : {}),
   // Serve the repo's assets/ directory as static files, so the viewer can
   // fetch e.g. /goose.ply directly. Large local captures do not go here -
   // drop their folder onto the viewer instead (StreamedSplatMesh.loadLocal),
