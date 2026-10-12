@@ -2221,6 +2221,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     if (this.disposed) return;
     this.bindRenderingOnlyRenderer(renderer, 'update');
     this.lastRenderer = renderer;
+    // A pooled tenant is ordered by its owner only. Its own sort would queue a
+    // publication the owner never releases, and the owner cannot capture past it.
+    if (this.pooledOwner && options.sort !== false) options = { ...options, sort: false };
     if (this.pooledOwner) {
       this.enableWorkerPublicationBoundary();
     } else if (options.sort === false && this.unifiedPickVisibility !== null) {

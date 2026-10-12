@@ -266,6 +266,33 @@ describe('PooledUnifiedSplatMesh', () => {
     pool.dispose();
   });
 
+  // A host can keep updating a source as if it drew standalone (a handoff while
+  // the pooled draw has no order yet). Its own sort would queue a publication
+  // only the owner may release, so the owner could never capture it again.
+  it('keeps the owner capturing when a host updates a tenant with sort enabled', () => {
+    sent.length = 0;
+    const renderer = mockRenderer();
+    const pool = new SplatPool({ capacity: 2 * W });
+    const stream = new SplatMesh({ capacity: W }, { pool });
+    const pooled = new PooledUnifiedSplatMesh(renderer, pool);
+    pooled.addSource(stream);
+    const camera = cameraAt(3);
+
+    stream.appendRange(splat(3));
+    const sentBefore = sent.length;
+    const sortsBefore = sortRequestCount();
+    stream.update(camera, renderer, { sort: true });
+    stream.update(camera, renderer, { sort: true });
+    expect(sent.length).toBe(sentBefore); // no standalone sort of its own
+    pooled.update(camera); // captures and sorts
+    expect(sortRequestCount()).toBe(sortsBefore + 1);
+    pooled.update(camera); // publishes
+    expect(instanceCount(pooled)).toBe(3);
+    pooled.dispose();
+    stream.dispose();
+    pool.dispose();
+  });
+
   it('discards an in-flight order when membership changes and re-sorts the new set', () => {
     sent.length = 0;
     const renderer = mockRenderer();
