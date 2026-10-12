@@ -23,6 +23,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-12
+
 ### Changed
 
 - **Narrower experimental surface.** `MergedSplatMesh`, the `static-lod` entry
@@ -43,6 +45,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- A `SplatMesh` drawn by a `PooledUnifiedSplatMesh` no longer sorts on its
+  own when the host calls its `update()` with sorting enabled (for example
+  during a handoff before the pooled draw has an order). That sort queued a
+  publication only the owner could release, so the owner stopped capturing
+  the mesh's new rows. Pooled tenants now always skip their standalone sort.
 - Playwright's Vite server starts without file watchers, so `git push`
   preflight no longer dies with `EMFILE` on a machine that already runs
   `npm run dev` or other Vite processes. A failed preflight trailer now also
@@ -2780,7 +2787,8 @@ The foundational releases, developed rapidly over two days. Highlights:
 - **GPU picking** (`M8`): `SplatMesh.pick(ndc, camera, renderer)`: asynchronous
  one-pixel depth pick returning a world-space center-plane hit.
 
-[Unreleased]: https://github.com/Voluma-ai/vlam/compare/v1.0.0...main
+[Unreleased]: https://github.com/Voluma-ai/vlam/compare/v1.1.0...main
+[1.1.0]: https://github.com/Voluma-ai/vlam/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Voluma-ai/vlam/compare/v0.14.0...v1.0.0
 [0.14.0]: https://github.com/Voluma-ai/vlam/compare/v0.13.6...v0.14.0
 [0.13.6]: https://github.com/Voluma-ai/vlam/compare/v0.13.5...v0.13.6
