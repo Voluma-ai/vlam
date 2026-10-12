@@ -69,7 +69,7 @@ Brush lifecycle or stale-pick fixes discovered during existing selection
 validation fit stabilization. Defer new storage modes, rendering paths, and
 selection features until their benefits are measured and visually validated.
 
-- **Experimental radix sorter: r186 workgroup atomics** — replace
+- **Radix sorter: r186 workgroup atomics** — replace
   the global-storage ranking bitmasks in
   [`radix-sorter.ts`](src/lib/core/radix-sorter.ts) with atomic workgroup arrays.
   Target lower global-memory traffic and GPU scratch allocation while preserving
@@ -78,8 +78,8 @@ selection features until their benefits are measured and visually validated.
   frame-time tails against the current radix implementation; verify exact index
   coverage, depth ordering, and equal-key stability, including partial workgroups.
   Visually validate standalone/unified rendering and confirm WebGL2 fallback
-  non-regression. Keep radix experimental and retain the default counting sorter
-  until measurements justify a separate policy change.
+  non-regression. Retain the default counting sorter until measurements
+  justify a separate policy change.
 - **Cull before sorting and compute projection** — prototype a WebGPU path
   that builds a dense visible-splat list before sorting, uses its GPU count
   for indirect dispatch/draw, and evaluates projection once per splat. VLAM

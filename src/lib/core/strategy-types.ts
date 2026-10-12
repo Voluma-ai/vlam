@@ -32,7 +32,7 @@ export interface SplatSorter {
   dispose(): void;
 }
 
-/** An experimental sorter supplied by `@voluma/vlam/sorting/radix`. */
+/** A GPU radix sorter supplied by `@voluma/vlam/sorting/radix`. */
 export interface SplatSortStrategyFactory {
   readonly kind: 'radix';
   readonly exactDepth: boolean;
