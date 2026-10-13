@@ -4390,7 +4390,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           localCameraPosition: this.localCameraPosition,
           sh: wantPackedColor ? this.materialInputs.sh : null,
         });
-        const matchVertexSort = this.activeCount > 1000;
+        // Always sort the compacted visible list. The indirect draw count is
+        // the visible count, so sorting the full active list instead draws only
+        // its first (farthest) entries and drops every near splat, while culled
+        // splats in that list read projected slots left over from earlier poses
+        // (a 4M SOG lost its foreground and showed frozen streaks, 2026-10-13).
         this.projectedSorter = new ComputeSorter({
           renderer,
           capacity: this.capacity,
@@ -4398,14 +4402,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
           dataTextureWidth: SplatMesh.DATA_TEXTURE_WIDTH,
           splatIndexAttribute: this.splatIndexAttribute,
           sourceIndexAttribute: this.sourceIndexAttribute,
-          ...(matchVertexSort
-            ? {}
-            : {
-                visibleIndexAttribute: this.projectedPipeline.buffers.visibleIndices,
-                projectedParametersAttribute: this.projectedPipeline.buffers.parameters,
-                visibleCountAttribute: this.projectedPipeline.buffers.visibleCount,
-                indirectDispatchAttribute: this.projectedPipeline.buffers.dispatchArgs,
-              }),
+          visibleIndexAttribute: this.projectedPipeline.buffers.visibleIndices,
+          projectedParametersAttribute: this.projectedPipeline.buffers.parameters,
+          visibleCountAttribute: this.projectedPipeline.buffers.visibleCount,
+          indirectDispatchAttribute: this.projectedPipeline.buffers.dispatchArgs,
           sortMetric: this.sortMetric,
         });
       } catch (error) {
@@ -4448,7 +4448,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         this.boundingSphereLocal,
         cameraVisibleSortRange(projectionCamera, this.sortMetric, this.viewport.value),
       );
-      this.refreshProjectedVisibleCountHint();
       // Each GPU sort path marks its own submission (see requestSortIfNeeded):
       // the hold exists to keep a second pass off the order buffer this one
       // now owns. The CPU worker path never marks - it owns no GPU buffer, and
@@ -4467,26 +4466,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
       : 'explicit-compute';
     this.onActiveListReady(this.activeListVersion);
     return true;
-  }
-
-  private projectedVisibleCountRead: Promise<void> | null = null;
-
-  private refreshProjectedVisibleCountHint(): void {
-    const pipeline = this.projectedPipeline;
-    const sorter = this.projectedSorter;
-    if (!pipeline || !sorter || this.projectedVisibleCountRead) return;
-    const pending = pipeline
-      .readVisibleCount()
-      .then((count) => {
-        if (this.projectedSorter === sorter) sorter.setVisibleCountHint(count);
-      })
-      .catch(() => {
-        /* A lost device or disposed pipeline is reported by the next update. */
-      })
-      .finally(() => {
-        if (this.projectedVisibleCountRead === pending) this.projectedVisibleCountRead = null;
-      });
-    this.projectedVisibleCountRead = pending;
   }
 
   private setComputeProjectionActive(active: boolean): void {
@@ -4512,7 +4491,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
     this.projectedPipeline?.dispose();
     this.projectedPipeline = null;
     this.projectionPipelineFailed = false;
-    this.projectedVisibleCountRead = null;
   }
 
   /** Returns whether culling, projected attributes, or list order need rebuilding. */
