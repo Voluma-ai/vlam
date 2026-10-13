@@ -1794,6 +1794,10 @@ async function main(): Promise<void> {
       ...(sparkColorOutput ? { srgbOutput: true } : {}),
       ...(projectionStrategy === undefined ? {} : { projectionStrategy }),
       ...(performanceProfile === undefined ? {} : { performanceProfile }),
+      // ?sh=N overrides the profile's SH default on every path, so `?sh=3`
+      // turns view-dependent color back on under the mobile `smooth` profile
+      // for static scenes too, not just streamed ones.
+      ...(requestedShBands() === undefined ? {} : { shBands: requestedShBands() }),
       ...(sortIntervalMs === undefined ? {} : { sortIntervalMs }),
       ...(antialias === undefined ? {} : { antialias }),
       ...(cutoff === undefined ? {} : { maxStdDev: cutoff }),

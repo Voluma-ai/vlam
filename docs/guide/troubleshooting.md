@@ -255,6 +255,12 @@ argument:
   full-detail `'quality'` elsewhere). `smooth` culls negligible projected
   contributions; opt into SH-preserving `'balanced'` culls only after checking
   that fine detail stays complete for your scene.
+- **`shBands`** (unset: every band the capture carries, except under
+  `smooth`, which defaults it to `0`). This is why mobile renders without
+  view-dependent color by default. Pass `shBands: 3` (or `1`/`2`) to keep SH
+  on a mobile device while leaving the rest of `smooth` in place; `0` forces
+  it off everywhere. A static mesh treats any non-zero value as "all bands the
+  file has". In the demo viewer, `?sh=N` does the same.
 
 ## Library warnings in the console
 
