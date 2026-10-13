@@ -23,6 +23,21 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Compute projection drew only the farthest splats above 1000 splats.** Since
+  0.13.1 the standalone projected sorter ordered the full active list while the
+  indirect draw count was the culled visible count, so the draw dropped every
+  near splat and culled splats read projected slots left over from earlier
+  poses (frozen streaks). It now always sorts the compacted visible list. A 4M
+  SOG on an iPhone 15 Pro: 40 fps vs 26 with vertex projection, same image;
+  Pixel 8a: 54-60 fps vs 13.
+- **Compute projection no longer shimmers up close.** The projected sorter
+  scaled its depth buckets to the visible count, which is smallest exactly when
+  the camera is close, so near splats tied and the unstable scatter reshuffled
+  them every sort. It keeps the capacity-sized histogram (as the vertex path
+  does) and no longer reads the visible count back from the GPU.
+
 ### Changed
 
 - **Faster radial radix sort.** GPU radix sorts with the `radial` metric now

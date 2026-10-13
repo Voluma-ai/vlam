@@ -152,11 +152,6 @@ export class ComputeSorter implements SplatSorter {
   private readonly activeCount = uniform(0);
   /** Highest bucket index this sort uses; see {@link effectiveBucketCount}. */
   private readonly bucketMax = uniform(0);
-  /**
-   * One-frame-stale GPU-visible count for compute projection. Zero keeps the
-   * capacity-sized histogram so streaming covers still get full depth resolution.
-   */
-  private visibleCountHint = 0;
 
   /** Bucket count used by the most recent {@link sort}. Diagnostic. */
   lastBucketCount = 0;
@@ -387,28 +382,15 @@ export class ComputeSorter implements SplatSorter {
   }
 
   /**
-   * One-frame-stale GPU-visible count from compute projection. Shrinks the
-   * histogram/scan dispatches when most splats are culled. Ignored without an
-   * indirect projection dispatch so streaming covers keep full depth resolution.
-   */
-  setVisibleCountHint(count: number): void {
-    this.visibleCountHint = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
-  }
-
-  /**
-   * Keep the allocated depth resolution while a streaming pool fills. A coarse
-   * cover can span the whole scene with few splats; reducing the bucket count
-   * with the live count makes overlapping splats tie and shimmer until detail
-   * arrives. Only compute projection, which already compacted to survivors,
-   * may shrink the histogram work using {@link setVisibleCountHint}.
+   * Keep the allocated depth resolution for every sort. A coarse cover can span
+   * the whole scene with few splats, and compute projection's visible list is
+   * small exactly when the camera is close; shrinking the bucket count with
+   * either count makes overlapping near splats share buckets, and the unstable
+   * scatter then reshuffles them on every sort. Scaling buckets to the visible
+   * count made a 4M SOG shimmer up close on a Pixel 8a (2026-10-13); with the
+   * full 2^22 histogram it measured 54-60 fps there, within run-to-run noise.
    */
   private effectiveBucketCount(): number {
-    if (this.indirectDispatchAttribute && this.visibleCountHint > 0) {
-      return Math.min(
-        this.histogramBucketCount,
-        ComputeSorter.bucketCountFor(this.visibleCountHint),
-      );
-    }
     return this.histogramBucketCount;
   }
 

@@ -355,6 +355,29 @@ describe('SplatMesh sort scheduling', () => {
     expect(internals(mesh).sortScheduler.submissionDiagnostics().action).toBe('suppressed');
   });
 
+  it('sorts the compacted visible list under compute projection at any splat count', () => {
+    // The indirect draw count is the projector's visible count. A sorter fed
+    // the full active list instead (the former `activeCount > 1000` switch)
+    // draws only that list's farthest entries: a 4M SOG lost its foreground
+    // and culled splats drew stale projected slots as frozen streaks.
+    const gpu = pendingGpuCompletion();
+    const mesh = new SplatMesh(makeSplatData(1500), {
+      sortIntervalMs: 0,
+      projectionStrategy: computeProjection(),
+    });
+    meshes.push(mesh);
+
+    mesh.update(perspectiveAt(3), gpu.renderer);
+    expect(mesh.projectionStrategyStatus.effective).toBe('compute');
+    const pipeline = internals(mesh).projectedPipeline! as unknown as {
+      buffers: { dispatchArgs: THREE.IndirectStorageBufferAttribute };
+    };
+    const sorter = internals(mesh).projectedSorter! as unknown as {
+      indirectDispatchAttribute: THREE.IndirectStorageBufferAttribute | null;
+    };
+    expect(sorter.indirectDispatchAttribute).toBe(pipeline.buffers.dispatchArgs);
+  });
+
   it('re-projects a camera move under a held gate with compute projection', async () => {
     // The hardware projection probe: move, draw, move again before the GPU
     // acknowledges the first sort, then hold the camera. Compute projection
