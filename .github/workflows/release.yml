@@ -23,6 +23,9 @@ jobs:
   publish:
     name: publish to npm
     runs-on: ubuntu-latest
+    # A healthy run takes ~5 minutes; fail fast instead of GitHub's 6-hour
+    # default (v1.1.0 hung in the Playwright apt install and never published).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -32,6 +35,7 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: npm ci
       - run: npx playwright install --with-deps chromium
+        timeout-minutes: 10
 
       # The tag is the source of truth for what gets published - refuse to
       # publish if package.json disagrees with it.
