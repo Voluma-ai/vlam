@@ -25,6 +25,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- **SOG chunks no longer fail when Safari loses the decode context.** Safari
+  26.6 drops the worker's WebGL2 readback context under GPU pressure beside a
+  WebGPU renderer, so every retry of a SOG or LCC2 chunk failed with "Could not
+  allocate a WebGL texture" and a single-chunk scene never appeared. A lost
+  context now switches that worker to the `ImageDecoder` or canvas decode.
 - **Compute projection drew only the farthest splats above 1000 splats.** Since
   0.13.1 the standalone projected sorter ordered the full active list while the
   indirect draw count was the culled visible count, so the draw dropped every
