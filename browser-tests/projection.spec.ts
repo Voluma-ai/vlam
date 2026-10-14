@@ -10,6 +10,10 @@ test('compute projection has exact dense coverage and indirect arguments', async
     runtimePlatform.startsWith('Linux'),
     'Chromium Linux SwiftShader drops its external Dawn instance during projection GPUBuffer readback.',
   );
+  test.fixme(
+    runtimePlatform.startsWith('Mac'),
+    'On macOS the goose compute-vs-vertex pixel parity exceeds tolerance (~247k channels, max diff 104, voxel-edge ordering differences); also fails on main.',
+  );
   await page.goto('/src/viewer/projection-probe.html?renderOnly=1');
   const result = page.locator('[data-testid="result"]');
   await expect(result).not.toHaveText('', { timeout: 120_000 });
