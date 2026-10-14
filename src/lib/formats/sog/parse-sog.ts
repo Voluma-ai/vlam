@@ -377,10 +377,17 @@ async function decodeShN(
 }
 
 let webpReadbackContext: WebGL2RenderingContext | undefined;
+/**
+ * Set once this worker's readback context is lost. Safari drops worker WebGL
+ * contexts under GPU pressure (beside a WebGPU renderer), and every
+ * replacement context can be dropped again, so later images skip the GPU path.
+ */
+let webpReadbackContextLost = false;
 
 /** Returns one worker-local WebGL2 context for consistent WebP readback. */
 function getWebpReadbackContext(): WebGL2RenderingContext | undefined {
   if (!('OffscreenCanvas' in globalThis) || !('createImageBitmap' in globalThis)) return undefined;
+  if (webpReadbackContextLost) return undefined;
   if (webpReadbackContext && !webpReadbackContext.isContextLost()) return webpReadbackContext;
 
   const canvas = new OffscreenCanvas(1, 1);
@@ -471,7 +478,18 @@ async function decodeWebpViaGpu(
 /** Decodes a WebP image to raw RGBA bytes. */
 async function decodeWebp(bytes: Uint8Array): Promise<DecodedImage> {
   const gpuContext = getWebpReadbackContext();
-  if (gpuContext) return decodeWebpViaGpu(bytes, gpuContext);
+  if (gpuContext) {
+    try {
+      return await decodeWebpViaGpu(bytes, gpuContext);
+    } catch (error) {
+      // A lost context returns null from createTexture. Safari 26.6 loses the
+      // worker context mid-load, which failed every retry of a scene's only
+      // chunk (2026-10-14). Decode without WebGL instead of failing the chunk.
+      if (!gpuContext.isContextLost()) throw error;
+      webpReadbackContextLost = true;
+      webpReadbackContext = undefined;
+    }
+  }
 
   // WebCodecs fallback for environments without worker WebGL2. Chromium
   // preserves these data bytes; Firefox uses the GPU path above because its

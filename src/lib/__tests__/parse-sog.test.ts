@@ -511,6 +511,42 @@ describe('SOG decoder failure cleanup', () => {
   });
 });
 
+describe('SOG WebGL context loss', () => {
+  it('decodes without WebGL once the worker readback context is lost', async () => {
+    vi.resetModules();
+    const { parseSog: parseFresh } = await import('../formats/sog/parse-sog');
+    vi.stubGlobal('ImageDecoder', StubImageDecoder);
+    vi.stubGlobal('createImageBitmap', async () => ({
+      width: 1,
+      height: 1,
+      close: () => undefined,
+    }));
+    const gl = new StubWebGl2Context();
+    // The context is live when acquired and lost by the first allocation;
+    // a lost WebGL context returns null from every create call.
+    let lost = false;
+    vi.spyOn(gl, 'isContextLost').mockImplementation(() => lost);
+    vi.spyOn(gl, 'createTexture').mockImplementation(() => {
+      lost = true;
+      return null!;
+    });
+    const getContext = vi.fn(() => gl as unknown as WebGL2RenderingContext);
+    vi.stubGlobal(
+      'OffscreenCanvas',
+      class {
+        getContext = getContext;
+      },
+    );
+
+    const data = await parseFresh(makeBundle(makeMeta(1)));
+    await parseFresh(makeBundle(makeMeta(1)));
+
+    expect(data.colors[3]).toBe(200);
+    // One context attempt; later images and chunks skip WebGL entirely.
+    expect(getContext).toHaveBeenCalledOnce();
+  });
+});
+
 describe('SOG bitmap failure cleanup', () => {
   it.each(['texture', 'framebuffer', 'canvas', 'readback'] as const)(
     'releases acquired resources on %s failure',
