@@ -1,8 +1,9 @@
 import { writeCovariance, type SplatData } from '../../core/splat-data';
+import { MAX_DECODED_SPLATS } from '../splat-count-limits';
 
 const BYTES_PER_SPLAT = 32;
-/** Mirrors `parse-sog.ts` MAX_SPLAT_COUNT - the renderer's 2²⁴ splat ceiling. */
-const MAX_SPLAT_COUNT = 1 << 24;
+/** Bounds the decode; the loaders thin anything above the drawable ceiling. */
+const MAX_SPLAT_COUNT = MAX_DECODED_SPLATS;
 
 /**
  * Parses the common 32-byte `.splat` format into flat, GPU-friendly arrays.
