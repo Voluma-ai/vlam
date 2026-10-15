@@ -156,6 +156,10 @@ Short reference snippets from `docs/guide/samples/`, mostly exported functions r
 <<< ../../docs/guide/samples/loading-status.ts
 :::
 
+::: details loading-scene-budget.ts, several whole files under one `SplatSceneBudget`
+<<< ../../docs/guide/samples/loading-scene-budget.ts
+:::
+
 ### Streaming
 
 ::: details streaming-basic.ts, `StreamedSplatMesh.load`

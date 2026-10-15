@@ -13,6 +13,11 @@ import {
 import { isCompressedPly, parseCompressedPly } from './parse-compressed-ply';
 import { readWholeFile, type SplatProgressCallback } from '../../loaders/loading';
 import {
+  importanceBins,
+  importanceScore,
+  keepMostImportant,
+} from '../../loaders/limit-splat-count';
+import {
   assertPlyElementFits,
   assertPlyPropertyTypes,
   parsePlyHeader,
@@ -76,21 +81,40 @@ function sigmoid(x: number): number {
  * {@link loadSplatDataFile}, `ChunkLoader`, `StreamedSplatMesh`): malformed input
  * surfaces here as a plain `Error`.
  */
-export function parseSplatPly(buffer: ArrayBuffer): SplatData {
+export function parseSplatPly(
+  buffer: ArrayBuffer,
+  options: { maxSplats?: number } = {},
+): SplatData {
   const header = parsePlyHeader(buffer);
   if (isCompressedPly(header)) return parseCompressedPly(buffer, header);
 
   const vertices = requireSplatVertexElement(header);
   assertPlyElementFits(vertices, buffer.byteLength);
 
-  const out = allocate(vertices.count);
+  const count = vertices.count;
+  const offsets = vertexOffsets(vertices);
   const rest = restLayout(vertices);
   const view = new DataView(buffer, vertices.offset);
-  decodeRecords(view, vertexOffsets(vertices), vertices.stride, 0, 0, vertices.count, out);
-  const shPacked = rest
-    ? packRestRecords(view, vertices.stride, 0, 0, vertices.count, rest)
-    : undefined;
-  return finalizePlyDecode(vertices.count, out, shPacked);
+  const { maxSplats } = options;
+  let keep: Uint8Array | null = null;
+  let kept = count;
+  if (maxSplats !== undefined && count > maxSplats) {
+    kept = Math.max(0, Math.floor(maxSplats));
+    const scores = new Float32Array(count);
+    scoreRecords(view, offsets, vertices.stride, 0, 0, count, scores);
+    keep = keepMostImportant(importanceBins(scores), kept);
+  }
+  const out = allocate(kept);
+  decodeRecords(view, offsets, vertices.stride, 0, 0, count, out, keep, 0);
+  let shPacked: SplatPackedShData | undefined;
+  if (rest) {
+    // The quantization extent spans every splat, kept or not, so the packed
+    // words match a full decode thinned afterwards bit for bit.
+    const extent = measureRestExtent(view, vertices.stride, 0, 0, count, rest, 0);
+    shPacked = allocatePackedRest(kept, rest, extent);
+    writePackedRest(view, vertices.stride, 0, 0, count, rest, extent, shPacked.packed, keep, 0);
+  }
+  return finalizePlyDecode(kept, out, shPacked, keep ? count : undefined);
 }
 
 /**
@@ -125,7 +149,18 @@ const HEADER_WINDOW_BYTES = 64 * 1024;
  */
 export async function parseSplatPlyFile(
   file: File,
-  options: { signal?: AbortSignal; windowBytes?: number; onProgress?: SplatProgressCallback } = {},
+  options: {
+    signal?: AbortSignal;
+    windowBytes?: number;
+    onProgress?: SplatProgressCallback;
+    /**
+     * Keep at most this many splats, the most visible ones, thinned while
+     * decoding so the dropped splats' arrays are never allocated. A function
+     * is called once with the file's splat count. Costs one extra read pass
+     * over the file when it thins.
+     */
+    maxSplats?: number | ((count: number) => number | Promise<number>);
+  } = {},
 ): Promise<SplatData> {
   const { signal, onProgress } = options;
   const windowBytes = options.windowBytes ?? STREAM_WINDOW_BYTES;
@@ -139,45 +174,117 @@ export async function parseSplatPlyFile(
 
   const count = vertices.count;
   const stride = vertices.stride;
-  const out = allocate(count);
   const offsets = vertexOffsets(vertices);
   const rest = restLayout(vertices);
   // At least one whole record per read: a window never splits a record, so
   // the decoder always sees complete ones.
   const perWindow = Math.max(1, Math.floor(windowBytes / stride));
-
-  // SH needs a second pass: its scene-wide quantization extent is not known
-  // until every coefficient has been inspected. Re-reading bounded File
-  // windows avoids the former count*coefficients*3 Float32Array (180 B/splat
-  // at SH3) while keeping the packed result bit-identical.
-  const passBytes = count * stride;
-  const totalBytes = passBytes * (rest ? 2 : 1);
-  let extent = 0;
-  onProgress?.(0, totalBytes);
-  for (let first = 0; first < count; first += perWindow) {
+  const readWindow = async (first: number, last: number): Promise<DataView> => {
     signal?.throwIfAborted();
-    const last = Math.min(first + perWindow, count);
     const slice = file.slice(vertices.offset + first * stride, vertices.offset + last * stride);
-    const view = new DataView(await slice.arrayBuffer());
-    // The window's byte 0 is record `first`, so the decoder rebases onto it.
-    decodeRecords(view, offsets, stride, first, first, last, out);
-    if (rest) extent = measureRestExtent(view, stride, first, first, last, rest, extent);
-    onProgress?.(last * stride, totalBytes);
+    return new DataView(await slice.arrayBuffer());
+  };
+
+  const maxSplats =
+    typeof options.maxSplats === 'function' ? await options.maxSplats(count) : options.maxSplats;
+  const thin = maxSplats !== undefined && count > maxSplats;
+  const kept = thin ? Math.max(0, Math.floor(maxSplats)) : count;
+
+  // SH needs a pass of its own: its scene-wide quantization extent is not
+  // known until every coefficient has been inspected. Re-reading bounded File
+  // windows avoids the former count*coefficients*3 Float32Array (180 B/splat
+  // at SH3) while keeping the packed result bit-identical. Thinning adds a
+  // scoring pass ahead of the decode, so the dropped splats are never held.
+  const passBytes = count * stride;
+  const passes = 1 + (rest ? 1 : 0) + (thin ? 1 : 0);
+  const totalBytes = passBytes * passes;
+  let pass = 0;
+  onProgress?.(0, totalBytes);
+
+  let keep: Uint8Array | null = null;
+  if (thin) {
+    const scores = new Float32Array(count);
+    for (let first = 0; first < count; first += perWindow) {
+      const last = Math.min(first + perWindow, count);
+      scoreRecords(await readWindow(first, last), offsets, stride, first, first, last, scores);
+      onProgress?.(last * stride, totalBytes);
+    }
+    keep = keepMostImportant(importanceBins(scores), kept);
+    pass++;
   }
+
+  const out = allocate(kept);
+  let extent = 0;
+  let written = 0;
+  for (let first = 0; first < count; first += perWindow) {
+    const last = Math.min(first + perWindow, count);
+    const view = await readWindow(first, last);
+    // The window's byte 0 is record `first`, so the decoder rebases onto it.
+    written = decodeRecords(view, offsets, stride, first, first, last, out, keep, written);
+    if (rest) extent = measureRestExtent(view, stride, first, first, last, rest, extent);
+    onProgress?.(pass * passBytes + last * stride, totalBytes);
+  }
+  pass++;
 
   let shPacked: SplatPackedShData | undefined;
   if (rest) {
-    shPacked = allocatePackedRest(count, rest, extent);
+    shPacked = allocatePackedRest(kept, rest, extent);
+    let packed = 0;
     for (let first = 0; first < count; first += perWindow) {
-      signal?.throwIfAborted();
       const last = Math.min(first + perWindow, count);
-      const slice = file.slice(vertices.offset + first * stride, vertices.offset + last * stride);
-      const view = new DataView(await slice.arrayBuffer());
-      writePackedRest(view, stride, first, first, last, rest, extent, shPacked.packed);
-      onProgress?.(passBytes + last * stride, totalBytes);
+      const view = await readWindow(first, last);
+      packed = writePackedRest(
+        view,
+        stride,
+        first,
+        first,
+        last,
+        rest,
+        extent,
+        shPacked.packed,
+        keep,
+        packed,
+      );
+      onProgress?.(pass * passBytes + last * stride, totalBytes);
     }
   }
-  return finalizePlyDecode(count, out, shPacked);
+  return finalizePlyDecode(kept, out, shPacked, keep ? count : undefined);
+}
+
+/**
+ * Scores records `[from, to)` for thinning, exactly as `limitSplatCount`
+ * would score them once decoded: the same 8-bit opacity and the same float32
+ * covariance diagonal, so the kept set is identical.
+ */
+function scoreRecords(
+  view: DataView,
+  o: VertexOffsets,
+  stride: number,
+  viewFirst: number,
+  from: number,
+  to: number,
+  scores: Float32Array,
+): void {
+  const covariance = new Float32Array(6);
+  for (let i = from; i < to; i++) {
+    const base = (i - viewFirst) * stride;
+    const readFloat = (offset: number): number => view.getFloat32(base + offset, true);
+    writeCovariance(
+      covariance,
+      0,
+      Math.exp(readFloat(o.s0)),
+      Math.exp(readFloat(o.s1)),
+      Math.exp(readFloat(o.s2)),
+      readFloat(o.q0),
+      readFloat(o.q1),
+      readFloat(o.q2),
+      readFloat(o.q3),
+    );
+    scores[i] = importanceScore(
+      Math.round(sigmoid(readFloat(o.alpha)) * 255) / 255,
+      (covariance[0] as number) + (covariance[3] as number) + (covariance[5] as number),
+    );
+  }
 }
 
 /** The vertex element of a splat PLY, with its required properties checked. */
@@ -225,8 +332,14 @@ export function finalizePlyDecode(
   count: number,
   out: SplatArrays,
   shPacked: SplatPackedShData | undefined,
+  sourceCount?: number,
 ): SplatData {
-  return { count, ...out, ...(shPacked ? { shPacked } : {}) };
+  return {
+    count,
+    ...out,
+    ...(shPacked ? { shPacked } : {}),
+    ...(sourceCount === undefined ? {} : { sourceCount }),
+  };
 }
 
 export interface SplatArrays {
@@ -285,6 +398,11 @@ export function vertexOffsets(vertices: PlyElement): VertexOffsets {
  * Decodes records `[from, to)` into `out`, reading from a view whose byte 0
  * holds record `viewFirst`. Shared by the whole-buffer and streamed paths, so
  * both produce identical arrays.
+ *
+ * With `keep`, only marked records are written, packed from output index
+ * `outFirst`; without it, record `i` lands at index `i`.
+ *
+ * @returns The next output index.
  */
 export function decodeRecords(
   view: DataView,
@@ -294,10 +412,15 @@ export function decodeRecords(
   from: number,
   to: number,
   out: SplatArrays,
-): void {
+  keep: Uint8Array | null = null,
+  outFirst = from,
+): number {
   const { positions, colors, covariances } = out;
-  for (let i = from; i < to; i++) {
-    const base = (i - viewFirst) * stride;
+  let next = keep ? outFirst : from;
+  for (let r = from; r < to; r++) {
+    if (keep && !keep[r]) continue;
+    const i = next++;
+    const base = (r - viewFirst) * stride;
     const readFloat = (offset: number): number => view.getFloat32(base + offset, true);
 
     positions[i * 3 + 0] = readFloat(o.x);
@@ -325,6 +448,7 @@ export function decodeRecords(
       readFloat(o.q3),
     );
   }
+  return next;
 }
 
 /** Finds the largest absolute SH coefficient in a fixed-stride record range. */
@@ -361,7 +485,12 @@ export function allocatePackedRest(
   };
 }
 
-/** Packs channel-major `f_rest_*` directly into coefficient-major RGB words. */
+/**
+ * Packs channel-major `f_rest_*` directly into coefficient-major RGB words.
+ * `keep` and `outFirst` select and place records as in {@link decodeRecords}.
+ *
+ * @returns The next output index.
+ */
 export function writePackedRest(
   view: DataView,
   stride: number,
@@ -371,11 +500,15 @@ export function writePackedRest(
   rest: RestLayout,
   extent: number,
   out: Uint32Array,
-): void {
+  keep: Uint8Array | null = null,
+  outFirst = from,
+): number {
   const { coefficients, offsets } = rest;
-  for (let i = from; i < to; i++) {
-    const base = (i - viewFirst) * stride;
-    const dest = i * coefficients;
+  let next = keep ? outFirst : from;
+  for (let r = from; r < to; r++) {
+    if (keep && !keep[r]) continue;
+    const base = (r - viewFirst) * stride;
+    const dest = next++ * coefficients;
     for (let c = 0; c < coefficients; c++) {
       out[dest + c] = packShCoefficient(
         view.getFloat32(base + (offsets[c] as number), true),
@@ -385,19 +518,5 @@ export function writePackedRest(
       );
     }
   }
-}
-
-/** Measures and packs a whole in-memory PLY without an intermediate float array. */
-function packRestRecords(
-  view: DataView,
-  stride: number,
-  viewFirst: number,
-  from: number,
-  to: number,
-  rest: RestLayout,
-): SplatPackedShData {
-  const extent = measureRestExtent(view, stride, viewFirst, from, to, rest, 0);
-  const packed = allocatePackedRest(to - from, rest, extent);
-  writePackedRest(view, stride, viewFirst, from, to, rest, extent, packed.packed);
-  return packed;
+  return next;
 }

@@ -4,6 +4,8 @@
  * {@link loadSplatData} / {@link loadSplatDataFile} decode a whole file into
  * {@link SplatData} for {@link SplatMesh}. {@link ChunkLoader} is the
  * multiplexed worker behind those helpers and behind streamed chunk fetches.
+ * {@link SplatSceneBudget} bounds the splats of a scene made of several
+ * whole files.
  *
  * Format-specific parsers stay on `@voluma/vlam/formats/*`; this entry loads
  * them on demand through the worker.
@@ -17,6 +19,13 @@ export {
   type SplatDataFileLoadOptions,
 } from './load-splat-data';
 export { ChunkLoader } from './chunk-loader';
+export {
+  SplatSceneBudget,
+  type SplatSceneBudgetOptions,
+  type SplatSceneBudgetPlanOptions,
+  type SplatBudgetReservation,
+} from './splat-scene-budget';
+export { peekSplatCount, type SplatCountPeekOptions } from './peek-splat-count';
 export {
   SplatLoadError,
   isAbortError,

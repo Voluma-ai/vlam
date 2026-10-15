@@ -37,7 +37,9 @@ npm run test:coverage # Vitest with V8 coverage (text + cobertura, what CI runs)
 ```
 
 `git push` runs `npm run preflight` through Husky, including the local
-Playwright checks. It does not start Docker. The Playwright Vite server
+Playwright checks. It does not start Docker. Browser checks use Playwright's
+configured single worker, the same as CI: two SwiftShader browsers in
+parallel can lose the WebGL context. The Playwright Vite server
 starts without file watchers so a local `npm run dev` does not exhaust
 Linux inotify limits during preflight. When a gate fails, preflight
 reprints the failed test names and error lines after the full log, because
@@ -101,12 +103,14 @@ output. Pull requests have no description template; write what the change does.
 ## Dev GPU harnesses
 
 [`src/viewer/chunk-harness.html`](src/viewer/chunk-harness.html),
-[`src/viewer/unified-harness.html`](src/viewer/unified-harness.html), and
+[`src/viewer/unified-harness.html`](src/viewer/unified-harness.html),
+[`src/viewer/budget-harness.html`](src/viewer/budget-harness.html), and
 [`src/viewer/rad-parity-harness.html`](src/viewer/rad-parity-harness.html), plus
 [`src/viewer/render-benchmark.html`](src/viewer/render-benchmark.html),
 [`src/viewer/memory-benchmark.html`](src/viewer/memory-benchmark.html),
 are standalone browser pages for poking at one subsystem in isolation. They are
 served by `npm run dev` at `/chunk-harness.html`, `/unified-harness.html`,
+`/budget-harness.html`,
 `/rad-parity-harness.html`, `/render-benchmark.html`, and `/memory-benchmark.html`.
 The memory page records load checkpoints, sampled main-isolate heap, optional
 browser-wide measurements, and explicit CPU/GPU allocation estimates; see

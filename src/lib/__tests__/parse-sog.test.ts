@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseSog, parseSogDirectory } from '../formats/sog/parse-sog';
+import { limitSplatCount } from '../loaders/limit-splat-count';
 
 /**
  * These tests exercise the decoder's defenses against hostile inputs
@@ -405,6 +406,77 @@ describe('parseSog', () => {
     await expect(parseSog(buildZip({ 'meta.json': JSON.stringify(meta) }))).rejects.toThrow(
       /"sh0" codebook contains a non-finite entry/,
     );
+  });
+});
+
+/** A pseudo-random N-splat bundle (deterministic), with palette shN. */
+function makeRandomBundle(count: number): ArrayBuffer {
+  let seed = 12345;
+  const byte = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed & 0xff;
+  };
+  const image = (pixel: () => number[]) =>
+    fakeImage(count, 1, Array.from({ length: count }, pixel).flat());
+  const shCodebook = Array.from({ length: 256 }, (_, i) => (i - 128) / 128);
+  return buildZip({
+    'meta.json': JSON.stringify(
+      makeMeta(count, {
+        // Log-scale codebook: e^-6 .. e^1, so traces spread over decades.
+        scales: { codebook: codebook.map((v) => -6 + 7 * v), files: ['scales.webp'] },
+        shN: {
+          count: 4,
+          bands: 1,
+          codebook: shCodebook,
+          files: ['shN_centroids.webp', 'shN_labels.webp'],
+        },
+      }),
+    ),
+    'means_l.webp': image(() => [byte(), byte(), byte(), 255]),
+    'means_u.webp': image(() => [byte(), byte(), byte(), 255]),
+    'quats.webp': image(() => [byte(), byte(), byte(), 252 + (byte() & 3)]),
+    'scales.webp': image(() => [byte(), byte(), byte(), 255]),
+    // A few repeated opacities, so the cut lands inside a tied bucket.
+    'sh0.webp': image(() => [byte(), byte(), byte(), [0, 40, 200, 255][byte() & 3] as number]),
+    'shN_centroids.webp': fakeImage(12, 1, Array.from({ length: 48 }, byte)),
+    'shN_labels.webp': image(() => [byte() & 3, 0, 0, 255]),
+  });
+}
+
+describe('parseSog in-decode thinning', () => {
+  it('keeps exactly the set limitSplatCount would keep from the full decode', async () => {
+    vi.stubGlobal('ImageDecoder', StubImageDecoder);
+    const bundle = makeRandomBundle(3000);
+    const full = await parseSog(bundle);
+    const reference = limitSplatCount(await parseSog(bundle), 1100);
+    const thinned = await parseSog(bundle, { maxSplats: 1100 });
+
+    expect(full.count).toBe(3000);
+    expect(thinned.count).toBe(1100);
+    expect(thinned.sourceCount).toBe(3000);
+    expect(Array.from(thinned.positions)).toEqual(Array.from(reference.positions));
+    expect(Array.from(thinned.colors)).toEqual(Array.from(reference.colors));
+    expect(Array.from(thinned.covariances)).toEqual(Array.from(reference.covariances));
+    expect(Array.from(thinned.sh?.labels ?? [])).toEqual(Array.from(reference.sh?.labels ?? []));
+    expect(thinned.positions.buffer.byteLength).toBe(1100 * 3 * 4);
+  });
+
+  it('decodes byte-for-byte as before when nothing has to be dropped', async () => {
+    vi.stubGlobal('ImageDecoder', StubImageDecoder);
+    const bundle = makeRandomBundle(500);
+    const plain = await parseSog(bundle);
+    const roomy = await parseSog(bundle, { maxSplats: 500 });
+    expect(roomy.sourceCount).toBeUndefined();
+    expect(roomy).toEqual(plain);
+  });
+
+  it('asks a function for the limit once, with the file count', async () => {
+    vi.stubGlobal('ImageDecoder', StubImageDecoder);
+    const maxSplats = vi.fn(async (count: number) => count / 5);
+    const data = await parseSog(makeRandomBundle(500), { maxSplats });
+    expect(maxSplats).toHaveBeenCalledTimes(1);
+    expect(maxSplats).toHaveBeenCalledWith(500);
+    expect(data.count).toBe(100);
   });
 });
 

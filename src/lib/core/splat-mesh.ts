@@ -72,6 +72,7 @@ import {
   createDataTexture,
   deviceMaxTextureSize,
   releaseRowSpan,
+  resizeDataTexture,
   type SplatPoolBacking,
   type SplatPoolRange,
   type SplatPoolTenant,
@@ -82,6 +83,11 @@ import type { ShComputeCache } from './sh-compute-cache';
 import { StorageMirrorReleaser } from './storage-attribute-mirror';
 import { dataTexturesUploaded, releaseDataTextureMirrors } from './data-texture-mirror';
 import { assertStorageBufferFitsDevice } from './webgpu-limits';
+import {
+  takeSplatBudgetLink,
+  type SplatBudgetLink,
+  type SplatBudgetTenant,
+} from './splat-budget-link';
 import {
   assertSplatSortStrategy,
   isAutomaticProjectionStrategy,
@@ -190,7 +196,8 @@ interface ChannelRecord {
   readonly type: SplatChannelType;
   /** Default value; rows are reset to it when {@link SplatMesh.appendRange} reuses them. */
   readonly fill: number;
-  readonly backing: Uint8Array | Float32Array;
+  /** Replaced (never resized in place) when a budget shrinks the pool. */
+  backing: Uint8Array | Float32Array;
   readonly texture: THREE.DataTexture;
   readonly textureType: THREE.TextureDataType;
   /** Row spans written since the last flush, awaiting GPU upload. */
@@ -273,7 +280,7 @@ interface RangeRecord {
  *    active pool spans on the CPU. shN data on appended ranges is ignored
  *    (palettes are per-file and cannot be merged here).
  */
-export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
+export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudgetTenant {
   private static readonly DATA_TEXTURE_WIDTH = SPLAT_DATA_TEXTURE_WIDTH;
 
   /**
@@ -359,6 +366,17 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private readonly shEvaluationState = { reason: 'not-prepared' };
   /** Constructor-created range, retained for static in-place LOD replacement. */
   private staticRange: SplatRange | undefined;
+  /**
+   * Rows of the static range ranked most visible first, from
+   * {@link SplatData.drawOrder}. Retained only for a budgeted load into a plain
+   * `SplatMesh` with its own pool, so a scene budget can shrink it to a prefix
+   * ({@link shrinkToBudget}). The active list itself stays in pool order: the
+   * sorters do not need importance order, it is rebuilt in pool order on
+   * several paths, and pool order keeps the unified gather's reads coherent.
+   */
+  private staticDrawOrder: Uint32Array | null = null;
+  /** The scene budget this mesh's data was loaded under, if any. */
+  private budgetLink: SplatBudgetLink | null = null;
   private readonly shEnabled: boolean;
   /**
    * Dequantization range for the packed SH, shared by every coefficient.
@@ -935,6 +953,16 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
     if (isStatic) {
       this.staticRange = this.appendRangeWithState(source, true);
+      if (source.drawOrder) {
+        if (source.drawOrder.length !== source.count) {
+          throw new RangeError('SplatMesh: drawOrder must hold one entry per splat.');
+        }
+        // Subclasses (static LOD, merged) manage their own residency, and a
+        // shared or render-only pool cannot be reallocated.
+        if (new.target === SplatMesh && ownsPool && storageMode === 'editable') {
+          this.staticDrawOrder = source.drawOrder;
+        }
+      }
       // Constructor-time writes into this mesh's own pool are covered by the
       // textures' initial `needsUpdate` upload - the GPU cannot have seen them
       // earlier. A supplied (shared) pool may already be on the GPU, so its
@@ -955,6 +983,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         this.matrix.decompose(this.position, this.quaternion, this.scale);
         this.matrixWorldNeedsUpdate = true;
       }
+      // Last, so a constructor that throws never leaves the budget holding a
+      // mesh that does not exist.
+      this.budgetLink = takeSplatBudgetLink(source) ?? null;
+      this.budgetLink?.attach(this);
     }
   }
 
@@ -1763,6 +1795,102 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   /** Number of splats currently active (drawn and depth-sorted). */
   get activeSplatCount(): number {
     return this.activeCount;
+  }
+
+  /** @internal {@link SplatBudgetTenant}: the splats this mesh holds for its scene budget. */
+  get budgetedSplatCount(): number {
+    return this.staticRange ? (this.ranges.get(this.staticRange)?.count ?? 0) : 0;
+  }
+
+  /** @internal {@link SplatBudgetTenant}: whether {@link shrinkToBudget} can free splats. */
+  get budgetShrinkable(): boolean {
+    const record = this.staticRange ? this.ranges.get(this.staticRange) : undefined;
+    return (
+      this.staticDrawOrder !== null &&
+      record !== undefined &&
+      record.start === 0 &&
+      !this.disposed &&
+      this.pooledOwner === null &&
+      this.pool.tenantCount === 1 &&
+      !this.pool.cpuMirrorsReleased
+    );
+  }
+
+  /**
+   * @internal {@link SplatBudgetTenant}: shrinks a budgeted static mesh to its
+   * `count` most visible splats - a prefix of its {@link SplatData.drawOrder} -
+   * and reallocates its pool textures and CPU backing at the smaller size.
+   * Returns the count it now holds, unchanged when it cannot shrink (no draw
+   * order, a shared or render-only pool, a subclass). Lossy and synchronous;
+   * the per-mesh draw-list attributes keep their original size.
+   */
+  shrinkToBudget(count: number): number {
+    const current = this.budgetedSplatCount;
+    const target = Math.max(0, Math.min(current, Math.floor(count)));
+    const order = this.staticDrawOrder;
+    const record = this.staticRange ? this.ranges.get(this.staticRange) : undefined;
+    if (target >= current || !this.budgetShrinkable || !order || !record) return current;
+
+    // Kept rows keep their pool order, packed to the front: neighbours stay
+    // neighbours for the gather, and the importance order survives as a
+    // re-indexed prefix for the next shrink.
+    const rank = new Uint32Array(current).fill(0xffffffff);
+    for (let i = 0; i < target; i++) rank[order[i] as number] = 0;
+    let kept = 0;
+    for (let row = 0; row < current; row++) if (rank[row] === 0) rank[row] = kept++;
+    const packRows = (array: Float32Array | Uint8Array | Uint32Array, stride: number): void => {
+      for (let row = 0; row < current; row++) {
+        const to = rank[row] as number;
+        if (to === 0xffffffff || to === row) continue;
+        const from = row * stride;
+        const dest = to * stride;
+        for (let k = 0; k < stride; k++) array[dest + k] = array[from + k] as number;
+      }
+    };
+    const backing = this.backing;
+    packRows(backing.centers, 4);
+    packRows(backing.colors, 4);
+    packRows(backing.covarianceA, 4);
+    packRows(backing.covarianceB, 4);
+    for (const group of backing.shPacked) packRows(group, 4);
+    for (const channel of this.channels.values()) packRows(channel.backing, 1);
+    const nextOrder = new Uint32Array(target);
+    for (let i = 0; i < target; i++) nextOrder[i] = rank[order[i] as number] as number;
+
+    // Reallocate: the pool (and each channel) keeps only the rows still used.
+    const width = SplatMesh.DATA_TEXTURE_WIDTH;
+    const rows = Math.max(1, Math.ceil(target / width));
+    this.pool.shrinkRows(rows);
+    for (const channel of this.channels.values()) {
+      channel.backing = channel.backing.slice(0, rows * width);
+      resizeDataTexture(channel.texture, channel.backing, width, rows);
+      channel.pendingRows = [];
+    }
+    if (this.poolFloatTextures === 'float16') this.syncHalfFloatPoolImages();
+    record.count = target;
+    // The record keeps the pool's last row even when empty, so every row
+    // stays accounted to a tenant.
+    record.rowCount = rows;
+    this.staticDrawOrder = nextOrder;
+
+    // Every image was replaced and re-uploads whole; queued row copies and
+    // in-flight worker snapshots describe the old layout.
+    this.invalidateWorkerPublications(false);
+    this.pendingUploadRows = [];
+    // The worker sorter mirrors centers by pool index; resend the new rows.
+    if (this.workerPublicationEnabled && target > 0) this.markRowsWritten(0, rows);
+    this.shCache?.invalidate();
+    this.invalidateProjectedSortCache();
+    this.rebuildActiveList();
+    // The order currently drawn indexes the old layout. Draw nothing until a
+    // sort over the new list lands, rather than the wrong splats.
+    if (this.gpuDrawListHeld || this.workerPublicationEnabled) {
+      this.publishedActiveCount = 0;
+      (this.geometry as THREE.InstancedBufferGeometry).instanceCount = 0;
+    }
+    this.queryEpoch++;
+    this.contentRevision++;
+    return target;
   }
 
   /**
@@ -3050,6 +3178,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.budgetLink?.detach(this);
+    this.budgetLink = null;
     this.pooledOwner = null;
     this.invalidateWorkerPublications(false);
     super.dispose();

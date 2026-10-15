@@ -446,6 +446,55 @@ export class SplatPool {
   }
 
   /**
+   * @internal Reallocates the pool at `rows` rows, keeping the first `rows`
+   * rows of data and freeing the rest - the backing arrays and the GPU
+   * textures both shrink. The textures keep their identity (materials,
+   * pickers and unified gathers hold them), get a smaller image, and are
+   * disposed so every renderer re-creates them at the new size on next use.
+   *
+   * Only for a pool with at most one tenant whose data already sits below
+   * `rows`, and with CPU backing still present; the tenant rebuilds its draw
+   * state afterwards. Float16 images are allocated but left for the tenant to
+   * encode from the float32 backing.
+   */
+  shrinkRows(rows: number): void {
+    if (!Number.isInteger(rows) || rows < 1 || rows > this.rows) {
+      throw new RangeError('SplatPool.shrinkRows: rows must be an integer in [1, current rows].');
+    }
+    if (this.tenants.size > 1) throw new Error('SplatPool.shrinkRows: the pool is shared.');
+    if (this.cpuMirrorsReleasedValue) {
+      throw new Error('SplatPool.shrinkRows: CPU backing was released.');
+    }
+    if (rows === this.rows) return;
+    const texels = this.width * rows;
+    const keep = <T extends Float32Array | Uint8Array | Uint32Array>(array: T): T =>
+      array.slice(0, texels * 4) as T;
+    this.backing.centers = keep(this.backing.centers);
+    this.backing.colors = keep(this.backing.colors);
+    this.backing.covarianceA = keep(this.backing.covarianceA);
+    this.backing.covarianceB = keep(this.backing.covarianceB);
+    this.backing.shPacked = this.backing.shPacked.map(keep);
+    const half = this.floatTextures === 'float16';
+    const images: [THREE.DataTexture, ArrayBufferView][] = [
+      [this.centersTexture, half ? new Uint16Array(texels * 4) : this.backing.centers],
+      [this.colorsTexture, this.backing.colors],
+      [this.covarianceATexture, half ? new Uint16Array(texels * 4) : this.backing.covarianceA],
+      [this.covarianceBTexture, this.backing.covarianceB],
+      ...this.shPackedTextures.map((texture, index): [THREE.DataTexture, ArrayBufferView] => [
+        texture,
+        this.backing.shPacked[index] as Uint32Array,
+      ]),
+    ];
+    for (const [texture, data] of images) resizeDataTexture(texture, data, this.width, rows);
+    (this as { rows: number }).rows = rows;
+    this.freeRowSpans = this.freeRowSpans
+      .filter((span) => span.start < rows)
+      .map((span) => ({ start: span.start, count: Math.min(span.count, rows - span.start) }));
+    this.activeSlotByPoolIndexValue = new Uint32Array(texels).fill(0xffffffff);
+    this.poolIndexTemplate = null;
+  }
+
+  /**
    * Packs every tenant's ranges toward row 0, removing the gaps that add /
    * remove churn leaves behind and restoring a single contiguous free span.
    * Callers reach this when {@link allocateRows} throws despite enough total
@@ -536,6 +585,23 @@ export class SplatPool {
     for (const texture of this.shPackedTextures) texture.dispose();
     this.tenants.clear();
   }
+}
+
+/**
+ * @internal Gives a data texture a new image of a different size and drops its
+ * GPU resource, so the next use re-creates it at that size. Three's backends
+ * otherwise write a resized image into the existing allocation, freeing
+ * nothing.
+ */
+export function resizeDataTexture(
+  texture: THREE.DataTexture,
+  data: ArrayBufferView,
+  width: number,
+  height: number,
+): void {
+  texture.image = { data: data as THREE.TypedArray, width, height };
+  texture.dispose();
+  texture.needsUpdate = true;
 }
 
 export function createDataTexture(

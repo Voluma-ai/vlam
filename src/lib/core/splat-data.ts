@@ -60,11 +60,19 @@ export interface SplatData {
   readonly format?: SplatDataFormat;
   /**
    * Splat count of the source file, set only when the loaders had to thin a
-   * scene above the 2²⁴ drawable ceiling down to {@link count}: they keep the
-   * most visible splats (opacity × size) and drop the rest. Absent when every
-   * splat was kept.
+   * scene down to {@link count}, because it was above the 2²⁴ drawable ceiling
+   * or above its share of a scene budget: they keep the most visible splats
+   * (opacity × size) and drop the rest. Absent when every splat was kept.
    */
   readonly sourceCount?: number;
+  /**
+   * The splats ranked by visibility (opacity × size), most visible first: a
+   * permutation of `0..count-1`, in coarse importance buckets with file order
+   * inside each bucket. Set by the loaders only for a load under a scene
+   * budget (`SplatSceneBudget` on `@voluma/vlam/loaders`), whose re-balancing
+   * may later shrink the mesh to a prefix of this order. Absent otherwise.
+   */
+  readonly drawOrder?: Uint32Array;
 }
 
 /** Palette emitted once in chunk zero by Spark's clustered RAD SH encoding. */

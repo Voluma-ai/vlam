@@ -30,6 +30,8 @@ import { experiments } from '../internal/experiments';
 import { warn } from '../core/logging';
 import { recordRemotePlyMetrics, remotePlyMetrics } from './ply-metrics';
 import { cleanupPlyTemporary, recoverPlyTemporaryOrphans } from './ply-temp';
+import { MAX_DRAWABLE_SPLATS } from '../formats/splat-count-limits';
+import type { SplatBudgetReservation, SplatSceneBudget } from './splat-scene-budget';
 
 /**
  * Formats served by the one-shot worker rather than the streaming one.
@@ -59,6 +61,7 @@ class WorkerClient {
       removeAbortListener?: () => void;
       onProgress?: SplatProgressCallback;
       onStatus?: (status: SplatLoadStatus) => void;
+      onBudget?: (count: number) => number;
     }
   >();
   private disposed = false;
@@ -85,6 +88,15 @@ class WorkerClient {
         if (event.data.type === 'progress') {
           // Progress does not settle the request; the result still follows.
           request.onProgress?.(event.data.loaded, event.data.total);
+          return;
+        }
+        if (event.data.type === 'budget') {
+          const grant: LoadWorkerRequest = {
+            type: 'grant',
+            id: event.data.id,
+            maxSplats: request.onBudget?.(event.data.count) ?? MAX_DRAWABLE_SPLATS,
+          };
+          this.worker?.postMessage(grant);
           return;
         }
         this.pending.delete(event.data.id);
@@ -117,6 +129,7 @@ class WorkerClient {
     signal: AbortSignal | undefined,
     onProgress?: SplatProgressCallback,
     onStatus?: (status: SplatLoadStatus) => void,
+    onBudget?: (count: number) => number,
   ): Promise<SplatData> {
     if (this.disposed) return Promise.reject(createAbortError('ChunkLoader has been disposed.'));
     if (signal?.aborted) return Promise.reject(createAbortError('Chunk load was cancelled.'));
@@ -131,7 +144,7 @@ class WorkerClient {
         : undefined;
     if (resourceId) this.ownedPlyFiles.set(id, resourceId);
     const promise = new Promise<SplatData>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, onProgress, onStatus });
+      this.pending.set(id, { resolve, reject, onProgress, onStatus, onBudget });
     });
     if (signal) {
       // Settle immediately on abort rather than waiting for the worker's
@@ -296,24 +309,29 @@ export class ChunkLoader {
     // root-relative URLs cannot be resolved - make the URL absolute here.
     const absoluteUrl = resolveSplatUrl(url, options.baseUrl).href;
     const format = resolveFileFormat(absoluteUrl, kind, options.format ?? 'auto');
-    const data = await this.request(
-      {
-        from: 'url',
-        url: absoluteUrl,
-        kind,
-        ...(options.request ? { request: options.request } : {}),
-      },
-      format,
-      options.signal,
-      options.lcc,
-      options.rad,
-      options.files,
-      options.sog,
-      options.onProgress,
-      options.onStatus,
+    // Only a self-contained scene is budgeted: streamed chunks (directories,
+    // LCC and RAD ranges) belong to a mesh whose governor bounds them already.
+    const wholeFile = kind === 'file' && format !== 'lcc-bin' && format !== 'rad-chunk';
+    const budget = wholeFile ? options.sceneBudget : undefined;
+    return this.budgeted(budget, absoluteUrl, absoluteUrl, format, (onBudget) =>
+      this.request(
+        {
+          from: 'url',
+          url: absoluteUrl,
+          kind,
+          ...(options.request ? { request: options.request } : {}),
+        },
+        format,
+        options.signal,
+        options.lcc,
+        options.rad,
+        options.files,
+        options.sog,
+        options.onProgress,
+        options.onStatus,
+        onBudget,
+      ),
     );
-    warnIfThinned(data, absoluteUrl);
-    return withSourceFormat(data, format);
   }
 
   /**
@@ -338,19 +356,62 @@ export class ChunkLoader {
       requested === 'auto'
         ? splatFormatForExtension(splatNameExtension(file.name), file.name)
         : requested;
-    const data = await this.request(
-      { from: 'file', file },
-      format,
-      options.signal,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      options.onProgress,
-      options.onStatus,
+    return this.budgeted(options.sceneBudget, file, file.name, format, (onBudget) =>
+      this.request(
+        { from: 'file', file },
+        format,
+        options.signal,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        options.onProgress,
+        options.onStatus,
+        onBudget,
+      ),
     );
-    warnIfThinned(data, file.name);
-    return withSourceFormat(data, format);
+  }
+
+  /**
+   * Runs one load, holding a share of `budget` from the moment the worker
+   * knows the decoded count until the data is returned (committed) or the
+   * load fails (released).
+   */
+  private async budgeted(
+    budget: SplatSceneBudget | undefined,
+    input: string | File,
+    label: string,
+    format: ChunkFileFormat,
+    load: (onBudget: ((count: number) => number) | undefined) => Promise<SplatData>,
+  ): Promise<SplatData> {
+    let reservation: SplatBudgetReservation | undefined;
+    const onBudget = budget
+      ? (count: number): number => {
+          reservation?.release();
+          reservation = budget.reserve(count, input);
+          return reservation.maxSplats;
+        }
+      : undefined;
+    let data: SplatData;
+    try {
+      data = await load(onBudget);
+    } catch (error) {
+      reservation?.release();
+      throw error;
+    }
+    if (reservation && reservation.maxSplats === 0 && data.count === 0) {
+      reservation.release();
+      throw new SplatLoadError(
+        `${label} cannot be loaded: the scene budget of ` +
+          `${budget?.total.toLocaleString('en-US')} splats is taken by scenes that cannot shrink. ` +
+          `Dispose a mesh or raise the budget.`,
+        { phase: 'decode', url: typeof input === 'string' ? input : '', retryable: false },
+      );
+    }
+    const stamped = withSourceFormat(data, format);
+    const committed = reservation ? reservation.commit(stamped) : stamped;
+    warnIfThinned(committed, label, budget);
+    return committed;
   }
 
   /** Routes one load to the worker that owns its format. */
@@ -364,6 +425,7 @@ export class ChunkLoader {
     sog?: SogShPackingOptions,
     onProgress?: SplatProgressCallback,
     onStatus?: (status: SplatLoadStatus) => void,
+    onBudget?: (count: number) => number,
   ): Promise<SplatData> {
     if (this.disposed) return Promise.reject(createAbortError('ChunkLoader has been disposed.'));
     if (signal?.aborted) return Promise.reject(createAbortError('Chunk load was cancelled.'));
@@ -378,6 +440,7 @@ export class ChunkLoader {
       ...(files ? { files } : {}),
       ...(onProgress ? { progress: true } : {}),
       ...(onStatus ? { status: true } : {}),
+      ...(onBudget ? { budgeted: true } : {}),
     };
 
     onStatus?.('initializing');
@@ -389,7 +452,9 @@ export class ChunkLoader {
     // made it - a chunk scheduler that posts and then aborts within one frame
     // depends on that ordering. Only the one-shot path, which cannot avoid
     // awaiting its chunk, defers.
-    if (!(client instanceof Promise)) return client.request(message, signal, onProgress, onStatus);
+    if (!(client instanceof Promise)) {
+      return client.request(message, signal, onProgress, onStatus, onBudget);
+    }
     return new Promise<SplatData>((resolve, reject) => {
       let waiting = true;
       const cleanup = () => {
@@ -412,7 +477,7 @@ export class ChunkLoader {
         (resolved) => {
           if (!waiting) return;
           cleanup();
-          resolved.request(message, signal, onProgress, onStatus).then(resolve, reject);
+          resolved.request(message, signal, onProgress, onStatus, onBudget).then(resolve, reject);
         },
         (error: unknown) => {
           if (!waiting) return;
@@ -471,13 +536,22 @@ export class ChunkLoader {
 /** Self-contained scene formats {@link SplatData.format} can hold. */
 const SOURCE_FORMATS: readonly SplatDataFormat[] = ['ply', 'spz', 'splat', 'ksplat', 'sog', 'rad'];
 
-/** Reports a scene the worker thinned to the drawable ceiling. */
-function warnIfThinned(data: SplatData, label: string): void {
+/** Reports a scene the worker thinned to the drawable ceiling or its budget share. */
+function warnIfThinned(data: SplatData, label: string, budget?: SplatSceneBudget): void {
   if (data.sourceCount === undefined) return;
+  const count = (value: number) => value.toLocaleString('en-US');
+  if (budget && data.sourceCount <= MAX_DRAWABLE_SPLATS) {
+    warn(
+      `${label} holds ${count(data.sourceCount)} splats; showing the ${count(data.count)} ` +
+        `most visible to fit the scene budget of ${count(budget.total)}.`,
+    );
+    return;
+  }
   warn(
-    `${label} holds ${data.sourceCount.toLocaleString('en-US')} splats, above the ` +
-      `drawable maximum; showing the ${data.count.toLocaleString('en-US')} most visible. ` +
-      `Convert it to Streamed SOG to keep every splat.`,
+    `${label} holds ${count(data.sourceCount)} splats, above the ` +
+      `drawable maximum; showing the ${count(data.count)} most visible` +
+      (budget ? ` to fit the scene budget of ${count(budget.total)}` : '') +
+      `. Convert it to Streamed SOG to keep every splat.`,
   );
 }
 

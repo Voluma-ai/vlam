@@ -7,7 +7,9 @@ import { parseLccChunk, type LccChunkParams } from '../formats/lcc/parse-lcc';
 import { packPaletteSh } from '../core/sh-pack';
 import type { SplatData } from '../core/splat-data';
 import { fetchBuffer, fetchRange, fetchWholeResponse, stripFragment } from './worker-fetch';
-import { serveLoadRequests } from './worker-host';
+import { serveLoadRequests, type RequestSplatBudget } from './worker-host';
+import { parsePlyHeader } from './ply-header';
+import { MAX_DRAWABLE_SPLATS } from '../formats/splat-count-limits';
 import {
   isAbortError,
   readWholeFile,
@@ -43,7 +45,7 @@ import type {
   SogShPackingOptions,
 } from './load-worker-protocol';
 
-serveLoadRequests((message, signal, onProgress, onStatus) =>
+serveLoadRequests((message, signal, onProgress, onStatus, requestBudget) =>
   load(
     message.source,
     message.format,
@@ -55,6 +57,7 @@ serveLoadRequests((message, signal, onProgress, onStatus) =>
     message.resourceId,
     onProgress,
     onStatus,
+    requestBudget,
   ),
 );
 
@@ -69,6 +72,7 @@ async function load(
   resourceId?: string,
   onProgress?: SplatProgressCallback,
   onStatus?: (status: SplatLoadStatus) => void,
+  requestBudget?: RequestSplatBudget,
 ): Promise<SplatData | RemotePlyResult> {
   signal.throwIfAborted();
   if (source.from === 'url' && source.kind === 'directory') {
@@ -98,6 +102,9 @@ async function load(
     try {
       return await parseSplatPlyFile(source.file, {
         signal,
+        maxSplats: requestBudget
+          ? async (count) => Math.min(await requestBudget(count), MAX_DRAWABLE_SPLATS)
+          : MAX_DRAWABLE_SPLATS,
         ...(onProgress ? { onProgress } : {}),
       });
     } catch (error) {
@@ -131,10 +138,25 @@ async function load(
   onStatus?.('decoding');
   try {
     switch (format) {
-      case 'ply':
-        return parseSplatPly(buffer);
+      case 'ply': {
+        // Thin while decoding (see the SOG case); the header gives the count.
+        const declared = parsePlyHeader(buffer).element('vertex')?.count ?? 0;
+        const maxSplats = requestBudget
+          ? Math.min(await requestBudget(declared), MAX_DRAWABLE_SPLATS)
+          : MAX_DRAWABLE_SPLATS;
+        return parseSplatPly(buffer, { maxSplats });
+      }
       case 'sog': {
-        const data = await parseSog(buffer, { signal });
+        // Thin while decoding, so a file above the drawable ceiling or its
+        // budget share never holds its discarded splats' arrays: the
+        // worker's peak then scales with what is kept. `worker-host` still
+        // runs `limitSplatCount`, which finds nothing left to drop.
+        const data = await parseSog(buffer, {
+          signal,
+          maxSplats: requestBudget
+            ? async (count) => Math.min(await requestBudget(count), MAX_DRAWABLE_SPLATS)
+            : MAX_DRAWABLE_SPLATS,
+        });
         return sog ? packSogShN(data, sog) : data;
       }
       case 'rad':

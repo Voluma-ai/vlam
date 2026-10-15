@@ -207,7 +207,11 @@ misses, or a pick pending across `dispose()` resolve `null`.
 
 Unified work buffers cost **16 bytes of storage per splat of capacity**, and
 WebGPU's default `maxStorageBufferBindingSize` is 128 MiB, so capacities
-above ~8M splats need raised limits, requested at renderer creation.
+above ~8M splats need raised limits, requested at renderer creation. Capacity
+may not exceed 2²⁴ (16.7M) slots, the most the draw's float32 index can
+address; the constructor throws a `RangeError` above it. Whole-file sources
+loaded under one `SplatSceneBudget` always fit
+([Loading scenes](loading-scenes.md#several-large-files-one-scene-budget)).
 `createWebGPURenderer()` requests them for you; the explicit adapter below is
 here because the optional pre-flight check needs the `adapter` handle itself.
 

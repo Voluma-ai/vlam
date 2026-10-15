@@ -13,7 +13,10 @@ const gates = [
   ['test:coverage'],
   ['docs:check'],
   ['docs:samples'],
-  ...(skipBrowser ? [] : [['test:browser', '--', '--workers=2']]),
+  // Honor playwright.config.ts: two SwiftShader browsers in parallel lose
+  // the WebGL context (blank canvas, pageerror "undefined") and fail probes
+  // such as paint.spec.ts. CI already runs `npm run test:browser` with one worker.
+  ...(skipBrowser ? [] : [['test:browser']]),
   ['build'],
 ];
 

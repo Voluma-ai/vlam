@@ -155,6 +155,42 @@ in-flight fetch/decode stops and the promise rejects with an `AbortError`.
 `StreamedSplatMesh.load` takes the same `signal` for its initial manifest
 load; a partially built streamed mesh is disposed on abort, so nothing leaks.
 
+## Several large files: one scene budget
+
+One `SplatMesh` holds at most 2²⁴ (16.7M) splats; a larger whole file is
+thinned to its 2²⁴ most visible splats when it loads. A scene made of several
+large files needs the same bound across all of them, or their pools add up
+past what the device can hold. Load them under one `SplatSceneBudget`:
+
+```ts
+import { loadSplatData, SplatSceneBudget } from '@voluma/vlam/loaders';
+
+// The device's default, at most 2²⁴. Pass `{ total }` to tighten it.
+const sceneBudget = new SplatSceneBudget();
+const urls = ['/castle.sog', '/garden.sog', '/statue.ply'];
+// Optional: split the budget by each file's header count before loading.
+// Without it, each file takes whatever is still free when it arrives.
+await sceneBudget.plan(urls);
+
+const meshes = await Promise.all(
+  urls.map(async (url) => new SplatMesh(await loadSplatData(url, { sceneBudget }))),
+);
+
+// The budget never exceeds what one unified draw can address.
+const unified = new UnifiedSplatMesh(renderer, sceneBudget.total);
+```
+
+<!-- full file: docs/guide/samples/loading-scene-budget.ts -->
+
+Each file is thinned in the load worker to its share, keeping its most visible
+splats (opacity × size), and logs a warning when it loses any. A `total` you
+pass tightens the device default and never raises it, so a phone stays within
+its tier. Hand the returned data to `new SplatMesh` unchanged: the mesh
+reports to the budget and gives its share back on `dispose()`. Thinning is
+lossy; a mesh does not regain detail when another is disposed. Streamed
+formats keep their own budgets ([Multi-mesh budgets](multi-mesh-budgets.md))
+and are not counted.
+
 ## Size limits
 
 A browser caps a single `ArrayBuffer` at 2 GiB. Local uncompressed 3DGS `.ply`

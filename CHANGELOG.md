@@ -23,8 +23,34 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Added
+
+- **`SplatSceneBudget` bounds a scene made of several whole files.** Pass one
+  budget as `sceneBudget` to every `loadSplatData` / `loadSplatDataFile` /
+  `ChunkLoader` load of the scene: each file is thinned in the load worker to
+  its share, keeping its most visible splats, so the total never exceeds the
+  device's default budget (or a tighter `total`), and never 2²⁴. A file takes
+  what is free; `budget.plan(urls)` splits the budget in proportion to each
+  file's header count first (`peekSplatCount` reads it with a few small range
+  requests). When a file added later does not fit, the meshes already built
+  from the budget shrink to their proportional shares (by original file size)
+  first, keeping their most visible splats and reallocating their pool
+  textures, so the memory is actually returned. The mesh built from the data
+  gives its share back on `dispose()`. Budgeted data carries
+  `SplatData.drawOrder`, its splats ranked most visible first. Streamed
+  formats are not counted. Size a `UnifiedSplatMesh` over budgeted sources
+  from `budget.total`, not from the sum of each `mesh.capacity`: a shrunk
+  mesh keeps its original draw-list capacity, so that sum can exceed 2²⁴ and
+  throw. Paying for it: `/loaders` gzip 34.8 kB → 40.6 kB (header peeks and
+  thinning in the decode worker) and the composed unified graph 90.4 kB →
+  105.9 kB (`SplatMesh.shrinkToBudget` in core).
+
 ### Fixed
 
+- **Local `git push` preflight no longer runs two Playwright workers.** CI
+  already honors the single-worker SwiftShader policy in `playwright.config.ts`;
+  the hook still passed `--workers=2`, so a WebGL2 probe (paint) could lose its
+  context the moment a WebGPU worker started and fail with pageerror `"undefined"`.
 - **Whole-file scenes above 16.7M splats now load instead of failing.** A
   `.sog`, `.ply`, `.spz`, `.splat` or `.ksplat` with more splats than one
   `SplatMesh` can draw (2²⁴) was rejected ("above the supported maximum").
@@ -32,6 +58,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   evenly across the file) and drop the rest, set `SplatData.sourceCount` to the
   original count, and log a warning. Files up to 2²⁵ splats decode; above that,
   or to keep every splat, convert to Streamed SOG.
+- **`UnifiedSplatMesh` rejects a work buffer above 2²⁴ slots** instead of
+  drawing a corrupt permutation. Its draw indexes the work buffer through a
+  float32 `splatIndex`, exact only up to 2²⁴, so a capacity sized as the sum
+  of several large sources either failed with a storage-buffer error or, on a
+  device with a large binding limit, silently drew the wrong splats past that
+  index. The constructor now throws a `RangeError` naming the limit.
 - **SOG chunks no longer fail when Safari loses the decode context.** Safari
   26.6 drops the worker's WebGL2 readback context under GPU pressure beside a
   WebGPU renderer, so every retry of a SOG or LCC2 chunk failed with "Could not
@@ -52,6 +84,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- **Thinning a `.sog` or 3DGS `.ply` no longer decodes the splats it drops.**
+  A bundled SOG or uncompressed PLY above 2²⁴ splats, or above its share of a
+  `SplatSceneBudget`, is now scored from its opacity, scales and rotations and
+  thinned while decoding, so the worker only allocates output arrays for the
+  splats it keeps (40 bytes per dropped splat, plus packed SH, no longer pass
+  through memory). A local PLY pays one extra read pass for the scoring. The
+  kept set is identical to the previous decode-then-thin result. `parseSog`
+  and `parseSplatPly` take the same limit as `options.maxSplats`. Compressed
+  PLY, SPZ, SPLAT and KSPLAT still decode fully before thinning.
 - **Faster radial radix sort.** GPU radix sorts with the `radial` metric now
   use a 16-bit key warped toward the camera (`1 - sqrt(1 - u)`), so they run
   four passes instead of six. Near-camera steps stay sub-millimetre (about

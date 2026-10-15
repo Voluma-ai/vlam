@@ -6,4 +6,4 @@
  * require this import; the loading worker already knows this format. Use this
  * subpath for direct decode outside the default loaders.
  */
-export { parseSog, parseSogDirectory } from './parse-sog';
+export { parseSog, parseSogDirectory, type SogParseOptions } from './parse-sog';

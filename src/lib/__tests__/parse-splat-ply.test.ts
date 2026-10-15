@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { parseSplatPly, parseSplatPlyFile } from '../formats/ply/parse-splat-ply';
 import { packShCoefficients } from '../core/sh-pack';
+import { limitSplatCount } from '../loaders/limit-splat-count';
+import type { SplatData } from '../core/splat-data';
 
 /** The vertex properties a Gaussian splat PLY carries, in file order. */
 const PROPERTY_NAMES = [
@@ -388,6 +390,74 @@ describe('parseSplatPlyFile (streamed)', () => {
     const buffer = buildPly(vertices, { truncateBytes: 100 });
     await expect(parseSplatPlyFile(new File([buffer], 'scene.ply'))).rejects.toThrow(
       /Truncated PLY/,
+    );
+  });
+});
+
+describe('PLY in-decode thinning', () => {
+  let seed = 7;
+  const random = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+  const rest = Array.from({ length: 9 }, (_, i) => [`f_rest_${i}`, 'float'] as const);
+  const vertices = Array.from({ length: 2000 }, (_, i) => {
+    const q = [random() - 0.5, random() - 0.5, random() - 0.5, random() - 0.5];
+    return {
+      x: i,
+      y: random(),
+      z: random(),
+      f_dc_0: random() - 0.5,
+      f_dc_1: random() - 0.5,
+      f_dc_2: random() - 0.5,
+      // A few repeated logits, so the cut can land inside a tied bucket.
+      opacity: [-4, 0, 2, 6][i % 4],
+      scale_0: -6 + 6 * random(),
+      scale_1: -6 + 6 * random(),
+      scale_2: -6 + 6 * random(),
+      rot_0: q[0],
+      rot_1: q[1],
+      rot_2: q[2],
+      rot_3: q[3],
+      ...Object.fromEntries(rest.map(([name]) => [name, (random() - 0.5) * 3])),
+    };
+  });
+  const buffer = buildPlyWithRest(vertices, rest);
+
+  const same = (actual: SplatData, expected: SplatData) => {
+    expect(actual.count).toBe(expected.count);
+    expect(actual.sourceCount).toBe(expected.sourceCount);
+    expect(Array.from(actual.positions)).toEqual(Array.from(expected.positions));
+    expect(Array.from(actual.colors)).toEqual(Array.from(expected.colors));
+    expect(Array.from(actual.covariances)).toEqual(Array.from(expected.covariances));
+    expect(Array.from(actual.shPacked?.packed ?? [])).toEqual(
+      Array.from(expected.shPacked?.packed ?? []),
+    );
+    expect(actual.shPacked?.range).toEqual(expected.shPacked?.range);
+  };
+
+  it('keeps exactly the splats limitSplatCount keeps, SH included', () => {
+    const reference = limitSplatCount(parseSplatPly(buffer), 700);
+    same(parseSplatPly(buffer, { maxSplats: 700 }), reference);
+  });
+
+  it.each([1, 4096, 64 * 1024 * 1024])(
+    'streams the same thinned scene at windowBytes=%i',
+    async (windowBytes) => {
+      const reference = limitSplatCount(parseSplatPly(buffer), 700);
+      const maxSplats = async (count: number) => (count === 2000 ? 700 : -1);
+      same(
+        await parseSplatPlyFile(new File([buffer], 'scene.ply'), { windowBytes, maxSplats }),
+        reference,
+      );
+    },
+  );
+
+  it('decodes as before when nothing has to be dropped', async () => {
+    const plain = parseSplatPly(buffer);
+    expect(parseSplatPly(buffer, { maxSplats: 2000 })).toEqual(plain);
+    expect(await parseSplatPlyFile(new File([buffer], 'scene.ply'), { maxSplats: 5000 })).toEqual(
+      plain,
     );
   });
 });
