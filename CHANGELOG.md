@@ -38,7 +38,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   textures, so the memory is actually returned. The mesh built from the data
   gives its share back on `dispose()`. Budgeted data carries
   `SplatData.drawOrder`, its splats ranked most visible first. Streamed
-  formats are not counted.
+  formats are not counted. Size a `UnifiedSplatMesh` over budgeted sources
+  from `budget.total`, not from the sum of each `mesh.capacity`: a shrunk
+  mesh keeps its original draw-list capacity, so that sum can exceed 2²⁴ and
+  throw.
 
 ### Fixed
 

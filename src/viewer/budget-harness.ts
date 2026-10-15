@@ -92,10 +92,16 @@ async function addNext(): Promise<SplatMesh | null> {
   return mesh;
 }
 
-/** Splat pool texture bytes: 52 per slot plus 16 per packed-SH texture. */
+/**
+ * Splat pool texture bytes: 52 per slot plus 16 per packed-SH texture. Sized
+ * from the pool, which a budget shrink reallocates, not from `mesh.capacity`,
+ * which keeps the original draw-list size.
+ */
 function poolBytes(mesh: SplatMesh): number {
-  const pool = (mesh as unknown as { pool: { shPackedTextures: readonly unknown[] } }).pool;
-  return mesh.capacity * (52 + 16 * pool.shPackedTextures.length);
+  const pool = (
+    mesh as unknown as { pool: { capacity: number; shPackedTextures: readonly unknown[] } }
+  ).pool;
+  return pool.capacity * (52 + 16 * pool.shPackedTextures.length);
 }
 
 function stats() {

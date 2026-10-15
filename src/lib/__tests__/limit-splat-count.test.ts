@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SplatData } from '../core/splat-data';
-import { limitSplatCount } from '../loaders/limit-splat-count';
+import { importanceScore, limitSplatCount } from '../loaders/limit-splat-count';
 
 /** Splat i sits at x = i with the given opacity byte and isotropic variance. */
 function makeData(
@@ -174,5 +174,21 @@ describe('limitSplatCount', () => {
     expect(out.positions.length).toBe(0);
     expect(out.drawOrder?.length).toBe(0);
     expect(out.sourceCount).toBe(1);
+  });
+});
+
+describe('importanceScore', () => {
+  it('drops non-finite importance below every real score', () => {
+    expect(importanceScore(1, Infinity)).toBe(-Infinity);
+    expect(importanceScore(1, Number.NaN)).toBe(-Infinity);
+    expect(importanceScore(0, 1)).toBe(-Infinity);
+    expect(importanceScore(1, 8)).toBe(3);
+  });
+
+  it('keeps ranking the finite splats when one covariance is infinite', () => {
+    // One corrupt splat must not squash every finite score into one bin.
+    const variances = [1, Infinity, 4, 9, 0.01, 16];
+    const data = makeData(variances.map((variance) => ({ alpha: 255, variance })));
+    expect(xs(limitSplatCount(data, 3))).toEqual([2, 3, 5]);
   });
 });

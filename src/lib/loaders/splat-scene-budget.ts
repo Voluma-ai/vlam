@@ -8,7 +8,8 @@ import { linkSplatBudget, type SplatBudgetTenant } from '../core/splat-budget-li
 import { MAX_DRAWABLE_SPLATS } from '../formats/splat-count-limits';
 import { limitToDrawOrder } from './limit-splat-count';
 import { warn } from '../core/logging';
-import type { SplatCountPeekOptions } from './peek-splat-count';
+import { resolveSplatUrl } from './loading';
+import { peekSplatCount, type SplatCountPeekOptions } from './peek-splat-count';
 
 /** Options for {@link SplatSceneBudget}. */
 export interface SplatSceneBudgetOptions {
@@ -162,8 +163,6 @@ export class SplatSceneBudget {
     inputs: readonly (string | URL | File)[],
     options: SplatSceneBudgetPlanOptions = {},
   ): Promise<void> {
-    const { peekSplatCount } = await import('./peek-splat-count');
-    const { resolveSplatUrl } = await import('./loading');
     const counts = await Promise.all(inputs.map((input) => peekSplatCount(input, options)));
     const shares = proportionalShares(
       counts.map((count) => count ?? 0),

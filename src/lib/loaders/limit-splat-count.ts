@@ -125,8 +125,11 @@ export function limitToDrawOrder(data: SplatData, count: number): SplatData {
  */
 export function importanceScore(opacity: number, trace: number): number {
   const importance = opacity * trace;
-  // Zero, negative or NaN importance sorts below every real score.
-  return importance > 0 ? Math.log2(importance) : -Infinity;
+  // Zero, negative or NaN importance sorts below every real score. So does an
+  // infinite one (a corrupt covariance): kept, it would be the histogram's
+  // maximum and squash every finite score into one bin, turning the whole
+  // file's thinning into an even cull.
+  return importance > 0 && importance < Infinity ? Math.log2(importance) : -Infinity;
 }
 
 /** Scores every splat of decoded data with {@link importanceScore}. */

@@ -205,6 +205,9 @@ async function headContentLength(
 ): Promise<number | null> {
   const response = await fetch(url, { ...toRequestInit(request, signal), method: 'HEAD' });
   if (!response.ok) return null;
+  // A compressed transfer reports the compressed size, not the file's.
+  const encoding = response.headers.get('content-encoding');
+  if (encoding && encoding !== 'identity') return null;
   const length = Number(response.headers.get('content-length'));
   return Number.isSafeInteger(length) && length > 0 ? length : null;
 }
