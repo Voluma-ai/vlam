@@ -37,7 +37,9 @@ npm run test:coverage # Vitest with V8 coverage (text + cobertura, what CI runs)
 ```
 
 `git push` runs `npm run preflight` through Husky, including the local
-Playwright checks. It does not start Docker. The Playwright Vite server
+Playwright checks. It does not start Docker. Browser checks use Playwright's
+configured single worker, the same as CI: two SwiftShader browsers in
+parallel can lose the WebGL context. The Playwright Vite server
 starts without file watchers so a local `npm run dev` does not exhaust
 Linux inotify limits during preflight. When a gate fails, preflight
 reprints the failed test names and error lines after the full log, because

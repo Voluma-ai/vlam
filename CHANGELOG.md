@@ -45,6 +45,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- **Local `git push` preflight no longer runs two Playwright workers.** CI
+  already honors the single-worker SwiftShader policy in `playwright.config.ts`;
+  the hook still passed `--workers=2`, so a WebGL2 probe (paint) could lose its
+  context the moment a WebGPU worker started and fail with pageerror `"undefined"`.
 - **Whole-file scenes above 16.7M splats now load instead of failing.** A
   `.sog`, `.ply`, `.spz`, `.splat` or `.ksplat` with more splats than one
   `SplatMesh` can draw (2²⁴) was rejected ("above the supported maximum").
