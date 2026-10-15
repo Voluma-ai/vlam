@@ -27,6 +27,7 @@ import {
 // setup, unlike an asset file referenced via `new URL(...)`.
 import LoadWorker from './load-worker?worker&inline';
 import { experiments } from '../internal/experiments';
+import { warn } from '../core/logging';
 import { recordRemotePlyMetrics, remotePlyMetrics } from './ply-metrics';
 import { cleanupPlyTemporary, recoverPlyTemporaryOrphans } from './ply-temp';
 
@@ -311,6 +312,7 @@ export class ChunkLoader {
       options.onProgress,
       options.onStatus,
     );
+    warnIfThinned(data, absoluteUrl);
     return withSourceFormat(data, format);
   }
 
@@ -347,6 +349,7 @@ export class ChunkLoader {
       options.onProgress,
       options.onStatus,
     );
+    warnIfThinned(data, file.name);
     return withSourceFormat(data, format);
   }
 
@@ -467,6 +470,16 @@ export class ChunkLoader {
 
 /** Self-contained scene formats {@link SplatData.format} can hold. */
 const SOURCE_FORMATS: readonly SplatDataFormat[] = ['ply', 'spz', 'splat', 'ksplat', 'sog', 'rad'];
+
+/** Reports a scene the worker thinned to the drawable ceiling. */
+function warnIfThinned(data: SplatData, label: string): void {
+  if (data.sourceCount === undefined) return;
+  warn(
+    `${label} holds ${data.sourceCount.toLocaleString('en-US')} splats, above the ` +
+      `drawable maximum; showing the ${data.count.toLocaleString('en-US')} most visible. ` +
+      `Convert it to Streamed SOG to keep every splat.`,
+  );
+}
 
 /**
  * Stamps the resolved format onto decoded scene data so {@link SplatMesh} can

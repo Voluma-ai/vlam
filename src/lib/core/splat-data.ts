@@ -58,6 +58,13 @@ export interface SplatData {
    * and streamed chunks, in which case no orientation is ever inferred.
    */
   readonly format?: SplatDataFormat;
+  /**
+   * Splat count of the source file, set only when the loaders had to thin a
+   * scene above the 2²⁴ drawable ceiling down to {@link count}: they keep the
+   * most visible splats (opacity × size) and drop the rest. Absent when every
+   * splat was kept.
+   */
+  readonly sourceCount?: number;
 }
 
 /** Palette emitted once in chunk zero by Spark's clustered RAD SH encoding. */

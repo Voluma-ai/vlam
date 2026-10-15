@@ -11,7 +11,9 @@
  */
 import type { SplatData } from '../core/splat-data';
 import type { RemotePlyResult } from '../formats/ply/parse-splat-ply-remote';
+import { MAX_DRAWABLE_SPLATS } from '../formats/splat-count-limits';
 import type { LoadWorkerRequest, LoadWorkerResponse } from './load-worker-protocol';
+import { limitSplatCount } from './limit-splat-count';
 import {
   createProgressThrottle,
   isAbortError,
@@ -86,7 +88,9 @@ export function serveLoadRequests(load: LoadHandler): void {
       const output = await load(message, controller.signal, onProgress, onStatus);
       controller.signal.throwIfAborted();
       flushProgress();
-      const data = 'data' in output ? output.data : output;
+      // Whole-file scenes above the drawable ceiling are thinned, not
+      // rejected; streamed chunks are capped far below it by their parsers.
+      const data = limitSplatCount('data' in output ? output.data : output, MAX_DRAWABLE_SPLATS);
       const metrics = 'data' in output ? output.metrics : undefined;
       const transfers = [data.positions.buffer, data.colors.buffer, data.covariances.buffer];
       if (data.sh) transfers.push(data.sh.labels.buffer, data.sh.palette.buffer);

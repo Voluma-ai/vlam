@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseSpz } from '../formats/spz/parse-spz';
+import { MAX_DECODED_SPLATS } from '../formats/splat-count-limits';
 
 const SPZ_MAGIC = 0x5053474e;
 /** Header `flags` bit 0: trained with Mip-Splatting antialiasing. */
@@ -129,12 +130,12 @@ describe('parseSpz', () => {
     await expect(parseSpz(compressed)).rejects.toThrow(/Invalid SPZ point count/);
   });
 
-  it('rejects a v4 point count above the renderer maximum', async () => {
+  it('rejects a v4 point count above the decode maximum', async () => {
     const raw = new ArrayBuffer(32);
     const view = new DataView(raw);
     view.setUint32(0, SPZ_MAGIC, true);
     view.setUint32(4, 4, true);
-    view.setUint32(8, (1 << 24) + 1, true);
+    view.setUint32(8, MAX_DECODED_SPLATS + 1, true);
     await expect(parseSpz(raw)).rejects.toThrow(/Invalid SPZ point count/);
   });
 });

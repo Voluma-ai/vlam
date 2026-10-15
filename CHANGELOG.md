@@ -25,6 +25,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- **Whole-file scenes above 16.7M splats now load instead of failing.** A
+  `.sog`, `.ply`, `.spz`, `.splat` or `.ksplat` with more splats than one
+  `SplatMesh` can draw (2²⁴) was rejected ("above the supported maximum").
+  The loaders now keep the 2²⁴ most visible splats (opacity × size, ties thinned
+  evenly across the file) and drop the rest, set `SplatData.sourceCount` to the
+  original count, and log a warning. Files up to 2²⁵ splats decode; above that,
+  or to keep every splat, convert to Streamed SOG.
 - **SOG chunks no longer fail when Safari loses the decode context.** Safari
   26.6 drops the worker's WebGL2 readback context under GPU pressure beside a
   WebGPU renderer, so every retry of a SOG or LCC2 chunk failed with "Could not

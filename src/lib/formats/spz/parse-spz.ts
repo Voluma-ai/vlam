@@ -2,6 +2,7 @@ import { ZSTDDecoder } from 'three/examples/jsm/libs/zstddec.module.js';
 import { halfToFloat } from '../../core/half-float';
 import { packShCoefficients, shCoefficientCount } from '../../core/sh-pack';
 import { SH_C0, writeCovariance, type SplatData } from '../../core/splat-data';
+import { MAX_DECODED_SPLATS } from '../splat-count-limits';
 
 const SPZ_MAGIC = 0x5053474e;
 const LEGACY_HEADER_BYTES = 16;
@@ -9,11 +10,11 @@ const VERSION_4_HEADER_BYTES = 32;
 const COLOR_SCALE = 0.15;
 const SQRT_HALF = Math.SQRT1_2;
 /**
- * Upper bound on the declared point count (mirrors `parse-sog.ts`
- * MAX_SPLAT_COUNT): the renderer cannot draw more than 2²⁴ splats, so a
- * hostile header is rejected before it sizes any allocation.
+ * Upper bound on the declared point count, so a hostile header is rejected
+ * before it sizes any allocation. Counts above the drawable ceiling decode,
+ * then the loaders thin them.
  */
-const MAX_SAFE_POINTS = 1 << 24;
+const MAX_SAFE_POINTS = MAX_DECODED_SPLATS;
 /**
  * Expansion ceiling for the legacy gzip path: header plus the largest legal
  * payload (positions 9 + alpha 1 + color 3 + scales 3 + rotation 4 + degree-3

@@ -5,6 +5,7 @@ import {
   toSplatLoadError,
   type SplatRequestOptions,
 } from '../../loaders/loading';
+import { MAX_DECODED_SPLATS } from '../splat-count-limits';
 import { readZipEntries } from './zip';
 
 /**
@@ -44,13 +45,12 @@ interface DecodedImage {
 }
 
 /**
- * Upper bound on `meta.count` before any allocation happens. The renderer
- * cannot draw more anyway: 2048-wide pool textures cap at ~16.7M splats and
- * the float32 `splatIndex` is exact only up to 2²⁴, so
+ * Upper bound on `meta.count` before any allocation happens. Counts between
+ * the drawable ceiling and this bound decode, then the loaders thin them;
  * anything larger in an untrusted meta.json is rejected rather than
  * ballooning into a multi-gigabyte allocation.
  */
-const MAX_SPLAT_COUNT = 1 << 24;
+const MAX_SPLAT_COUNT = MAX_DECODED_SPLATS;
 
 /**
  * Parses a bundled `.sog` file into flat, GPU-friendly arrays, including
