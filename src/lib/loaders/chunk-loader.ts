@@ -399,10 +399,19 @@ export class ChunkLoader {
       reservation?.release();
       throw error;
     }
-    warnIfThinned(data, label, budget);
+    if (reservation && reservation.maxSplats === 0 && data.count === 0) {
+      reservation.release();
+      throw new SplatLoadError(
+        `${label} cannot be loaded: the scene budget of ` +
+          `${budget?.total.toLocaleString('en-US')} splats is taken by scenes that cannot shrink. ` +
+          `Dispose a mesh or raise the budget.`,
+        { phase: 'decode', url: typeof input === 'string' ? input : '', retryable: false },
+      );
+    }
     const stamped = withSourceFormat(data, format);
-    reservation?.commit(stamped);
-    return stamped;
+    const committed = reservation ? reservation.commit(stamped) : stamped;
+    warnIfThinned(committed, label, budget);
+    return committed;
   }
 
   /** Routes one load to the worker that owns its format. */

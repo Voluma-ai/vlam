@@ -6,6 +6,7 @@ import {
 } from '../core/splat-budget';
 import { linkSplatBudget, type SplatBudgetTenant } from '../core/splat-budget-link';
 import { MAX_DRAWABLE_SPLATS } from '../formats/splat-count-limits';
+import { limitToDrawOrder } from './limit-splat-count';
 import { warn } from '../core/logging';
 import type { SplatCountPeekOptions } from './peek-splat-count';
 
@@ -39,10 +40,11 @@ export interface SplatBudgetReservation {
   /** The most splats the file may keep; the loader thins it to this. */
   readonly maxSplats: number;
   /**
-   * Confirms the decoded data. The budget then holds `data.count` splats for
-   * it until the mesh built from `data` is disposed.
+   * Confirms the decoded data. The budget then holds its splats until the mesh
+   * built from it is disposed. Returns the data to use: `data` itself, or a
+   * thinner copy when files decoding side by side over-committed the budget.
    */
-  commit(data: SplatData): void;
+  commit(data: SplatData): SplatData;
   /** Gives the share back: the load failed or was cancelled. */
   release(): void;
 }
@@ -183,6 +185,12 @@ export class SplatSceneBudget {
    * the load worker's request once the decoded count is known; a host does not
    * need to.
    *
+   * A file gets what is free, and at least its proportional share of the
+   * scene whenever the others can give that up: loaded meshes above their
+   * shares shrink at once, and files still loading above theirs are thinned
+   * when they commit. The budget can therefore be briefly over-committed
+   * while several files decode at the same time, never once they are loaded.
+   *
    * @param declared - The file's splat count, when known.
    * @param input - The absolute URL or the `File`, to find a planned share.
    */
@@ -195,8 +203,22 @@ export class SplatSceneBudget {
           : this.plannedByFile.get(input);
     let want = declared === undefined ? Infinity : Math.max(0, Math.floor(declared));
     if (planned !== undefined) want = Math.min(want, planned);
-    if (declared !== undefined && want > this.free) this.rebalance(Math.floor(declared), want);
-    const share = Math.max(0, Math.min(want, this.free));
+    let share = Math.min(want, this.free);
+    if (declared !== undefined && want > share) {
+      const entry = { sourceCount: Math.floor(declared) };
+      const fair = this.fairShares(entry);
+      this.shrinkLoaded(fair);
+      // Files still decoding above their shares give the difference back
+      // when they commit; until then this newcomer may count on it. Data
+      // already handed to the host can only shrink once it is a mesh.
+      let reclaimable = 0;
+      for (const other of this.entries) {
+        if (!other.committed) reclaimable += Math.max(0, other.held - (fair.get(other) ?? 0));
+      }
+      const target = Math.min(want, fair.get(entry) ?? 0);
+      share = Math.min(want, Math.max(this.free, Math.min(target, this.free + reclaimable)));
+    }
+    share = Math.max(0, share);
     const entry: BudgetEntry = {
       sourceCount: declared ?? share,
       held: share,
@@ -208,21 +230,34 @@ export class SplatSceneBudget {
     return {
       maxSplats: share,
       commit: (data: SplatData) => {
-        if (settled) return;
+        if (settled) return data;
         settled = true;
-        entry.held = data.count;
         entry.committed = true;
         entry.sourceCount = data.sourceCount ?? data.count;
-        this.byData.set(data, entry);
-        linkSplatBudget(data, {
+        entry.held = data.count;
+        // Over-committed while files decoded side by side: this one gives
+        // back what it holds above its share before any mesh is built from it.
+        let committed = data;
+        if (this.overCommitted > 0) {
+          const fair = this.fairShares().get(entry) ?? 0;
+          if (data.count > fair && data.drawOrder) {
+            committed = limitToDrawOrder(data, Math.max(fair, data.count - this.overCommitted));
+            entry.held = committed.count;
+          }
+          this.shrinkLoaded(this.fairShares());
+        }
+        this.byData.set(committed, entry);
+        linkSplatBudget(committed, {
           attach: (tenant) => {
             entry.tenant = tenant;
             entry.held = tenant.budgetedSplatCount;
+            if (this.overCommitted > 0) this.shrinkLoaded(this.fairShares());
           },
           detach: (tenant) => {
             if (entry.tenant === tenant) this.entries.delete(entry);
           },
         });
+        return committed;
       },
       release: () => {
         if (settled) return;
@@ -232,32 +267,48 @@ export class SplatSceneBudget {
     };
   }
 
+  /** Splats promised beyond the total (only while several files decode at once). */
+  private get overCommitted(): number {
+    let held = 0;
+    for (const entry of this.entries) held += entry.held;
+    return Math.max(0, held - this.total);
+  }
+
   /**
-   * Makes room for a file that does not fit what is free: every mesh holding
-   * more than its proportional share of the scene - `total × sourceCount / Σ`,
-   * by each file's *original* count, so a file thinned before is not
-   * penalised twice - shrinks to that share, keeping its most visible splats.
-   * Runs once per added file, on the main thread.
-   *
-   * @param declared - The newcomer's own splat count.
-   * @param want - What the newcomer asks for (its planned share, or `declared`).
+   * Each file's proportional share of the scene - `total × sourceCount / Σ`,
+   * by its *original* count, so a file thinned before is not penalised twice -
+   * never above its own count. `extra` is a newcomer not yet registered.
    */
-  private rebalance(declared: number, want: number): void {
-    let sum = declared;
-    for (const entry of this.entries) sum += entry.sourceCount;
-    const fairShare = (count: number): number =>
-      Math.min(count, Math.floor((this.total * count) / sum));
-    // A newcomer never forces the others below their fair shares, even when
-    // it planned for more than its own.
-    if (this.free >= Math.min(want, fairShare(declared))) return;
+  private fairShares(extra?: { sourceCount: number }): Map<object, number> {
+    const all: { sourceCount: number }[] = [...this.entries];
+    if (extra) all.push(extra);
+    let sum = 0;
+    for (const entry of all) sum += entry.sourceCount;
+    const shares = new Map<object, number>();
+    for (const entry of all) {
+      shares.set(
+        entry,
+        sum <= this.total
+          ? entry.sourceCount
+          : Math.min(entry.sourceCount, Math.floor((this.total * entry.sourceCount) / sum)),
+      );
+    }
+    return shares;
+  }
+
+  /**
+   * Shrinks every loaded mesh holding more than its share to that share,
+   * keeping its most visible splats. Runs once per added file, on the main
+   * thread.
+   */
+  private shrinkLoaded(fair: Map<object, number>): void {
     let freed = 0;
     let shrunk = 0;
     for (const entry of this.entries) {
       const tenant = entry.tenant;
-      if (!tenant?.budgetShrinkable) continue;
-      const fair = fairShare(entry.sourceCount);
-      if (entry.held <= fair) continue;
-      const held = tenant.shrinkToBudget(fair);
+      const share = fair.get(entry);
+      if (!tenant?.budgetShrinkable || share === undefined || entry.held <= share) continue;
+      const held = tenant.shrinkToBudget(share);
       if (held >= entry.held) continue;
       freed += entry.held - held;
       entry.held = held;

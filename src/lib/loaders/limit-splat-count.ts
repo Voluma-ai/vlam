@@ -51,6 +51,18 @@ export function limitSplatCount(
 
   const kept = Math.max(0, Math.floor(maxCount));
   const keep = keepMostImportant(bins, kept);
+  return {
+    ...compactSplatData(data, keep, kept),
+    ...(options.drawOrder ? { drawOrder: drawOrderFromBins(bins, keep, kept) } : {}),
+  };
+}
+
+/**
+ * Compacts every per-splat array of `data` to the `kept` splats marked in
+ * `keep`, in file order, and sets `sourceCount` to the original count.
+ */
+function compactSplatData(data: SplatData, keep: Uint8Array, kept: number): SplatData {
+  const { count } = data;
   const positions = compact(data.positions, keep, 3, kept);
   const colors = compact(data.colors, keep, 4, kept);
   const covariances = compact(data.covariances, keep, 6, kept);
@@ -64,8 +76,9 @@ export function limitSplatCount(
   const frontierParent = data.frontierParent
     ? compact(data.frontierParent, keep, 1, kept)
     : undefined;
+  const { drawOrder: _stale, ...rest } = data;
   return {
-    ...data,
+    ...rest,
     count: kept,
     positions,
     colors,
@@ -73,9 +86,32 @@ export function limitSplatCount(
     ...(sh ? { sh } : {}),
     ...(shPacked ? { shPacked } : {}),
     ...(frontierParent ? { frontierParent } : {}),
-    ...(options.drawOrder ? { drawOrder: drawOrderFromBins(bins, keep, kept) } : {}),
     sourceCount: data.sourceCount ?? count,
   };
+}
+
+/**
+ * Keeps the first `count` splats of `data.drawOrder` - its most visible ones -
+ * in file order, re-ranking the draw order to match. Used on the main thread
+ * when a scene budget must take back part of a share it already granted.
+ * Compacts the arrays in place, like {@link limitSplatCount}.
+ */
+export function limitToDrawOrder(data: SplatData, count: number): SplatData {
+  const order = data.drawOrder;
+  const kept = Math.max(0, Math.min(data.count, Math.floor(count)));
+  if (!order || kept >= data.count) return data;
+  const rank = new Uint32Array(data.count).fill(0xffffffff);
+  for (let i = 0; i < kept; i++) rank[order[i] as number] = 0;
+  const keep = new Uint8Array(data.count);
+  let next = 0;
+  for (let row = 0; row < data.count; row++) {
+    if (rank[row] !== 0) continue;
+    keep[row] = 1;
+    rank[row] = next++;
+  }
+  const drawOrder = new Uint32Array(kept);
+  for (let i = 0; i < kept; i++) drawOrder[i] = rank[order[i] as number] as number;
+  return { ...compactSplatData(data, keep, kept), drawOrder };
 }
 
 /**

@@ -138,4 +138,21 @@ describe('ChunkLoader under a scene budget', () => {
     ).rejects.toMatchObject({ name: 'AbortError' });
     expect(sceneBudget.free).toBe(16);
   });
+
+  it('rejects a file the full budget leaves no room for', async () => {
+    const sceneBudget = new SplatSceneBudget({ profile: null, total: 10 });
+    // Hold the whole budget with data no mesh can shrink.
+    const held = sceneBudget.reserve(10);
+    held.commit({
+      count: 10,
+      positions: new Float32Array(30),
+      colors: new Uint8Array(40),
+      covariances: new Float32Array(60),
+    });
+    await expect(make().load('https://x.test/a.sog', { sceneBudget })).rejects.toMatchObject({
+      name: 'SplatLoadError',
+      message: expect.stringMatching(/scene budget of 10 splats is taken/),
+    });
+    expect(sceneBudget.free).toBe(0);
+  });
 });

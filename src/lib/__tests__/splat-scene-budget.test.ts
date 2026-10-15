@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { resolveSplatBudget, type SplatDeviceProfile } from '../core/splat-budget';
 import { SplatMesh } from '../core/splat-mesh';
 import type { SplatData } from '../core/splat-data';
@@ -49,18 +49,18 @@ describe('SplatSceneBudget reservations', () => {
     expect(budget.free).toBe(400);
     expect(budget.resident).toBe(0); // still decoding
 
-    const b = budget.reserve(900);
-    expect(b.maxSplats).toBe(400);
-    expect(budget.free).toBe(0);
-
     a.commit(data(550, { sourceCount: 600 }));
     expect(budget.resident).toBe(550);
-    expect(budget.free).toBe(50);
+    expect(budget.free).toBe(450);
 
+    // Committed data cannot give anything back, so B takes what is free.
+    const b = budget.reserve(900);
+    expect(b.maxSplats).toBe(450);
+    expect(budget.free).toBe(0);
     b.release();
     expect(budget.free).toBe(450);
     b.release();
-    b.commit(data(1)); // settled already: ignored
+    expect(b.commit(data(1))).toHaveProperty('count', 1); // settled already: ignored
     expect(budget.resident).toBe(550);
 
     const c = budget.reserve(undefined);
@@ -124,8 +124,55 @@ describe('SplatSceneBudget planning', () => {
 
     expect(budget.reserve(3000, ply).maxSplats).toBe(2250);
     expect(budget.reserve(1000, sog).maxSplats).toBe(750);
-    // Unplanned: takes what is free.
     expect(budget.free).toBe(0);
-    expect(budget.reserve(500, unknown).maxSplats).toBe(0);
+    // Unplanned and nothing free: it still gets its share of the scene
+    // (500 of 4500 splats → 333), reclaimed from the two files in flight.
+    expect(budget.reserve(500, unknown).maxSplats).toBe(333);
+  });
+});
+
+describe('SplatSceneBudget with files decoding side by side', () => {
+  /** Decoded data for a reservation, as the worker would thin it. */
+  function decoded(count: number, share: number): SplatData {
+    const kept = Math.min(count, share);
+    return data(kept, {
+      drawOrder: Uint32Array.from({ length: kept }, (_, i) => kept - 1 - i),
+      ...(kept < count ? { sourceCount: count } : {}),
+    });
+  }
+
+  it('never starves a file that asks while another is still loading', () => {
+    const budget = new SplatSceneBudget({ profile: null, total: 12_000 });
+    const a = budget.reserve(20_000);
+    const b = budget.reserve(20_000);
+    expect(a.maxSplats).toBe(12_000);
+    expect(b.maxSplats).toBe(6_000);
+
+    // A commits while over-committed: it gives back its excess before any
+    // mesh is built, keeping the head of its draw order.
+    const aData = a.commit(decoded(20_000, a.maxSplats));
+    expect(aData.count).toBe(6_000);
+    expect(aData.sourceCount).toBe(20_000);
+    expect(Array.from(aData.drawOrder ?? []).slice(0, 3)).toEqual([5_999, 5_998, 5_997]);
+    const bData = b.commit(decoded(20_000, b.maxSplats));
+    expect(bData.count).toBe(6_000);
+    expect(budget.resident).toBe(12_000);
+    expect(budget.free).toBe(0);
+    new SplatMesh(aData).dispose();
+  });
+
+  it('shrinks an attached mesh that was built before the over-commit cleared', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const budget = new SplatSceneBudget({ profile: null, total: 1_000 });
+    const a = budget.reserve(1_000);
+    const b = budget.reserve(1_000); // fair 500, reclaimable from A
+    expect(b.maxSplats).toBe(500);
+    const bData = b.commit(decoded(1_000, b.maxSplats));
+    const bMesh = new SplatMesh(bData);
+    const aData = a.commit(decoded(1_000, a.maxSplats));
+    expect(aData.count).toBe(500);
+    expect(bMesh.budgetedSplatCount).toBe(500);
+    expect(budget.resident).toBe(1_000);
+    bMesh.dispose();
   });
 });
