@@ -23,6 +23,19 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ## [Unreleased]
 
+### Added
+
+- **`SplatSceneBudget` bounds a scene made of several whole files.** Pass one
+  budget as `sceneBudget` to every `loadSplatData` / `loadSplatDataFile` /
+  `ChunkLoader` load of the scene: each file is thinned in the load worker to
+  its share, keeping its most visible splats, so the total never exceeds the
+  device's default budget (or a tighter `total`), and never 2²⁴. A file takes
+  what is free; `budget.plan(urls)` splits the budget in proportion to each
+  file's header count first (`peekSplatCount` reads it with a few small range
+  requests). The mesh built from the data gives its share back on
+  `dispose()`. Budgeted data carries `SplatData.drawOrder`, its splats ranked
+  most visible first. Streamed formats are not counted.
+
 ### Fixed
 
 - **Whole-file scenes above 16.7M splats now load instead of failing.** A

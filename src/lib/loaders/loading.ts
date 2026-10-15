@@ -1,3 +1,4 @@
+import type { SplatSceneBudget } from './splat-scene-budget';
 /**
  * The self-contained scene formats - files (or bundles) that decode to a whole
  * scene on their own, with no external manifest. This is the value set of
@@ -88,6 +89,11 @@ export interface SplatDataFileLoadOptions {
   onProgress?: SplatProgressCallback;
   /** Reports work stages, without implying decoded or rendered readiness percentages. */
   onStatus?: (status: SplatLoadStatus) => void;
+  /**
+   * Scene budget shared with the other files of the scene. The file is thinned
+   * to its share, keeping its most visible splats; see {@link SplatSceneBudget}.
+   */
+  sceneBudget?: SplatSceneBudget;
 }
 
 /** Shared URL, cancellation, and request options for package loaders. */
@@ -102,6 +108,12 @@ export interface SplatInputOptions {
   onProgress?: SplatProgressCallback;
   /** Reports work stages, without implying decoded or rendered readiness percentages. */
   onStatus?: (status: SplatLoadStatus) => void;
+  /**
+   * Scene budget shared with the other files of the scene. A whole-file scene
+   * is thinned to its share, keeping its most visible splats; see
+   * {@link SplatSceneBudget}. Ignored for streamed chunks.
+   */
+  sceneBudget?: SplatSceneBudget;
 }
 
 /** The stage at which a splat load failed. */

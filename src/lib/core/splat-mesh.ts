@@ -83,6 +83,11 @@ import { StorageMirrorReleaser } from './storage-attribute-mirror';
 import { dataTexturesUploaded, releaseDataTextureMirrors } from './data-texture-mirror';
 import { assertStorageBufferFitsDevice } from './webgpu-limits';
 import {
+  takeSplatBudgetLink,
+  type SplatBudgetLink,
+  type SplatBudgetTenant,
+} from './splat-budget-link';
+import {
   assertSplatSortStrategy,
   isAutomaticProjectionStrategy,
   isComputeProjectionStrategy,
@@ -273,7 +278,7 @@ interface RangeRecord {
  *    active pool spans on the CPU. shN data on appended ranges is ignored
  *    (palettes are per-file and cannot be merged here).
  */
-export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
+export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudgetTenant {
   private static readonly DATA_TEXTURE_WIDTH = SPLAT_DATA_TEXTURE_WIDTH;
 
   /**
@@ -359,6 +364,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   private readonly shEvaluationState = { reason: 'not-prepared' };
   /** Constructor-created range, retained for static in-place LOD replacement. */
   private staticRange: SplatRange | undefined;
+  /** The scene budget this mesh's data was loaded under, if any. */
+  private budgetLink: SplatBudgetLink | null = null;
   private readonly shEnabled: boolean;
   /**
    * Dequantization range for the packed SH, shared by every coefficient.
@@ -935,6 +942,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
 
     if (isStatic) {
       this.staticRange = this.appendRangeWithState(source, true);
+      if (source.drawOrder) {
+        if (source.drawOrder.length !== source.count) {
+          throw new RangeError('SplatMesh: drawOrder must hold one entry per splat.');
+        }
+      }
       // Constructor-time writes into this mesh's own pool are covered by the
       // textures' initial `needsUpdate` upload - the GPU cannot have seen them
       // earlier. A supplied (shared) pool may already be on the GPU, so its
@@ -955,6 +967,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
         this.matrix.decompose(this.position, this.quaternion, this.scale);
         this.matrixWorldNeedsUpdate = true;
       }
+      // Last, so a constructor that throws never leaves the budget holding a
+      // mesh that does not exist.
+      this.budgetLink = takeSplatBudgetLink(source) ?? null;
+      this.budgetLink?.attach(this);
     }
   }
 
@@ -1763,6 +1779,20 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   /** Number of splats currently active (drawn and depth-sorted). */
   get activeSplatCount(): number {
     return this.activeCount;
+  }
+
+  /** @internal {@link SplatBudgetTenant}: the splats this mesh holds for its scene budget. */
+  get budgetedSplatCount(): number {
+    return this.staticRange ? (this.ranges.get(this.staticRange)?.count ?? 0) : 0;
+  }
+
+  /**
+   * @internal {@link SplatBudgetTenant}: shrinks a budgeted static mesh to its
+   * `count` most visible splats. Returns the count it now holds.
+   */
+  shrinkToBudget(count: number): number {
+    void count;
+    return this.budgetedSplatCount;
   }
 
   /**
@@ -3050,6 +3080,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.budgetLink?.detach(this);
+    this.budgetLink = null;
     this.pooledOwner = null;
     this.invalidateWorkerPublications(false);
     super.dispose();

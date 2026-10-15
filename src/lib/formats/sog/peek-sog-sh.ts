@@ -18,7 +18,8 @@ import {
  * leaves SH off instead of allocating hundreds of megabytes speculatively.
  */
 
-const MAX_ZIP_COMMENT_PLUS_EOCD = 65557;
+/** The largest ZIP tail that can hold the end-of-central-directory record. */
+export const MAX_ZIP_COMMENT_PLUS_EOCD = 65557;
 const MAX_PEEK_BYTES = 1_048_576;
 
 export type PaletteShBands = 0 | 1 | 2 | 3;
@@ -132,27 +133,47 @@ export async function sogShBandsFromZip(
   fileSize: number,
   tail?: { readonly start: number; readonly bytes: Uint8Array },
 ): Promise<PaletteShBands> {
-  if (!Number.isSafeInteger(fileSize) || fileSize <= 0) return 0;
+  return sogShBandsFromMeta(await peekSogMeta(read, fileSize, tail));
+}
+
+/**
+ * Reads a bundled SOG's `meta.json` through ranged reads: the ZIP's end
+ * record and central directory from the tail, then the one entry. Costs a few
+ * small requests instead of the whole bundle.
+ *
+ * @param read - Fetches `length` bytes at `start`; must return exactly that many.
+ * @param fileSize - The bundle's size in bytes.
+ * @param tail - The bundle's last bytes, when a suffix fetch already ran.
+ * @returns The parsed `meta.json`, or `null` when the bundle has none that
+ * can be read this way (no entry, an unsupported compression method, or an
+ * entry above the peek size limit).
+ */
+export async function peekSogMeta(
+  read: (start: number, length: number) => Promise<Uint8Array>,
+  fileSize: number,
+  tail?: { readonly start: number; readonly bytes: Uint8Array },
+): Promise<unknown> {
+  if (!Number.isSafeInteger(fileSize) || fileSize <= 0) return null;
   const tailLength = Math.min(fileSize, MAX_ZIP_COMMENT_PLUS_EOCD);
   const tailStart = fileSize - tailLength;
   const tailBytes = tail?.bytes ?? (await read(tailStart, tailLength));
   const resolvedStart = tail?.start ?? tailStart;
   const entry = await zipMetaEntry(tailBytes, resolvedStart, fileSize, read);
-  if (entry === null) return 0;
+  if (entry === null) return null;
   const prefix = await read(entry.localOffset, 30);
   const headerSize = zipLocalHeaderSize(prefix, entry);
-  if (headerSize === null || headerSize > MAX_PEEK_BYTES) return 0;
+  if (headerSize === null || headerSize > MAX_PEEK_BYTES) return null;
   const header = await read(entry.localOffset, headerSize);
   const local = validateZipLocalFileHeader(header, entry);
-  if (local === null) return 0;
+  if (local === null) return null;
   const dataStart = entry.localOffset + local.dataOffset;
-  if (entry.compressedSize > MAX_PEEK_BYTES) return 0;
+  if (entry.compressedSize > MAX_PEEK_BYTES) return null;
   const compressed = await read(dataStart, entry.compressedSize);
   const payload = await decodeZipPayload(compressed, entry.method, entry.name);
   try {
-    return sogShBandsFromMeta(JSON.parse(new TextDecoder().decode(payload)));
+    return JSON.parse(new TextDecoder().decode(payload)) as unknown;
   } catch {
-    return 0;
+    return null;
   }
 }
 
@@ -195,7 +216,8 @@ async function fetchJson(
   return response.json();
 }
 
-async function fetchRangeBytes(
+/** Fetches exactly `length` bytes at `start`; throws when the server ignores `Range`. */
+export async function fetchRangeBytes(
   url: string,
   start: number,
   length: number,
@@ -219,7 +241,8 @@ async function fetchRangeBytes(
   return buffer;
 }
 
-async function fetchSuffixBytes(
+/** Fetches a file's last `maxBytes` bytes and its total size, or `null` without `Range` support. */
+export async function fetchSuffixBytes(
   url: string,
   maxBytes: number,
   request: SplatRequestOptions | undefined,

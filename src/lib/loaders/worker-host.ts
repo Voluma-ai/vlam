@@ -23,12 +23,19 @@ import {
   type SplatLoadStatus,
 } from './loading';
 
+/**
+ * Asks the main thread for a budgeted load's share, given the file's own splat
+ * count. Resolves once; later calls return the same grant.
+ */
+export type RequestSplatBudget = (count: number) => Promise<number>;
+
 /** Decodes one request. Rejections are serialized back to the client. */
 export type LoadHandler = (
   message: Extract<LoadWorkerRequest, { type: 'load' }>,
   signal: AbortSignal,
   onProgress: SplatProgressCallback | undefined,
   onStatus: ((status: SplatLoadStatus) => void) | undefined,
+  requestBudget: RequestSplatBudget | undefined,
 ) => Promise<SplatData | RemotePlyResult>;
 
 /**
@@ -39,6 +46,7 @@ export type LoadHandler = (
  */
 export function serveLoadRequests(load: LoadHandler): void {
   const controllers = new Map<number, AbortController>();
+  const grants = new Map<number, (maxSplats: number) => void>();
 
   self.onmessage = async (event: MessageEvent<LoadWorkerRequest>) => {
     const worker = self as unknown as Worker;
@@ -46,6 +54,11 @@ export function serveLoadRequests(load: LoadHandler): void {
 
     if (message.type === 'cancel') {
       controllers.get(message.id)?.abort();
+      return;
+    }
+    if (message.type === 'grant') {
+      grants.get(message.id)?.(message.maxSplats);
+      grants.delete(message.id);
       return;
     }
 
@@ -84,15 +97,49 @@ export function serveLoadRequests(load: LoadHandler): void {
       const update: LoadWorkerResponse = { type: 'status', id: message.id, status };
       worker.postMessage(update);
     };
+    let grant: Promise<number> | undefined;
+    const requestBudget: RequestSplatBudget | undefined = message.budgeted
+      ? (count) =>
+          (grant ??= new Promise<number>((resolve, reject) => {
+            const { signal } = controller;
+            const onAbort = () => {
+              grants.delete(message.id);
+              reject(signal.reason instanceof Error ? signal.reason : new Error('Aborted.'));
+            };
+            if (signal.aborted) return onAbort();
+            signal.addEventListener('abort', onAbort, { once: true });
+            grants.set(message.id, (maxSplats) => {
+              signal.removeEventListener('abort', onAbort);
+              resolve(maxSplats);
+            });
+            const ask: LoadWorkerResponse = { type: 'budget', id: message.id, count };
+            worker.postMessage(ask);
+          }))
+      : undefined;
     try {
-      const output = await load(message, controller.signal, onProgress, onStatus);
+      const output = await load(message, controller.signal, onProgress, onStatus, requestBudget);
       controller.signal.throwIfAborted();
       flushProgress();
-      // Whole-file scenes above the drawable ceiling are thinned, not
-      // rejected; streamed chunks are capped far below it by their parsers.
-      const data = limitSplatCount('data' in output ? output.data : output, MAX_DRAWABLE_SPLATS);
+      const decoded = 'data' in output ? output.data : output;
+      // Whole-file scenes above the drawable ceiling, or above their share of
+      // a scene budget, are thinned rather than rejected; streamed chunks are
+      // capped far below the ceiling by their parsers. A parser that already
+      // thinned against the budget asked for the same grant, so this is then
+      // a no-op apart from the draw order.
+      const data = requestBudget
+        ? limitSplatCount(
+            decoded,
+            Math.min(
+              await requestBudget(decoded.sourceCount ?? decoded.count),
+              MAX_DRAWABLE_SPLATS,
+            ),
+            { drawOrder: true },
+          )
+        : limitSplatCount(decoded, MAX_DRAWABLE_SPLATS);
+      controller.signal.throwIfAborted();
       const metrics = 'data' in output ? output.metrics : undefined;
       const transfers = [data.positions.buffer, data.colors.buffer, data.covariances.buffer];
+      if (data.drawOrder) transfers.push(data.drawOrder.buffer);
       if (data.sh) transfers.push(data.sh.labels.buffer, data.sh.palette.buffer);
       if (data.shPacked) transfers.push(data.shPacked.packed.buffer);
       if (data.radTree)
@@ -120,6 +167,7 @@ export function serveLoadRequests(load: LoadHandler): void {
       worker.postMessage(reply);
     } finally {
       controllers.delete(message.id);
+      grants.delete(message.id);
     }
   };
 }

@@ -113,4 +113,66 @@ describe('limitSplatCount', () => {
     );
     expect(() => limitSplatCount(data, 1)).toThrow(/drawable maximum/);
   });
+
+  it('ranks a thinned scene most visible first, file order within a bucket', () => {
+    const data = makeData([
+      { alpha: 255, variance: 1 }, // 3
+      { alpha: 10, variance: 1 }, // dropped
+      { alpha: 255, variance: 4 }, // 12
+      { alpha: 255, variance: 1 }, // 3, ties splat 0
+      { alpha: 0, variance: 9 }, // dropped
+      { alpha: 255, variance: 2 }, // 6
+    ]);
+    const out = limitSplatCount(data, 4, { drawOrder: true });
+    expect(xs(out)).toEqual([0, 2, 3, 5]);
+    // Kept rows: 0→x0, 1→x2, 2→x3, 3→x5. By importance: x2, x5, then the
+    // tied x0 and x3 in file order.
+    expect(Array.from(out.drawOrder ?? [])).toEqual([1, 3, 0, 2]);
+  });
+
+  it('emits a draw order without thinning when asked, and none otherwise', () => {
+    const splats = Array.from({ length: 50 }, (_, i) => ({
+      alpha: (i * 37) % 256,
+      variance: 1 + ((i * 13) % 7),
+    }));
+    const ordered = limitSplatCount(makeData(splats), 100, { drawOrder: true });
+    expect(ordered.sourceCount).toBeUndefined();
+    expect(ordered.count).toBe(50);
+    const order = Array.from(ordered.drawOrder ?? []);
+    expect([...order].sort((a, b) => a - b)).toEqual(Array.from({ length: 50 }, (_, i) => i));
+    const importance = (row: number) =>
+      ((ordered.colors[row * 4 + 3] as number) / 255) *
+      3 *
+      (ordered.covariances[row * 6] as number);
+    for (let i = 1; i < order.length; i++) {
+      const previous = importance(order[i - 1] as number);
+      const current = importance(order[i] as number);
+      expect(current).toBeLessThanOrEqual(previous * (1 + 1e-3));
+      // Equal importance keeps file order.
+      if (current === previous) expect(order[i]).toBeGreaterThan(order[i - 1] as number);
+    }
+
+    const plain = makeData(splats);
+    expect(limitSplatCount(plain, 100)).toBe(plain);
+    expect(limitSplatCount(makeData(splats), 10).drawOrder).toBeUndefined();
+  });
+
+  it('ranks so a prefix keeps the same splats as thinning (no tie at the cut)', () => {
+    const splats = Array.from({ length: 200 }, (_, i) => ({
+      alpha: 1 + ((i * 89) % 255),
+      variance: 0.5 + ((i * 31) % 11),
+    }));
+    const order = limitSplatCount(makeData(splats), 200, { drawOrder: true }).drawOrder;
+    const prefix = new Set(Array.from(order ?? []).slice(0, 60));
+    const thinned = xs(limitSplatCount(makeData(splats), 60));
+    expect([...prefix].sort((a, b) => a - b)).toEqual(thinned);
+  });
+
+  it('thins to nothing when the budget share is zero', () => {
+    const out = limitSplatCount(makeData([{ alpha: 255, variance: 1 }]), 0, { drawOrder: true });
+    expect(out.count).toBe(0);
+    expect(out.positions.length).toBe(0);
+    expect(out.drawOrder?.length).toBe(0);
+    expect(out.sourceCount).toBe(1);
+  });
 });

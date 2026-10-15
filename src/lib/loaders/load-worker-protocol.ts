@@ -59,8 +59,17 @@ export type LoadWorkerRequest =
       status?: boolean;
       /** Opaque host-owned OPFS file name for exact remote PLY SH. */
       resourceId?: string;
+      /**
+       * A whole-file load under a scene budget: once the decoded count is
+       * known the worker asks for its share (`budget`), waits for the `grant`,
+       * thins to it and attaches `drawOrder`. Never set for streamed chunks,
+       * whose formats keep their own governors.
+       */
+      budgeted?: boolean;
     }
-  | { type: 'cancel'; id: number };
+  | { type: 'cancel'; id: number }
+  /** The main thread's answer to a `budget` request: the share to thin to. */
+  | { type: 'grant'; id: number; maxSplats: number };
 
 /** A `rad-chunk`'s location. A single-file `.rad` gives a byte range; a
  * `--rad-chunked` set gives no range - the URL is the whole `.radc` file. */
@@ -84,4 +93,6 @@ export type LoadWorkerResponse =
   | { type: 'result'; id: number; ok: true; data: SplatData; metrics?: RemotePlyMetrics }
   | { type: 'result'; id: number; ok: false; error: SerializedSplatLoadError; cancelled: boolean }
   | { type: 'progress'; id: number; loaded: number; total: number }
-  | { type: 'status'; id: number; status: SplatLoadStatus };
+  | { type: 'status'; id: number; status: SplatLoadStatus }
+  /** A budgeted load asks for its share of the scene budget for `count` splats. */
+  | { type: 'budget'; id: number; count: number };
