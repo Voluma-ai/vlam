@@ -51,6 +51,7 @@ src/
  effects.ts, paint.ts viewer-side effect picker + painting on lib primitives
  chunk-harness.ts / .html ChunkLoader GPU harness (`/chunk-harness.html`)
  unified-harness.ts / .html UnifiedSplatMesh GPU harness (`/unified-harness.html`)
+ budget-harness.ts / .html several whole files under one SplatSceneBudget (`/budget-harness.html`)
  rad-parity-harness.ts / .html Opt-in streamed `.rad` direct/unified screenshot run
  sort-benchmark.ts frame/sort timing rig behind ?benchmarkSeconds
  render-benchmark.html / .ts settled plain-SplatMesh device benchmark

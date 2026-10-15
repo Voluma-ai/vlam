@@ -101,12 +101,14 @@ output. Pull requests have no description template; write what the change does.
 ## Dev GPU harnesses
 
 [`src/viewer/chunk-harness.html`](src/viewer/chunk-harness.html),
-[`src/viewer/unified-harness.html`](src/viewer/unified-harness.html), and
+[`src/viewer/unified-harness.html`](src/viewer/unified-harness.html),
+[`src/viewer/budget-harness.html`](src/viewer/budget-harness.html), and
 [`src/viewer/rad-parity-harness.html`](src/viewer/rad-parity-harness.html), plus
 [`src/viewer/render-benchmark.html`](src/viewer/render-benchmark.html),
 [`src/viewer/memory-benchmark.html`](src/viewer/memory-benchmark.html),
 are standalone browser pages for poking at one subsystem in isolation. They are
 served by `npm run dev` at `/chunk-harness.html`, `/unified-harness.html`,
+`/budget-harness.html`,
 `/rad-parity-harness.html`, `/render-benchmark.html`, and `/memory-benchmark.html`.
 The memory page records load checkpoints, sampled main-isolate heap, optional
 browser-wide measurements, and explicit CPU/GPU allocation estimates; see

@@ -69,6 +69,7 @@ const HTML_PAGES: Readonly<Record<string, string>> = {
   '/demo/index.html': 'src/viewer/index.html',
   '/chunk-harness.html': 'src/viewer/chunk-harness.html',
   '/unified-harness.html': 'src/viewer/unified-harness.html',
+  '/budget-harness.html': 'src/viewer/budget-harness.html',
   '/rad-parity-harness.html': 'src/viewer/rad-parity-harness.html',
   '/render-benchmark.html': 'src/viewer/render-benchmark.html',
   '/memory-benchmark.html': 'src/viewer/memory-benchmark.html',
@@ -172,7 +173,7 @@ export function viewerDevPlugin(): Plugin {
             html = await server.transformIndexHtml(transformUrl, html);
             res.statusCode = 200;
             res.setHeader('Content-Type', 'text/html; charset=utf-8');
-            if (pathname === '/memory-benchmark.html') {
+            if (pathname === '/memory-benchmark.html' || pathname === '/budget-harness.html') {
               res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
               res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
             }
