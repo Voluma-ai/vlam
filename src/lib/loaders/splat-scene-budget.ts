@@ -6,6 +6,7 @@ import {
 } from '../core/splat-budget';
 import { linkSplatBudget, type SplatBudgetTenant } from '../core/splat-budget-link';
 import { MAX_DRAWABLE_SPLATS } from '../formats/splat-count-limits';
+import { warn } from '../core/logging';
 import type { SplatCountPeekOptions } from './peek-splat-count';
 
 /** Options for {@link SplatSceneBudget}. */
@@ -66,10 +67,13 @@ interface BudgetEntry {
  * `loadSplatDataFile` (or `ChunkLoader`) call. Each file is decoded, then
  * thinned in the load worker to its share, keeping its most visible splats
  * (opacity × size) exactly as an oversized single file is. A file takes
- * whatever the budget has free; {@link plan} a known batch first to split the
- * budget in proportion to each file's size instead. The budget never exceeds
- * 2²⁴ splats, so the sum of its files always fits one `UnifiedSplatMesh` work
- * buffer.
+ * whatever the budget has free. When that is less than its proportional share
+ * of the scene, the meshes already built from earlier files shrink to theirs
+ * first (keeping their most visible splats, and reallocating their pools so
+ * the memory is really returned), so adding a file later needs no host
+ * arithmetic. {@link plan} a known batch first to split the budget up front
+ * instead. The budget never exceeds 2²⁴ splats, so the sum of its files always
+ * fits one `UnifiedSplatMesh` work buffer.
  *
  * Pass the returned data to `new SplatMesh(data)` unchanged: the mesh reports
  * to the budget and gives its splats back on `dispose()`. Data that never
@@ -77,7 +81,11 @@ interface BudgetEntry {
  *
  * Thinning is lossy. Disposing one mesh frees budget for the next load, but
  * the meshes that remain do not regain the splats they were thinned by;
- * reload a file to restore its detail.
+ * reload a file to restore its detail. A re-balance happens when the late
+ * file's count is known (after it decodes), so the earlier meshes stay
+ * shrunk even if that load then fails. Only a plain `SplatMesh` built
+ * directly from the budgeted data, with its own editable pool, can shrink;
+ * any other consumer keeps its share.
  *
  * Streamed formats (`StreamedSplatMesh`) keep their own governors and are not
  * counted here.
@@ -179,16 +187,16 @@ export class SplatSceneBudget {
    * @param input - The absolute URL or the `File`, to find a planned share.
    */
   reserve(declared?: number, input?: string | File): SplatBudgetReservation {
-    const free = this.free;
-    let share = declared === undefined ? free : Math.min(Math.floor(declared), free);
     const planned =
       input === undefined
         ? undefined
         : typeof input === 'string'
           ? this.plannedByUrl.get(input)
           : this.plannedByFile.get(input);
-    if (planned !== undefined) share = Math.min(share, planned);
-    share = Math.max(0, share);
+    let want = declared === undefined ? Infinity : Math.max(0, Math.floor(declared));
+    if (planned !== undefined) want = Math.min(want, planned);
+    if (declared !== undefined && want > this.free) this.rebalance(Math.floor(declared), want);
+    const share = Math.max(0, Math.min(want, this.free));
     const entry: BudgetEntry = {
       sourceCount: declared ?? share,
       held: share,
@@ -222,6 +230,46 @@ export class SplatSceneBudget {
         this.entries.delete(entry);
       },
     };
+  }
+
+  /**
+   * Makes room for a file that does not fit what is free: every mesh holding
+   * more than its proportional share of the scene - `total × sourceCount / Σ`,
+   * by each file's *original* count, so a file thinned before is not
+   * penalised twice - shrinks to that share, keeping its most visible splats.
+   * Runs once per added file, on the main thread.
+   *
+   * @param declared - The newcomer's own splat count.
+   * @param want - What the newcomer asks for (its planned share, or `declared`).
+   */
+  private rebalance(declared: number, want: number): void {
+    let sum = declared;
+    for (const entry of this.entries) sum += entry.sourceCount;
+    const fairShare = (count: number): number =>
+      Math.min(count, Math.floor((this.total * count) / sum));
+    // A newcomer never forces the others below their fair shares, even when
+    // it planned for more than its own.
+    if (this.free >= Math.min(want, fairShare(declared))) return;
+    let freed = 0;
+    let shrunk = 0;
+    for (const entry of this.entries) {
+      const tenant = entry.tenant;
+      if (!tenant?.budgetShrinkable) continue;
+      const fair = fairShare(entry.sourceCount);
+      if (entry.held <= fair) continue;
+      const held = tenant.shrinkToBudget(fair);
+      if (held >= entry.held) continue;
+      freed += entry.held - held;
+      entry.held = held;
+      shrunk++;
+    }
+    if (shrunk > 0) {
+      warn(
+        `Scene budget of ${this.total.toLocaleString('en-US')} splats re-balanced for a new ` +
+          `file: ${shrunk} loaded scene(s) gave up ${freed.toLocaleString('en-US')} of ` +
+          `their least visible splats.`,
+      );
+    }
   }
 
   /**

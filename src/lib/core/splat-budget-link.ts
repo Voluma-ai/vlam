@@ -10,6 +10,8 @@ import type { SplatData } from './splat-data';
 export interface SplatBudgetTenant {
   /** Splats the mesh currently holds. */
   readonly budgetedSplatCount: number;
+  /** Whether {@link shrinkToBudget} can currently free any splats. */
+  readonly budgetShrinkable: boolean;
   /**
    * Shrinks the mesh to its `count` most visible splats, when it can (see
    * {@link SplatData.drawOrder}). Returns the count it now holds.

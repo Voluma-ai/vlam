@@ -32,9 +32,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   device's default budget (or a tighter `total`), and never 2²⁴. A file takes
   what is free; `budget.plan(urls)` splits the budget in proportion to each
   file's header count first (`peekSplatCount` reads it with a few small range
-  requests). The mesh built from the data gives its share back on
-  `dispose()`. Budgeted data carries `SplatData.drawOrder`, its splats ranked
-  most visible first. Streamed formats are not counted.
+  requests). When a file added later does not fit, the meshes already built
+  from the budget shrink to their proportional shares (by original file size)
+  first, keeping their most visible splats and reallocating their pool
+  textures, so the memory is actually returned. The mesh built from the data
+  gives its share back on `dispose()`. Budgeted data carries
+  `SplatData.drawOrder`, its splats ranked most visible first. Streamed
+  formats are not counted.
 
 ### Fixed
 
