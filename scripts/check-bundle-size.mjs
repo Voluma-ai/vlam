@@ -31,7 +31,9 @@ import { fileURLToPath } from 'node:url';
 const BUDGET_GZIP_BYTES = {
   // 70,990 B measured after the strategy split × 1.15, rounded to 1 kB.
   '.': 82_000,
-  './loaders': 40_000,
+  // 40,646 B measured after SplatSceneBudget (header peeks, draw-order
+  // thinning, worker grant round-trip) × 1.15, rounded to 1 kB.
+  './loaders': 47_000,
   // 93,992 B measured after NaN-safe SH extent + RAD lebytes width checks
   // (both live in the inlined load-worker this entry statically imports)
   // × 1.15, rounded to 1 kB.
@@ -63,8 +65,9 @@ const OWN_BUDGET_GZIP_BYTES = {
 };
 
 const COMPOSED_BUDGET_GZIP_BYTES = {
-  // 90,421 B measured for the composed graph × 1.15, rounded to 1 kB.
-  './+unified+sorting/radix+projection/compute': 104_000,
+  // 105,851 B measured after SplatMesh.shrinkToBudget / SplatPool.shrinkRows
+  // landed in the core graph × 1.15, rounded to 1 kB.
+  './+unified+sorting/radix+projection/compute': 122_000,
 };
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));

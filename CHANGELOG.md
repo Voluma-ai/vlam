@@ -41,7 +41,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   formats are not counted. Size a `UnifiedSplatMesh` over budgeted sources
   from `budget.total`, not from the sum of each `mesh.capacity`: a shrunk
   mesh keeps its original draw-list capacity, so that sum can exceed 2²⁴ and
-  throw.
+  throw. Paying for it: `/loaders` gzip 34.8 kB → 40.6 kB (header peeks and
+  thinning in the decode worker) and the composed unified graph 90.4 kB →
+  105.9 kB (`SplatMesh.shrinkToBudget` in core).
 
 ### Fixed
 
