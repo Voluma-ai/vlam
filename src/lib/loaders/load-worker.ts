@@ -8,6 +8,7 @@ import { packPaletteSh } from '../core/sh-pack';
 import type { SplatData } from '../core/splat-data';
 import { fetchBuffer, fetchRange, fetchWholeResponse, stripFragment } from './worker-fetch';
 import { serveLoadRequests, type RequestSplatBudget } from './worker-host';
+import { parsePlyHeader } from './ply-header';
 import { MAX_DRAWABLE_SPLATS } from '../formats/splat-count-limits';
 import {
   isAbortError,
@@ -101,6 +102,9 @@ async function load(
     try {
       return await parseSplatPlyFile(source.file, {
         signal,
+        maxSplats: requestBudget
+          ? async (count) => Math.min(await requestBudget(count), MAX_DRAWABLE_SPLATS)
+          : MAX_DRAWABLE_SPLATS,
         ...(onProgress ? { onProgress } : {}),
       });
     } catch (error) {
@@ -134,8 +138,14 @@ async function load(
   onStatus?.('decoding');
   try {
     switch (format) {
-      case 'ply':
-        return parseSplatPly(buffer);
+      case 'ply': {
+        // Thin while decoding (see the SOG case); the header gives the count.
+        const declared = parsePlyHeader(buffer).element('vertex')?.count ?? 0;
+        const maxSplats = requestBudget
+          ? Math.min(await requestBudget(declared), MAX_DRAWABLE_SPLATS)
+          : MAX_DRAWABLE_SPLATS;
+        return parseSplatPly(buffer, { maxSplats });
+      }
       case 'sog': {
         // Thin while decoding, so a file above the drawable ceiling or its
         // budget share never holds its discarded splats' arrays: the
