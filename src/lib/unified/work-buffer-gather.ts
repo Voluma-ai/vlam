@@ -27,6 +27,23 @@ import {
 import { colorSpaceToWorking } from 'three/tsl';
 import type { SplatModifier } from '../core/splat-modifier';
 import { StorageMirrorReleaser } from '../core/storage-attribute-mirror';
+import { MAX_DRAWABLE_SPLATS } from '../formats/splat-count-limits';
+
+/**
+ * Throws when a unified work buffer would hold more slots than its draw can
+ * address. The draw-order index is a float32 `splatIndex`, exact only up to
+ * 2²⁴; past it neighbouring slots alias and the draw reads the wrong splats
+ * instead of failing.
+ */
+export function assertWorkBufferCapacity(capacity: number): void {
+  if (capacity > MAX_DRAWABLE_SPLATS) {
+    throw new RangeError(
+      `Unified work buffer capacity ${capacity.toLocaleString('en-US')} exceeds the drawable ` +
+        `maximum of 2^24 (${MAX_DRAWABLE_SPLATS.toLocaleString('en-US')}) splats: the float32 ` +
+        `draw index cannot address more. Load the sources under one SplatSceneBudget.`,
+    );
+  }
+}
 
 /**
  * GPU gather pass for Phase 0 of the unified renderer. It resolves a source
@@ -63,6 +80,7 @@ export class WorkBuffer {
   static readonly SCRATCH_SLOTS = 256;
 
   constructor(readonly capacity: number) {
+    assertWorkBufferCapacity(capacity);
     const slots = capacity + WorkBuffer.SCRATCH_SLOTS;
     this.centers = new THREE.StorageBufferAttribute(new Float32Array(slots * 4), 4);
     this.colors = new THREE.StorageBufferAttribute(new Float32Array(slots * 4), 4);

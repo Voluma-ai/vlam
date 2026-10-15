@@ -14,7 +14,7 @@ import { SplatMesh } from '../core/splat-mesh';
 import type { SplatPickOptions, SplatPickResult, UnifiedSourceView } from '../core/splat-mesh';
 import { isFillConstrainedSplatDevice } from '../core/splat-budget';
 import { WebGpuSortScheduler } from '../core/sort-scheduler';
-import { WorkBuffer, WorkBufferGather } from './work-buffer-gather';
+import { WorkBuffer, WorkBufferGather, assertWorkBufferCapacity } from './work-buffer-gather';
 import {
   createGatherCache,
   gatherGeometryMatches,
@@ -233,6 +233,11 @@ export function supportsUnifiedSplatMesh(renderer: object): boolean {
  *
  * WebGPU only. Prefer {@link supportsUnifiedSplatMesh} before construction.
  *
+ * `capacity` (the work-buffer slots, shared by every source's active splats)
+ * may not exceed 2²⁴: the draw indexes the work buffer through a float32
+ * `splatIndex`, so the constructor throws a `RangeError` above it rather than
+ * drawing a corrupt permutation. Load whole-file sources under one
+ * `SplatSceneBudget` (`@voluma/vlam/loaders`) to keep their sum below it.
  */
 export class UnifiedSplatMesh extends THREE.Mesh {
   private readonly workBuffer: WorkBuffer;
@@ -381,6 +386,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
           'On WebGL2 use standalone SplatMesh draws or static MergedSplatMesh.',
       );
     }
+    assertWorkBufferCapacity(capacity);
     // Fail before allocating StorageBufferAttributes that would trip a cryptic
     // CreateBindGroup validation error when the host left the 128 MiB default.
     assertStorageBufferFitsDevice(renderer, estimateLargestStorageBufferBytes(capacity), capacity);

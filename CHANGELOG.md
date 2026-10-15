@@ -32,6 +32,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   evenly across the file) and drop the rest, set `SplatData.sourceCount` to the
   original count, and log a warning. Files up to 2²⁵ splats decode; above that,
   or to keep every splat, convert to Streamed SOG.
+- **`UnifiedSplatMesh` rejects a work buffer above 2²⁴ slots** instead of
+  drawing a corrupt permutation. Its draw indexes the work buffer through a
+  float32 `splatIndex`, exact only up to 2²⁴, so a capacity sized as the sum
+  of several large sources either failed with a storage-buffer error or, on a
+  device with a large binding limit, silently drew the wrong splats past that
+  index. The constructor now throws a `RangeError` naming the limit.
 - **SOG chunks no longer fail when Safari loses the decode context.** Safari
   26.6 drops the worker's WebGL2 readback context under GPU pressure beside a
   WebGPU renderer, so every retry of a SOG or LCC2 chunk failed with "Could not

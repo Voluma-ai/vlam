@@ -5,6 +5,7 @@ import { writeCovariance, type SplatData } from '../core/splat-data';
 import { SplatMesh } from '../core/splat-mesh';
 import { MergedSplatMesh } from '../core/merged-splat-mesh';
 import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '../unified/unified-splat-mesh';
+import { WorkBuffer } from '../unified/work-buffer-gather';
 import { exactSort, radixSort } from '../sorting/radix';
 import { computeProjection } from '../projection/compute';
 
@@ -123,6 +124,19 @@ describe('UnifiedSplatMesh', () => {
       reason: 'explicit-vertex',
     });
     unified.dispose();
+  });
+
+  it('caps the work buffer at the 2^24 slots its float32 draw index can address', () => {
+    // A device limit far below 2^24 slots makes the storage-buffer check throw
+    // next: reaching it proves the capacity cap let exactly 2^24 through,
+    // without allocating a gigabyte of work buffer in a unit test.
+    const tinyLimit = mockRenderer({
+      backend: { isWebGPUBackend: true, device: { limits: { maxStorageBufferBindingSize: 1024 } } },
+    });
+    expect(() => new UnifiedSplatMesh(tinyLimit, 2 ** 24)).toThrow(/maxStorageBufferBindingSize/);
+    expect(() => new UnifiedSplatMesh(mockRenderer(), 2 ** 24 + 1)).toThrow(RangeError);
+    expect(() => new UnifiedSplatMesh(mockRenderer(), 2 ** 24 + 1)).toThrow(/2\^24 \(16,777,216\)/);
+    expect(() => new WorkBuffer(2 ** 24 + 1)).toThrow(/drawable maximum/);
   });
 
   it('rejects render-only sources before mutating registration state', () => {
