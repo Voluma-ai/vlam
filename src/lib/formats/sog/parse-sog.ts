@@ -6,6 +6,11 @@ import {
   type SplatRequestOptions,
 } from '../../loaders/loading';
 import { MAX_DECODED_SPLATS } from '../splat-count-limits';
+import {
+  importanceBins,
+  importanceScore,
+  keepMostImportant,
+} from '../../loaders/limit-splat-count';
 import { readZipEntries } from './zip';
 
 /**
@@ -68,14 +73,34 @@ const MAX_SPLAT_COUNT = MAX_DECODED_SPLATS;
  */
 export async function parseSog(
   buffer: ArrayBuffer,
-  options: { signal?: AbortSignal } = {},
+  options: SogParseOptions = {},
 ): Promise<SplatData> {
   const archive = readZipEntries(buffer);
-  return parseSogFromEntries(async (name) => {
-    const entry = archive.get(name);
-    if (!entry) throw new Error(`SOG bundle is missing "${name}".`);
-    return entry();
-  }, options.signal);
+  return parseSogFromEntries(
+    async (name) => {
+      const entry = archive.get(name);
+      if (!entry) throw new Error(`SOG bundle is missing "${name}".`);
+      return entry();
+    },
+    options.signal,
+    options.maxSplats,
+  );
+}
+
+/** Options for {@link parseSog}. */
+export interface SogParseOptions {
+  /** Checked between decode stages and inside the dequantization loop. */
+  signal?: AbortSignal;
+  /**
+   * Keep at most this many splats, the most visible ones (opacity × size),
+   * thinned while decoding so the discarded splats are never written out:
+   * the decode's peak memory scales with what is kept, not with the file.
+   * The kept set is exactly the one `limitSplatCount` would choose from the
+   * fully decoded scene, and `sourceCount` is set when anything was dropped.
+   * A function is called once with the file's splat count and may resolve
+   * asynchronously (the loaders ask a scene budget). Default: keep all.
+   */
+  maxSplats?: number | ((count: number) => number | Promise<number>);
 }
 
 /**
@@ -151,6 +176,7 @@ export async function parseSogDirectory(
 async function parseSogFromEntries(
   readEntry: (name: string) => Promise<Uint8Array>,
   signal?: AbortSignal,
+  maxSplats?: SogParseOptions['maxSplats'],
 ): Promise<SplatData> {
   const meta = JSON.parse(new TextDecoder().decode(await readEntry('meta.json'))) as SogMeta;
   validateMeta(meta);
@@ -171,10 +197,6 @@ async function parseSogFromEntries(
   assertImageHoldsCount(quats, 'quats', count);
   assertImageHoldsCount(scales, 'scales', count);
   assertImageHoldsCount(sh0, 'sh0', count);
-  const positions = new Float32Array(count * 3);
-  const colors = new Uint8Array(count * 4);
-  const covariances = new Float32Array(count * 6);
-
   // Positions: 16 bit per axis, normalized over [mins, maxs] in a
   // symmetric-log domain: unlog(n) = sign(n)·(eⁿ − 1).
   const { mins, maxs } = meta.means;
@@ -184,66 +206,102 @@ async function parseSogFromEntries(
   // [-√½, +√½]; alpha − 252 says which component was omitted (the largest,
   // reconstructed from unit length). Component order is (w, x, y, z).
   const quatComponent = (byte: number): number => (byte / 255 - 0.5) * Math.SQRT2;
+  const quaternion = (p: number): readonly [number, number, number, number] => {
+    const a = quatComponent(quats.data[p + 0] as number);
+    const b = quatComponent(quats.data[p + 1] as number);
+    const c = quatComponent(quats.data[p + 2] as number);
+    const d = Math.sqrt(Math.max(0, 1 - (a * a + b * b + c * c)));
+    const mode = (quats.data[p + 3] as number) - 252;
+    return mode === 0
+      ? [d, a, b, c]
+      : mode === 1
+        ? [a, d, b, c]
+        : mode === 2
+          ? [a, b, d, c]
+          : [a, b, c, d];
+  };
+  const scale = (p: number, axis: number): number =>
+    Math.exp(meta.scales.codebook[scales.data[p + axis] as number] as number);
 
   const toColorByte = (sh: number): number =>
     Math.max(0, Math.min(255, Math.round((0.5 + sh * SH_C0) * 255)));
 
-  for (let i = 0; i < count; i++) {
-    // The dequantization loop dominates decode time. With a signal, yield
-    // to the event loop every 65,536 splats so a pending cancel message
-    // can be processed at all (the worker is single-threaded), then honor
-    // it. Without a signal this branch never runs - no overhead.
-    if (signal && (i & 0xffff) === 0 && i > 0) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      signal.throwIfAborted();
+  // The dequantization loops dominate decode time. With a signal, yield to
+  // the event loop every 65,536 splats so a pending cancel message can be
+  // processed at all (the worker is single-threaded), then honor it. Without
+  // a signal this never runs - no overhead.
+  const pause = async (): Promise<void> => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    signal?.throwIfAborted();
+  };
+
+  const limit = typeof maxSplats === 'function' ? await maxSplats(count) : maxSplats;
+  signal?.throwIfAborted();
+  const keep = limit !== undefined && count > limit ? await selectKept(Math.max(0, limit)) : null;
+  const kept = keep ? Math.max(0, Math.floor(limit as number)) : count;
+
+  /**
+   * Scores every splat from its quantized opacity, scales and rotation, then
+   * marks the `target` most visible. The covariance diagonal is rounded to
+   * float32 exactly as {@link writeCovariance} stores it, so the scores (and
+   * therefore the kept set) match `limitSplatCount` on the decoded scene.
+   */
+  async function selectKept(target: number): Promise<Uint8Array> {
+    const scores = new Float32Array(count);
+    const diagonal = new Float32Array(6);
+    for (let i = 0; i < count; i++) {
+      if (signal && (i & 0xffff) === 0 && i > 0) await pause();
+      const p = i * 4;
+      const [qw, qx, qy, qz] = quaternion(p);
+      writeCovariance(diagonal, 0, scale(p, 0), scale(p, 1), scale(p, 2), qw, qx, qy, qz);
+      scores[i] = importanceScore(
+        (sh0.data[p + 3] as number) / 255,
+        (diagonal[0] as number) + (diagonal[3] as number) + (diagonal[5] as number),
+      );
     }
+    return keepMostImportant(importanceBins(scores), target);
+  }
+
+  const positions = new Float32Array(kept * 3);
+  const colors = new Uint8Array(kept * 4);
+  const covariances = new Float32Array(kept * 6);
+  let out = 0;
+  for (let i = 0; i < count; i++) {
+    if (signal && (i & 0xffff) === 0 && i > 0) await pause();
+    if (keep && !keep[i]) continue;
     const p = i * 4; // Every attribute image shares the same pixel layout.
+    const o = out++;
 
     for (let axis = 0; axis < 3; axis++) {
       const quantized =
         (((meansU.data[p + axis] as number) << 8) | (meansL.data[p + axis] as number)) / 65535;
       const lo = mins[axis] as number;
       const hi = maxs[axis] as number;
-      positions[i * 3 + axis] = unlog(lo + (hi - lo) * quantized);
+      positions[o * 3 + axis] = unlog(lo + (hi - lo) * quantized);
     }
 
     // SH0: RGB are codebook indices for the DC term; alpha is the opacity,
     // stored already activated (no sigmoid, unlike PLY).
-    colors[p + 0] = toColorByte(meta.sh0.codebook[sh0.data[p + 0] as number] as number);
-    colors[p + 1] = toColorByte(meta.sh0.codebook[sh0.data[p + 1] as number] as number);
-    colors[p + 2] = toColorByte(meta.sh0.codebook[sh0.data[p + 2] as number] as number);
-    colors[p + 3] = sh0.data[p + 3] as number;
+    colors[o * 4 + 0] = toColorByte(meta.sh0.codebook[sh0.data[p + 0] as number] as number);
+    colors[o * 4 + 1] = toColorByte(meta.sh0.codebook[sh0.data[p + 1] as number] as number);
+    colors[o * 4 + 2] = toColorByte(meta.sh0.codebook[sh0.data[p + 2] as number] as number);
+    colors[o * 4 + 3] = sh0.data[p + 3] as number;
 
-    const a = quatComponent(quats.data[p + 0] as number);
-    const b = quatComponent(quats.data[p + 1] as number);
-    const c = quatComponent(quats.data[p + 2] as number);
-    const d = Math.sqrt(Math.max(0, 1 - (a * a + b * b + c * c)));
-    const mode = (quats.data[p + 3] as number) - 252;
-    const [qw, qx, qy, qz] =
-      mode === 0
-        ? [d, a, b, c]
-        : mode === 1
-          ? [a, d, b, c]
-          : mode === 2
-            ? [a, b, d, c]
-            : [a, b, c, d];
-
-    writeCovariance(
-      covariances,
-      i,
-      Math.exp(meta.scales.codebook[scales.data[p + 0] as number] as number),
-      Math.exp(meta.scales.codebook[scales.data[p + 1] as number] as number),
-      Math.exp(meta.scales.codebook[scales.data[p + 2] as number] as number),
-      qw,
-      qx,
-      qy,
-      qz,
-    );
+    const [qw, qx, qy, qz] = quaternion(p);
+    writeCovariance(covariances, o, scale(p, 0), scale(p, 1), scale(p, 2), qw, qx, qy, qz);
   }
 
   signal?.throwIfAborted();
-  const sh = meta.shN ? await decodeShN(meta.shN, count, readEntry) : undefined;
-  return { count, positions, colors, covariances, sh, antialias: meta.antialias === true };
+  const sh = meta.shN ? await decodeShN(meta.shN, count, readEntry, keep, kept) : undefined;
+  return {
+    count: kept,
+    positions,
+    colors,
+    covariances,
+    sh,
+    antialias: meta.antialias === true,
+    ...(keep ? { sourceCount: count } : {}),
+  };
 }
 
 /**
@@ -334,6 +392,8 @@ async function decodeShN(
   meta: NonNullable<SogMeta['shN']>,
   count: number,
   readEntry: (name: string) => Promise<Uint8Array>,
+  keep: Uint8Array | null,
+  kept: number,
 ): Promise<SplatShData> {
   const [centroids, labelsImage] = await Promise.all([
     readEntry(meta.files[0] ?? 'shN_centroids.webp').then(decodeWebp),
@@ -345,8 +405,10 @@ async function decodeShN(
   // `coeffs` texels wide. Bound every decoded label against the centroids
   // image so a hostile labels image cannot address texels outside it.
   const coeffs = meta.bands === 1 ? 3 : meta.bands === 2 ? 8 : 15;
-  const labels = new Uint32Array(count);
+  const labels = new Uint32Array(kept);
+  let out = 0;
   for (let i = 0; i < count; i++) {
+    if (keep && !keep[i]) continue;
     const label =
       (labelsImage.data[i * 4] as number) | ((labelsImage.data[i * 4 + 1] as number) << 8);
     const row = Math.floor(label / 64);
@@ -357,7 +419,7 @@ async function decodeShN(
           `${centroids.width}×${centroids.height} centroids palette.`,
       );
     }
-    labels[i] = label;
+    labels[out++] = label;
   }
 
   const palette = new Float32Array(centroids.width * centroids.height * 4);

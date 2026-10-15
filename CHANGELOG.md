@@ -71,6 +71,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- **Thinning a `.sog` no longer decodes the splats it drops.** A bundled SOG
+  above 2²⁴ splats, or above its share of a `SplatSceneBudget`, is now scored
+  from its quantized opacity, scales and rotations and thinned while decoding,
+  so the worker only allocates output arrays for the splats it keeps (40 bytes
+  per dropped splat no longer pass through memory). The kept set is identical
+  to the previous decode-then-thin result. `parseSog` takes the same limit as
+  `options.maxSplats`. Other formats still decode fully before thinning.
 - **Faster radial radix sort.** GPU radix sorts with the `radial` metric now
   use a 16-bit key warped toward the camera (`1 - sqrt(1 - u)`), so they run
   four passes instead of six. Near-camera steps stay sub-millimetre (about
