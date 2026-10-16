@@ -60,6 +60,23 @@ export interface SplatPickHost {
 }
 
 /**
+ * The mesh's active list: a storage buffer that also steps once per instance.
+ *
+ * Unified and compute-projection sources pick by reading this list at
+ * `instanceIndex`. WebGL2 has no storage buffers, so three binds that read as
+ * a plain vertex attribute and drops the element index: without an instance
+ * divisor every pick instance read rows 0-3 by vertex, and the pass drew one
+ * wrong quad instead of the source (a pooled tenant then never hit, or hit
+ * everywhere). The flags only set that divisor. WebGPU binds the buffer as
+ * storage, where they have no effect.
+ */
+export const createActiveIndexAttribute = (count: number): THREE.StorageBufferAttribute =>
+  Object.assign(new THREE.StorageBufferAttribute(new Uint32Array(count), 1), {
+    isInstancedBufferAttribute: true,
+    meshPerAttribute: 1,
+  });
+
+/**
  * Owns the pick pass and everything it allocates. Resources are created on the
  * first pick, so a mesh that is never picked pays nothing.
  */
@@ -320,10 +337,15 @@ export class SplatPicker {
       rgba.length === packedRowBytes * targetHeight
         ? packedRowBytes
         : Math.ceil(packedRowBytes / 256) * 256;
+    // `pixels` count rows from the bottom, as WebGL2 reads them back. A WebGPU
+    // target's first row is its top, so a multi-row batch reads mirrored rows.
+    const topDown =
+      (renderer.backend as { isWebGPUBackend?: boolean } | undefined)?.isWebGPUBackend === true;
     return ndcs.map((ndc, index) => {
       const pixel = pixels[index] as { x: number; y: number };
       if (pixel.x < 0 || pixel.y < 0 || pixel.x >= width || pixel.y >= height) return null;
-      const offset = (pixel.y - y0) * rowBytes + (pixel.x - x0) * 4;
+      const row = topDown ? y1 - pixel.y : pixel.y - y0;
+      const offset = row * rowBytes + (pixel.x - x0) * 4;
       const r = rgba[offset] as number;
       const g = rgba[offset + 1] as number;
       const b = rgba[offset + 2] as number;

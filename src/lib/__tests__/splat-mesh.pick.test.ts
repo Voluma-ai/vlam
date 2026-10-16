@@ -430,6 +430,33 @@ describe('SplatMesh.pick', () => {
     expect(results[1]!.point.y).toBeGreaterThan(results[0]!.point.y);
   });
 
+  it('reads multi-row batches bottom-up on WebGL2 and top-down on WebGPU', async () => {
+    const pickRows = async (webgpu: boolean) => {
+      const mesh = createMesh();
+      const camera = new THREE.PerspectiveCamera(60, 2, 0.1, 100);
+      camera.position.z = 5;
+      camera.updateMatrixWorld(true);
+      const renderer = createMockRenderer(200, 100);
+      if (webgpu) (renderer as unknown as { backend: object }).backend = { isWebGPUBackend: true };
+      const packed = packNormalizedDepth(normalizeViewDepth(5, camera.near, camera.far));
+      // Only the first row read back is covered: the bottom row on WebGL2,
+      // the top row on WebGPU (each 1-pixel row, packed or 256-byte padded).
+      vi.mocked(renderer.readRenderTargetPixelsAsync).mockImplementationOnce(async () => {
+        const pixels = new Uint8Array(webgpu ? 256 + 4 : 8);
+        pixels.set([packed.r, packed.g, packed.b, 255], 0);
+        return pixels;
+      });
+      const [lower, upper] = await mesh.pickMany(
+        [new THREE.Vector2(0, 0), new THREE.Vector2(0, 0.02)],
+        camera,
+        renderer,
+      );
+      return { lower: lower !== null, upper: upper !== null };
+    };
+    expect(await pickRows(false)).toEqual({ lower: true, upper: false });
+    expect(await pickRows(true)).toEqual({ lower: false, upper: true });
+  });
+
   it('returns null after dispose and disposes pick resources', async () => {
     const mesh = createMesh();
     const camera = new THREE.PerspectiveCamera(60, 2, 0.1, 100);

@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" />
+  <title>VLAM pooled pick probe</title>
+  <canvas id="canvas" width="128" height="128"></canvas>
+  <output data-testid="result"></output>
+  <script type="module">
+    import * as THREE from 'three/webgpu';
+    import { createWebGPURenderer, SplatMesh, SplatPool } from '../lib/core';
+    import { PooledUnifiedSplatMesh } from '../lib/unified/pooled';
+
+    // Pooled tenants are hidden from the scene draw and pick through their own
+    // pass, reading their active list by instance. Each source holds a row of
+    // small splats, so a pass that reads the wrong rows (for example the list
+    // by vertex instead of by instance) misses the probed splat, or covers
+    // the gaps between splats with a quad built from the first rows.
+    const SIZE = 128;
+    const params = new URLSearchParams(location.search);
+    const requested = params.get('backend');
+    const output = document.querySelector('[data-testid="result"]');
+    const fail = (error) => {
+      output.textContent = JSON.stringify({ error: String(error?.stack ?? error) });
+    };
+    addEventListener('error', (event) => fail(event.error ?? event.message));
+    addEventListener('unhandledrejection', (event) => fail(event.reason));
+    if (requested !== 'webgpu' && requested !== 'webgl2') {
+      throw new Error(`Unknown backend: ${requested}`);
+    }
+
+    const renderer = await createWebGPURenderer({
+      canvas: document.querySelector('#canvas'),
+      antialias: false,
+      forceWebGL: requested === 'webgl2',
+      requireWebGpu: requested === 'webgpu',
+    });
+    renderer.setSize(SIZE, SIZE, false);
+    renderer.setClearColor(0x000000, 1);
+    await renderer.init();
+    const backend = renderer.backend.isWebGPUBackend ? 'webgpu' : 'webgl2';
+    if (backend !== requested) throw new Error(`Requested ${requested}, initialized ${backend}.`);
+
+    /** A row of `count` small splats along x, `spacing` apart, centered on 0. */
+    const row = (count, spacing, y, z, color) => {
+      const positions = new Float32Array(count * 3);
+      const colors = new Uint8Array(count * 4);
+      const covariances = new Float32Array(count * 6);
+      for (let i = 0; i < count; i++) {
+        positions.set([(i - (count - 1) / 2) * spacing, y, z], i * 3);
+        colors.set([...color, 255], i * 4);
+        // σ = 0.02: five σ to the midpoint between neighbors.
+        covariances.set([0.0004, 0, 0, 0.0004, 0, 0.0004], i * 6);
+      }
+      return { count, positions, colors, covariances };
+    };
+    const MAIN_COUNT = 9;
+    const SPACING = 0.2;
+    const mainRow = row(MAIN_COUNT, SPACING, 0, 0, [255, 0, 0]);
+    const markerRow = row(3, SPACING, 0.5, -0.2, [0, 0, 255]);
+
+    const pool = new SplatPool({ capacity: 4 * 2048 });
+    // The main stands in for a streamed source: dynamic capacity, rows
+    // appended after it joined, so they travel the worker publication.
+    const main = new SplatMesh({ capacity: 2048 }, { pool });
+    const marker = new SplatMesh(markerRow, { pool });
+    const scene = new THREE.Scene();
+    const pooled = new PooledUnifiedSplatMesh(renderer, pool);
+    pooled.addSource(main);
+    pooled.addSource(marker);
+    scene.add(pooled);
+    main.appendRange(mainRow);
+    // Same rows drawn on their own, as the pick reference.
+    const reference = new SplatMesh(mainRow);
+    const referenceScene = new THREE.Scene();
+    referenceScene.add(reference);
+
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 10);
+    camera.position.set(0, 0, 3);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld();
+    const target = new THREE.RenderTarget(SIZE, SIZE, { type: THREE.UnsignedByteType });
+    const frame = () => {
+      pooled.update(camera);
+      reference.update(camera, renderer);
+      renderer.setRenderTarget(target);
+      renderer.clear();
+      renderer.render(scene, camera);
+      renderer.render(referenceScene, camera);
+      renderer.setRenderTarget(null);
+    };
+    const start = pooled.getDrawPublicationSnapshot().publicationRevision;
+    for (let i = 0; i < 120; i++) {
+      frame();
+      await new Promise((resolve) => setTimeout(resolve, 16));
+      const snapshot = pooled.getDrawPublicationSnapshot();
+      if (snapshot.ready && snapshot.publicationRevision > start) break;
+    }
+    frame();
+
+    const ndcOf = (x, y, z) => {
+      const ndc = new THREE.Vector3(x, y, z).project(camera);
+      return new THREE.Vector2(ndc.x, ndc.y);
+    };
+    const toArray = (hit) => (hit === null ? null : hit.point.toArray());
+    // Splat 7 of the main row (not one of the first four rows), the gap
+    // beside it, empty space above the row, and the marker's middle splat.
+    const mainX = (7 - (MAIN_COUNT - 1) / 2) * SPACING;
+    const onMain = ndcOf(mainX, 0, 0);
+    const gap = ndcOf(mainX + SPACING / 2, 0, 0);
+    const empty = ndcOf(0, -0.5, 0);
+    const onMarker = ndcOf(0, 0.5, -0.2);
+    const points = [onMain, gap, empty, onMarker];
+
+    const result = {
+      backend,
+      tenantsHidden: !main.visible && !marker.visible,
+      mainX,
+      reference: (await reference.pickMany(points, camera, renderer)).map(toArray),
+      main: (await main.pickMany(points, camera, renderer)).map(toArray),
+      mainSingle: toArray(await main.pick(onMain, camera, renderer)),
+      marker: (await marker.pickMany(points, camera, renderer)).map(toArray),
+      pooled: [],
+    };
+    for (const point of points) result.pooled.push(toArray(await pooled.pick(point, camera)));
+    output.textContent = JSON.stringify(result);
+  </script>
+</html>
