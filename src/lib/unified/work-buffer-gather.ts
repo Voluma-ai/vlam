@@ -196,13 +196,19 @@ export class WorkBufferGather {
     const outputIsotropicScreenRadius = storage(this.isotropicScreenRadius, 'float', capacity);
     this.pass = Fn(() => {
       If(float(instanceIndex).lessThan(this.activeCount), () => {
-        const poolIndex = int(source.element(instanceIndex));
+        // Every node the modifier stack can see AND the outputs below read is
+        // pinned to a var here, ahead of the fold. three r186 caches a reused
+        // temp's var name in the parent scope even when it was first emitted
+        // inside a modifier's `If`, so the outputs would read a var that is
+        // only assigned when that branch ran (e.g. `ctx.normal` in a per-light
+        // `If` zeroed the gathered covariance: see-through specks).
+        const poolIndex = int(source.element(instanceIndex)).toVar();
         const texel = ivec2(
           poolIndex.mod(int(dataTextureWidth)),
           poolIndex.div(int(dataTextureWidth)),
-        );
+        ).toVar();
         const attributes = readSplatGatherInputs(centersTexture, colorsTexture, texel);
-        const localCenter = attributes.center;
+        const localCenter = attributes.center.toVar();
         const target = instanceIndex.add(this.targetOffset.toUint());
         const inputA = textureLoad(covarianceATexture, texel);
         const inputB = textureLoad(covarianceBTexture, texel);
@@ -210,9 +216,9 @@ export class WorkBufferGather {
           vec3(inputA.x, inputA.y, inputA.z),
           vec3(inputA.y, inputA.w, inputB.x),
           vec3(inputA.z, inputB.x, inputB.y),
-        );
+        ).toVar();
         const baseColor = attributes.color;
-        const colorAfterSh =
+        const colorAfterSh = (
           sh === null
             ? baseColor
             : vec4(
@@ -227,7 +233,8 @@ export class WorkBufferGather {
                   )
                   .clamp(0.0, 1.0),
                 baseColor.a,
-              );
+              )
+        ).toVar();
         const worldCenter = this.sourceMatrix.mul(vec4(localCenter, 1.0)).xyz;
         const stack = foldSplatModifierStack(modifiers, localCameraPosition, {
           index: poolIndex,

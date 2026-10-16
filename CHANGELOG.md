@@ -47,6 +47,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- **`UnifiedSplatMesh` sources no longer collapse to specks when a modifier
+  reads `ctx.normal` inside an `If`.** The gather built the normal from the
+  same covariance node it writes out, and three r186 emitted that shared node
+  inside the modifier's branch: where the branch did not run (a light out of
+  range, say), the gathered covariance was zero and every splat drew as a tiny
+  see-through speck. `localCenter`, the post-SH color and the texel had the same
+  hazard for modifiers reading them per branch. The gather now materializes all
+  of these ahead of the modifier stack. Standalone `SplatMesh` was unaffected.
+  A context field read in three or more sibling branches still needs a
+  `.toVar()` ahead of them (see the effects guide).
 - **Pooled WebGL2 sources pick their own splats again.** A source drawn by
   `PooledUnifiedSplatMesh` is hidden and picks through its own pass, which reads
   the source's active list by instance. WebGL2 has no storage buffers: three
