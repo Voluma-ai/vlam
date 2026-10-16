@@ -5,7 +5,7 @@
   <output id="result"></output>
   <script type="module">
     import * as THREE from 'three/webgpu';
-    import { float } from 'three/tsl';
+    import { Fn, If, float, int, uniform, vec3, vec4 } from 'three/tsl';
     import { SplatPool } from '../lib/core/splat-mesh-pool';
     import { SplatMesh, createWebGPURenderer } from '../lib/core';
     import { UnifiedSplatMesh } from '../lib/unified';
@@ -117,6 +117,7 @@
       { name: 'rad-merged', lodAlpha: true, alpha: 210 },
       { name: 'fade', fade: 0.35, lodAlpha: true, alpha: 210 },
       { name: 'isotropic', isotropic: true },
+      { name: 'branch-normal', branchNormal: true },
       { name: 'sh', sh: true },
       { name: 'edge', x: 1.1 },
       { name: 'behind', z: 3 },
@@ -172,6 +173,18 @@
           color: config.fade ? ctx.color.mul(float(config.fade)) : ctx.color,
           ...(config.isotropic ? { isotropicCovarianceMix: float(1), isotropicScreenRadiusPx: float(2) } : {}),
         })];
+        // A per-light loop whose lights are all off: `ctx.normal` is read only
+        // inside branches that never run, so the frame must match `axis`. The
+        // unified gather once took its covariance from such a branch.
+        if (config.branchNormal) {
+          const lights = uniform(0, 'int');
+          const shade = Fn(([normal]) => {
+            const sum = vec3(0).toVar();
+            for (let k = 0; k < 2; k++) If(int(k).lessThan(lights), () => { sum.addAssign(normal); });
+            return sum;
+          });
+          mesh.modifiers = [(ctx) => ({ color: vec4(ctx.color.rgb.add(shade(ctx.normal)), ctx.color.a) })];
+        }
         const drawMesh = unified
           ? new UnifiedSplatMesh(renderer, 2048, { performanceProfile: 'quality' })
           : mesh;
@@ -308,7 +321,7 @@
     captures.id = 'captures';
     captures.style.cssText = 'display:grid;grid-template-columns:repeat(8,80px);gap:8px;background:#222;padding:12px;color:white;width:max-content';
     for (const result of results) {
-      if (!['rad-whole-translucent', 'rad-whole-opaque', 'warp-planet', 'warp-planet-baked', 'warp-fold', 'warp-fold-baked', 'relight-default', 'relight-zero', 'mixed-before', 'mixed-compacted', 'mixed-removed'].includes(result.name)) continue;
+      if (!['axis', 'branch-normal', 'rad-whole-translucent', 'rad-whole-opaque', 'warp-planet', 'warp-planet-baked', 'warp-fold', 'warp-fold-baked', 'relight-default', 'relight-zero', 'mixed-before', 'mixed-compacted', 'mixed-removed'].includes(result.name)) continue;
       const card = document.createElement('div');
       const canvas = document.createElement('canvas'); canvas.width = canvas.height = 64;
       canvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(result.pixels), 64, 64), 0, 0);

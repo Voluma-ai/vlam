@@ -199,6 +199,14 @@ their pre-displacement depth-sort order; modifiers run per splat, not per
 pixel. Pure-TSL modifiers run on both backends; a `wgslFn` escape hatch (as
 in `revealPreset`) is WebGPU-only.
 
+Reading a context field only inside `If` branches (a per-light loop that skips
+out-of-range lights, say) is fine for one or two branches. From the third
+sibling branch on, three's TSL (r186) can reuse a temp that only an earlier
+sibling assigned, so a branch may see the value as zero. Materialize the
+field once with `.toVar()` in a scope enclosing every branch, for example at
+the top of the inline `Fn` that holds the loop: `const n = normal.toVar()`.
+That costs the field for every splat, even when no branch runs.
+
 ## Painting a channel with a surface-aware stroke
 
 The demo's paint highlight is a byte channel read by a modifier. Its input is

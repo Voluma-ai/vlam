@@ -68,6 +68,12 @@ test('preserves Gaussian, DoF, RAD, clipping and picking across material paths',
     }
     const maxDifference = (a: number[], b: number[]) =>
       Math.max(...a.map((value, i) => Math.abs(value - b[i]!)));
+    // A modifier that reads `ctx.normal` only in branches that never run is
+    // a no-op; the unified gather once lost its covariance to that branch.
+    expect(
+      maxDifference(result('branch-normal').pixels, result('axis').pixels),
+      'branch-normal',
+    ).toBe(0);
     expect(coverage('rad-whole-zero')).toBe(0);
     expect(centerAlpha('rad-whole-translucent')).toBeGreaterThan(0);
     expect(centerAlpha('rad-whole-translucent')).toBeLessThan(centerAlpha('rad-whole-opaque'));
