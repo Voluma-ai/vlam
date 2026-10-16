@@ -21,6 +21,9 @@ import {
   Fn,
   If,
   attribute,
+  getCurrentStack,
+  setCurrentStack,
+  stack as tslStack,
   colorSpaceToWorking,
   float,
   int,
@@ -405,156 +408,15 @@ export function applySplatMaterialGraph(
   // Vertex extent and this exponent must agree or the falloff rescales.
   const gaussianExponent = -0.5 * settings.maxStdDev * settings.maxStdDev;
 
-  // Per-instance index -> texel coordinate in the data textures.
-  const splatIndex = inputs.pickSource
-    ? storage(inputs.pickSource.indices, 'uint', inputs.pickSource.capacity)
-        .element(instanceIndex)
-        .toInt()
-    : attribute<'float'>('splatIndex', 'float').toInt();
-  const splatTexel = ivec2(splatIndex.mod(textureWidth), splatIndex.div(textureWidth));
-
-  // Varyings (computed in the vertex stage, constant across each quad).
-  // With SH data, the view-dependent contribution - the higher SH bands
-  // evaluated with the local view direction (Kerbl et al. convention,
-  // coefficients read from the SOG palette) - is added to the base color.
   const cachedColor = mode === 'display' ? inputs.shFinalColor : undefined;
-  const attributes = readSplatMaterialInputs(
-    textures.centersTexture,
-    textures.colorsTexture,
-    splatTexel,
-    cachedColor,
-  );
-  const baseColor = attributes.color.toVar();
-  /** The splat's center as stored in the pool - its own source's data frame. */
-  const poolCenter = attributes.center;
-  // Per-source placement is resolved here, ahead of everything else, so the
-  // rest of the graph - modifier stack included - sees the splat where it
-  // visually is. In a `MergedSplatMesh` the pool frame is an internal storage
-  // detail; the splat's real mesh-local position is `M · poolCenter`. Applying
-  // it outside the fold (rather than as modifier #0, which is what this used to
-  // be) also makes it impossible for a host modifier's `offset`/`rotation` to
-  // overwrite the placement - the fold replaces those fields, it does not
-  // accumulate them.
-  const placement = inputs.sourcePlacement;
-  const placed = placement
-    ? sourceWorldTransform(
-        placement.columns,
-        placement.sourceId ??
-          asNode<'int'>(textureLoad(placement.sourceIdTexture, splatTexel).r.toInt()),
-        asNode<'vec3'>(poolCenter),
-      )
-    : null;
-  /** Splat center in mesh-local space: the pool texel, or its placed position. */
-  const localCenter = placed ? placed.worldCenter : asNode<'vec3'>(poolCenter);
-  const projectedClip = inputs.projected
-    ? storage(inputs.projected.clipCenters, 'vec4', inputs.projected.capacity)
-    : null;
-  const projectedAxes = inputs.projected
-    ? storage(inputs.projected.axes, 'vec4', inputs.projected.capacity)
-    : null;
-  const projectedParameters = inputs.projected
-    ? storage(inputs.projected.parameters, 'vec4', inputs.projected.capacity)
-    : null;
   const colorSource = splatDisplayColorSource({
     hasCachedColor: cachedColor != null,
     packedProjectedColor: inputs.projected?.packedColor === true,
     hasSh: sh !== null,
   });
-  const uncachedShSum =
-    colorSource === 'vertex-sh' && sh !== null
-      ? (() => {
-          const direction = (() => {
-            if (!placed) return localCenter.sub(uniforms.localCameraPosition).normalize();
-            // SH coefficients stay in their source frame. Transforming the
-            // camera ray by the inverse linear placement is equivalent to
-            // rotating every l=1..3 coefficient band, without re-uploading
-            // per-splat packed coefficients when a source moves.
-            return placed.linear
-              .inverse()
-              .mul(localCenter.sub(uniforms.localCameraPosition))
-              .normalize();
-          })();
-          return evaluateSplatSh(sh, textures, splatTexel, direction);
-        })()
-      : null;
-  const shSum = uncachedShSum;
-  const colorAfterSh =
-    colorSource === 'cached'
-      ? baseColor
-      : colorSource === 'packed' && projectedParameters
-        ? unpackRgba8FromFloat(projectedParameters.element(splatIndex).z)
-        : shSum === null
-          ? baseColor
-          : vec4(baseColor.rgb.add(shSum).clamp(0.0, 1.0), baseColor.a);
-  /** Approximate surface normal for lighting hooks: Σ⁻¹ amplifies the
-   * least-variance axis (inverse iteration, two applications), oriented
-   * toward the camera. Built only when a modifier reads `ctx.normal`. */
-  const makeNormal = (): THREE.Node<'vec3'> => {
-    const covA = textureLoad(textures.covarianceATexture, splatTexel);
-    const covB = textureLoad(textures.covarianceBTexture, splatTexel);
-    const poolSigma = mat3(
-      vec3(covA.x.add(1e-8), covA.y, covA.z),
-      vec3(covA.y, covA.w.add(1e-8), covB.x),
-      vec3(covA.z, covB.x, covB.y.add(1e-8)),
-    );
-    // Run the inverse iteration in the *placed* frame, so a rotated source is
-    // shaded consistently with the rest of the scene. Regularizing before the
-    // placement (rather than adding εI to A·Σ·Aᵀ) avoids mat3 diagonal surgery
-    // in TSL and still yields A·Σ·Aᵀ + ε·A·Aᵀ, positive-definite for any
-    // nonsingular A - it degrades only for a source scaled to ~0, which is
-    // degenerate everywhere else too.
-    //
-    // Note the A⁻ᵀ·n "normal transform" shortcut does not apply here: that
-    // identity is for a level-set gradient, and the least-variance eigenvector
-    // of A·Σ·Aᵀ is not A⁻ᵀ times the least-variance eigenvector of Σ.
-    const sigma = placed
-      ? asNode<'mat3'>(placed.linear.mul(poolSigma).mul(placed.linear.transpose()))
-      : asNode<'mat3'>(poolSigma);
-    const inverse = sigma.inverse();
-    const toCamera = uniforms.localCameraPosition.sub(localCenter);
-    const axis = inverse.mul(inverse.mul(toCamera)).normalize();
-    return asNode<'vec3'>(axis.mul(axis.dot(toCamera).sign()));
-  };
 
-  /** Reads a per-splat channel (M7.3). Undefined name is a build error, not
-   * a silent zero. `.r` holds the value (normalized for byte channels). */
-  const makeChannel = (name: string): THREE.Node<'float'> => {
-    const channel = inputs.channels.get(name);
-    if (!channel) {
-      throw new Error(
-        `SplatMesh: a modifier reads channel "${name}", which is not defined. ` +
-          `Call defineChannel("${name}") before assigning the modifier.`,
-      );
-    }
-    return asNode<'float'>(textureLoad(channel.texture, splatTexel).r);
-  };
-
-  // Fold the modifier stack (empty stack ⇒ all fragments null and the
-  // graph below is emitted exactly as the unhooked renderer).
-  const stack = foldSplatModifierStack(inputs.modifiers, uniforms.localCameraPosition, {
-    index: asNode<'int'>(splatIndex),
-    localCenter,
-    sourceCenter: asNode<'vec3'>(poolCenter),
-    sourceToLocal: placed?.linear,
-    color: asNode<'vec4'>(colorAfterSh),
-    makeNormal,
-    makeChannel,
-  });
-
-  // Source formats store display-ready sRGB colors while a regular Three.js
-  // scene renders in its linear working space. Keep that conversion local to
-  // the splat material so standard meshes can share the renderer without
-  // forcing the entire canvas into LinearSRGBColorSpace.
-  // With `srgbOutput` the stored sRGB color is emitted as-is: the renderer is
-  // expected to skip output conversion, so splats alpha-composite on
-  // gamma-encoded values (3DGS training / WebGL-viewer semantics).
-  // Pick only needs opacity (a); keep the same color path so modifiers that
-  // tint/fade alpha stay consistent with the display pass.
-  const splatColor = varying(
-    settings.srgbOutput
-      ? asNode<'vec4'>(stack.color)
-      : asNode<'vec4'>(colorSpaceToWorking(stack.color, THREE.SRGBColorSpace)),
-  );
+  /** Modifier-resolved splat color; assigned by the vertex stage. */
+  const splatColor = varying(vec4(0), 'vSplatColor');
   const quadPosition = varying(positionGeometry.xy);
   const viewDepthVarying = mode === 'pick' ? varying(float(0), 'pickViewDepth') : null;
   // Opacity compensation for screen-space dilation (mip antialias and/or
@@ -578,7 +440,202 @@ export function applySplatMaterialGraph(
       ? varying(float(1), 'vVisualOpacity')
       : null;
 
+  // The per-splat inputs and the modifier fold are built inside the vertex
+  // `Fn`, and everything a modifier can read is pinned with `.toVar()` before
+  // the fold. three r186 builds an `If` body in a child node cache that falls
+  // back to its parent's entries, so a shared node first emitted inside a
+  // modifier's branch keeps that branch's var for the rest of the shader: a
+  // center read only in a per-light `If` moved every splat whose lights were
+  // off to the mesh origin. Outside a `Fn` there is no stack to put a var on.
+  const buildVertexInputs = () => {
+    // Per-instance index -> texel coordinate in the data textures.
+    const splatIndex = (
+      inputs.pickSource
+        ? storage(inputs.pickSource.indices, 'uint', inputs.pickSource.capacity)
+            .element(instanceIndex)
+            .toInt()
+        : attribute<'float'>('splatIndex', 'float').toInt()
+    ).toVar();
+    const splatTexel = ivec2(splatIndex.mod(textureWidth), splatIndex.div(textureWidth)).toVar();
+
+    // Varyings (computed in the vertex stage, constant across each quad).
+    // With SH data, the view-dependent contribution - the higher SH bands
+    // evaluated with the local view direction (Kerbl et al. convention,
+    // coefficients read from the SOG palette) - is added to the base color.
+    const attributes = readSplatMaterialInputs(
+      textures.centersTexture,
+      textures.colorsTexture,
+      splatTexel,
+      cachedColor,
+    );
+    const baseColor = attributes.color.toVar();
+    /** The splat's center as stored in the pool - its own source's data frame. */
+    const poolCenter = attributes.center;
+    // Per-source placement is resolved here, ahead of everything else, so the
+    // rest of the graph - modifier stack included - sees the splat where it
+    // visually is. In a `MergedSplatMesh` the pool frame is an internal storage
+    // detail; the splat's real mesh-local position is `M · poolCenter`. Applying
+    // it outside the fold (rather than as modifier #0, which is what this used to
+    // be) also makes it impossible for a host modifier's `offset`/`rotation` to
+    // overwrite the placement - the fold replaces those fields, it does not
+    // accumulate them.
+    const placement = inputs.sourcePlacement;
+    const transform = placement
+      ? sourceWorldTransform(
+          placement.columns,
+          placement.sourceId ??
+            asNode<'int'>(textureLoad(placement.sourceIdTexture, splatTexel).r.toInt()),
+          asNode<'vec3'>(poolCenter),
+        )
+      : null;
+    const placed = transform
+      ? {
+          worldCenter: asNode<'vec3'>(transform.worldCenter.toVar()),
+          linear: asNode<'mat3'>(transform.linear.toVar()),
+        }
+      : null;
+    /** Splat center in mesh-local space: the pool texel, or its placed position. */
+    const localCenter = placed ? placed.worldCenter : asNode<'vec3'>(poolCenter);
+    const projectedClip = inputs.projected
+      ? storage(inputs.projected.clipCenters, 'vec4', inputs.projected.capacity)
+      : null;
+    const projectedAxes = inputs.projected
+      ? storage(inputs.projected.axes, 'vec4', inputs.projected.capacity)
+      : null;
+    const projectedParameters = inputs.projected
+      ? storage(inputs.projected.parameters, 'vec4', inputs.projected.capacity)
+      : null;
+    const uncachedShSum =
+      colorSource === 'vertex-sh' && sh !== null
+        ? (() => {
+            const direction = (() => {
+              if (!placed) return localCenter.sub(uniforms.localCameraPosition).normalize();
+              // SH coefficients stay in their source frame. Transforming the
+              // camera ray by the inverse linear placement is equivalent to
+              // rotating every l=1..3 coefficient band, without re-uploading
+              // per-splat packed coefficients when a source moves.
+              return placed.linear
+                .inverse()
+                .mul(localCenter.sub(uniforms.localCameraPosition))
+                .normalize();
+            })();
+            return evaluateSplatSh(sh, textures, splatTexel, direction);
+          })()
+        : null;
+    const shSum = uncachedShSum;
+    const colorAfterSh =
+      colorSource === 'cached'
+        ? baseColor
+        : colorSource === 'packed' && projectedParameters
+          ? asNode<'vec4'>(unpackRgba8FromFloat(projectedParameters.element(splatIndex).z).toVar())
+          : shSum === null
+            ? baseColor
+            : asNode<'vec4'>(vec4(baseColor.rgb.add(shSum).clamp(0.0, 1.0), baseColor.a).toVar());
+    /** Approximate surface normal for lighting hooks: Σ⁻¹ amplifies the
+     * least-variance axis (inverse iteration, two applications), oriented
+     * toward the camera. Built only when a modifier reads `ctx.normal`, from
+     * new nodes on every call (the fold builds it once per reading scope). */
+    const makeNormal = (): THREE.Node<'vec3'> => {
+      const covA = textureLoad(textures.covarianceATexture, splatTexel);
+      const covB = textureLoad(textures.covarianceBTexture, splatTexel);
+      const poolSigma = mat3(
+        vec3(covA.x.add(1e-8), covA.y, covA.z),
+        vec3(covA.y, covA.w.add(1e-8), covB.x),
+        vec3(covA.z, covB.x, covB.y.add(1e-8)),
+      );
+      // Run the inverse iteration in the *placed* frame, so a rotated source is
+      // shaded consistently with the rest of the scene. Regularizing before the
+      // placement (rather than adding εI to A·Σ·Aᵀ) avoids mat3 diagonal surgery
+      // in TSL and still yields A·Σ·Aᵀ + ε·A·Aᵀ, positive-definite for any
+      // nonsingular A - it degrades only for a source scaled to ~0, which is
+      // degenerate everywhere else too.
+      //
+      // Note the A⁻ᵀ·n "normal transform" shortcut does not apply here: that
+      // identity is for a level-set gradient, and the least-variance eigenvector
+      // of A·Σ·Aᵀ is not A⁻ᵀ times the least-variance eigenvector of Σ.
+      const sigma = placed
+        ? asNode<'mat3'>(placed.linear.mul(poolSigma).mul(placed.linear.transpose()))
+        : asNode<'mat3'>(poolSigma);
+      const inverse = sigma.inverse();
+      const toCamera = uniforms.localCameraPosition.sub(localCenter);
+      const axis = inverse.mul(inverse.mul(toCamera)).normalize();
+      return asNode<'vec3'>(axis.mul(axis.dot(toCamera).sign()));
+    };
+
+    /** Reads a per-splat channel (M7.3). Undefined name is a build error, not
+     * a silent zero. `.r` holds the value (normalized for byte channels). */
+    const makeChannel = (name: string): THREE.Node<'float'> => {
+      const channel = inputs.channels.get(name);
+      if (!channel) {
+        throw new Error(
+          `SplatMesh: a modifier reads channel "${name}", which is not defined. ` +
+            `Call defineChannel("${name}") before assigning the modifier.`,
+        );
+      }
+      return asNode<'float'>(textureLoad(channel.texture, splatTexel).r);
+    };
+
+    // Fold the modifier stack (empty stack ⇒ all fragments null and the
+    // graph below is emitted exactly as the unhooked renderer).
+    const stack = foldSplatModifierStack(inputs.modifiers, uniforms.localCameraPosition, {
+      index: asNode<'int'>(splatIndex),
+      localCenter,
+      sourceCenter: asNode<'vec3'>(poolCenter),
+      sourceToLocal: placed?.linear,
+      color: asNode<'vec4'>(colorAfterSh),
+      makeNormal,
+      makeChannel,
+    });
+    // Source formats store display-ready sRGB colors while a regular Three.js
+    // scene renders in its linear working space. Keep that conversion local to
+    // the splat material so standard meshes can share the renderer without
+    // forcing the entire canvas into LinearSRGBColorSpace.
+    // With `srgbOutput` the stored sRGB color is emitted as-is: the renderer is
+    // expected to skip output conversion, so splats alpha-composite on
+    // gamma-encoded values (3DGS training / WebGL-viewer semantics).
+    // Pick only needs opacity (a); keep the same color path so modifiers that
+    // tint/fade alpha stay consistent with the display pass.
+    splatColor.assign(
+      settings.srgbOutput
+        ? asNode<'vec4'>(stack.color)
+        : asNode<'vec4'>(colorSpaceToWorking(stack.color, THREE.SRGBColorSpace)),
+    );
+
+    return {
+      splatIndex,
+      splatTexel,
+      localCenter,
+      placed,
+      colorAfterSh,
+      projectedClip,
+      projectedAxes,
+      projectedParameters,
+      stack,
+    };
+  };
+  // Modifiers run when the vertex `Fn` builds. Run the fold once here as well,
+  // on a throwaway stack, so a modifier that cannot build (an undefined
+  // channel, say) throws while the mesh can still roll its list back.
+  const previousStack = getCurrentStack();
+  setCurrentStack(tslStack());
+  try {
+    buildVertexInputs();
+  } finally {
+    setCurrentStack(previousStack);
+  }
+
   material.vertexNode = Fn(() => {
+    const {
+      splatIndex,
+      splatTexel,
+      localCenter,
+      placed,
+      colorAfterSh,
+      projectedClip,
+      projectedAxes,
+      projectedParameters,
+      stack,
+    } = buildVertexInputs();
     const center = stack.offset === null ? localCenter : localCenter.add(stack.offset);
     const viewCenter = modelViewMatrix.mul(vec4(center, 1.0)).toVar();
     const clipCenter = cameraProjectionMatrix.mul(viewCenter).toVar();

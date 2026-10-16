@@ -54,9 +54,26 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   range, say), the gathered covariance was zero and every splat drew as a tiny
   see-through speck. `localCenter`, the post-SH color and the texel had the same
   hazard for modifiers reading them per branch. The gather now materializes all
-  of these ahead of the modifier stack. Standalone `SplatMesh` was unaffected.
-  A context field read in three or more sibling branches still needs a
-  `.toVar()` ahead of them (see the effects guide).
+  of these ahead of the modifier stack.
+- **Standalone `SplatMesh` no longer moves splats to the mesh origin when a
+  modifier reads a context field only inside an `If`.** The material path had
+  the same three r186 hazard as the gather: `ctx.normal`, `localCenter`,
+  `sourceCenter`, `worldCenter` or `viewCenter` read only in a branch (inside an
+  inline `Fn`) made the splat center read as zero wherever that branch did not
+  run. The per-splat inputs and the modifier fold now build inside the vertex
+  `Fn`, pinned ahead of the stack. As a side effect the modifier stack is
+  emitted once per vertex shader; the `balanced` / `smooth` profiles used to
+  emit it again in both arms of the contribution test.
+- **Context fields are safe in any number of sibling `If` branches.** From the
+  third sibling on, three r186 read a temp that only an earlier sibling
+  assigned, so a per-light loop over eight lights saw `ctx.normal`,
+  `worldCenter`, `viewCenter`, `localToView` or a channel as zero in most
+  lights. The modifier fold now builds each lazy field once per TSL scope that
+  reads it, pinned to that scope's var, and pins a modifier's outputs before
+  the next modifier reads them. Fields are still only built when read. Hosts
+  can drop the `.toVar()` workaround for bare context fields; an expression a
+  modifier builds itself and shares across three or more branches still needs
+  one (see the effects guide). three's own fix lands in r187.
 - **Pooled WebGL2 sources pick their own splats again.** A source drawn by
   `PooledUnifiedSplatMesh` is hidden and picks through its own pass, which reads
   the source's active list by instance. WebGL2 has no storage buffers: three
