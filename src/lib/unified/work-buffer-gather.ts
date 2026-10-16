@@ -235,13 +235,15 @@ export class WorkBufferGather {
                 baseColor.a,
               )
         ).toVar();
-        const worldCenter = this.sourceMatrix.mul(vec4(localCenter, 1.0)).xyz;
+        // The fold builds each lazy field once per scope that reads it, so
+        // these builders return new nodes on every call (see ScopedFields).
+        const makeWorldCenter = () => this.sourceMatrix.mul(vec4(localCenter, 1.0)).xyz;
         const stack = foldSplatModifierStack(modifiers, localCameraPosition, {
           index: poolIndex,
           localCenter,
           color: colorAfterSh,
-          makeWorldCenter: () => worldCenter,
-          makeViewCenter: () => this.cameraViewMatrix.mul(vec4(worldCenter, 1.0)).xyz,
+          makeWorldCenter,
+          makeViewCenter: () => this.cameraViewMatrix.mul(vec4(makeWorldCenter(), 1.0)).xyz,
           makeLocalToView: () => this.cameraViewMatrix.mul(this.sourceMatrix).toMat3(),
           makeNormal: () => {
             const inverse = covarianceBase.inverse();

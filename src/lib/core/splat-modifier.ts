@@ -44,15 +44,16 @@ export interface SplatContext {
   readonly baseColor: Node<'vec4'>;
   /** Approximate surface normal (least-variance axis of the splat's
    * covariance), mesh-local, oriented toward the camera. Built lazily -
-   * only modifiers that read it pay for the eigen approximation. */
+   * only modifiers that read it pay for the eigen approximation, once per
+   * TSL scope (`Fn` body or `If` branch) that reads it. */
   readonly normal: Node<'vec3'>;
   /**
    * Reads a per-splat channel by name (see `SplatMesh.defineChannel` /
    * `writeChannel`). Float channels return their stored value; byte channels
    * return the value normalized to `[0, 1]`. Reading an undefined channel is
    * a build-time error (a missing mask is a bug, not a silent zero). The read
-   * is memoized per name, so referencing the same channel twice costs one
-   * texture fetch.
+   * is memoized per name within a TSL scope, so referencing the same channel
+   * twice in one scope costs one texture fetch.
    */
   channel(name: string): Node<'float'>;
 

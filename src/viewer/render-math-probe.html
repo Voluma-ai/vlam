@@ -117,7 +117,11 @@
       { name: 'rad-merged', lodAlpha: true, alpha: 210 },
       { name: 'fade', fade: 0.35, lodAlpha: true, alpha: 210 },
       { name: 'isotropic', isotropic: true },
-      { name: 'branch-normal', branchNormal: true },
+      { name: 'branch-normal', branchNormal: 'argument' },
+      // Off-origin, so a center leaked out of a branch (read as zero) shows.
+      { name: 'shift', x: 0.3 },
+      { name: 'branch-shift', x: 0.3, branchNormal: 'argument' },
+      { name: 'branch-shift-per-read', x: 0.3, branchNormal: 'per-read' },
       { name: 'sh', sh: true },
       { name: 'edge', x: 1.1 },
       { name: 'behind', z: 3 },
@@ -173,17 +177,29 @@
           color: config.fade ? ctx.color.mul(float(config.fade)) : ctx.color,
           ...(config.isotropic ? { isotropicCovarianceMix: float(1), isotropicScreenRadiusPx: float(2) } : {}),
         })];
-        // A per-light loop whose lights are all off: `ctx.normal` is read only
-        // inside branches that never run, so the frame must match `axis`. The
-        // unified gather once took its covariance from such a branch.
+        // A per-light loop whose lights are all off: context fields are read
+        // only inside branches that never run, so the frame must match the
+        // plain splat. The unified gather once took its covariance from such a
+        // branch, and the standalone material its center. Three siblings: from
+        // the third on, three r186 reused a temp an earlier sibling assigned.
         if (config.branchNormal) {
           const lights = uniform(0, 'int');
           const shade = Fn(([normal]) => {
             const sum = vec3(0).toVar();
-            for (let k = 0; k < 2; k++) If(int(k).lessThan(lights), () => { sum.addAssign(normal); });
+            for (let k = 0; k < 3; k++) If(int(k).lessThan(lights), () => { sum.addAssign(normal); });
             return sum;
           });
-          mesh.modifiers = [(ctx) => ({ color: vec4(ctx.color.rgb.add(shade(ctx.normal)), ctx.color.a) })];
+          mesh.modifiers = [config.branchNormal === 'argument'
+            ? (ctx) => ({ color: vec4(ctx.color.rgb.add(shade(ctx.normal)), ctx.color.a) })
+            : (ctx) => ({
+                color: vec4(Fn(() => {
+                  const sum = vec3(0).toVar();
+                  for (let k = 0; k < 3; k++) If(int(k).lessThan(lights), () => {
+                    sum.addAssign(ctx.normal.add(ctx.worldCenter).add(ctx.viewCenter));
+                  });
+                  return sum;
+                })().add(ctx.color.rgb), ctx.color.a),
+              })];
         }
         const drawMesh = unified
           ? new UnifiedSplatMesh(renderer, 2048, { performanceProfile: 'quality' })

@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
-import { Fn, If, bool, float, int, uniform, vec3, vec4 } from 'three/tsl';
+import { bool, uniform } from 'three/tsl';
 import { describe, expect, it, vi } from 'vitest';
-import type { SplatContext, SplatModifier } from '../core/splat-modifier';
+import type { SplatModifier } from '../core/splat-modifier';
 import { WorkBuffer, WorkBufferGather } from '../unified/work-buffer-gather';
 import {
   WORK_BUFFER_BYTES_PER_SLOT,
@@ -9,6 +9,7 @@ import {
   estimateUnifiedWorkBufferPeakBytes,
 } from '../unified/unified-work-buffer';
 import { buildComputeWgsl, findOutOfScopeReads } from './helpers/wgsl-scope';
+import { BRANCHES, branchShapes, contextReads, tint } from './helpers/branch-modifiers';
 
 function packedSh() {
   return {
@@ -137,55 +138,8 @@ describe('WorkBufferGather', () => {
   });
 });
 
-/**
- * Per-light shading loops in the shapes hosts write: every context read
- * happens only inside an `If` that skips out-of-range lights, either on a
- * node passed into an inline `Fn` or read afresh in each branch. Sibling
- * branches like these are what made three r186 leak the gather's temps.
- */
-const branchShapes: Record<
-  string,
-  (read: (ctx: SplatContext) => THREE.Node<'vec3'>) => SplatModifier
-> = {
-  'Fn argument': (read) => {
-    const count = uniform(0, 'int');
-    const accumulate = Fn(([value]: [THREE.Node<'vec3'>]) => {
-      const sum = vec3(0, 0, 0).toVar();
-      for (let k = 0; k < 2; k++) {
-        If(int(k).lessThan(count), () => {
-          sum.addAssign(value.mul(float(k + 1)));
-        });
-      }
-      return sum;
-    });
-    return (ctx) => ({
-      color: vec4(ctx.color.rgb.add(accumulate(read(ctx)) as THREE.Node<'vec3'>), ctx.color.a),
-    });
-  },
-  'read per branch': (read) => {
-    const count = uniform(0, 'int');
-    return (ctx) => {
-      const sum = vec3(0, 0, 0).toVar();
-      for (let k = 0; k < 2; k++) {
-        If(int(k).lessThan(count), () => {
-          sum.addAssign(read(ctx).mul(float(k + 1)));
-        });
-      }
-      return { color: vec4(ctx.color.rgb.add(sum), ctx.color.a) };
-    };
-  },
-};
-
 describe('WorkBufferGather modifier branch scoping', () => {
-  const reads: [string, (ctx: SplatContext) => THREE.Node<'vec3'>][] = [
-    ['normal', (ctx) => ctx.normal],
-    ['localCenter', (ctx) => ctx.localCenter],
-    ['baseColor', (ctx) => ctx.baseColor.rgb],
-    ['worldCenter and viewCenter', (ctx) => ctx.worldCenter.add(ctx.viewCenter)],
-    ['channel', (ctx) => vec3(ctx.channel('mask'))],
-    ['index', (ctx) => vec3(float(ctx.index))],
-  ];
-  for (const [field, read] of reads) {
+  for (const [field, read] of Object.entries(contextReads)) {
     for (const [shape, modifier] of Object.entries(branchShapes)) {
       for (const variant of [
         { name: 'plain' },
@@ -202,17 +156,37 @@ describe('WorkBufferGather modifier branch scoping', () => {
             channels: new Map([
               ['mask', { texture: new THREE.DataTexture(new Float32Array(16), 4, 1) }],
             ]),
-            modifiers: [modifier(read)],
+            modifiers: [tint, modifier(read)],
           });
           const wgsl = buildComputeWgsl((gather as unknown as { pass: THREE.ComputeNode }).pass);
-          // Guard the harness itself: the branch must really be in the shader.
-          expect(wgsl).toMatch(/\bif \( \( 1 < /);
+          // Guard the harness itself: the last sibling must be in the shader.
+          expect(wgsl).toContain(`if ( ( ${BRANCHES - 1} < `);
           expect(findOutOfScopeReads(wgsl)).toEqual([]);
           gather.dispose();
         });
       }
     }
   }
+
+  it('builds ctx.normal only for a modifier that reads it', () => {
+    const build = (modifier: SplatModifier) => {
+      const gather = new WorkBufferGather({
+        capacity: 4,
+        sourceCapacity: 4,
+        sourceIndex: new THREE.StorageBufferAttribute(new Uint32Array(4), 1),
+        ...textures(4),
+        modifiers: [modifier],
+      });
+      const wgsl = buildComputeWgsl((gather as unknown as { pass: THREE.ComputeNode }).pass);
+      gather.dispose();
+      return wgsl;
+    };
+    // The normal is the only inverse in the gather.
+    expect(build(tint)).not.toContain('tsl_inverse_mat3(');
+    expect(build(branchShapes['read per branch']!(contextReads.normal!))).toContain(
+      'tsl_inverse_mat3(',
+    );
+  });
 
   it('flags a read of a var only a sibling branch assigned', () => {
     const wgsl = [

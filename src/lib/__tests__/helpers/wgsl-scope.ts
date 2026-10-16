@@ -1,8 +1,9 @@
 /**
- * Test-only WGSL inspection for TSL compute graphs.
+ * Test-only WGSL inspection for TSL graphs.
  *
- * Builds a compute node's WGSL in Node (no GPU) and checks that every
- * `nodeVarN` a statement reads was assigned in a block that encloses it.
+ * Builds a compute pass's or a material's WGSL in Node (no GPU) and checks
+ * that every `nodeVarN` a statement reads was assigned in a block that
+ * encloses it.
  * three r186 can cache a reused temp's var name in the parent scope even
  * when the assignment was emitted inside an `If`, so code after the branch
  * reads a var that only that branch wrote. WGSL zero-initializes function
@@ -11,30 +12,70 @@
 import * as THREE from 'three/webgpu';
 import { context } from 'three/tsl';
 
-/** Generates the WGSL for `computeNode` with a minimal renderer stub. */
-export function buildComputeWgsl(computeNode: THREE.ComputeNode): string {
-  // Just enough of a renderer for `WGSLNodeBuilder` on a compute node that
-  // only does `textureLoad`s; nothing here reaches a GPU device.
-  const renderer = {
+/**
+ * Just enough of a renderer for `WGSLNodeBuilder` on the graphs these tests
+ * build (texture loads, storage buffers, an unlit node material); nothing
+ * here reaches a GPU device.
+ */
+function rendererStub(): unknown {
+  return {
     backend: {
       compatibilityMode: false,
       utils: { getTextureSampleData: () => ({ primarySamples: 1 }) },
     },
     contextNode: context(),
+    currentColorSpace: THREE.SRGBColorSpace,
+    currentToneMapping: THREE.NoToneMapping,
     debug: { diagnostics: { keywords: new Set() }, onNodeBuilderCreated: null },
+    getColorBufferType: () => THREE.HalfFloatType,
+    getMRT: () => null,
+    getOutputRenderTarget: () => null,
+    getRenderTarget: () => null,
     hasCompatibility: () => false,
     hasFeature: () => false,
+    library: new THREE.StandardNodeLibrary(),
+    lighting: new THREE.Lighting(),
+    localClippingEnabled: false,
+    nodes: { getCacheKey: () => 0 },
+    outputColorSpace: THREE.SRGBColorSpace,
+    shadowMap: { enabled: false },
+    toneMapping: THREE.NoToneMapping,
   };
-  // three's typings omit the compute-only entry (a null object plus
-  // `compute`) and `build()`/`computeShader`, which the backend uses.
-  const Builder = THREE.WGSLNodeBuilder as unknown as new (
-    object: null,
-    renderer: unknown,
-  ) => { compute: THREE.ComputeNode; build(): void; computeShader: string };
-  const builder = new Builder(null, renderer);
+}
+
+// three's typings omit the compute-only entry (a null object plus
+// `compute`), the scene/camera/material fields and `build()`'s outputs.
+type HeadlessBuilder = {
+  compute: THREE.ComputeNode;
+  scene: THREE.Scene;
+  camera: THREE.Camera;
+  material: THREE.Material;
+  build(): void;
+  computeShader: string;
+  vertexShader: string;
+  fragmentShader: string;
+};
+const Builder = THREE.WGSLNodeBuilder as unknown as new (
+  object: THREE.Object3D | null,
+  renderer: unknown,
+) => HeadlessBuilder;
+
+/** Generates the WGSL for `computeNode` with a minimal renderer stub. */
+export function buildComputeWgsl(computeNode: THREE.ComputeNode): string {
+  const builder = new Builder(null, rendererStub());
   builder.compute = computeNode;
   builder.build();
   return builder.computeShader;
+}
+
+/** Generates the vertex and fragment WGSL for drawing `mesh` with its material. */
+export function buildMaterialWgsl(mesh: THREE.Mesh): { vertex: string; fragment: string } {
+  const builder = new Builder(mesh, rendererStub());
+  builder.scene = new THREE.Scene();
+  builder.camera = new THREE.PerspectiveCamera();
+  builder.material = mesh.material as THREE.Material;
+  builder.build();
+  return { vertex: builder.vertexShader, fragment: builder.fragmentShader };
 }
 
 /** A `nodeVarN` read with no assignment in any enclosing block. */

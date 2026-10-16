@@ -199,13 +199,22 @@ their pre-displacement depth-sort order; modifiers run per splat, not per
 pixel. Pure-TSL modifiers run on both backends; a `wgslFn` escape hatch (as
 in `revealPreset`) is WebGPU-only.
 
-Reading a context field only inside `If` branches (a per-light loop that skips
-out-of-range lights, say) is fine for one or two branches. From the third
-sibling branch on, three's TSL (r186) can reuse a temp that only an earlier
-sibling assigned, so a branch may see the value as zero. Materialize the
-field once with `.toVar()` in a scope enclosing every branch, for example at
-the top of the inline `Fn` that holds the loop: `const n = normal.toVar()`.
-That costs the field for every splat, even when no branch runs.
+Context fields are safe to read only inside `If` branches (a per-light loop
+that skips out-of-range lights, say), in any number of sibling branches. The
+stack builds each lazy field (`normal`, `worldCenter`, `viewCenter`,
+`localToView`, channels) once per TSL scope that reads it, as a var assigned
+in that scope; inputs and earlier modifiers' outputs are assigned before the
+stack runs. Where you read a field decides what it costs:
+
+- read it at the top of the modifier or the inline `Fn` (or pass it in as an
+  `Fn` argument) to compute it once per splat, whether or not a branch runs;
+- read it inside each branch to compute it only in branches that run, once
+  per branch.
+
+An expression you build yourself outside the branches and then use in three or
+more of them, such as `ctx.normal.mul(2)` passed into the loop, needs its own
+`.toVar()`: three's TSL (r186) can otherwise reuse a temp that only an earlier
+sibling assigned, and a branch sees zero. three fixes this in r187.
 
 ## Painting a channel with a surface-aware stroke
 
