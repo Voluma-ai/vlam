@@ -41,7 +41,7 @@ import { WorkerSorter, type WorkerSortSnapshot } from './worker-sorter';
 import { WebGpuSortScheduler, validateSortIntervalMs } from './sort-scheduler';
 import { classifySplatGpuClass, detectSplatDeviceProfile } from './splat-budget';
 import { encodeFloat32ToHalf } from './half-float';
-import { SplatPicker } from './splat-mesh-picking';
+import { createActiveIndexAttribute, SplatPicker } from './splat-mesh-picking';
 import { clampDepthOfFieldSettings, type DepthOfFieldSettings } from './depth-of-field';
 import {
   applySplatMaterialGraph,
@@ -915,7 +915,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
     this.lodAlpha = options.lodAlpha ?? false;
     this.orientation = options.orientation ?? 'y-up';
     this.splatIndexAttribute = splatIndexAttribute;
-    this.sourceIndexAttribute = new THREE.StorageBufferAttribute(new Uint32Array(texelCount), 1);
+    this.sourceIndexAttribute = createActiveIndexAttribute(texelCount);
     this.dataTextures = pool.coreTextures;
     this.isStatic = isStatic;
     this.storageModeValue = storageMode;

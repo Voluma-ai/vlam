@@ -47,6 +47,18 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Fixed
 
+- **Pooled WebGL2 sources pick their own splats again.** A source drawn by
+  `PooledUnifiedSplatMesh` is hidden and picks through its own pass, which reads
+  the source's active list by instance. WebGL2 has no storage buffers: three
+  bound that list as a per-vertex attribute, so every pick instance drew one
+  quad from rows 0-3, and `SplatMesh.pick` / `pickMany` and the pooled `pick`
+  missed the source or hit a screen-wide plane. The list now steps per instance
+  on WebGL2; WebGPU is unchanged.
+- **`pickMany` on WebGPU no longer mirrors multi-row batches.** WebGPU reads the
+  pick target back top row first, but the batch indexed rows from the bottom,
+  so points on different rows took each other's depth (a symmetric batch around
+  an object returned hits above it and misses on it). Single-row batches and
+  `pick` were unaffected.
 - **Local `git push` preflight no longer runs two Playwright workers.** CI
   already honors the single-worker SwiftShader policy in `playwright.config.ts`;
   the hook still passed `--workers=2`, so a WebGL2 probe (paint) could lose its
