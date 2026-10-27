@@ -65,6 +65,19 @@ describe('ChunkCacheBudget', () => {
     expect(allocated(budget, meshes)).toBeLessThanOrEqual(budget.totalBytes);
   });
 
+  it('keeps weight in charge when the floors would fill the envelope', () => {
+    // One main plus sixteen markers against the 192 MiB phone envelope with a
+    // 24 MiB floor: an even-split floor gave every mesh the same 11 MiB, so the
+    // main (weight 7 against markers below 1) could not hold its own frontier.
+    const budget = new ChunkCacheBudget({ totalBytes: 192 * MIB, perMeshFloorBytes: 24 * MIB });
+    const main = new FakeMesh(7).join(budget);
+    const markers = Array.from({ length: 16 }, () => new FakeMesh(0.3).join(budget));
+    expect(allocated(budget, [main, ...markers])).toBeLessThanOrEqual(budget.totalBytes);
+    expect(budget.allowanceFor(main.handle)).toBeGreaterThan(48 * MIB);
+    for (const marker of markers)
+      expect(budget.allowanceFor(marker.handle)).toBeGreaterThan(5 * MIB);
+  });
+
   it('holds the invariant when every mesh is hidden', () => {
     const budget = new ChunkCacheBudget({ totalBytes: 512 * MIB });
     const meshes = Array.from({ length: 5 }, () => new FakeMesh(0).join(budget));
