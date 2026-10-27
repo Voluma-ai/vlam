@@ -114,6 +114,11 @@ interface Entry extends ChunkCacheHandle {
 const DEFAULT_PER_MESH_FLOOR_BYTES = 32 * 1024 * 1024;
 const DEFAULT_MIN_INTERVAL_MS = 250;
 const DEFAULT_DEADBAND = 0.15;
+/**
+ * Most of the envelope the per-mesh floors may claim together. The rest is
+ * always split by weight, however many meshes register.
+ */
+const FLOOR_SHARE = 0.5;
 
 /** See the module comment. Construct one per scene and pass it to every mesh. */
 export class ChunkCacheBudget {
@@ -239,10 +244,17 @@ export class ChunkCacheBudget {
 
     const total = this.totalBytesValue;
     // A floor is a claim *inside* the envelope, not a reservation on top of it:
-    // cap it at an even split so N floors can never sum past the total, then
-    // hand out only what is left over by weight. Adding a weighted share to an
-    // unreserved floor would overcommit whenever any mesh sat below its share.
-    const floor = Math.min(this.perMeshFloorBytes, Math.floor(total / entries.length));
+    // cap the floors together at FLOOR_SHARE of the total, then hand out what is
+    // left over by weight. Adding a weighted share to an unreserved floor would
+    // overcommit whenever any mesh sat below its share. Capping only at an even
+    // split let the floors take the whole envelope once N x floor >= total
+    // (17 meshes against a 192 MiB phone envelope): every mesh then held the
+    // same 11 MiB whatever its weight, and the main could not keep its own
+    // frontier resident, so it drew nothing.
+    const floor = Math.min(
+      this.perMeshFloorBytes,
+      Math.floor((total * FLOOR_SHARE) / entries.length),
+    );
     const next = new Map<Entry, number>();
     const unclamped = new Set<Entry>(entries);
     let pool = total;

@@ -57,6 +57,7 @@ import {
   type StreamedSplatFormat,
 } from '../loaders/loading';
 import {
+  detectSplatDeviceProfile,
   liftBudgetToFinestLevel,
   estimateSplatPoolBytes,
   recommendedRadMaxStdDev,
@@ -332,16 +333,35 @@ export function estimateSceneDecodedBytes(scene: StreamedScene): number {
   return Math.max(1, splats) * perSplat;
 }
 
-function radChunkResidencyPages(
+/**
+ * Pool bytes a phone's chunk-page residency may reserve. Desktop holds up to
+ * {@link RAD_CHUNK_PAGE_TARGET} pages as a GPU-side cache; a phone tab dies
+ * long before that (VOL-77: 141 pages, ~1.2 GB, crashed an iPhone 15 Pro), so
+ * it keeps about two cuts of a 1M budget - what the indexed path reserves.
+ */
+const MOBILE_RAD_CHUNK_POOL_BYTES = 256 * 1024 * 1024;
+
+/**
+ * Page-table pool for chunk residency, or why the mesh keeps the indexed path.
+ *
+ * `profile` defaults to the detected device like every budget resolver: hosts
+ * normally omit `deviceProfile`, and without it the device memory clamp never
+ * applied, so an iPhone reserved the full 256-page target and the tab crashed
+ * loading. Phones keep chunk pages under {@link MOBILE_RAD_CHUNK_POOL_BYTES}
+ * rather than falling back: on the iPhone the indexed path never published a
+ * main cut, and shared-pool markers could not reserve its two-cut slots.
+ *
+ * Exported for unit testing only; not part of the public API.
+ */
+export function radChunkResidencyPages(
   scene: StreamedScene,
-  profile: SplatDeviceProfile | undefined,
+  profile: SplatDeviceProfile | undefined = detectSplatDeviceProfile(),
   options: StreamedSplatMeshOptions,
   budget: number,
 ): { pages: number; chunkSize: number } | { fallback: string } {
   const chunkSize = scene.chunkSize ?? SLAB_PAGE_SPLATS;
   const chunkCount = scene.chunkUrls.length;
   if (chunkSize !== SLAB_PAGE_SPLATS) return { fallback: 'non-authored-page-size' };
-  if (profile?.isMobile) return { fallback: 'mobile-device' };
   const sharedDrawCapacity = options.pool
     ? Math.max(1, Math.floor(options.pool.capacity / chunkSize / 1.25)) * chunkSize
     : Number.MAX_SAFE_INTEGER;
@@ -355,8 +375,10 @@ function radChunkResidencyPages(
   let pages = Math.min(RAD_CHUNK_PAGE_TARGET, chunkCount);
   if (pages < minimumPages) return { fallback: 'residency-below-draw-budget' };
 
-  const memoryBudget =
-    profile?.deviceMemoryGb !== undefined ? profile.deviceMemoryGb * 1024 ** 3 * 0.45 : Infinity;
+  const memoryBudget = Math.min(
+    profile?.deviceMemoryGb !== undefined ? profile.deviceMemoryGb * 1024 ** 3 * 0.45 : Infinity,
+    profile?.isMobile ? MOBILE_RAD_CHUNK_POOL_BYTES : Infinity,
+  );
   const poolOptions = {
     capacityFactor: 1,
     floatTextures: options.poolFloatTextures,
