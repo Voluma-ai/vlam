@@ -109,7 +109,10 @@ export function createWorkBufferMaterial(options: {
     : null;
   const workColor = varying(vec4(1, 1, 1, 1), 'vWorkColor');
   const quadPosition = varying(positionGeometry.xy, 'vWorkQuadPosition');
-  const opacityCompensation = varying(float(1), 'vWorkOpacityCompensation');
+  // Written once per vertex path: three r187 re-emits a vertex varying's
+  // initializer in every block that references it, so the vertex stage keeps
+  // the fade in a var (see `applySplatMaterialGraph`).
+  const opacityCompensationVarying = varying(float(1), 'vWorkOpacityCompensation');
   const displayOpacity = varying(float(1), 'vWorkDisplayOpacity');
   // Spark LOD alpha, matching `SplatMesh`'s display graph. The gather has
   // already recovered `alpha ∈ [0,2]` for `.rad` sources, so `alpha > 1`
@@ -126,7 +129,7 @@ export function createWorkBufferMaterial(options: {
   if (experiments.unifiedFlatVaryings) {
     // Gather and projection assign the same constants at every quad vertex.
     workColor.setInterpolation('flat');
-    opacityCompensation.setInterpolation('flat');
+    opacityCompensationVarying.setInterpolation('flat');
     displayOpacity.setInterpolation('flat');
     adjustedStdDev.setInterpolation('flat');
     mergedExponent?.setInterpolation('flat');
@@ -155,11 +158,13 @@ export function createWorkBufferMaterial(options: {
     const liveCenterOpacity = centerSample.w.mul(liveScale);
     const drawable = liveCenterOpacity.greaterThan(0);
     displayOpacity.assign(liveCenterOpacity);
-    workColor.assign(colors.element(workIndex));
+    // The vertex stage reads the color from this var, never back from the varying.
+    const color = colors.element(workIndex).toVar();
+    workColor.assign(color);
     if (mergedExponent) {
-      const remap = workColor.a.mul(4).sub(3).min(5);
+      const remap = color.a.mul(4).sub(3).min(5);
       mergedExponent.assign(
-        workColor.a.greaterThan(1).select(
+        color.a.greaterThan(1).select(
           remap
             .mul(remap)
             .sub(1)
@@ -173,7 +178,7 @@ export function createWorkBufferMaterial(options: {
       const clipCenter = projectedClip.element(workIndex);
       const cachedAxes = projectedAxes.element(workIndex);
       const cachedParameters = projectedParameters.element(workIndex);
-      opacityCompensation.assign(cachedParameters.x);
+      opacityCompensationVarying.assign(cachedParameters.x);
       adjustedStdDev.assign(cachedParameters.y);
       gaussianExponent?.assign(cachedParameters.y.mul(cachedParameters.y).mul(-0.5));
       const pixelOffset = cachedAxes.xy
@@ -190,6 +195,7 @@ export function createWorkBufferMaterial(options: {
     const clipCenter = cameraProjectionMatrix.mul(viewCenter).toVar();
     const covA = covarianceA.element(workIndex);
     const covB = covarianceB.element(workIndex);
+    const opacityCompensation = float(1).toVar();
     const covariance = mat3(
       vec3(covA.x, covA.y, covA.z),
       vec3(covA.y, covA.w, covB.x),
@@ -232,7 +238,7 @@ export function createWorkBufferMaterial(options: {
     // so one coarse splat covers the subtree it stands in for; the covariance is
     // untouched. A leaf keeps the base cutoff. `SplatMesh` does the same at
     // `applySplatMaterialGraph`'s `lodAlpha` branch.
-    const stdDev = radSplatStdDev(workColor.a, options.maxStdDev);
+    const stdDev = radSplatStdDev(color.a, options.maxStdDev);
     adjustedStdDev.assign(stdDev);
     gaussianExponent?.assign(stdDev.mul(stdDev).mul(-0.5));
     const eigenvector = projectedSplatEigenvector(a, b, lambda1);
@@ -270,6 +276,7 @@ export function createWorkBufferMaterial(options: {
       options.minContribution ?? 0,
       { aperture: options.dofAperture, opacityCompensation },
     );
+    opacityCompensationVarying.assign(opacityCompensation);
     return inFrustum
       .and(drawable)
       .and(contributionVisible)
@@ -285,7 +292,7 @@ export function createWorkBufferMaterial(options: {
       mergedExponent,
       gaussianExponent,
     );
-    const alpha = opacity.mul(opacityCompensation).mul(displayOpacity);
+    const alpha = opacity.mul(opacityCompensationVarying).mul(displayOpacity);
     const rgb = (
       options.displayColorModifier?.(workColor.rgb, screenUV, options.viewport) ?? workColor.rgb
     ).toVar();

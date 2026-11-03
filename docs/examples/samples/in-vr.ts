@@ -348,8 +348,7 @@ async function dispose(): Promise<void> {
   (marker.material as THREE.Material).dispose();
   rayGeometry.dispose();
   rayMaterial.dispose();
-  // r186 disposal is async; older Three typings still declare void.
-  await Promise.resolve(renderer.dispose());
+  await renderer.dispose();
   renderer.domElement.remove();
 }
 addEventListener(

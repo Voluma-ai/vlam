@@ -135,13 +135,9 @@ export class ShComputeCache {
           );
           textureStore(output, pixel, vec4(base.rgb.add(rgb).clamp(0, 1), base.a));
         });
-      })().compute(1, [256]);
-      // The public TSL typing accepts a scalar count, while the WebGPU backend
-      // also accepts an indirect dispatch attribute. Clear that scalar before
-      // first compilation so it does not inject a one-invocation early return;
+      })().computeKernel([256]);
+      // A kernel has no count, so no early return is injected;
       // `renderer.compute(visiblePass, dispatchArgs)` supplies the dimensions.
-      visiblePass.count = null;
-      visiblePass.dispatchSize = [1, 1, 1];
       this.visiblePass = visiblePass;
       this.visiblePass.name = 'vlam-sh-final-color-visible';
     } else {

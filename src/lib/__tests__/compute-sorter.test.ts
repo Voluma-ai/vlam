@@ -187,6 +187,39 @@ describe('ComputeSorter', () => {
     expect(internals.bucketMax.value).toBe(capacity - 1);
   });
 
+  it('dispatches the per-splat stages indirectly as kernels', () => {
+    const compute = vi.fn();
+    const renderer = { compute } as unknown as THREE.WebGPURenderer;
+    const indirect = new THREE.IndirectStorageBufferAttribute(new Uint32Array(3), 1);
+    sorter = new ComputeSorter({
+      renderer,
+      capacity: CAPACITY,
+      centersTexture: new THREE.DataTexture(
+        new Float32Array(CAPACITY * 4),
+        CAPACITY,
+        1,
+        THREE.RGBAFormat,
+        THREE.FloatType,
+      ),
+      dataTextureWidth: CAPACITY,
+      splatIndexAttribute: new THREE.StorageInstancedBufferAttribute(new Float32Array(CAPACITY), 1),
+      sourceIndexAttribute: new THREE.StorageBufferAttribute(new Uint32Array(CAPACITY), 1),
+      indirectDispatchAttribute: indirect,
+    });
+    sorter.sort(new THREE.Matrix4(), 17, new THREE.Sphere(new THREE.Vector3(), 1));
+    const internals = internalsOf(sorter);
+    const indirectCalls = compute.mock.calls.filter((call) => call[1] === indirect);
+    expect(indirectCalls.map((call) => call[0] as unknown)).toEqual([
+      internals.histogramPass,
+      internals.scatterPass,
+    ]);
+    // three r187 throws when a dispatch size meets a counted node.
+    for (const pass of [internals.histogramPass, internals.scatterPass]) {
+      expect(pass.count).toBeNull();
+      expect(pass.dispatchSize).toBeNull();
+    }
+  });
+
   it('keeps capacity-sized buckets on the streaming path', () => {
     const capacity = 1 << 20;
     sorter = makeSorter(vi.fn(), capacity);
