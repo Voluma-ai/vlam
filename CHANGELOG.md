@@ -50,6 +50,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - Developed and tested against three.js r187, with `@types/three@0.187.0`
   declarations in full: the r186 declaration shim is gone. The peer range
   stays `three >=0.186.0`, and every fix below also runs on r186.
+- Browser checks run on Playwright 1.64.1. Playwright 1.57 cannot install
+  Chromium's system libraries on GitHub's `ubuntu-latest` (Ubuntu 26.04)
+  runners, which failed the `browser` CI job and the release workflow.
 
 ### Fixed
 
