@@ -69,6 +69,18 @@ Brush lifecycle or stale-pick fixes discovered during existing selection
 validation fit stabilization. Defer new storage modes, rendering paths, and
 selection features until their benefits are measured and visually validated.
 
+- **4DGS playback: Faltwerk `.csgs` MVP** — the proof of concept ships the
+  experimental `@voluma/vlam/formats/csgs` decoder (version 1, bit-exact
+  against the reference fixtures) and the `/csgs-harness.html` playback page
+  (worker decode, CPU frame evaluation, whole-set pool swap per frame; see
+  `docs/formats/csgs-notes.md`). Next: GPU curve evaluation through a
+  `SplatModifier` reading per-section knot textures (covariance via the linear
+  `rotation` output), section fetch lookahead with region-atomic swaps,
+  `scene.json` loading, a demo timeline, and the later container versions.
+  **Acceptance:** real-time playback of the public demo clips on WebGPU and
+  WebGL2 with the test-camera reference comparison unchanged, no per-frame
+  pool re-upload, and a license-cleared clip before anything appears on the
+  public demo site.
 - **Radix sorter: r186 workgroup atomics** — replace
   the global-storage ranking bitmasks in
   [`radix-sorter.ts`](src/lib/core/radix-sorter.ts) with atomic workgroup arrays.

@@ -102,6 +102,7 @@ export default defineConfig({
         'formats/spz': 'src/lib/formats/spz/index.ts',
         'formats/splat': 'src/lib/formats/splat/index.ts',
         'formats/ksplat': 'src/lib/formats/ksplat/index.ts',
+        'formats/csgs': 'src/lib/formats/csgs/index.ts',
       },
       formats: ['es'],
       fileName: (_format, entryName) => `${entryName}.js`,

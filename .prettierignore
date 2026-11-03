@@ -9,6 +9,9 @@ blob-report
 package-lock.json
 .tmp
 
+# Verbatim decoder fixtures from Faltwerk's test suite (compared bit-for-bit).
+src/lib/__tests__/fixtures
+
 # Prose is hand-wrapped to fit a terminal; Prettier would reflow it.
 *.md
 

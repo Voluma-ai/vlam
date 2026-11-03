@@ -25,6 +25,20 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- **Experimental `@voluma/vlam/formats/csgs`: Faltwerk 4D Gaussian splat
+  sections.** A proof of concept for dynamic (4DGS) playback: `CsgsDecoder`
+  decodes version-1 `.csgs` sections (rANS entropy coding, per-splat hat
+  curves for position, rotation, log-scale, opacity and DC color, static
+  degree-3 SH) bit-exactly against the reference decoder's fixtures;
+  `prepareCsgsSection` dequantizes a section and `evaluateCsgsFrame` evaluates
+  it at a frame time into `SplatData` with per-splat packed SH, for a
+  dynamic-capacity `SplatMesh`. The default loaders do not know the format;
+  the new dev harness (`/csgs-harness.html`) shows host-driven playback:
+  worker decode, CPU frame evaluation and a whole-set pool swap per frame, on
+  WebGPU and WebGL2. Later container versions (SH codebooks, motion
+  prediction, follow masks, requantization, B-splines) are rejected with a
+  clear error. See `docs/formats/csgs-notes.md`.
+
 - **`SplatSceneBudget` bounds a scene made of several whole files.** Pass one
   budget as `sceneBudget` to every `loadSplatData` / `loadSplatDataFile` /
   `ChunkLoader` load of the scene: each file is thinned in the load worker to

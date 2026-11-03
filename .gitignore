@@ -11,6 +11,8 @@ test-results
 playwright-report
 blob-report
 splatstest
+# Local 4DGS clips for the .csgs playback harness (third-party captures, not redistributed).
+assets/csgs-demo
 .claude
 .codex
 .cursor*

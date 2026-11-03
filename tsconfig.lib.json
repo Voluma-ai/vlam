@@ -39,7 +39,8 @@
     "src/lib/formats/lcc/index.ts",
     "src/lib/formats/spz/index.ts",
     "src/lib/formats/splat/index.ts",
-    "src/lib/formats/ksplat/index.ts"
+    "src/lib/formats/ksplat/index.ts",
+    "src/lib/formats/csgs/index.ts"
   ],
   "exclude": ["src/lib/**/*.test.ts", "src/lib/__tests__"]
 }

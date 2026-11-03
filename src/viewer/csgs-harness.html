@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VLAM! .csgs playback harness</title>
+    <style>
+      body { margin: 0; background: #111; color: #ddd; font: 14px/1.5 system-ui, sans-serif; }
+      #stage { display: flex; flex-wrap: wrap; gap: 16px; margin: 16px; align-items: flex-start; }
+      canvas, img { display: block; border: 1px solid #444; max-width: 100%; }
+      #controls { display: flex; gap: 12px; align-items: center; margin: 0 16px; }
+      #status { margin: 16px; white-space: pre-wrap; font-family: ui-monospace, monospace; }
+      #result { display: block; margin: 16px; white-space: pre-wrap; font-family: ui-monospace, monospace; color: #9c9; }
+      input[type="range"] { width: 320px; }
+      figcaption { color: #aaa; }
+    </style>
+  </head>
+  <body>
+    <div id="controls">
+      <button id="play" type="button">Pause</button>
+      <input id="scrub" type="range" min="0" max="0" step="1" value="0" />
+      <span id="frame">frame 0</span>
+    </div>
+    <div id="stage">
+      <canvas id="canvas" width="512" height="512"></canvas>
+      <figure id="reference" hidden><img id="reference-image" alt="reference view" /><figcaption></figcaption></figure>
+    </div>
+    <div id="status">Starting .csgs playback harness…</div>
+    <output id="result" data-testid="result"></output>
+    <script type="module" src="./csgs-harness.ts"></script>
+  </body>
+</html>

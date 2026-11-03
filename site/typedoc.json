@@ -18,6 +18,7 @@
     "../src/lib/formats/spz/index.ts",
     "../src/lib/formats/splat/index.ts",
     "../src/lib/formats/ksplat/index.ts",
+    "../src/lib/formats/csgs/index.ts",
     "../src/lib/effects/index.ts"
   ],
   // Keep the reading order above (index, optional subpaths, formats, effects)

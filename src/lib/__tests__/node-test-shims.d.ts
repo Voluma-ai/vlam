@@ -1,7 +1,7 @@
 declare module 'node:fs' {
   export function existsSync(path: string): boolean;
   export function readFileSync(path: string): Uint8Array;
-  export function writeFileSync(path: string, data: string): void;
+  export function writeFileSync(path: string, data: string | Uint8Array): void;
 }
 
 declare module 'node:os' {
