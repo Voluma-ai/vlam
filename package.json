@@ -1,7 +1,7 @@
 {
   "name": "@voluma/vlam",
-  "version": "1.2.1",
-  "description": "VLAM! - A lightweight WebGPU Gaussian splat viewer for three.js, built for high performance, streaming LOD, and fully customizable rendering through an open shader pipeline.",
+  "version": "1.2.2",
+  "description": "VLAM! - WebGPU Gaussian splat viewer for three.js, built for high performance, streaming LOD, and fully customizable rendering through an open shader pipeline.",
   "license": "MIT",
   "author": "Voluma",
   "repository": {
@@ -158,7 +158,7 @@
     "@sparkjsdev/spark": "2.2.0",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
-    "@types/three": "0.185.4",
+    "@types/three": "^0.187.0",
     "@vitest/coverage-v8": "^4.1.11",
     "@voluma/three-transform-gizmo": "^0.9.0",
     "camera-controls": "^3.1.2",
@@ -169,7 +169,7 @@
     "prettier": "^3.9.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "three": "^0.186.0",
+    "three": "^0.187.0",
     "three-mesh-bvh": "^0.9.11",
     "typedoc": "^0.28.20",
     "typedoc-plugin-markdown": "^4.12.0",

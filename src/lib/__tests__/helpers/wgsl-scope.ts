@@ -137,3 +137,21 @@ export function findOutOfScopeReads(wgsl: string): OutOfScopeRead[] {
   }
   return violations;
 }
+
+/**
+ * Lists the vertex varyings a vertex WGSL statement reads back.
+ *
+ * three r187 re-emits a vertex varying's initializer in every block that
+ * references it, so a varying assigned in one branch and read in another
+ * reads (and finally outputs) its initial value. Vertex graphs must keep such
+ * values in a var and only write the varying.
+ */
+export function findVertexVaryingReads(vertexWgsl: string): string[] {
+  const body = vertexWgsl.slice(vertexWgsl.indexOf('// flow'));
+  const reads: string[] = [];
+  for (const line of body.split('\n')) {
+    const read = line.replace(/^\s*varyings\.\w+ = /, '');
+    if (/\bvaryings\.\w+/.test(read)) reads.push(line.trim());
+  }
+  return reads;
+}

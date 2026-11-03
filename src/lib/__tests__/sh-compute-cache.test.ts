@@ -261,6 +261,10 @@ describe('pool-indexed SH compute cache', () => {
     expect(gpu.compute).toHaveBeenCalledTimes(2);
     expect(gpu.compute.mock.calls[0]).toHaveLength(1);
     expect(gpu.compute.mock.calls[1]?.[1]).toBe(dispatchArgs);
+    // three r187 throws when a dispatch size meets a counted node.
+    const visiblePass = gpu.compute.mock.calls[1]?.[0] as THREE.ComputeNode;
+    expect(visiblePass.count).toBeNull();
+    expect(visiblePass.dispatchSize).toBeNull();
     expect(cache.snapshot()).toMatchObject({ visibleListRefreshes: 1 });
     cache.dispose(r);
     texture.dispose();

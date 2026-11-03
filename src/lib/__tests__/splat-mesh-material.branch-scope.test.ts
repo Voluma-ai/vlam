@@ -17,7 +17,11 @@ import {
 } from '../core/splat-mesh-material';
 import type { SplatModifier } from '../core/splat-modifier';
 import { BRANCHES, branchShapes, contextReads, tint } from './helpers/branch-modifiers';
-import { buildMaterialWgsl, findOutOfScopeReads } from './helpers/wgsl-scope';
+import {
+  buildMaterialWgsl,
+  findOutOfScopeReads,
+  findVertexVaryingReads,
+} from './helpers/wgsl-scope';
 
 const WIDTH = 4;
 
@@ -123,6 +127,20 @@ describe('material graph - modifier branch scoping', () => {
     expect(vertexWgsl(display, [branchShapes['read per branch']!(contextReads.normal!)])).toContain(
       'tsl_inverse_mat3(',
     );
+  });
+
+  it.each([
+    ...variants,
+    { name: 'antialias', mode: 'display', settings: { antialias: true } },
+    {
+      name: 'RAD LOD alpha, balanced',
+      mode: 'display',
+      settings: { lodAlpha: true, performanceProfile: 'balanced' },
+    },
+  ] satisfies Variant[])('never reads a varying back in the vertex stage ($name)', (variant) => {
+    // The DoF contribution cull read the opacity fade back from its varying,
+    // which three r187 reset to 1 in that branch, dropping the fade entirely.
+    expect(findVertexVaryingReads(vertexWgsl(variant, [tint]))).toEqual([]);
   });
 
   it('emits the modifier stack once, however often the vertex graph reads its color', () => {

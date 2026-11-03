@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu';
 import { uniform } from 'three/tsl';
 import { describe, expect, it } from 'vitest';
 import { createWorkBufferMaterial } from '../unified/work-buffer-material';
+import { buildMaterialWgsl, findVertexVaryingReads } from './helpers/wgsl-scope';
 
 function relightDefaults() {
   return {
@@ -134,4 +135,45 @@ describe('createWorkBufferMaterial', () => {
     expect(material.vertexNode).not.toBeNull();
     material.dispose();
   });
+
+  it.each([false, true])(
+    'never reads a varying back in the vertex stage (projected: %s)',
+    (projected) => {
+      const records = () => new THREE.StorageBufferAttribute(new Float32Array(16), 4);
+      const material = createWorkBufferMaterial({
+        capacity: 4,
+        centers: records(),
+        colors: records(),
+        covarianceA: records(),
+        covarianceB: records(),
+        isotropicMix: new THREE.StorageBufferAttribute(new Float32Array(4), 1),
+        isotropicScreenRadius: new THREE.StorageBufferAttribute(new Float32Array(4), 1),
+        order: new THREE.StorageInstancedBufferAttribute(new Float32Array(4), 1),
+        projected: projected
+          ? { clipCenters: records(), axes: records(), parameters: records() }
+          : undefined,
+        focal: uniform(new THREE.Vector2(400, 400)),
+        viewport: uniform(new THREE.Vector2(800, 600)),
+        maxStdDev: uniform(3),
+        minSplatSizePx: uniform(0),
+        antialias: uniform(0),
+        projectedLowPassVariance: uniform(0.3),
+        compensateProjectedLowPass: uniform(0),
+        dofFocusDistance: uniform(10),
+        dofAperture: uniform(0.2),
+        minPixelSize: 2,
+        minContribution: 3,
+        ...relightDefaults(),
+      });
+      const geometry = new THREE.InstancedBufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(12), 3));
+      // three r187 resets a varying read back in a later block to its
+      // initializer; the DoF cull read the opacity fade that way.
+      const { vertex } = buildMaterialWgsl(new THREE.Mesh(geometry, material));
+      expect(vertex).toContain('vWorkOpacityCompensation');
+      expect(findVertexVaryingReads(vertex)).toEqual([]);
+      geometry.dispose();
+      material.dispose();
+    },
+  );
 });

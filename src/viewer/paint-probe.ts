@@ -95,8 +95,9 @@ async function compileFor(renderTarget: THREE.RenderTarget | null): Promise<void
 
 async function readPixels(): Promise<Uint8Array> {
   const pixels = (await renderer.readRenderTargetPixelsAsync(target, 0, 0, 96, 96)) as Uint8Array;
-  // WebGPU aligns all but the final row to 256 bytes; WebGL2 is tightly packed.
-  const rowBytes = actual === 'webgpu' ? 512 : 384;
+  // three r186 WebGPU readbacks pad all but the final row to 256 bytes; r187
+  // and WebGL2 return them tightly packed.
+  const rowBytes = pixels.length === 96 * 384 ? 384 : 512;
   const packed = new Uint8Array(96 * 96 * 4);
   for (let row = 0; row < 96; row++)
     packed.set(pixels.subarray(row * rowBytes, row * rowBytes + 384), row * 384);

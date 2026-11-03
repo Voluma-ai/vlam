@@ -25,6 +25,26 @@ import type { SplatPickOptions, SplatPickResult } from './splat-mesh';
 import type { FloatUniform } from './splat-mesh-material';
 import { isXrArrayCamera } from './xr-view';
 
+/** Last queued `compileAsync` per renderer; see {@link serializeCompile}. */
+const rendererCompiles = new WeakMap<THREE.WebGPURenderer, Promise<void>>();
+
+/**
+ * Starts `compile` once every earlier picker compile on `renderer` settles.
+ * three r187's `compileAsync` holds one renderer-wide precompilation state
+ * across its awaits, so a second call that starts before the first finishes
+ * clears it and the first throws (`_precompilationState` is null). Picking
+ * several meshes at once did exactly that.
+ */
+function serializeCompile(
+  renderer: THREE.WebGPURenderer,
+  compile: () => Promise<void>,
+): Promise<void> {
+  const previous = rendererCompiles.get(renderer) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(compile);
+  rendererCompiles.set(renderer, next);
+  return next;
+}
+
 /** What the picker needs from the mesh it picks. */
 export interface SplatPickHost {
   /** The mesh, for the transform/visibility the proxy mirrors and its geometry. */
@@ -161,12 +181,7 @@ export class SplatPicker {
   async prepareForCpuRelease(camera: THREE.Camera, renderer: THREE.WebGPURenderer): Promise<void> {
     if (this.host.isDisposed() || this.host.getActiveCount() === 0) return;
     this.ensureResources(camera);
-    await this.compilePipeline(
-      renderer,
-      this.target!,
-      this.pickCamera!,
-      renderer.getRenderTarget(),
-    );
+    await this.compilePipeline(renderer, this.target!, this.pickCamera!);
   }
 
   /** Rebuilds the pick graph after a settings change. No-op before the first pick. */
@@ -258,7 +273,7 @@ export class SplatPicker {
     // renderer after this awaited pick, a slow backend can reject that orphaned
     // promise as "Instance dropped". Compile once through three's awaited path.
     try {
-      await this.compilePipeline(renderer, pickTarget, pickCamera, renderer.getRenderTarget());
+      await this.compilePipeline(renderer, pickTarget, pickCamera);
     } catch (error) {
       if (this.host.isDisposed()) return misses();
       throw error;
@@ -330,8 +345,8 @@ export class SplatPicker {
     }
     if (this.host.isDisposed()) return misses();
 
-    // three.js WebGPU readbacks pad each row to a 256-byte boundary. The
-    // final row has no padding; WebGL2 readbacks are tightly packed.
+    // three r186 WebGPU readbacks pad each row but the last to a 256-byte
+    // boundary; r187 and WebGL2 readbacks are tightly packed.
     const packedRowBytes = targetWidth * 4;
     const rowBytes =
       rgba.length === packedRowBytes * targetHeight
@@ -402,7 +417,6 @@ export class SplatPicker {
     renderer: THREE.WebGPURenderer,
     target: THREE.RenderTarget,
     camera: THREE.Camera,
-    previousTarget: THREE.RenderTarget | null,
   ): Promise<void> {
     const material = this.material as THREE.NodeMaterial;
     if (this.compiledRenderer === renderer && this.compiledMaterialVersion === material.version) {
@@ -419,15 +433,17 @@ export class SplatPicker {
       return;
     }
 
-    let compilation: Promise<void>;
-    try {
-      renderer.setRenderTarget(target);
-      // compileAsync captures the render context synchronously, restores its
-      // own render state, then awaits pipeline validation.
-      compilation = renderer.compileAsync(this.scene, camera);
-    } finally {
-      renderer.setRenderTarget(previousTarget);
-    }
+    const compilation = serializeCompile(renderer, () => {
+      const previousTarget = renderer.getRenderTarget();
+      try {
+        renderer.setRenderTarget(target);
+        // compileAsync captures the render context synchronously, restores its
+        // own render state, then awaits pipeline validation.
+        return renderer.compileAsync(this.scene, camera);
+      } finally {
+        renderer.setRenderTarget(previousTarget);
+      }
+    });
     const version = material.version;
     const tracked = compilation.then(() => {
       if (this.material === material && material.version === version && !this.host.isDisposed()) {
