@@ -20,6 +20,7 @@ and [`architecture.md`](architecture.md).
 | **LCC** (`.lcc` / `meta.lcc`, v3–v5) |, | ✅ | ✅ manifest + siblings | ✅ | ⚠️ `Quality` profile: packed SH (`shBands`); `Portable` DC | `lcc.test.ts`, `parse-lcc.test.ts` | Quality vs Portable |
 | **LCC2** (XGRIDS tiles) |, | ✅ | ✅ manifest + `.sog` tiles | ✅ | ✅ peek tile `meta.json` `shN` (palette → packed; off on `smooth`) | `lcc2-*`, `peek-sog-sh` | Tempel SH0/SH3 octree orbit (Chrome/Windows, WebGPU + WebGL2) |
 | **RAD** (Spark `.rad`) | ✅ whole-file ≤ ~16.7M leaves | ✅ prefix or **page-table** foveation | ✅ `.rad` folder (optional `.radc` chunks) | ✅ | ✅ packed SH when capture has `maxSh` | `parse-rad`, `rad-*`, `frontier-pager` | page-table fly-through |
+| **CSGS** (Faltwerk 4DGS, v1) | ⚠️ experimental: `formats/csgs` decoder + CPU frame evaluation; host-driven playback (`/csgs-harness.html`), not in the loaders |, |, | ✅ per frame | ✅ packed shN (degree 3, static per splat) | `parse-csgs.test.ts`, `csgs-playback.spec.ts` (local clips) | test-camera reference strips, WebGPU + WebGL2 |
 
 ### Format notes
 

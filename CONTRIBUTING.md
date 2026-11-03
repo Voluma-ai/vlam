@@ -31,13 +31,16 @@ npm run docs:samples # type-check the guide code samples in docs/guide/samples/
 npm run build      # docs site + library
 npm run build:lib  # the published package: bundle + .d.ts into dist/ (what prepack runs)
 npm run size:check # gzip-size budgets for published entries (scripts/check-bundle-size.mjs)
-npm run preflight  # every reproducible CI gate, including local browser checks
+npm run preflight  # every reproducible CI gate, including the full browser suite
 npm run test:browser:linux # browser checks in pinned Ubuntu/Playwright Docker
 npm run test:coverage # Vitest with V8 coverage (text + cobertura, what CI runs)
 ```
 
-`git push` runs `npm run preflight` through Husky, including the local
-Playwright checks. It does not start Docker. Browser checks use Playwright's
+`git push` runs `npm run preflight -- --browser-smoke` through Husky: every
+gate, but only `browser-tests/backend.spec.ts` from Playwright (seconds rather
+than minutes). The full browser suite runs in the PR `browser` CI job and in a
+plain `npm run preflight`; run that before pushing render changes. It does not
+start Docker. Browser checks use Playwright's
 configured single worker, the same as CI: two SwiftShader browsers in
 parallel can lose the WebGL context. The Playwright Vite server
 starts without file watchers so a local `npm run dev` does not exhaust
@@ -105,13 +108,15 @@ output. Pull requests have no description template; write what the change does.
 [`src/viewer/chunk-harness.html`](src/viewer/chunk-harness.html),
 [`src/viewer/unified-harness.html`](src/viewer/unified-harness.html),
 [`src/viewer/budget-harness.html`](src/viewer/budget-harness.html), and
-[`src/viewer/rad-parity-harness.html`](src/viewer/rad-parity-harness.html), plus
+[`src/viewer/rad-parity-harness.html`](src/viewer/rad-parity-harness.html),
+[`src/viewer/csgs-harness.html`](src/viewer/csgs-harness.html), plus
 [`src/viewer/render-benchmark.html`](src/viewer/render-benchmark.html),
 [`src/viewer/memory-benchmark.html`](src/viewer/memory-benchmark.html),
 are standalone browser pages for poking at one subsystem in isolation. They are
 served by `npm run dev` at `/chunk-harness.html`, `/unified-harness.html`,
 `/budget-harness.html`,
-`/rad-parity-harness.html`, `/render-benchmark.html`, and `/memory-benchmark.html`.
+`/rad-parity-harness.html`, `/csgs-harness.html`, `/render-benchmark.html`, and
+`/memory-benchmark.html`.
 The memory page records load checkpoints, sampled main-isolate heap, optional
 browser-wide measurements, and explicit CPU/GPU allocation estimates; see
 [`docs/memory-benchmark.md`](docs/memory-benchmark.md). The RAD parity page is

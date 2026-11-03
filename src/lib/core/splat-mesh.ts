@@ -473,6 +473,12 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
 
   /** Row spans written since the last flush, awaiting GPU upload. */
   private pendingUploadRows: { start: number; count: number }[] = [];
+  /**
+   * Rows whose core attributes (center, color, covariance) changed but whose
+   * packed SH did not ({@link overwriteRangeCore}): uploaded to the core
+   * textures only.
+   */
+  private pendingCoreOnlyRows: { start: number; count: number }[] = [];
   /** Persistent copy sources avoid allocating four temporary textures per upload region. */
   private readonly uploadStaging = new Map<string, Map<number, THREE.DataTexture>>();
   /** Reusable float→half encode buffers keyed like {@link uploadStaging}. */
@@ -1309,6 +1315,36 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
   }
 
   /**
+   * {@link overwriteRangeData} for the core attributes only: centers, colors
+   * (with opacity) and covariances are written in place and their rows queued
+   * for the core textures, while the splats' packed SH words stay as they are
+   * and are not re-uploaded. For animated content whose view-dependent color
+   * is fixed while it moves (a 4DGS clip within one section), this saves the
+   * larger half of every frame's upload. `data.shPacked` is ignored. The
+   * caller must {@link invalidateSort} once per batch.
+   */
+  protected overwriteRangeCore(handle: SplatRange, data: SplatData, offset: number): void {
+    const record = this.ranges.get(handle);
+    if (!record) throw new Error('SplatMesh.overwriteRangeCore: unknown range handle.');
+    if (!Number.isInteger(offset) || offset < 0 || offset + data.count > record.count) {
+      throw new RangeError('SplatMesh.overwriteRangeCore: write exceeds the range.');
+    }
+    if (data.count === 0) return;
+    const destination = record.start + offset;
+    this.writeSplatRows(destination, data, false);
+    const width = SplatMesh.DATA_TEXTURE_WIDTH;
+    const firstRow = Math.floor(destination / width);
+    const rowCount = Math.floor((destination + data.count - 1) / width) - firstRow + 1;
+    // The CPU-ordered worker path snapshots whole rows; it gains nothing here.
+    if (this.workerPublicationEnabled) this.markRowsWritten(firstRow, rowCount);
+    else this.pendingCoreOnlyRows.push({ start: firstRow, count: rowCount });
+    _appendBox.setFromArray(data.positions);
+    this.localBounds.union(_appendBox);
+    this.boundsDirty = true;
+    if (record.active) this.contentRevision++;
+  }
+
+  /**
    * Existing CPU mirrors and absolute pool start for an owned range.
    * @internal
    */
@@ -1351,7 +1387,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
    * Shared by the append and staged-write paths, which differ only in where
    * the rows come from and when they are activated.
    */
-  private writeSplatRows(destination: number, data: SplatData): void {
+  private writeSplatRows(destination: number, data: SplatData, withPackedSh = true): void {
     const { centers, colors, covarianceA, covarianceB } = this.backing;
     writeSplatColors(this.centersTexture, colors, destination, data.colors, data.count);
     // Everything loop-invariant is hoisted into locals, including the two
@@ -1384,7 +1420,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
       covarianceB[p + 2] = labels ? (labels[i] as number) : 0;
       covarianceB[p + 3] = frontierParent ? (frontierParent[i] as number) : 0;
     }
-    this.writePackedSh(destination, data);
+    if (withPackedSh) this.writePackedSh(destination, data);
   }
 
   /**
@@ -1877,6 +1913,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
     // in-flight worker snapshots describe the old layout.
     this.invalidateWorkerPublications(false);
     this.pendingUploadRows = [];
+    this.pendingCoreOnlyRows = [];
     // The worker sorter mirrors centers by pool index; resend the new rows.
     if (this.workerPublicationEnabled && target > 0) this.markRowsWritten(0, rows);
     this.shCache?.invalidate();
@@ -2011,6 +2048,13 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
     if (ownershipChanged) {
       this.picker.rebuildMaterial();
       this.picker.markNeedsUpdate();
+    }
+    if (ownershipChanged && visible === null) {
+      // The unified renderer ordered this mesh while it owned the draw; the
+      // standalone order is stale (or was never built), and an unmoved camera
+      // alone would not re-sort it. Force one, like a pooled release does.
+      this.sortedActiveListVersion = -1;
+      this.invalidateSort();
     }
   }
 
@@ -2312,9 +2356,9 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
       return false;
     }
     const end = startRow + rowCount;
-    return !this.pendingUploadRows.some(
-      (row) => row.start < end && startRow < row.start + row.count,
-    );
+    const overlaps = (row: { start: number; count: number }): boolean =>
+      row.start < end && startRow < row.start + row.count;
+    return !this.pendingUploadRows.some(overlaps) && !this.pendingCoreOnlyRows.some(overlaps);
   }
 
   /** Obsolete addresses were cleared centrally before this tenant rebuilds. */
@@ -3228,6 +3272,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
     // Drop queued CPU work and cached references so nothing uploads or
     // rebuilds after teardown, and large arrays are unreachable promptly.
     this.pendingUploadRows = [];
+    this.pendingCoreOnlyRows = [];
     this.queryGrid = null;
     this.ranges.clear();
   }
@@ -3422,6 +3467,12 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
    */
   private captureWorkerPublication(withIndices = true): WorkerSortSnapshot | null {
     if (this.workerSnapshotInFlight || this.workerPublicationPending) return null;
+    // The snapshot carries whole rows; core-only rows marked before the
+    // worker boundary was enabled travel as whole rows too.
+    if (this.pendingCoreOnlyRows.length > 0) {
+      this.pendingUploadRows.push(...this.pendingCoreOnlyRows);
+      this.pendingCoreOnlyRows = [];
+    }
     const width = SplatMesh.DATA_TEXTURE_WIDTH;
     const coreRows = mergeUploadRows(this.pendingUploadRows).map((row) => {
       const offset = row.start * width * 4;
@@ -3853,9 +3904,16 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
    */
   private flushPendingUploads(renderer: THREE.WebGPURenderer): void {
     // The four core pool textures share one dirty-row set (they are written
-    // together), each RGBA (4 components).
-    if (this.pendingUploadRows.length > 0) {
-      const rows = mergeUploadRows(this.pendingUploadRows);
+    // together), each RGBA (4 components); core-only rows join it, and only
+    // the whole rows reach the packed SH below.
+    if (this.pendingUploadRows.length > 0 || this.pendingCoreOnlyRows.length > 0) {
+      const coreOnly = this.pendingCoreOnlyRows.length > 0;
+      const rows = mergeUploadRows(
+        coreOnly
+          ? [...this.pendingUploadRows, ...this.pendingCoreOnlyRows]
+          : this.pendingUploadRows,
+      );
+      const shRows = coreOnly ? mergeUploadRows(this.pendingUploadRows) : rows;
       const floatType =
         this.poolFloatTextures === 'float16' ? THREE.HalfFloatType : THREE.FloatType;
       this.uploadRows(renderer, rows, 4, [
@@ -3886,12 +3944,13 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
           type: THREE.FloatType,
         },
       ]);
-      // Packed SH is written by the same calls and so shares those dirty
-      // rows, but it is an integer format and cannot ride the same copy.
-      if (this.shPackedTextures.length > 0) {
+      // Packed SH is written by the same calls and so shares the whole rows
+      // (not the core-only ones), but it is an integer format and cannot ride
+      // the same copy.
+      if (this.shPackedTextures.length > 0 && shRows.length > 0) {
         this.uploadRows(
           renderer,
-          rows,
+          shRows,
           4,
           this.shPackedTextures.map((texture, group) => ({
             key: `shPacked${group}`,
@@ -3902,6 +3961,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
         );
       }
       this.pendingUploadRows = [];
+      this.pendingCoreOnlyRows = [];
     }
     // Each channel is single-component (Red) and tracks its own dirty rows.
     for (const [name, channel] of this.channels.entries()) {

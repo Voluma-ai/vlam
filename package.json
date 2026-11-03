@@ -27,7 +27,9 @@
     "splat",
     "ksplat",
     "ply",
-    "spz"
+    "spz",
+    "csgs",
+    "4dgs"
   ],
   "type": "module",
   "sideEffects": false,
@@ -118,6 +120,10 @@
     "./formats/ksplat": {
       "types": "./dist/formats/ksplat/index.d.ts",
       "import": "./dist/formats/ksplat.js"
+    },
+    "./formats/csgs": {
+      "types": "./dist/formats/csgs/index.d.ts",
+      "import": "./dist/formats/csgs.js"
     },
     "./package.json": "./package.json"
   },

@@ -20,7 +20,7 @@ directory name and `package.json` disagree, trust `package.json`.
 | Command | What it does |
 | --- | --- |
 | `npm install` | install dependencies (also registers lint + typecheck + docs:check git hooks) |
-| `npm run dev` | VitePress docs site → http://localhost:5170 (port pinned; interactive viewer at `/demo/`, harnesses at `/chunk-harness.html` / `/unified-harness.html` / `/rad-parity-harness.html`, settled render and memory benchmarks at `/render-benchmark.html` / `/memory-benchmark.html`) |
+| `npm run dev` | VitePress docs site → http://localhost:5170 (port pinned; interactive viewer at `/demo/`, harnesses at `/chunk-harness.html` / `/unified-harness.html` / `/rad-parity-harness.html` / `/csgs-harness.html`, settled render and memory benchmarks at `/render-benchmark.html` / `/memory-benchmark.html`) |
 | `npm run build:site` | docs site + viewer + TypeDoc HTML → `dist-site/` |
 | `npm run build:lib` | library ES build + `.d.ts` → `dist/` |
 | `npm run build` | site + library |
@@ -53,6 +53,8 @@ src/
  unified-harness.ts / .html UnifiedSplatMesh GPU harness (`/unified-harness.html`)
  budget-harness.ts / .html several whole files under one SplatSceneBudget (`/budget-harness.html`)
  rad-parity-harness.ts / .html Opt-in streamed `.rad` direct/unified screenshot run
+ csgs-harness.ts / .html Faltwerk `.csgs` 4DGS playback proof of concept (`/csgs-harness.html`)
+ csgs-decode-worker.ts its section decode worker
  sort-benchmark.ts frame/sort timing rig behind ?benchmarkSeconds
  render-benchmark.html / .ts settled plain-SplatMesh device benchmark
  memory-benchmark.html / .ts static/streamed load + retained-memory benchmark
@@ -76,6 +78,7 @@ src/
  spz/ → `@voluma/vlam/formats/spz`
  splat/ → `@voluma/vlam/formats/splat`
  ksplat/ → `@voluma/vlam/formats/ksplat`
+ csgs/ → `@voluma/vlam/formats/csgs` (parse-csgs, csgs-frame; experimental 4DGS)
 
  -- core/ rendering / mesh --
  splat-mesh.ts SplatMesh: the pool, range lifecycle, active list, sort wiring

@@ -27,8 +27,8 @@ kept authoritative so this one does not drift.
 - **Headless verification bar.** Run `npm test`, `npm run test:browser`,
   `npm run lint`, `npm run build`, `npm run docs:check`, and
   `npm run docs:samples`. Browser checks need the one-time
-  `npx playwright install chromium` setup. `git push` runs `npm run preflight`,
-  including those browser checks, and reprints failed test names at the end of
+  `npx playwright install chromium` setup. `git push` runs `npm run preflight` with only a
+  browser smoke spec (the full suite runs in PR CI), and reprints failed test names at the end of
   the log. `npm run test:browser:linux` is the optional pinned Linux/SwiftShader
   run and is not part of `git push`. Public JSDoc is rendered
   into the generated site; do not commit TypeDoc output.

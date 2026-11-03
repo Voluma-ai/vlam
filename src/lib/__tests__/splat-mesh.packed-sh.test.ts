@@ -61,6 +61,7 @@ interface UploadRowSpan {
 
 interface UploadInternals {
   pendingUploadRows: UploadRowSpan[];
+  pendingCoreOnlyRows: UploadRowSpan[];
   uploadRows(...args: unknown[]): void;
 }
 
@@ -205,6 +206,45 @@ describe('SplatMesh packed SH storage', () => {
     const mesh = new SplatMesh(makeData(4, { bands: 3 }), { shBands: 1 });
     expect(mesh.shBands).toBe(3);
     expect(shBacking(mesh)).toHaveLength(4);
+    mesh.dispose();
+  });
+
+  it('overwrites core attributes in place without touching or re-uploading SH', () => {
+    const mesh = new SplatMesh({ capacity: WIDTH * 8 }, { shBands: 1 });
+    const internals = mesh as unknown as UploadInternals & {
+      overwriteRangeCore(range: unknown, data: SplatData, offset: number): void;
+      backing: { centers: Float32Array };
+    };
+    const range = mesh.appendRange(makeData(WIDTH * 2, { bands: 1 }));
+    internals.pendingUploadRows = [];
+    const before = storedWord(mesh, WIDTH + 5, 2);
+    const moved = makeData(WIDTH, { bands: 1, word: () => 0xdeadbeef });
+    moved.positions.fill(7);
+    internals.overwriteRangeCore(range, moved, WIDTH);
+    expect(internals.backing.centers[(WIDTH + 5) * 4]).toBe(7);
+    expect(storedWord(mesh, WIDTH + 5, 2)).toBe(before);
+    expect(internals.pendingUploadRows).toEqual([]);
+    expect(internals.pendingCoreOnlyRows).toEqual([{ start: 1, count: 1 }]);
+
+    // A later whole write of row 3 joins the flush: core textures get both
+    // rows, packed SH only the whole one.
+    internals.pendingUploadRows = [{ start: 3, count: 1 }];
+    const uploadRows = vi.spyOn(internals, 'uploadRows');
+    updateMesh(mesh, vi.fn());
+    expect(uploadRows).toHaveBeenCalledTimes(2);
+    expect(uploadRows.mock.calls[0]![1]).toEqual([
+      { start: 1, count: 1 },
+      { start: 3, count: 1 },
+    ]);
+    expect(uploadRows.mock.calls[1]![1]).toEqual([{ start: 3, count: 1 }]);
+    expect(internals.pendingCoreOnlyRows).toEqual([]);
+
+    // Core-only rows alone never reach the packed-SH textures.
+    uploadRows.mockClear();
+    internals.overwriteRangeCore(range, moved, 0);
+    updateMesh(mesh, vi.fn());
+    expect(uploadRows).toHaveBeenCalledTimes(1);
+    expect(uploadRows.mock.calls[0]![1]).toEqual([{ start: 0, count: 1 }]);
     mesh.dispose();
   });
 

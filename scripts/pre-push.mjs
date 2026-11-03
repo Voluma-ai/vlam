@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-const result = spawnSync('npm', ['run', 'preflight'], {
+const result = spawnSync('npm', ['run', 'preflight', '--', '--browser-smoke'], {
   cwd: root,
   stdio: 'inherit',
   shell: process.platform === 'win32',
