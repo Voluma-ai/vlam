@@ -53,6 +53,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - Browser checks run on Playwright 1.64.1. Playwright 1.57 cannot install
   Chromium's system libraries on GitHub's `ubuntu-latest` (Ubuntu 26.04)
   runners, which failed the `browser` CI job and the release workflow.
+- Dev tooling patched for open `npm audit` findings: `vite` 6.4.5, `vitest`
+  and `@vitest/coverage-v8` 4.1.12, `wrangler` 4.157, and overrides for
+  `markdown-it` 14.3.3, `sharp` 0.35.5, `undici` 7.30.1 and `minimatch` 11.0.4.
+  TypeDoc still needs `minimatch` 10 (it calls `matchOne`, which 11 removed), so
+  one moderate, dev-only `minimatch` finding remains under `typedoc` until
+  TypeDoc supports 11. `npm audit --omit=dev` is clean; the published package's
+  only dependency is the `three` peer.
 
 ### Fixed
 
