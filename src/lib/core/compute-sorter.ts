@@ -254,7 +254,15 @@ export class ComputeSorter implements SplatSorter {
       atomicStore(histogram.element(instanceIndex), uint(0));
     })().compute(this.histogramBucketCount, [BLOCK_SIZE]);
 
-    this.histogramPass = Fn(() => {
+    // Indirectly dispatched stages are kernels: three r187 rejects a dispatch
+    // size for a node built with a count. Both stages bound themselves against
+    // the GPU visible count (or `activeCount`) in the shader either way.
+    const perSplatPass = (body: THREE.Node): THREE.ComputeNode =>
+      this.indirectDispatchAttribute
+        ? body.computeKernel([BLOCK_SIZE])
+        : body.compute(capacity, [BLOCK_SIZE]);
+
+    const histogramBody = Fn(() => {
       const count = visibleCount ? atomicLoad(visibleCount.element(0)).toFloat() : this.activeCount;
       If(float(instanceIndex).lessThan(count), () => {
         const poolIndex = int(sourceIndex.element(instanceIndex));
@@ -303,7 +311,8 @@ export class ComputeSorter implements SplatSorter {
         buckets.element(instanceIndex).assign(bucket);
         atomicAdd(histogram.element(bucket), uint(1));
       });
-    })().compute(capacity, [BLOCK_SIZE]);
+    })();
+    this.histogramPass = perSplatPass(histogramBody);
 
     // One thread serially scans one 256-bucket block: threads never share
     // data within a dispatch, so no barriers are needed anywhere.
@@ -359,7 +368,7 @@ export class ComputeSorter implements SplatSorter {
 
     // Ascending view-space z puts the most negative (farthest) splats
     // first: back-to-front, matching the CPU sorter.
-    this.scatterPass = Fn(() => {
+    const scatterBody = Fn(() => {
       const count = visibleCount ? atomicLoad(visibleCount.element(0)).toFloat() : this.activeCount;
       If(float(instanceIndex).lessThan(count), () => {
         const poolIndex = sourceIndex.element(instanceIndex);
@@ -367,7 +376,8 @@ export class ComputeSorter implements SplatSorter {
         const destination = atomicAdd(histogram.element(bucket), uint(1));
         order.element(destination).assign(float(poolIndex));
       });
-    })().compute(capacity, [BLOCK_SIZE]);
+    })();
+    this.scatterPass = perSplatPass(scatterBody);
 
     this.sortPasses = [
       this.clearPass,
@@ -427,8 +437,10 @@ export class ComputeSorter implements SplatSorter {
     // Keep every stage limited to the buckets and splats in play while batching
     // all dependent stages into one command encoder, compute pass, and submit.
     const blockCount = buckets / ComputeSorter.BLOCK_SIZE;
-    this.histogramPass.count = activeCount;
-    this.scatterPass.count = activeCount;
+    if (!this.indirectDispatchAttribute) {
+      this.histogramPass.count = activeCount;
+      this.scatterPass.count = activeCount;
+    }
     this.clearPass.count = buckets;
     this.scanBlocksPass.count = blockCount;
     this.scanBlockSumsPass.count = blockCount / ComputeSorter.BLOCK_SIZE;

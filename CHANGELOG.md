@@ -59,8 +59,36 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   thinning in the decode worker) and the composed unified graph 90.4 kB →
   105.9 kB (`SplatMesh.shrinkToBudget` in core).
 
+### Changed
+
+- Developed and tested against three.js r187, with `@types/three@0.187.0`
+  declarations in full: the r186 declaration shim is gone. The peer range
+  stays `three >=0.186.0`, and every fix below also runs on r186.
+- Browser checks run on Playwright 1.64.1. Playwright 1.57 cannot install
+  Chromium's system libraries on GitHub's `ubuntu-latest` (Ubuntu 26.04)
+  runners, which failed the `browser` CI job and the release workflow.
+- Dev tooling patched for open `npm audit` findings: `vite` 6.4.5, `vitest`
+  and `@vitest/coverage-v8` 4.1.12, `wrangler` 4.157, and overrides for
+  `markdown-it` 14.3.3, `sharp` 0.35.5, `undici` 7.30.1 and `minimatch` 11.0.4.
+  TypeDoc still needs `minimatch` 10 (it calls `matchOne`, which 11 removed), so
+  one moderate, dev-only `minimatch` finding remains under `typedoc` until
+  TypeDoc supports 11. `npm audit --omit=dev` is clean; the published package's
+  only dependency is the `three` peer.
+
 ### Fixed
 
+- **Standalone depth of field fades opacity again on three r187.** Without
+  antialias, a `SplatMesh` with a nonzero aperture drew its widened splats at
+  full opacity. r187 re-emits a vertex varying's initial value in every branch
+  that reads it, and the DoF visibility cull read the fade back from its
+  varying. Both display materials now keep the fade in a vertex variable.
+- **Compute projection works on three r187.** r187 rejects an indirect
+  dispatch for a pass built with a count, so `projectionStrategy: 'compute'`
+  threw on its first sort. The indirectly dispatched sort and SH-cache passes
+  are now kernels bounded by the GPU visible count.
+- **Picking several meshes at once works on three r187.** Overlapping pick
+  compiles on one renderer threw inside three's `compileAsync`; picker compiles
+  now run one at a time per renderer.
 - **`UnifiedSplatMesh` sources no longer collapse to specks when a modifier
   reads `ctx.normal` inside an `If`.** The gather built the normal from the
   same covariance node it writes out, and three r186 emitted that shared node

@@ -421,8 +421,11 @@ export function applySplatMaterialGraph(
   const viewDepthVarying = mode === 'pick' ? varying(float(0), 'pickViewDepth') : null;
   // Opacity compensation for screen-space dilation (mip antialias and/or
   // core projected-2D DoF). Always present so DoF can fade opacity when
-  // antialias is off; with both disabled the fade stays 1.
-  const opacityCompensation = varying(float(1), 'vOpacityCompensation');
+  // antialias is off; with both disabled the fade stays 1. The vertex stage
+  // computes it in a var and writes this varying once: three r187 re-emits a
+  // vertex varying's initializer in every block that references it, so a
+  // varying read back in a later branch is reset to 1.
+  const opacityCompensationVarying = varying(float(1), 'vOpacityCompensation');
   const revealMultiplier = uniforms.revealMultiplier ?? float(1);
   // Spark LOD alpha (`.rad`): per-splat σ-cutoff and the recovered `alpha ∈ [0,2]`,
   // computed in the vertex stage and used by both the quad extent and the
@@ -625,6 +628,7 @@ export function applySplatMaterialGraph(
   }
 
   material.vertexNode = Fn(() => {
+    const opacityCompensation = float(1).toVar();
     const {
       splatIndex,
       splatTexel,
@@ -647,7 +651,7 @@ export function applySplatMaterialGraph(
       const cachedClip = projectedClip.element(splatIndex);
       const cachedAxes = projectedAxes.element(splatIndex);
       const cachedParameters = projectedParameters.element(splatIndex);
-      opacityCompensation.assign(cachedParameters.x);
+      opacityCompensationVarying.assign(cachedParameters.x);
       if (vAdjustedStdDev && vAlpha2) {
         vAdjustedStdDev.assign(cachedParameters.y);
         vAlpha2.assign(colorAfterSh.a.mul(lodAlphaScale));
@@ -937,6 +941,7 @@ export function applySplatMaterialGraph(
       }
     });
 
+    opacityCompensationVarying.assign(opacityCompensation);
     return clipPosition;
   })();
 
@@ -955,7 +960,7 @@ export function applySplatMaterialGraph(
         // True Gaussian falloff. |quadPosition| = 1 is `maxStdDev` σ from center.
         opacity = gaussianSplatOpacity(squaredDistance, gaussianExponent, splatColor.a);
       }
-      const alpha = opacity.mul(opacityCompensation).mul(revealMultiplier);
+      const alpha = opacity.mul(opacityCompensationVarying).mul(revealMultiplier);
       // Custom fragmentNode bypasses Three's alpha test. Keep RAD culling
       // opt-in through the material's live threshold (zero by default).
       if (settings.lodAlpha) Discard(alpha.lessThan(materialAlphaTest));
@@ -998,7 +1003,7 @@ export function applySplatMaterialGraph(
       } else {
         gaussian = gaussianSplatOpacity(squaredDistance, gaussianExponent, splatColor.a);
       }
-      const alpha = gaussian.mul(opacityCompensation).mul(revealMultiplier);
+      const alpha = gaussian.mul(opacityCompensationVarying).mul(revealMultiplier);
       Discard(alpha.lessThan(pick.alphaThreshold));
 
       // 24-bit normalized linear view depth → RGB; alpha marks a hit.

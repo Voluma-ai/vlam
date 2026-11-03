@@ -85,8 +85,8 @@
       const preview = document.querySelector('#preview');
       const context = preview.getContext('2d');
       const image = context.createImageData(96, 32);
-      // three.js WebGPU readback retains 256-byte row alignment.
-      const rowBytes = renderer.backend.isWebGPUBackend ? Math.ceil(96 * 4 / 256) * 256 : 96 * 4;
+      // three r186 WebGPU readbacks pad rows to 256 bytes; r187 and WebGL2 pack them.
+      const rowBytes = full.length === 96 * 4 * 32 ? 96 * 4 : Math.ceil(96 * 4 / 256) * 256;
       for (let y = 0; y < 32; y++) {
         const sourceRow = (31 - y) * rowBytes;
         image.data.set(full.subarray(sourceRow, sourceRow + 96 * 4), y * 96 * 4);
