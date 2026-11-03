@@ -18,16 +18,19 @@
  *  - `scale=<f>`: canvas size relative to the test camera's resolution (default 0.5)
  *  - `sh=0`: DC color only (no higher-order SH)
  *  - `static=1`: draw the fixed frame through a plain static `SplatMesh`
+ *  - `gpu=1`: evaluate the curves on the GPU (`csgs-gpu.ts`) through a
+ *    `UnifiedSplatMesh`, WebGPU only; `stageBudget=<bytes>` sets how much of
+ *    the next section it stages per frame
  *  - `nocanvas=1`: render only into the readback target (headless checks)
  */
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { SplatMesh, createWebGPURenderer } from '../lib/core';
-import { createCsgsFrameBuffers, evaluateCsgsFrame } from '../lib/formats/csgs';
+import { UnifiedSplatMesh } from '../lib/unified';
+import { CSGS_STAGE_BYTES_PER_FRAME, CsgsGpuPlaybackMesh } from './csgs-gpu';
 import {
   CSGS_DEMO_SCENE,
   CsgsPlaybackMesh,
-  csgsSectionAt,
   fetchCsgsScene,
   loadCsgsClip,
   type CsgsSceneFile,
@@ -47,6 +50,12 @@ const scale = Number(query.get('scale') ?? '0.5');
 const shBands = query.get('sh') === '0' ? 0 : 3;
 /** `static=1` draws the fixed frame through a plain static `SplatMesh` (no dynamic pool). */
 const staticMesh = query.get('static') === '1';
+/** `gpu=1` plays through `CsgsGpuPlaybackMesh` in a `UnifiedSplatMesh` (WebGPU). */
+const gpuPlayback = query.get('gpu') === '1';
+/** `stageBudget=<bytes>`: GPU staging per frame (default `CSGS_STAGE_BYTES_PER_FRAME`). */
+const stageBudget = query.has('stageBudget')
+  ? Number(query.get('stageBudget'))
+  : CSGS_STAGE_BYTES_PER_FRAME;
 /**
  * `nocanvas=1` renders only into the readback target, never the canvas. The
  * headless browser check needs it: presenting to a canvas on the SwiftShader
@@ -325,18 +334,27 @@ async function run(): Promise<void> {
   const three = new THREE.Scene();
   // The clips are already Y-up (the orbit's up vector is +Y), so the 3DGS
   // 180°-X correction must not be applied.
-  const staticFrame = fixedFrame ?? 0;
+  if (gpuPlayback && backend !== 'webgpu') throw new Error('gpu=1 needs the WebGPU backend.');
+  if (gpuPlayback && !clip.sections.every((s) => s.halfSafe)) {
+    throw new Error('gpu=1: the clip has knots beyond the half-float range.');
+  }
   const mesh = staticMesh
-    ? new SplatMesh(
-        evaluateCsgsFrame(
-          csgsSectionAt(clip, staticFrame)!,
-          staticFrame,
-          createCsgsFrameBuffers(csgsSectionAt(clip, staticFrame)!.count),
-        ),
-        { shBands, orientation: 'source' },
-      )
-    : new CsgsPlaybackMesh(clip, { shBands, orientation: 'source' });
+    ? new SplatMesh((await clip.evaluate(fixedFrame ?? 0)).data, {
+        shBands,
+        orientation: 'source',
+      })
+    : gpuPlayback
+      ? new CsgsGpuPlaybackMesh(clip, renderer, { shBands, orientation: 'source' })
+      : new CsgsPlaybackMesh(clip, { shBands, orientation: 'source' });
   three.add(mesh);
+  // GPU playback moves splats in the modifier, which only the unified draw
+  // sorts by; the mesh stays in the scene graph for its transform.
+  const unified =
+    mesh instanceof CsgsGpuPlaybackMesh ? new UnifiedSplatMesh(renderer, mesh.capacity) : null;
+  if (unified) {
+    unified.addSource(mesh, { visible: true, cacheModifiers: true });
+    three.add(unified);
+  }
   const camera = testCamera
     ? cameraFromTestCamera(testCamera)
     : cameraFromOrbit(scene, canvas.width / canvas.height);
@@ -351,7 +369,8 @@ async function run(): Promise<void> {
   const playback = mesh instanceof CsgsPlaybackMesh ? mesh : null;
   /** Playback counters; the static mesh shows its one frame whole. */
   const stats = () => ({
-    alive: playback?.alive ?? mesh.activeSplatCount,
+    alive:
+      playback?.alive ?? (mesh instanceof CsgsGpuPlaybackMesh ? mesh.alive : mesh.activeSplatCount),
     evalMs: playback?.evalMs ?? 0,
     swapMs: playback?.swapMs ?? 0,
     heldSwaps: playback?.heldSwaps ?? 0,
@@ -366,26 +385,43 @@ async function run(): Promise<void> {
   target.texture.colorSpace = renderer.outputColorSpace;
 
   /**
-   * Evaluates frame time `t` and swaps it into the pool. Returns false, and
-   * leaves the shown frame in place, while the previous sort is in flight.
+   * Moves playback toward frame time `t` (see `CsgsPlaybackMesh.advance`);
+   * `exact` waits for that very frame. Returns whether it is shown.
    */
-  function showFrame(t: number): boolean {
+  function showFrame(t: number, exact: boolean): boolean {
     const frame = Math.floor(t);
+    if (mesh instanceof CsgsGpuPlaybackMesh) {
+      // Seeking shows the whole frame; playing interpolates between frames.
+      // A seek waits for its section without showing a held frame first: the
+      // unified draw publishes frames late, and `measure` must not read one.
+      if (mesh.setTime(exact ? frame : t, !exact)) unified!.invalidateSource(mesh);
+      mesh.stage(stageBudget);
+      if (!mesh.shows(frame)) return false;
+      if (frame !== shownFrame) {
+        shownFrame = frame;
+        scrub.value = String(frame);
+        frameLabel.textContent = `frame ${frame} / ${totalFrames - 1}`;
+      }
+      return true;
+    }
     if (!(mesh instanceof CsgsPlaybackMesh)) {
       shownFrame = frame;
       return true;
     }
-    if (!mesh.showFrame(t)) return false;
-    if (!stage.startsWith('measure')) stage = `frame ${frame}`;
-    shownFrame = mesh.shownFrame;
-    scrub.value = String(frame);
-    frameLabel.textContent = `frame ${frame} / ${totalFrames - 1}`;
-    return true;
+    const shown = mesh.advance(frame, exact);
+    if (mesh.shownFrame !== shownFrame) {
+      shownFrame = mesh.shownFrame;
+      if (!stage.startsWith('measure')) stage = `frame ${shownFrame}`;
+      scrub.value = String(shownFrame);
+      frameLabel.textContent = `frame ${shownFrame} / ${totalFrames - 1}`;
+    }
+    return shown;
   }
 
   function render(): void {
     controls?.update();
-    mesh.update(camera, renderer);
+    if (unified) unified.update(camera);
+    else mesh.update(camera, renderer);
     if (skipCanvas) {
       renderer.setRenderTarget(target);
       renderer.clear();
@@ -438,6 +474,10 @@ async function run(): Promise<void> {
     get alive() {
       return stats().alive;
     },
+    /** The playback mesh, for console debugging. */
+    get mesh() {
+      return mesh;
+    },
     /** Swaps deferred because the previous frame's sort was still in flight. */
     get heldSwaps() {
       return stats().heldSwaps;
@@ -453,11 +493,22 @@ async function run(): Promise<void> {
       playing = false;
       time = frame;
       const before = lastReadback;
-      for (let wait = 0; !showFrame(frame) && wait < 80; wait++) {
+      for (let wait = 0; !showFrame(frame, true) && wait < 80; wait++) {
         render();
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
       render();
+      // A unified draw keeps its last publication on screen until the new
+      // gather's sort lands (slow on SwiftShader); wait until it shows the
+      // current sources rather than reading a stale frame.
+      for (
+        let wait = 0;
+        unified && !unified.getDrawPublicationSnapshot().ready && wait < 200;
+        wait++
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        render();
+      }
       // The worker sort (WebGL2, or `sortStrategy: 'worker'`) keeps the last
       // published frame visible until the new snapshot lands, and draws
       // nothing before the first one; keep rendering until the pixels differ
@@ -471,6 +522,17 @@ async function run(): Promise<void> {
         await new Promise((resolve) => setTimeout(resolve, 25));
         render();
         read = await readFrame(renderer, target, three, camera);
+      }
+      // GPU playback on SwiftShader lands its new section a few frames after
+      // the publication reports ready; the seeked frame is static, so read
+      // until two readbacks agree.
+      for (let settle = 0; unified && settle < 40; settle++) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        render();
+        const next = await readFrame(renderer, target, three, camera);
+        const settled = next.rgb.every((value, i) => value === read.rgb[i]);
+        read = next;
+        if (settled) break;
       }
       lastReadback = read;
       const small = downsample(read);
@@ -510,7 +572,9 @@ async function run(): Promise<void> {
      */
     dispose(): void {
       disposed = true;
+      unified?.dispose();
       mesh.dispose();
+      clip.dispose();
       target.dispose();
       renderer.dispose();
     },
@@ -537,7 +601,7 @@ async function run(): Promise<void> {
       time = (time + ((now - last) / 1000) * scene.fps) % totalFrames;
     }
     last = now;
-    if (Math.floor(time) !== shownFrame || playing) showFrame(time);
+    showFrame(time, !playing);
     render();
     print(
       `${clipName}: ${stats().alive} alive of ${ready.map((s) => s.count).join('/')} · ` +

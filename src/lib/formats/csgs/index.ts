@@ -29,4 +29,5 @@ export {
   csgsShExtent,
   type CsgsPlaybackSection,
   type CsgsFrameBuffers,
+  type CsgsFrameOptions,
 } from './csgs-frame';

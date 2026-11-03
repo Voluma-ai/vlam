@@ -5890,6 +5890,9 @@ async function main(): Promise<void> {
       get logo(): VlamLogo | null {
         return logo;
       },
+      get csgs(): CsgsEffect | null {
+        return csgsEffect;
+      },
       get logoFire(): VolumeFire | null {
         return logoFire;
       },

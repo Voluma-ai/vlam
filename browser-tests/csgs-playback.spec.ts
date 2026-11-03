@@ -97,6 +97,38 @@ test('plays a Faltwerk .csgs clip through a dynamic SplatMesh', async ({ page },
   expect(later.reference!.meanAbsDiff).toBeLessThan(later.reference!.otherPoseAbsDiff / 2);
   await savePng(page, info.outputPath(`${backend}-frame-48.png`));
   expect(pageErrors).toEqual([]);
+
+  if (backend === 'webgpu') {
+    // The GPU path (curves evaluated in a modifier, drawn by a unified mesh)
+    // must match the CPU path: same alive splats and the same reference fit.
+    await page.evaluate(() =>
+      (window as unknown as { __csgsHarness: { dispose(): void } }).__csgsHarness.dispose(),
+    );
+    await page.goto(
+      `/src/viewer/csgs-harness.html?backend=${backend}&scene=${encodeURIComponent(SCENE)}&cam=c00&frame=0&scale=0.5&nocanvas=1&gpu=1`,
+    );
+    await expect(page.locator('#result')).not.toHaveText('', { timeout: 200_000 });
+    const gpuFirst = JSON.parse((await page.locator('#result').textContent())!) as Metrics;
+    expect(gpuFirst.error, gpuFirst.error).toBeUndefined();
+    expect(gpuFirst.errors).toEqual([]);
+    expect(gpuFirst.alive).toBe(first.alive);
+    expect(Math.abs(gpuFirst.coverage - first.coverage)).toBeLessThan(0.01);
+    expect(Math.abs(gpuFirst.reference!.meanAbsDiff - first.reference!.meanAbsDiff)).toBeLessThan(
+      1,
+    );
+    await savePng(page, info.outputPath(`${backend}-gpu-frame-0.png`));
+    const gpuLater = await page.evaluate(() =>
+      (
+        window as unknown as { __csgsHarness: { measure(frame: number): Promise<Metrics> } }
+      ).__csgsHarness.measure(48),
+    );
+    expect(gpuLater.alive).toBe(later.alive);
+    expect(Math.abs(gpuLater.reference!.meanAbsDiff - later.reference!.meanAbsDiff)).toBeLessThan(
+      1,
+    );
+    await savePng(page, info.outputPath(`${backend}-gpu-frame-48.png`));
+    expect(pageErrors).toEqual([]);
+  }
   // Release the GPU before the page closes, so the next check's adapter
   // request does not wait on this page's teardown (SwiftShader).
   await page.evaluate(() =>

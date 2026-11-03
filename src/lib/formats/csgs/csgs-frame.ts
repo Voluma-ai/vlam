@@ -204,17 +204,31 @@ export function sampleCsgsCurve(
   );
 }
 
+/** Options of {@link evaluateCsgsFrame}. */
+export interface CsgsFrameOptions {
+  /**
+   * Write every splat of the section at its own index (`count` is then the
+   * section's), the dead ones with zero opacity and zero covariance, instead
+   * of only the alive splats packed together. Fixed slots let a host update
+   * a frame in place and keep the static SH of the section where it is.
+   */
+  readonly allSlots?: boolean;
+}
+
 /**
  * Evaluates the section at absolute frame time `t` (fractional frames
- * interpolate; liveness uses the whole frame). Only the splats alive at `t`
- * are written, so the returned `count` varies per frame. Views into `buffers`
- * are returned, so consume the result before the next call reuses them.
+ * interpolate; liveness uses the whole frame). By default only the splats
+ * alive at `t` are written, so the returned `count` varies per frame (see
+ * {@link CsgsFrameOptions.allSlots}). Views into `buffers` are returned, so
+ * consume the result before the next call reuses them.
  */
 export function evaluateCsgsFrame(
   section: CsgsPlaybackSection,
   t: number,
   buffers: CsgsFrameBuffers = createCsgsFrameBuffers(section.count),
+  options: CsgsFrameOptions = {},
 ): SplatData {
+  const allSlots = options.allSlots === true;
   const frame = Math.floor(t);
   const span = Math.max(section.nframes - 1, 1);
   const [kP, kR, kS, kO, kD] = section.k as [
@@ -245,6 +259,16 @@ export function evaluateCsgsFrame(
   let count = 0;
   for (let i = 0; i < section.count; i++) {
     if (frame < (section.birthFrame[i] as number) || frame >= (section.deathFrame[i] as number)) {
+      if (!allSlots) continue;
+      // A dead slot draws nothing; its position stays on the curve so it
+      // does not stretch the bounds the depth sort quantizes against.
+      evaluate(vP, oP[i] as number, kP[i] as number, 3);
+      positions[count * 3] = value[0] as number;
+      positions[count * 3 + 1] = value[1] as number;
+      positions[count * 3 + 2] = value[2] as number;
+      covariances.fill(0, count * 6, count * 6 + 6);
+      colors.fill(0, count * 4, count * 4 + 4);
+      count++;
       continue;
     }
     evaluate(vP, oP[i] as number, kP[i] as number, 3);
@@ -277,10 +301,12 @@ export function evaluateCsgsFrame(
     }
     evaluate(vO, oO[i] as number, kO[i] as number, 1);
     colors[count * 4 + 3] = Math.round(sigmoid(value[0] as number) * 255);
-    shPacked.set(
-      section.shPacked.packed.subarray(i * SH_COEFFICIENTS, (i + 1) * SH_COEFFICIENTS),
-      count * SH_COEFFICIENTS,
-    );
+    // Every slot written: the section's packed words are returned whole below.
+    if (!allSlots)
+      shPacked.set(
+        section.shPacked.packed.subarray(i * SH_COEFFICIENTS, (i + 1) * SH_COEFFICIENTS),
+        count * SH_COEFFICIENTS,
+      );
     count++;
   }
   // A frame where every splat is alive keeps the section's packed words verbatim.

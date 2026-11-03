@@ -1,6 +1,6 @@
 /**
  * The demo viewer's `4dgs` effect: Faltwerk `.csgs` clips dancing in the
- * scene. `main.ts` reaches this module only through a dynamic `import()`, so
+ * scene, their curves evaluated on the GPU under the unified draw. `main.ts` reaches this module only through a dynamic `import()`, so
  * the clip decoder, frame evaluator and playback meshes stay out of the
  * viewer's bundle until the effect is first picked.
  *
@@ -12,9 +12,16 @@
  * the clips over the scene.
  */
 import * as THREE from 'three/webgpu';
-import type { SplatMesh, SplatSortMetric } from '../lib/core';
+import type { SplatMesh, SplatMeshOptions, SplatSortMetric } from '../lib/core';
 import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '../lib/unified';
-import { CSGS_DEMO_SCENE, CsgsPlaybackMesh, loadCsgsClip, type CsgsClip } from './csgs-playback';
+import { CSGS_STAGE_BYTES_PER_FRAME, CsgsGpuPlaybackMesh } from './csgs-gpu';
+import {
+  CSGS_DEMO_SCENE,
+  CsgsPlaybackMesh,
+  csgsFrameBounds,
+  loadCsgsClip,
+  type CsgsClip,
+} from './csgs-playback';
 
 /**
  * Where the circle's center stands in known scenes (the dancers' feet), keyed
@@ -147,8 +154,15 @@ export async function mountCsgsEffect(host: CsgsEffectHost): Promise<CsgsEffect 
         .map((url) => url.trim())
         .filter((url) => url.length > 0)
     : DEMO_CLIPS;
-  // Each clip decodes in its own worker, so they load in parallel.
-  const loaded = await Promise.all(urls.map((url) => loadClip(new URL(url, location.href))));
+  // Each clip decodes in its own worker, so they load in parallel. The first
+  // frame's bounds set where each dancer's feet are.
+  const loaded = await Promise.all(
+    urls.map(async (url) => {
+      const clip = await loadClip(new URL(url, location.href));
+      const first = await clip.evaluate(0);
+      return { clip, bounds: csgsFrameBounds(first.data) };
+    }),
+  );
   if (!host.isCurrent()) return null;
   const { scene, splats, camera, renderer, sortMetric } = host;
   // The clips are already Y-up; draw settings follow the scene's, which the
@@ -168,10 +182,17 @@ export async function mountCsgsEffect(host: CsgsEffectHost): Promise<CsgsEffect 
   const towardAngle = Math.atan2(toward.x, toward.z);
   const radius = loaded.length > 1 ? CIRCLE_RADIUS : 0;
 
-  const meshes: CsgsPlaybackMesh[] = [];
+  // With a unified draw the curves run on the GPU (csgs-gpu.ts), which only
+  // that draw sorts correctly; without one (WebGL2) the workers evaluate
+  // frames and the meshes swap them in (csgs-playback.ts).
+  const gpu =
+    host.allowUnified &&
+    supportsUnifiedSplatMesh(renderer) &&
+    loaded.every(({ clip }) => clip.sections.every((s) => s.halfSafe));
+  const meshes: (CsgsPlaybackMesh | CsgsGpuPlaybackMesh)[] = [];
   const groups: THREE.Group[] = [];
-  loaded.forEach((clip, index) => {
-    const mesh = new CsgsPlaybackMesh(clip, {
+  loaded.forEach(({ clip, bounds: clipBounds }, index) => {
+    const options: SplatMeshOptions = {
       orientation: 'source',
       // A dynamic-capacity pool allocates no SH unless asked.
       shBands: 3,
@@ -183,10 +204,12 @@ export async function mountCsgsEffect(host: CsgsEffectHost): Promise<CsgsEffect 
       minContribution: sceneView.minContribution,
       projectedFilterProfile: sceneView.projectedFilterProfile,
       antialias: sceneView.antialias,
-    });
+    };
+    const mesh = gpu
+      ? new CsgsGpuPlaybackMesh(clip, renderer, options)
+      : new CsgsPlaybackMesh(clip, options);
     // Feet on the group's origin: the clip's lowest splats (outliers aside)
     // at its height, the clip's horizontal center over it.
-    const clipBounds = mesh.frameBounds(0);
     const clipCenter = clipBounds.getCenter(new THREE.Vector3());
     mesh.position.set(-clipCenter.x, -clipBounds.min.y, -clipCenter.z);
     // Around the circle, facing outward; the first dancer faces the camera.
@@ -208,7 +231,7 @@ export async function mountCsgsEffect(host: CsgsEffectHost): Promise<CsgsEffect 
   });
 
   let unifiedDraw: UnifiedSplatMesh | null = null;
-  if (host.allowUnified && supportsUnifiedSplatMesh(renderer)) {
+  if (gpu) {
     const capacity = meshes.reduce((sum, mesh) => sum + mesh.capacity, splats.capacity);
     unifiedDraw = new UnifiedSplatMesh(renderer, capacity, {
       performanceProfile: splats.performanceProfile,
@@ -218,7 +241,11 @@ export async function mountCsgsEffect(host: CsgsEffectHost): Promise<CsgsEffect 
       sortMetric,
     });
     unifiedDraw.addSource(splats, { visible: true });
-    for (const mesh of meshes) unifiedDraw.addSource(mesh, { visible: true });
+    // Cached between invalidations: a clip re-gathers (and re-sorts) only
+    // when its time moves.
+    for (const mesh of meshes) {
+      unifiedDraw.addSource(mesh, { visible: true, cacheModifiers: true });
+    }
     scene.add(unifiedDraw);
   } else {
     // Separate meshes do not sort against each other: draw the dancers after
@@ -230,26 +257,31 @@ export async function mountCsgsEffect(host: CsgsEffectHost): Promise<CsgsEffect 
   document.body.append(banner);
 
   const startedAt = performance.now();
-  /** Round-robin start, so every clip gets its turn to swap. */
-  let next = 0;
+  /** Clip that stages first this frame, rotated so none starves. */
+  let firstStager = 0;
   return {
     unifiedDraw,
     update(): void {
       const seconds = (performance.now() - startedAt) / 1000;
-      // A swap evaluates a whole frame on the CPU (~20 ms for 60k splats), so
-      // at most one clip swaps per rendered frame, the others keep theirs.
-      for (let step = 0; step < meshes.length; step++) {
-        const index = (next + step) % meshes.length;
-        const mesh = meshes[index]!;
+      for (const mesh of meshes) {
         const { fps } = mesh.clip.scene;
-        const frame = Math.floor((seconds * fps) % mesh.clip.totalFrames);
-        if (frame === mesh.shownFrame) continue;
-        // A standalone swap waits while its last sort runs (see CsgsPlaybackMesh).
-        if (mesh.showFrame(frame)) {
-          next = index + 1;
-          break;
+        const time = (seconds * fps) % mesh.clip.totalFrames;
+        if (mesh instanceof CsgsGpuPlaybackMesh) {
+          // Interpolated between frames; the GPU evaluates it.
+          if (mesh.setTime(time)) unifiedDraw?.invalidateSource(mesh);
+        } else {
+          // The clip's worker evaluates its next frame; the main thread only
+          // swaps a finished one in (a standalone swap also waits for its sort).
+          mesh.advance(Math.floor(time));
         }
       }
+      // The clips share one staging budget: their sections end together.
+      let budget = CSGS_STAGE_BYTES_PER_FRAME;
+      for (let step = 0; step < meshes.length && budget > 0; step++) {
+        const mesh = meshes[(firstStager + step) % meshes.length]!;
+        if (mesh instanceof CsgsGpuPlaybackMesh) budget -= mesh.stage(budget);
+      }
+      firstStager = (firstStager + 1) % meshes.length;
       // The unified draw updates the meshes itself.
       if (!unifiedDraw) for (const mesh of meshes) mesh.update(camera, renderer);
     },

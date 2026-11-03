@@ -192,4 +192,48 @@ describe('parseCsgs', () => {
     expect(whole.count).toBe(half.count);
     expect(Array.from(whole.positions)).not.toEqual(Array.from(half.positions));
   });
+
+  it('keeps every splat in its own slot with allSlots, dead ones drawing nothing', () => {
+    const decoder = new CsgsDecoder();
+    const section = decoder.decode(readFixture('synth_shared_s0000'));
+    const prepared = prepareCsgsSection(section, decoder.params!);
+    let sawDead = false;
+    for (let f = section.g0; f < section.g0 + section.nframes; f++) {
+      const packed = evaluateCsgsFrame(prepared, f, createCsgsFrameBuffers(prepared.count));
+      const slots = evaluateCsgsFrame(prepared, f, createCsgsFrameBuffers(prepared.count), {
+        allSlots: true,
+      });
+      expect(slots.count).toBe(prepared.count);
+      // The section's own SH words, in slot order.
+      expect(slots.shPacked?.packed).toBe(prepared.shPacked.packed);
+      let j = 0;
+      for (let i = 0; i < prepared.count; i++) {
+        const alive = f >= prepared.birthFrame[i]! && f < prepared.deathFrame[i]!;
+        if (!alive) {
+          sawDead = true;
+          expect(slots.colors[i * 4 + 3], `frame ${f} slot ${i}`).toBe(0);
+          expect(Array.from(slots.covariances.subarray(i * 6, i * 6 + 6))).toEqual([
+            0, 0, 0, 0, 0, 0,
+          ]);
+          expect(
+            Array.from(slots.positions.subarray(i * 3, i * 3 + 3)).every(Number.isFinite),
+          ).toBe(true);
+          continue;
+        }
+        // An alive slot holds exactly what the packed frame holds for it.
+        expect(Array.from(slots.positions.subarray(i * 3, i * 3 + 3))).toEqual(
+          Array.from(packed.positions.subarray(j * 3, j * 3 + 3)),
+        );
+        expect(Array.from(slots.colors.subarray(i * 4, i * 4 + 4))).toEqual(
+          Array.from(packed.colors.subarray(j * 4, j * 4 + 4)),
+        );
+        expect(Array.from(slots.covariances.subarray(i * 6, i * 6 + 6))).toEqual(
+          Array.from(packed.covariances.subarray(j * 6, j * 6 + 6)),
+        );
+        j++;
+      }
+      expect(j).toBe(packed.count);
+    }
+    expect(sawDead).toBe(true);
+  });
 });
