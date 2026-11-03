@@ -1,16 +1,25 @@
-import { existsSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { writeFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * `.csgs` playback proof of concept: decodes a local Faltwerk clip, shows one
+ * `.csgs` playback proof of concept: decodes a Faltwerk clip, shows one
  * frame per section through the dynamic pool, and compares the pinned test
  * camera's render with that camera's reference thumbnail.
  *
- * The clips are third-party captures that stay out of the repository
- * (`assets/csgs-demo/`, gitignored); without them the check is skipped.
+ * The clips are third-party captures with no stated license, linked from the
+ * public faltwerk-demo site rather than copied. The check skips on CI (no
+ * third-party downloads per run) and whenever that site is unreachable.
  */
-const SCENE = resolve(import.meta.dirname, '../assets/csgs-demo/scene_female.json');
+const SCENE = 'https://jameskane05.github.io/faltwerk-demo/scene_female.json';
+
+/** Whether the linked clip answers, so an offline run skips instead of failing. */
+async function sceneReachable(): Promise<boolean> {
+  try {
+    return (await fetch(SCENE, { method: 'HEAD', signal: AbortSignal.timeout(5000) })).ok;
+  } catch {
+    return false;
+  }
+}
 
 interface Metrics {
   backend: string;
@@ -41,7 +50,13 @@ async function savePng(page: Page, path: string): Promise<void> {
 }
 
 test('plays a Faltwerk .csgs clip through a dynamic SplatMesh', async ({ page }, info) => {
-  test.skip(!existsSync(SCENE), 'local .csgs clips are not present');
+  test.skip(
+    Boolean(
+      (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env.CI,
+    ),
+    'linked third-party clips are not fetched on CI',
+  );
+  test.skip(!(await sceneReachable()), 'the linked .csgs clip is unreachable');
   test.setTimeout(240_000);
   const backend = info.project.name === 'chromium-webgpu' ? 'webgpu' : 'webgl2';
   const pageErrors: string[] = [];
@@ -49,7 +64,7 @@ test('plays a Faltwerk .csgs clip through a dynamic SplatMesh', async ({ page },
   await page.goto(
     // `nocanvas`: presenting to a canvas on headless SwiftShader WebGPU destroys
     // the device; the render-target path is what the metrics read anyway.
-    `/src/viewer/csgs-harness.html?backend=${backend}&scene=/csgs-demo/scene_female.json&cam=c00&frame=0&scale=0.5&nocanvas=1`,
+    `/src/viewer/csgs-harness.html?backend=${backend}&scene=${encodeURIComponent(SCENE)}&cam=c00&frame=0&scale=0.5&nocanvas=1`,
   );
   await expect(page.locator('#result')).not.toHaveText('', { timeout: 200_000 });
   const first = JSON.parse((await page.locator('#result').textContent())!) as Metrics;

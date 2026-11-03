@@ -54,3 +54,22 @@ describe('live sorter selection', () => {
     );
   });
 });
+
+describe('unified ownership release', () => {
+  it('forces a standalone re-sort when a unified renderer releases the mesh', () => {
+    const { mesh, internals } = setup();
+    const versions = mesh as unknown as {
+      sortedActiveListVersion: number;
+      activeListVersion: number;
+    };
+    mesh.setUnifiedPickVisibility(true);
+    versions.sortedActiveListVersion = versions.activeListVersion;
+    internals.sortScheduler.markAccepted(20);
+    mesh.setUnifiedPickVisibility(true);
+    expect(internals.sortScheduler.hasPendingForce()).toBe(false);
+    mesh.setUnifiedPickVisibility(null);
+    expect(internals.sortScheduler.hasPendingForce()).toBe(true);
+    expect(versions.sortedActiveListVersion).not.toBe(versions.activeListVersion);
+    mesh.dispose();
+  });
+});

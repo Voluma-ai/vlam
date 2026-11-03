@@ -85,6 +85,9 @@ export default defineConfig({
         // independently of viewer UI churn. Paths are normalized for Windows.
         manualChunks(id) {
           const path = id.replace(/\\/g, '/');
+          // The .csgs evaluator is only reached through the lazy 4dgs effect;
+          // left out of the eager library chunk, it rides along with that.
+          if (path.includes('/src/lib/formats/csgs/')) return undefined;
           if (path.includes('/src/lib/')) return 'vlam';
           if (path.includes('/node_modules/three/')) return 'three';
           return undefined;

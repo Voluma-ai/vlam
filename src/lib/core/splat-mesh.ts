@@ -2012,6 +2012,13 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
       this.picker.rebuildMaterial();
       this.picker.markNeedsUpdate();
     }
+    if (ownershipChanged && visible === null) {
+      // The unified renderer ordered this mesh while it owned the draw; the
+      // standalone order is stale (or was never built), and an unmoved camera
+      // alone would not re-sort it. Force one, like a pooled release does.
+      this.sortedActiveListVersion = -1;
+      this.invalidateSort();
+    }
   }
 
   /**

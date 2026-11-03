@@ -7,9 +7,11 @@
  * nothing in the renderer knows about time. That is the simplest correct
  * path (depth sorting sees the true positions) and the upload cost is what a
  * modifier-based GPU evaluation would remove later.
+ * Loading and the sort-gated swap live in `csgs-playback.ts`, shared with
+ * the demo viewer's `4dgs` effect.
  *
  * Query parameters:
- *  - `scene=<url>`: a Faltwerk `scene_*.json` (default `/csgs-demo/scene_female.json`)
+ *  - `scene=<url>`: a Faltwerk `scene_*.json` (default {@link CSGS_DEMO_SCENE}, linked)
  *  - `backend=webgpu|webgl2`
  *  - `cam=<name>`: pin the view to one of the scene's test cameras (`c00`…)
  *  - `frame=<n>`: show one frame instead of playing; writes metrics to `#result`
@@ -20,47 +22,24 @@
  */
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { SplatMesh, createWebGPURenderer, type SplatRange } from '../lib/core';
+import { SplatMesh, createWebGPURenderer } from '../lib/core';
+import { createCsgsFrameBuffers, evaluateCsgsFrame } from '../lib/formats/csgs';
 import {
-  createCsgsFrameBuffers,
-  evaluateCsgsFrame,
-  type CsgsFrameBuffers,
-  type CsgsPlaybackSection,
-} from '../lib/formats/csgs';
-import type { CsgsDecodeReply, CsgsDecodeRequest } from './csgs-decode-worker';
+  CSGS_DEMO_SCENE,
+  CsgsPlaybackMesh,
+  csgsSectionAt,
+  fetchCsgsScene,
+  loadCsgsClip,
+  type CsgsSceneFile,
+  type CsgsTestCamera,
+} from './csgs-playback';
 
-interface SceneSection {
-  url: string;
-  g0: number;
-  nframes: number;
-}
-interface TestCamera {
-  name: string;
-  /** World → camera rotation, OpenCV axes (x right, y down, z forward). */
-  R: number[][];
-  t: number[];
-  fx: number;
-  fy: number;
-  cx: number;
-  cy: number;
-  w: number;
-  h: number;
-}
-interface SceneFile {
-  fps: number;
-  sections: SceneSection[];
-  orbit: { center: number[]; up: number[]; front: number[]; dist: number; fovy_deg: number };
-  testcams: TestCamera[];
-}
-
-/** Pool rows are 2048 splats wide; a range rounds up to whole rows. */
-const POOL_ROW = 2048;
 /** Thumbnail size of the reference strips (`synth/<clip>/<cam>.jpg`, one per frame). */
 const THUMB = { width: 64, height: 116 } as const;
 
 const query = new URLSearchParams(location.search);
 const backend = query.get('backend') === 'webgl2' ? 'webgl2' : 'webgpu';
-const sceneUrl = new URL(query.get('scene') ?? '/csgs-demo/scene_female.json', location.href);
+const sceneUrl = new URL(query.get('scene') ?? CSGS_DEMO_SCENE, location.href);
 const pinnedCamera = query.get('cam');
 const fixedFrame = query.has('frame') ? Number(query.get('frame')) : null;
 const scale = Number(query.get('scale') ?? '0.5');
@@ -94,57 +73,8 @@ function print(message: string): void {
   statusEl.textContent = message;
 }
 
-async function fetchScene(): Promise<SceneFile> {
-  const response = await fetch(sceneUrl);
-  if (!response.ok) throw new Error(`${sceneUrl.href}: HTTP ${response.status}`);
-  return (await response.json()) as SceneFile;
-}
-
-async function fetchSections(scene: SceneFile): Promise<ArrayBuffer[]> {
-  return Promise.all(
-    scene.sections.map(async (section) => {
-      const url = new URL(section.url, sceneUrl);
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`${url.href}: HTTP ${response.status}`);
-      return response.arrayBuffer();
-    }),
-  );
-}
-
-/** Decodes every section in the worker, resolving once all have arrived. */
-function decodeSections(
-  buffers: ArrayBuffer[],
-  onSection: (index: number, section: CsgsPlaybackSection, decodeMs: number) => void,
-): Promise<void> {
-  const worker = new Worker(new URL('./csgs-decode-worker.ts', import.meta.url), {
-    type: 'module',
-  });
-  return new Promise((resolve, reject) => {
-    let remaining = buffers.length;
-    worker.onmessage = (event: MessageEvent<CsgsDecodeReply>) => {
-      const reply = event.data;
-      if ('error' in reply) {
-        worker.terminate();
-        reject(new Error(reply.error));
-        return;
-      }
-      onSection(reply.index, reply.section, reply.decodeMs);
-      if (--remaining === 0) {
-        worker.terminate();
-        resolve();
-      }
-    };
-    worker.onerror = (event) => {
-      worker.terminate();
-      reject(new Error(event.message));
-    };
-    const request: CsgsDecodeRequest = { id: 1, sections: buffers };
-    worker.postMessage(request, buffers);
-  });
-}
-
 /** A three.js camera at a Faltwerk test camera's pose and intrinsics. */
-function cameraFromTestCamera(testCamera: TestCamera): THREE.PerspectiveCamera {
+function cameraFromTestCamera(testCamera: CsgsTestCamera): THREE.PerspectiveCamera {
   const { R, t, fy, w, h } = testCamera;
   const fov = (2 * Math.atan(h / (2 * fy)) * 180) / Math.PI;
   const camera = new THREE.PerspectiveCamera(fov, w / h, 0.01, 100);
@@ -169,7 +99,7 @@ function cameraFromTestCamera(testCamera: TestCamera): THREE.PerspectiveCamera {
   return camera;
 }
 
-function cameraFromOrbit(scene: SceneFile, aspect: number): THREE.PerspectiveCamera {
+function cameraFromOrbit(scene: CsgsSceneFile, aspect: number): THREE.PerspectiveCamera {
   const { center, front, up, dist, fovy_deg } = scene.orbit;
   const camera = new THREE.PerspectiveCamera(fovy_deg, aspect, 0.01, 100);
   const target = new THREE.Vector3(center[0], center[1], center[2]);
@@ -341,9 +271,7 @@ function compare(
 }
 
 async function run(): Promise<void> {
-  const scene = await fetchScene();
-  const totalFrames = Math.max(...scene.sections.map((s) => s.g0 + s.nframes));
-  const clipName = scene.sections[0]!.url.split('/').slice(-2, -1)[0]!.replace(/_p44$/, '');
+  const scene = await fetchCsgsScene(sceneUrl);
   const testCamera = pinnedCamera
     ? (scene.testcams.find((c) => c.name === pinnedCamera) ?? null)
     : null;
@@ -381,42 +309,33 @@ async function run(): Promise<void> {
   });
 
   stage = 'fetch';
-  print(`Fetching ${scene.sections.length} sections…`);
-  const buffers = await fetchSections(scene);
-  const sectionBytes = buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
-
-  const sections: (CsgsPlaybackSection | null)[] = scene.sections.map(() => null);
-  const decodeMs: number[] = [];
-  stage = 'decode';
-  print(`Decoding ${(sectionBytes / 1e6).toFixed(1)} MB in a worker…`);
-  await decodeSections(buffers, (index, section, ms) => {
-    sections[index] = section;
-    decodeMs[index] = ms;
-    print(
-      `Decoded section ${index + 1}/${sections.length}: ${section.count} splats in ${ms.toFixed(0)} ms`,
-    );
-  });
-  const ready = sections as CsgsPlaybackSection[];
-  const maxCount = Math.max(...ready.map((s) => s.count));
+  const clip = await loadCsgsClip(
+    sceneUrl,
+    (message) => {
+      if (message.startsWith('Decoding')) stage = 'decode';
+      print(message);
+    },
+    scene,
+  );
+  const { totalFrames, decodeMs } = clip;
+  const clipName = clip.name;
+  const ready = clip.sections;
   stage = 'mesh';
 
   const three = new THREE.Scene();
   // The clips are already Y-up (the orbit's up vector is +Y), so the 3DGS
   // 180°-X correction must not be applied.
-  const buffers2: CsgsFrameBuffers = createCsgsFrameBuffers(maxCount);
+  const staticFrame = fixedFrame ?? 0;
   const mesh = staticMesh
     ? new SplatMesh(
         evaluateCsgsFrame(
-          ready.find((s) => (fixedFrame ?? 0) >= s.g0 && (fixedFrame ?? 0) < s.g0 + s.nframes)!,
-          fixedFrame ?? 0,
-          buffers2,
+          csgsSectionAt(clip, staticFrame)!,
+          staticFrame,
+          createCsgsFrameBuffers(csgsSectionAt(clip, staticFrame)!.count),
         ),
         { shBands, orientation: 'source' },
       )
-    : new SplatMesh(
-        { capacity: Math.ceil(maxCount / POOL_ROW) * POOL_ROW + POOL_ROW },
-        { shBands, orientation: 'source' },
-      );
+    : new CsgsPlaybackMesh(clip, { shBands, orientation: 'source' });
   three.add(mesh);
   const camera = testCamera
     ? cameraFromTestCamera(testCamera)
@@ -428,11 +347,15 @@ async function run(): Promise<void> {
     controls.update();
   }
 
-  let range: SplatRange | null = null;
-  let alive = 0;
-  let lastEvalMs = 0;
-  let lastSwapMs = 0;
   let shownFrame = -1;
+  const playback = mesh instanceof CsgsPlaybackMesh ? mesh : null;
+  /** Playback counters; the static mesh shows its one frame whole. */
+  const stats = () => ({
+    alive: playback?.alive ?? mesh.activeSplatCount,
+    evalMs: playback?.evalMs ?? 0,
+    swapMs: playback?.swapMs ?? 0,
+    heldSwaps: playback?.heldSwaps ?? 0,
+  });
   let lastReadback: Readback | null = null;
   let measuring = false;
   let disposed = false;
@@ -442,25 +365,22 @@ async function run(): Promise<void> {
   });
   target.texture.colorSpace = renderer.outputColorSpace;
 
-  /** Evaluates frame time `t` and swaps it into the pool. */
-  function showFrame(t: number): void {
+  /**
+   * Evaluates frame time `t` and swaps it into the pool. Returns false, and
+   * leaves the shown frame in place, while the previous sort is in flight.
+   */
+  function showFrame(t: number): boolean {
     const frame = Math.floor(t);
-    if (!stage.startsWith('measure')) stage = `frame ${frame}`;
-    const section = ready.find((s) => frame >= s.g0 && frame < s.g0 + s.nframes);
-    if (!section) return;
-    const t0 = performance.now();
-    const data = evaluateCsgsFrame(section, t, buffers2);
-    const t1 = performance.now();
-    if (!staticMesh) {
-      if (range) mesh.removeRange(range);
-      range = data.count > 0 ? mesh.appendRange(data) : null;
+    if (!(mesh instanceof CsgsPlaybackMesh)) {
+      shownFrame = frame;
+      return true;
     }
-    lastSwapMs = performance.now() - t1;
-    lastEvalMs = t1 - t0;
-    alive = data.count;
-    shownFrame = frame;
+    if (!mesh.showFrame(t)) return false;
+    if (!stage.startsWith('measure')) stage = `frame ${frame}`;
+    shownFrame = mesh.shownFrame;
     scrub.value = String(frame);
     frameLabel.textContent = `frame ${frame} / ${totalFrames - 1}`;
+    return true;
   }
 
   function render(): void {
@@ -493,6 +413,8 @@ async function run(): Promise<void> {
   let referenceStrip: HTMLImageElement | null = null;
   if (testCamera) {
     const strip = new Image();
+    // Cross-origin strips must be CORS-loaded, or reading them back taints the canvas.
+    strip.crossOrigin = 'anonymous';
     strip.src = new URL(`synth/${clipName}/${testCamera.name}.jpg`, sceneUrl).href;
     referenceStrip = await new Promise<HTMLImageElement | null>((resolve) => {
       strip.onload = () => resolve(strip);
@@ -514,7 +436,11 @@ async function run(): Promise<void> {
       return shownFrame;
     },
     get alive() {
-      return alive;
+      return stats().alive;
+    },
+    /** Swaps deferred because the previous frame's sort was still in flight. */
+    get heldSwaps() {
+      return stats().heldSwaps;
     },
     errors,
     /** Shows one frame and returns its metrics (and a reference diff when pinned to a test camera). */
@@ -527,7 +453,10 @@ async function run(): Promise<void> {
       playing = false;
       time = frame;
       const before = lastReadback;
-      showFrame(frame);
+      for (let wait = 0; !showFrame(frame) && wait < 80; wait++) {
+        render();
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
       render();
       // The worker sort (WebGL2, or `sortStrategy: 'worker'`) keeps the last
       // published frame visible until the new snapshot lands, and draws
@@ -563,9 +492,7 @@ async function run(): Promise<void> {
       return {
         backend,
         frame,
-        alive,
-        evalMs: lastEvalMs,
-        swapMs: lastSwapMs,
+        ...stats(),
         coverage,
         reference,
         width: read.width,
@@ -583,8 +510,6 @@ async function run(): Promise<void> {
      */
     dispose(): void {
       disposed = true;
-      if (range) mesh.removeRange(range);
-      range = null;
       mesh.dispose();
       target.dispose();
       renderer.dispose();
@@ -615,9 +540,9 @@ async function run(): Promise<void> {
     if (Math.floor(time) !== shownFrame || playing) showFrame(time);
     render();
     print(
-      `${clipName}: ${alive} alive of ${ready.map((s) => s.count).join('/')} · ` +
-        `eval ${lastEvalMs.toFixed(1)} ms · swap ${lastSwapMs.toFixed(1)} ms · ` +
-        `decode ${decodeMs.map((ms) => ms.toFixed(0)).join('/')} ms · ${backend}`,
+      `${clipName}: ${stats().alive} alive of ${ready.map((s) => s.count).join('/')} · ` +
+        `eval ${stats().evalMs.toFixed(1)} ms · swap ${stats().swapMs.toFixed(1)} ms · ` +
+        `held swaps ${stats().heldSwaps} · decode ${decodeMs.map((ms) => ms.toFixed(0)).join('/')} ms · ${backend}`,
     );
     requestAnimationFrame(loop);
   };

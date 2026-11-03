@@ -9,8 +9,8 @@ Upstream: [Faltwerk](https://github.com/edrethardo/Faltwerk) (MIT, see
 `THIRD_PARTY_NOTICES.md`), whose `docs/format-csgs.md` is the byte-level
 specification. A public demo with four 64-frame clips lives at
 [jameskane05/faltwerk-demo](https://github.com/jameskane05/faltwerk-demo); the
-clips are third-party captures with no stated license and are not
-redistributed here.
+clips are third-party captures with no stated license; VLAM links them
+(`CSGS_DEMO_SCENE` in `src/viewer/csgs-playback.ts`) rather than copying them.
 
 ## What a stream is
 
@@ -49,7 +49,30 @@ varies per frame, and reuses caller-owned buffers. The harness
 the demo clips), evaluates the displayed frame on the main thread (about 25 ms
 for 50k splats), and swaps the whole set into a dynamic-capacity `SplatMesh`
 with `removeRange` + `appendRange` (about 12 ms). One packed-SH range is chosen
-for the whole stream so the pool never requantizes a later section.
+for the whole stream so the pool never requantizes a later section. A swap
+waits while the previous frame's GPU sort is in flight: the mesh keeps drawing
+that sort's order until it lands, and the swap rewrites the pool rows that
+order indexes, so swapping anyway shows one frame of new splats in the old
+order (an unsorted flash). The status line counts these held swaps.
+
+Loading and the gated swap live in `src/viewer/csgs-playback.ts`
+(`loadCsgsClip`, `CsgsPlaybackMesh`), shared by the harness and the demo
+viewer's **Faltwerk 4DGS** effect (`/demo/?effects=4dgs`). The effect lives in
+`src/viewer/csgs-effect.ts`, which `main.ts` loads with a dynamic `import()`:
+it, the playback mesh and the frame evaluator form one lazy chunk (the viewer
+build keeps `src/lib/formats/csgs/` out of its eager `vlam` chunk), so a
+visitor who never picks the effect downloads none of it.
+
+By default it plays all four clips linked from the public faltwerk-demo GitHub
+Pages site, which serves them with CORS `*` (the clips are linked, not copied,
+until their authors grant permission); `?csgs=<scene_*.json>[,…]` plays others.
+The clips stand in a 0.8 m circle a little above the floor of the Tempel
+courtyard (`CSGS_PLACEMENTS` in `csgs-effect.ts`), or at the center of an
+unknown scene, facing outward with the first toward the camera, under a credit
+banner. On WebGPU the scene and the clips draw through one `UnifiedSplatMesh`,
+so the dancers are depth-sorted with the scene's splats and each other; WebGL2
+layers them over the scene. At most one clip swaps frames per rendered frame
+(round-robin), since each swap evaluates a frame on the main thread.
 
 The clips are already Y-up (`orientation: 'source'`). Faltwerk's test cameras
 are OpenCV world-to-camera poses; `cameraFromTestCamera` in the harness converts
@@ -73,10 +96,10 @@ Known gaps of the proof of concept, in the order an MVP would address them:
 
 `parse-csgs.test.ts` decodes Faltwerk's synthetic version-1 fixtures and
 compares every integer array with the Python reference decoder's dump, plus
-float64 curve samples. `browser-tests/csgs-playback.spec.ts` plays a local
-clip (`assets/csgs-demo/`, gitignored; copy the demo repository's
-`scene_*.json`, `james/` and `synth/` there) pinned to test camera `c00`,
+float64 curve samples. `browser-tests/csgs-playback.spec.ts` plays the
+clip linked from the faltwerk-demo site (`CSGS_DEMO_SCENE`), pinned to test
+camera `c00`,
 and composites the render over that camera's reference thumbnail: the mean
 absolute difference over covered pixels is about 11/255 on both backends for
 frames in both sections, against 15 for DC-only color and 54 for the wrong
-pose. The check is skipped when the clips are absent.
+pose. The check is skipped on CI and when the site is unreachable.

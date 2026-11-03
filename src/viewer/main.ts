@@ -82,6 +82,7 @@ import {
   type VlamLogo,
 } from './vlam-logo';
 import { createProxyDepth, type ProxyDepth } from './proxy-depth';
+import type { CsgsEffect } from './csgs-effect';
 import { createVolumeFire, type VolumeFire } from './volume-fire';
 import { createPostDepthOfField, type PostDepthOfField } from './post-dof';
 import { showError, hideError, isErrorVisible, describeLoadError } from './failure';
@@ -2178,6 +2179,7 @@ async function main(): Promise<void> {
   //   warp     - planet / bowl wrap (worldWarpPreset)
   //   lod      - false-color by resident LOD level (red=finest … blue=coarse)
   //   distance  - false-color by camera distance (same band edges as LCC LODs)
+  //   4dgs     - Faltwerk .csgs 4DGS clips dancing in the scene (csgs-effect.ts, lazy)
   // `?tool=paint` is enough to arm paint without a separate effects value.
   let effectMode = params.get('effects') ?? (toolFromUrl === 'paint' ? 'paint' : null);
   /** Parks the visual effect while paint owns the stack; cleared on a local pick. */
@@ -3043,6 +3045,45 @@ async function main(): Promise<void> {
     }
   };
 
+  // ?effects=4dgs: a Faltwerk .csgs clip (`?csgs=<scene_*.json>`) dancing in
+  // the scene. Everything lives in csgs-effect.ts, imported on first use so
+  // the decoder and playback stay out of the viewer bundle. While it runs on
+  // WebGPU, its unified draw replaces the scene mesh's own update.
+  let csgsEffect: CsgsEffect | null = null;
+  let csgsSequence = 0;
+  const teardownCsgs = (): void => {
+    csgsSequence++;
+    csgsEffect?.dispose();
+    csgsEffect = null;
+  };
+  const mountCsgs = async (): Promise<void> => {
+    teardownCsgs();
+    const sequence = csgsSequence;
+    const isCurrent = (): boolean => sequence === csgsSequence && effectMode === '4dgs' && mounted;
+    try {
+      const { mountCsgsEffect } = await import('./csgs-effect');
+      if (!isCurrent()) return;
+      csgsEffect = await mountCsgsEffect({
+        clipUrl: params.get('csgs'),
+        scene,
+        splats,
+        sceneTitle,
+        camera,
+        renderer,
+        sortMetric,
+        allowUnified: !benchmarkUnified,
+        isCurrent,
+      });
+    } catch (error) {
+      if (sequence !== csgsSequence) return;
+      console.error('4DGS clip failed to load', error);
+      showError({
+        title: '4DGS clip unavailable',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   // ?effects=fog: low ground fog lit by a carried flashlight and one fixed
   // spot, on the same collision proxy as relight (see volumetric-fog.ts).
   let fogMode: VolumetricFogMode | null = null;
@@ -3425,6 +3466,7 @@ async function main(): Promise<void> {
       teardownRelight();
     }
     if (effectMode !== 'fog') teardownFog();
+    if (effectMode !== '4dgs') teardownCsgs();
     syncLogoVisible();
     syncLogoLighting();
     // LOD level channel is only written while the lod effect is active.
@@ -3445,6 +3487,10 @@ async function main(): Promise<void> {
       setEffectModifiers([]);
       updateEffects = null;
       void setupFog(mesh);
+    } else if (effectMode === '4dgs') {
+      setEffectModifiers([]);
+      updateEffects = null;
+      void mountCsgs();
     } else if (effectMode === 'reveal') {
       const reveal = revealPreset({ frequency: 6, edge: 0.06 });
       setEffectModifiers([reveal.modifier]);
@@ -5266,12 +5312,15 @@ async function main(): Promise<void> {
         benchmarkUnified.addSource(splats, { visible: true });
         scene.add(benchmarkUnified);
       }
+      // Before the scene update: the unified draw gathers the clip's new frame.
+      if (mounted && !presenting) csgsEffect?.update();
       const postUpdate = xrPostUpdateEnabled && presenting && mounted && !suppressStreamedUpdate;
       if (!postUpdate) xrPostUpdatePrimed = false;
       if (mounted && !suppressStreamedUpdate && (!postUpdate || !xrPostUpdatePrimed)) {
         const sortThisFrame =
           !presenting || backendName !== 'WebGL2' || xrSortCadence.shouldAttempt(timestamp);
         if (benchmarkUnified) benchmarkUnified.update(camera);
+        else if (csgsEffect?.unifiedDraw) csgsEffect.unifiedDraw.update(camera);
         else splats.update(camera, renderer, sortThisFrame ? undefined : XR_SKIP_SORT_OPTIONS);
         if (postUpdate) xrPostUpdatePrimed = true;
       }
@@ -5396,6 +5445,7 @@ async function main(): Promise<void> {
             const sortThisFrame =
               backendName !== 'WebGL2' || xrSortCadence.shouldAttempt(performance.now());
             if (benchmarkUnified) benchmarkUnified.update(camera);
+            else if (csgsEffect?.unifiedDraw) csgsEffect.unifiedDraw.update(camera);
             else splats.update(camera, renderer, sortThisFrame ? undefined : XR_SKIP_SORT_OPTIONS);
           } catch (error) {
             console.error('XR post-render update failed', error);
@@ -6255,6 +6305,11 @@ function buildEffectPicker(
       title: 'Walk on the planet (positive) / stand in the bowl (negative)',
     },
     { label: 'depth of field', mode: 'dof', title: 'Depth of field via the modifier hook (M13)' },
+    {
+      label: 'Faltwerk 4DGS',
+      mode: '4dgs',
+      title: 'Faltwerk .csgs 4DGS clips dancing in the scene (from the faltwerk-demo site)',
+    },
     { label: 'pulse', mode: 'demo', title: 'Opacity pulse (breathing alpha) + height tint (M7.2)' },
     {
       label: 'LOD levels',
