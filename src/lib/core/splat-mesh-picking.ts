@@ -433,15 +433,28 @@ export class SplatPicker {
       return;
     }
 
-    const compilation = serializeCompile(renderer, () => {
+    const compilation = serializeCompile(renderer, async () => {
       const previousTarget = renderer.getRenderTarget();
+      let pending: Promise<void>;
       try {
         renderer.setRenderTarget(target);
-        // compileAsync captures the render context synchronously, restores its
-        // own render state, then awaits pipeline validation.
-        return renderer.compileAsync(this.scene, camera);
+        // compileAsync captures the render context synchronously, then awaits
+        // pipeline validation. Frames rendered meanwhile must draw to the
+        // host's target, so restore it before the first yield.
+        pending = renderer.compileAsync(this.scene, camera);
       } finally {
         renderer.setRenderTarget(previousTarget);
+      }
+      try {
+        await pending;
+      } finally {
+        // three r187 snapshots the target bound at the call for each precompile
+        // work item and re-binds it whenever precompilation finishes after one
+        // of its yields, so the pick target is bound again once compileAsync
+        // settles. Left there, every later frame draws into the one-pixel
+        // target and the canvas never updates. Restore only when it is still
+        // ours: the host may have bound a target of its own meanwhile.
+        if (renderer.getRenderTarget() === target) renderer.setRenderTarget(previousTarget);
       }
     });
     const version = material.version;

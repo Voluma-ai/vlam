@@ -86,6 +86,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   dispatch for a pass built with a count, so `projectionStrategy: 'compute'`
   threw on its first sort. The indirectly dispatched sort and SH-cache passes
   are now kernels bounded by the GPU visible count.
+- **A pick no longer freezes the canvas on three r187.** r187's `compileAsync`
+  snapshots the render target bound at the call for its precompile work items
+  and re-binds it whenever precompilation finishes after one of its yields, so
+  the picker's one-pixel target stayed bound once the compile settled and every
+  later frame drew into it: the page kept running but the canvas never updated
+  (first seen when dropping an asset into a Voluma scene). The picker now
+  restores the host's render target again after `compileAsync` settles.
 - **Picking several meshes at once works on three r187.** Overlapping pick
   compiles on one renderer threw inside three's `compileAsync`; picker compiles
   now run one at a time per renderer.

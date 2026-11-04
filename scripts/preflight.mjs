@@ -6,7 +6,27 @@ import { failureSummary } from './preflight-failure.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const skipBrowser = process.argv.includes('--no-browser');
+
+/**
+ * Locally, a machine that cannot launch headless Chromium (browser not
+ * installed, missing system libs) skips the Playwright gate instead of failing
+ * the push. CI never skips: a broken browser there must fail.
+ */
+async function headlessChromiumUnavailable() {
+  if (process.env.CI) return undefined;
+  try {
+    const { chromium } = await import('@playwright/test');
+    const browser = await chromium.launch();
+    await browser.close();
+    return undefined;
+  } catch (error) {
+    return String(error instanceof Error ? error.message : error).split('\n')[0];
+  }
+}
+
+const noBrowserFlag = process.argv.includes('--no-browser');
+const browserProblem = noBrowserFlag ? undefined : await headlessChromiumUnavailable();
+const skipBrowser = noBrowserFlag || browserProblem !== undefined;
 // `git push` uses --browser-smoke: one backend spec on both projects catches a
 // broken renderer or dependency drift in seconds. The full Playwright suite
 // runs in PR CI, in release preflight, and in a plain `npm run preflight`.
@@ -55,7 +75,12 @@ function reportFailure(label, output, status) {
   process.exit(status);
 }
 
-if (skipBrowser) console.log('\n==> skipping npm run test:browser');
+if (browserProblem) {
+  console.log(
+    `\n==> skipping npm run test:browser: headless Chromium cannot launch locally (${browserProblem}). ` +
+      'Run `npx playwright install chromium` to enable it; PR CI still runs the suite.',
+  );
+} else if (skipBrowser) console.log('\n==> skipping npm run test:browser');
 else if (browserSmoke) {
   console.log('\n==> browser smoke only; full Playwright suite runs in PR CI');
 }
