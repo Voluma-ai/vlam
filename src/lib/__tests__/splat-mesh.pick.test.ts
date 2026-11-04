@@ -348,6 +348,33 @@ describe('SplatMesh.pick', () => {
     await expect(other.pick(new THREE.Vector2(), camera, renderer)).resolves.toBeNull();
   });
 
+  it('unbinds the pick target that three r187 re-binds after compileAsync yields', async () => {
+    const mesh = createMesh();
+    const camera = new THREE.PerspectiveCamera(60, 2, 0.1, 100);
+    camera.position.set(0, 0, 5);
+    camera.updateMatrixWorld(true);
+    const renderer = createMockRenderer();
+    const hostTarget = new THREE.RenderTarget(4, 4);
+    renderer.setRenderTarget(hostTarget);
+    vi.mocked(renderer.compileAsync).mockImplementationOnce(async () => {
+      // r187 snapshots the target bound at the call for its precompile work
+      // items and re-binds it whenever precompilation finishes after a yield.
+      const compileTarget = renderer.getRenderTarget();
+      expect(compileTarget).not.toBe(hostTarget);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      // The host's target is back before the first yield, so frames rendered
+      // during compilation draw where they should.
+      expect(renderer.getRenderTarget()).toBe(hostTarget);
+      renderer.setRenderTarget(compileTarget);
+    });
+
+    await expect(mesh.pick(new THREE.Vector2(0, 0), camera, renderer)).resolves.toBeNull();
+
+    expect(renderer.compileAsync).toHaveBeenCalledOnce();
+    expect(renderer.getRenderTarget()).toBe(hostTarget);
+    hostTarget.dispose();
+  });
+
   it('serializes concurrent pick requests', async () => {
     const mesh = createMesh();
     const camera = new THREE.PerspectiveCamera(60, 2, 0.1, 100);
