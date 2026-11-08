@@ -599,6 +599,37 @@ describe('UnifiedSplatMesh', () => {
     mesh.dispose();
   });
 
+  // Regression (Voluma timeline crossfade): the host invalidated every source's
+  // gather cache on a frame the gather was held. The live table skipped sources
+  // without a cache entry, so the fading marker drew at full opacity for a frame.
+  it('keeps a crossfade scaled on a held frame after the gather cache is invalidated', () => {
+    const { renderer } = pendingGpuCompletion();
+    const mesh = source();
+    const unified = new UnifiedSplatMesh(renderer, 1);
+    unified.addSource(mesh, { cacheModifiers: true });
+    const scene = new THREE.Scene();
+    const sortScheduler = computeInternals(unified).sortScheduler;
+    const live = unified as unknown as {
+      liveOpacityRangeValues: THREE.Vector4[];
+      liveOpacityCount: { value: number };
+    };
+
+    unified.setSourceOpacity(mesh, 0.4);
+    unified.update(cameraAt(3));
+    unified.onAfterRender(renderer as never, scene, cameraAt(3));
+    expect(live.liveOpacityCount.value).toBe(1);
+
+    unified.invalidateSource(mesh);
+    unified.setSourceOpacity(mesh, 0.1);
+    unified.update(cameraAt(3));
+    expect(sortScheduler.submissionDiagnostics().action).toBe('suppressed');
+    expect(live.liveOpacityCount.value).toBe(1);
+    expect(live.liveOpacityRangeValues[0]!.toArray()).toEqual([0, 1, 0.1, 0]);
+
+    unified.dispose();
+    mesh.dispose();
+  });
+
   it('keeps source picking aligned with unified visibility and restores it on removal', () => {
     const renderer = mockRenderer();
     const mesh = source();

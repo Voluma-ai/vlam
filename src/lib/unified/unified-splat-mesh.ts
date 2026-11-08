@@ -59,6 +59,13 @@ interface SourceRecord {
   originalVisible: boolean;
   lastGather: GatherCacheSnapshot | null;
   /**
+   * Opacity baked into `centers.w` of this source's current work-buffer slice.
+   * Unlike {@link lastGather} (a cache key, cleared by every invalidation) this
+   * tracks what the draw actually holds, so a held frame keeps scaling a live
+   * fade after the host invalidated the cache. `null` before the first gather.
+   */
+  drawnOpacity: number | null;
+  /**
    * Whether this source's fractional opacity is applied live in the draw
    * rather than baked by the gather. Assigned per prepare (bounded table).
    */
@@ -642,6 +649,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       shColorRefresh: options.shColorRefresh === true,
       originalVisible: source.visible,
       lastGather: null,
+      drawnOpacity: null,
       liveOpacity: false,
       view: null,
       registrationOrder: 0,
@@ -1254,6 +1262,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       } else {
         writeGatherCache(record.lastGather, view, sliceOffset, effectiveOpacity);
       }
+      record.drawnOpacity = effectiveOpacity;
     }
     if (onPrepareStage) {
       const endedAt = performance.now();
@@ -1807,13 +1816,16 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     slices.length = 0;
     for (const entry of this.previousLayout) {
       const record = this.sources.find((candidate) => candidate.source === entry.source);
-      const gathered = record?.lastGather;
+      // Read the opacity the drawn slice holds, not the gather cache: a host
+      // invalidation clears `lastGather` while a held frame still draws the old
+      // slice, and skipping it there drew a mid-fade source at full opacity.
+      const gatheredOpacity = record?.drawnOpacity ?? null;
       const view = record?.view;
-      if (!record?.visible || !gathered || !view) continue;
+      if (!record?.visible || gatheredOpacity === null || !view) continue;
       slices.push({
         offset: entry.offset,
         activeCount: entry.activeCount,
-        gatheredOpacity: gathered.opacity,
+        gatheredOpacity,
         currentOpacity: record.opacity * view.revealMultiplier,
       });
     }
