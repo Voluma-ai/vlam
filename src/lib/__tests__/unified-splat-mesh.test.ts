@@ -1354,6 +1354,26 @@ describe('UnifiedSplatMesh', () => {
       mesh.dispose();
     });
 
+    it('re-sorts a stationary camera when a source invalidates its sort displacement', () => {
+      const renderer = mockRenderer();
+      const mesh = source();
+      const unified = new UnifiedSplatMesh(renderer, 1);
+      unified.addSource(mesh);
+      const sort = sorterSpy(unified);
+      const camera = new THREE.PerspectiveCamera();
+      unified.update(camera);
+      expect(sort).toHaveBeenCalledTimes(1);
+      // An animated transform volume moved this source's gathered centers.
+      mesh.invalidateSortDisplacement();
+      unified.update(camera);
+      expect(sort).toHaveBeenCalledTimes(2);
+      // Settled: the displaced order is current, nothing re-sorts.
+      unified.update(camera);
+      expect(sort).toHaveBeenCalledTimes(2);
+      unified.dispose();
+      mesh.dispose();
+    });
+
     it('re-sorts when the camera moves', () => {
       const renderer = mockRenderer();
       const mesh = source();

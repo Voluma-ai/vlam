@@ -316,3 +316,84 @@ describe('buildRadScene prefix-vs-foveated choice', () => {
     expect(scene.foveation).toBeDefined();
   });
 });
+
+/** A single-file `.rad`: the header's one chunk lives inline after it. */
+function singleFileRad(chunk: Uint8Array, count: number): Uint8Array {
+  const meta = {
+    version: 1,
+    type: 'gsplat',
+    count,
+    chunkSize: count,
+    lodTree: true,
+    allChunkBytes: chunk.length,
+    chunks: [{ offset: 0, bytes: chunk.length }],
+  };
+  const metaJson = [...new TextEncoder().encode(JSON.stringify(meta))];
+  const metaPad = [...metaJson, ...Array(roundup8(metaJson.length) - metaJson.length).fill(0)];
+  const header = new Uint8Array(8);
+  new DataView(header.buffer).setUint32(0, RAD_MAGIC, true);
+  new DataView(header.buffer).setUint32(4, metaJson.length, true);
+  return Uint8Array.from([...header, ...metaPad, ...chunk]);
+}
+
+describe('buildRadScene when the server ignores Range', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const options = { budget: 1000, lodBaseDistance: 10, lodMultiplier: 2 };
+  const file = singleFileRad(radcChunk(4, [2, 0, 0, 0], [4, 0, 0, 0]), 4);
+
+  /** Answers a range read with a 206 slice of the file. */
+  function partial(range: string): Response {
+    const [start, end] = range.replace('bytes=', '').split('-').map(Number) as [number, number];
+    const slice = file.slice(start, end + 1);
+    return { ok: true, status: 206, arrayBuffer: () => Promise.resolve(slice.buffer) } as Response;
+  }
+
+  it('reads only the header prefix of a whole-file 200 and cancels the rest', async () => {
+    // A multi-GB capture answered with 200: the body never ends within the test.
+    let cancelled = false;
+    let served = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        // Fail fast if the loader keeps reading, instead of buffering until the
+        // test process exhausts the machine's memory.
+        if (served >= 64) {
+          controller.error(new Error('read past the header probe'));
+          return;
+        }
+        controller.enqueue(served === 0 ? file : new Uint8Array(65_536));
+        served++;
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    vi.stubGlobal('fetch', (_url: string, init?: RequestInit) => {
+      const range = (init?.headers as Record<string, string>).Range!;
+      if (range.startsWith('bytes=0-')) {
+        return Promise.resolve(new Response(endless, { status: 200 }));
+      }
+      return Promise.resolve(partial(range));
+    });
+
+    const scene = await buildRadScene(httpDatasetSource('http://host/scene.rad'), options);
+
+    expect(cancelled).toBe(true);
+    // The probe stops once it holds its 256 KiB, not at the end of the file.
+    expect(served).toBeLessThan(10);
+    expect(scene.contentSplatCount).toBe(4);
+    expect(scene.bounds.isEmpty()).toBe(false);
+  });
+
+  it('still rejects a 200 for a chunk read past byte 0', async () => {
+    vi.stubGlobal('fetch', (_url: string, init?: RequestInit) => {
+      const range = (init?.headers as Record<string, string>).Range!;
+      if (range.startsWith('bytes=0-')) return Promise.resolve(partial(range));
+      return Promise.resolve(new Response(file as BodyInit, { status: 200 }));
+    });
+
+    await expect(
+      buildRadScene(httpDatasetSource('http://host/scene.rad'), options),
+    ).rejects.toThrow(/ignored a Range request \(HTTP 200\)/);
+  });
+});

@@ -10,7 +10,7 @@ import {
 } from './live-opacity';
 import { ComputeSorter, releaseRendererAttributes } from '../core/compute-sorter';
 import { clampDepthOfFieldSettings, type DepthOfFieldSettings } from '../core/depth-of-field';
-import { SplatMesh } from '../core/splat-mesh';
+import { SplatMesh, getSplatSortDisplacementRevision } from '../core/splat-mesh';
 import type { SplatPickOptions, SplatPickResult, UnifiedSourceView } from '../core/splat-mesh';
 import { isFillConstrainedSplatDevice } from '../core/splat-budget';
 import { WebGpuSortScheduler } from '../core/sort-scheduler';
@@ -312,6 +312,12 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   /** Pose signature of the last accepted sort; starts unmatchable (zero scale). */
   private readonly lastSortedState = new THREE.Matrix4().makeScale(0, 0, 0);
   private readonly currentSortState = new THREE.Matrix4();
+  /**
+   * Sum of the admitted sources' `invalidateSortDisplacement` revisions the
+   * current order was built from. Revisions only grow, so a differing sum
+   * means some source's displaced centers moved since the last sort.
+   */
+  private sortedDisplacementKey = 0;
   /**
    * Total admitted splats in the last prepared frame. `removeSource` filters
    * {@link previousLayout} directly, so a tail source's removal can leave the
@@ -1312,6 +1318,15 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     }
 
     let sortReady = offset === 0;
+    // A source's modifiers moved its gathered centers under a stationary
+    // camera (an animated transform volume). Re-sort at the cadence camera
+    // motion gets rather than forcing a sort every frame of the animation.
+    let displacementKey = 0;
+    for (const record of admitted)
+      displacementKey += getSplatSortDisplacementRevision(record.source);
+    const displacedSortDue = (now: number): boolean =>
+      displacementKey !== this.sortedDisplacementKey &&
+      this.sortScheduler.isCadenceDue(offset, now);
     // Only a GPU sort owns the shared order buffer; a worker reply publishes
     // later and must not hold the submission gate (it would suppress the next
     // frame's request once the render acknowledgement arms the fallback).
@@ -1336,6 +1351,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         !geometryInvalidated &&
         !layoutChanged &&
         !this.sortScheduler.hasPendingForce() &&
+        !displacedSortDue(performance.now()) &&
         (offset === 0 || this.readyPublication !== null) &&
         !this.projectedPoseChanged(
           viewCamera.matrixWorldInverse,
@@ -1362,6 +1378,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
           // Clears the pending force the way an accepted vertex sort does, so a
           // later held frame can tell camera-only motion from coalesced content.
           this.sortScheduler.markAccepted(now);
+          if (!forceSort) this.sortedDisplacementKey = displacementKey;
         }
         this.recordProjectedPose(
           viewCamera.matrixWorldInverse,
@@ -1378,7 +1395,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
           : viewInverse;
       if (
         forceSort ||
-        this.sortScheduler.shouldSubmit(sortState, this.lastSortedState, offset, now)
+        this.sortScheduler.shouldSubmit(sortState, this.lastSortedState, offset, now) ||
+        displacedSortDue(now)
       ) {
         if (
           this.sorter.sort(
@@ -1390,6 +1408,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         ) {
           sortSubmitted = true;
           this.lastSortedState.copy(sortState);
+          if (!forceSort) this.sortedDisplacementKey = displacementKey;
           this.sortScheduler.markAccepted(now);
           // Worker replies publish later; gathering a source view is not enough.
           sortReady = this.sorter.kind !== 'worker';

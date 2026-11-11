@@ -16,7 +16,24 @@ export interface SplatSorterOptions {
   sourceIndexAttribute: THREE.StorageBufferAttribute;
   exactDepth?: boolean;
   sortMetric?: SplatSortMetric;
+  /** Moves texture-read centers before the key is measured; see {@link SplatSortCenterAdapter}. */
+  sortCenter?: SplatSortCenterAdapter;
 }
+
+/**
+ * Builds the position a standalone GPU sorter measures for one splat, from its
+ * pool-local `center`. `SplatMesh.sortDisplacement` uses it to sort splats
+ * where its displacement modifiers draw them rather than at their pool
+ * position. It is called inside the key pass's per-splat scope (so it may pin
+ * vars) and must return a mesh-local position. Only texture-read centers take
+ * an adapter: unified work-buffer centers are already displaced, and a
+ * per-source placement pool is not supported.
+ */
+export type SplatSortCenterAdapter = (inputs: {
+  center: THREE.Node<'vec3'>;
+  poolIndex: THREE.Node<'int'>;
+  texel: THREE.Node<'ivec2'>;
+}) => THREE.Node<'vec3'>;
 
 /** The implementation contract shared by all mesh sorters. */
 export interface SplatSorter {

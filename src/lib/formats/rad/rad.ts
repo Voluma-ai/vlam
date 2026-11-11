@@ -613,19 +613,47 @@ async function fetchRange(
   // `.rad` header is small enough to arrive whole from a server that ignores
   // Range. Chunk-*data* reads stay strict: a single-file `.rad` that answers
   // `200` would download the whole capture, so it is rejected.
-  if (response.status !== 206 && !(allowShort && response.status === 200)) {
+  const wholeFile = allowShort && start === 0 && response.status === 200;
+  if (response.status !== 206 && !wholeFile) {
     await discardResponseBody(response);
     throw new Error(
       `${url} ignored a Range request (HTTP ${response.status}); single-file .rad streaming ` +
         'needs a server that answers 206 Partial Content.',
     );
   }
-  const buffer = await response.arrayBuffer();
+  // A `200` body is the whole file, which for a single-file `.rad` can be many
+  // GB: keep only the probed prefix and cancel the rest of the download.
+  const buffer = wholeFile ? await readBodyPrefix(response, length) : await response.arrayBuffer();
   signal?.throwIfAborted();
   if (!allowShort && buffer.byteLength !== length) {
     throw new Error(`${url} returned ${buffer.byteLength} bytes for a ${length}-byte range.`);
   }
   return buffer;
+}
+
+/**
+ * Reads at most `length` bytes from the start of a response body, then cancels
+ * the stream so the rest of the file is never downloaded or buffered.
+ */
+async function readBodyPrefix(response: Response, length: number): Promise<ArrayBuffer> {
+  const reader = response.body?.getReader();
+  if (!reader) return (await response.arrayBuffer()).slice(0, length);
+  const prefix = new Uint8Array(length);
+  let filled = 0;
+  try {
+    while (filled < length) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const take = Math.min(value.byteLength, length - filled);
+      prefix.set(value.subarray(0, take), filled);
+      filled += take;
+    }
+  } finally {
+    await reader.cancel().catch(() => {
+      // The prefix is complete; a failed cancel must not replace it.
+    });
+  }
+  return prefix.buffer.slice(0, filled);
 }
 
 /** Fetches a whole file (an external `.radc` chunk, or a small chunked-set

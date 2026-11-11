@@ -28,9 +28,14 @@ import {
   workgroupBarrier,
   workgroupId,
 } from 'three/tsl';
-import type { SplatSorter } from './sorter';
+import type { SplatSortCenterAdapter, SplatSorter } from './sorter';
 import type { SplatSortMetric } from './splat-mesh-types';
-import { releaseRendererAttributes, type PerSourceSortTransform } from './compute-sorter';
+import {
+  assertSortCenterInputs,
+  displacedSortCenter,
+  releaseRendererAttributes,
+  type PerSourceSortTransform,
+} from './compute-sorter';
 import { sourceWorldTransform } from './splat-mesh-material';
 import {
   RADIAL_RADIX_KEY_BITS,
@@ -109,8 +114,12 @@ export class RadixSorter implements SplatSorter {
     exactDepth?: boolean;
     /** Camera-space ordering key. Default `'depth'`. */
     sortMetric?: SplatSortMetric;
+    /** Displaces texture-read centers before measuring; see `SplatSortCenterAdapter`. */
+    sortCenter?: SplatSortCenterAdapter;
   }) {
     const { capacity, centersTexture, dataTextureWidth, centersBuffer, perSource } = options;
+    const sortCenter = options.sortCenter ?? null;
+    assertSortCenterInputs('RadixSorter', sortCenter, centersBuffer, perSource);
     if (!centersTexture && !centersBuffer) {
       throw new Error('RadixSorter: provide centersTexture or centersBuffer.');
     }
@@ -181,7 +190,12 @@ export class RadixSorter implements SplatSorter {
         // Constructor validation requires a texture when no work buffer is supplied.
         const center = workCenters
           ? workCenters.element(poolIndex).xyz
-          : readSplatCenter(centersTexture!, texel as THREE.Node<'ivec2'>);
+          : displacedSortCenter(
+              sortCenter,
+              readSplatCenter(centersTexture!, texel as THREE.Node<'ivec2'>),
+              int(poolIndex),
+              texel as THREE.Node<'ivec2'>,
+            );
         // Match the draw material's placement before measuring depth, so
         // independently transformed sources interleave in one global order.
         const depthPoint = perSource
