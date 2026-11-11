@@ -194,8 +194,9 @@ Constraints to know (from the
 modifier contract): covariance is pre-baked,
 so `scale` is uniform-only. A view-space rigid rotation must be conjugated
 through `localToView` as described above; under nonuniform scale the resulting
-local matrix need not be orthogonal. Displaced splats keep
-their pre-displacement depth-sort order; modifiers run per splat, not per
+local matrix need not be orthogonal. A standalone mesh sorts displaced splats
+by their pre-displacement depth unless you opt in (see [Sorting displaced
+splats](#sorting-displaced-splats)); modifiers run per splat, not per
 pixel. Pure-TSL modifiers run on both backends; a `wgslFn` escape hatch (as
 in `revealPreset`) is WebGPU-only.
 
@@ -215,6 +216,45 @@ An expression you build yourself outside the branches and then use in three or
 more of them, such as `ctx.normal.mul(2)` passed into the loop, needs its own
 `.toVar()`: three's TSL (r186) can otherwise reuse a temp that only an earlier
 sibling assigned, and a branch sees zero. three fixes this in r187.
+
+## Sorting displaced splats
+
+A modifier that carries a chunk of splats somewhere else (a transform volume,
+an opening door) draws them at the new place, but a standalone mesh's GPU
+sorter still measures their depth at the pool position. When the chunk passes
+through other geometry it blends in the wrong order. List those modifiers in
+`sortDisplacement` as well, and the sorter folds their `offset` into each
+splat's sort key:
+
+```ts
+const carry: SplatModifier = (ctx) => ({ offset: ctx.offset.add(liveOffsetUniform) });
+mesh.modifiers = [carry];
+mesh.sortDisplacement = [carry];
+
+// Whenever the animation writes the modifier's uniforms:
+liveOffsetUniform.value.set(0, 0, -2);
+mesh.invalidateSortDisplacement();
+```
+
+- **Opt-in, per modifier.** An empty list (the default) keeps the original sort
+  pass. Each listed modifier adds its arithmetic to every sort, so list only
+  the ones that move splats. Assigning a changed list rebuilds the sorter, not
+  the material.
+- **Re-sorting.** The order changes with the camera only. Call
+  `invalidateSortDisplacement()` after each uniform write, and the next sort the
+  cadence admits re-sorts with a stationary camera: an animation sorts at the
+  rate camera motion does, not every frame.
+- **Sort context.** The fold starts from a zero offset and offers `index`,
+  `localCenter`, `sourceCenter`, `cameraLocal`, `baseColor` (before SH),
+  `normal` and channels. `worldCenter`, `viewCenter` and `localToView` throw:
+  the sort pass has no camera matrix for them.
+- **Unified draws** already sort the gathered, displaced centers and ignore
+  the list, but `invalidateSortDisplacement()` still re-sorts them under a
+  stationary camera. A source registered with `cacheModifiers` also needs
+  `invalidateSource` so its gather runs again.
+- **Not covered:** the WebGL2 worker sorter (it sorts CPU centers), a
+  `MergedSplatMesh` placement pool, and splats carried outside the mesh
+  bounds, which clamp to the nearest or farthest key.
 
 ## Painting a channel with a surface-aware stroke
 

@@ -25,13 +25,14 @@ import {
 export * from './splat-mesh-types';
 import * as THREE from 'three/webgpu';
 import type { WebGLRenderer } from 'three';
-import { uniform } from 'three/tsl';
+import { mat3, textureLoad, uniform, vec3 } from 'three/tsl';
 import type { SplatData } from './splat-data';
 import { experiments } from '../internal/experiments';
 import { splatCenterUploadData, writeSplatColors } from './splat-center-storage';
 import { type SplatOrientation, yUpTransformForFormat } from './orientation';
 import type { SplatModifier } from './splat-modifier';
-import type { SplatSorter } from './sorter';
+import type { SplatSortCenterAdapter, SplatSorter } from './sorter';
+import { foldSplatModifierStack } from './splat-modifier-stack';
 import {
   ComputeSorter,
   releaseRendererAttributes,
@@ -652,6 +653,12 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
   protected activeListVersion = 0;
   /** The active list the current depth order was built from. */
   private sortedActiveListVersion = -1;
+  /** Modifiers whose offset the standalone GPU sort key includes; see {@link sortDisplacement}. */
+  private sortDisplacementList: readonly SplatModifier[] = [];
+  /** Bumped by {@link invalidateSortDisplacement}; read by a unified owner too. */
+  private sortDisplacementRevision = 0;
+  /** {@link sortDisplacementRevision} the current standalone order was built from. */
+  private sortedDisplacementRevision = 0;
   /** Last active-list version whose matching order reached a real draw. */
   private renderedActiveListVersion = -1;
   /** Active-list version with a post-render notification queued. */
@@ -2228,6 +2235,61 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
       this.buildMaterial(this.materialInputs.textures, this.materialInputs.sh);
       throw error;
     }
+  }
+
+  /**
+   * Modifiers whose `offset` the standalone WebGPU sorter applies before it
+   * measures each splat's depth, so splats a modifier carries elsewhere sort
+   * where they are drawn instead of at their pool position. Opt-in and empty
+   * by default: with an empty list the sort pass is the original graph.
+   *
+   * List only modifiers that are also in {@link modifiers} and that move
+   * splats (a transform or carry volume). The sort folds just these, starting
+   * from a zero offset, with a context that has `index`, `localCenter`,
+   * `sourceCenter`, `cameraLocal`, `baseColor` (before SH), `normal` and
+   * channels; `worldCenter`, `viewCenter` and `localToView` throw there.
+   * Only the offset is used. Each extra modifier adds its arithmetic to every
+   * sort, so keep the list to the ones that need it.
+   *
+   * After changing these modifiers' uniforms, call
+   * {@link invalidateSortDisplacement}, or the order waits for camera motion.
+   * Assigning a changed list rebuilds the sorter (not the material).
+   *
+   * Not applied by the WebGL2 worker sorter, which sorts CPU centers, nor by
+   * a per-source placement pool. A unified draw already sorts gathered,
+   * displaced centers and ignores this list, but still honours
+   * {@link invalidateSortDisplacement}. Splats carried outside the mesh
+   * bounds clamp to the nearest or farthest sort key.
+   */
+  get sortDisplacement(): readonly SplatModifier[] {
+    return this.sortDisplacementList;
+  }
+
+  set sortDisplacement(value: readonly SplatModifier[]) {
+    const unchanged =
+      value.length === this.sortDisplacementList.length &&
+      value.every((modifier, i) => modifier === this.sortDisplacementList[i]);
+    if (unchanged) return;
+    this.sortDisplacementList = [...value];
+    // The adapter is compiled into the sorter's key pass. The worker sorter
+    // never uses it, so it keeps its CPU mirror and pending requests.
+    if (this.sorter !== null && this.sorter.kind !== 'worker') {
+      this.sorter.dispose();
+      this.sorter = null;
+    }
+    this.sortDisplacementRevision++;
+    this.invalidateSort();
+  }
+
+  /**
+   * Marks the displaced positions as moved (a transform volume animated), so
+   * the next sort the cadence admits re-sorts with a stationary camera. Unlike
+   * a content change it does not bypass the cadence: an animation re-sorts at
+   * the rate camera motion does, not on every frame. Cheap; call it on every
+   * uniform write of a displacing modifier.
+   */
+  invalidateSortDisplacement(): void {
+    this.sortDisplacementRevision++;
   }
 
   /**
@@ -4756,7 +4818,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
             this.lastSortedState,
             this.activeCount,
             now,
-          )
+          ) &&
+          !this.displacedSortDue(now)
         ) {
           return false;
         }
@@ -4777,6 +4840,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
     this.sorter ??= this.createSorter(renderer);
     if (!this.sorter) return false;
     this.flushHeldGpuActiveList();
+    const displacementRevision = this.sortDisplacementRevision;
     if (
       this.sorter.sort(
         this.currentModelView,
@@ -4786,6 +4850,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
       )
     ) {
       this.lastSortedState.copy(this.currentSortState);
+      this.sortedDisplacementRevision = displacementRevision;
       this.orderIsForeign = false; // the buffer now holds the primary order again
       // On WebGL2 `now` is 0 - harmless, cadence timing is WebGPU-only; the
       // call still clears the pending-force flag consumed above.
@@ -4839,6 +4904,73 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
   }
 
   /**
+   * Whether {@link invalidateSortDisplacement} moved splats the current order
+   * does not reflect and the cadence admits a sort now. Only a sorter that
+   * applies {@link sortDisplacement} can fix the order, so an empty list (or a
+   * placement pool, which ignores it) never asks.
+   */
+  private displacedSortDue(now: number): boolean {
+    return (
+      this.sortDisplacementList.length > 0 &&
+      this.perSourceSort === null &&
+      this.sortDisplacementRevision !== this.sortedDisplacementRevision &&
+      this.sortScheduler.isCadenceDue(this.activeCount, now)
+    );
+  }
+
+  /**
+   * Builds the sort-key center for {@link sortDisplacement}: the pool center
+   * plus the offset the listed modifiers fold to, in mesh-local space. `null`
+   * when there is nothing to apply, which keeps the sorter's original graph.
+   */
+  private sortCenterAdapter(): SplatSortCenterAdapter | null {
+    const modifiers = this.sortDisplacementList;
+    if (modifiers.length === 0 || this.perSourceSort !== null) return null;
+    const { colorsTexture, covarianceATexture, covarianceBTexture } = this.materialInputs.textures;
+    const localCameraPosition = this.localCameraPosition;
+    const unavailable = (field: string) => (): never => {
+      throw new Error(
+        `SplatMesh.sortDisplacement: a sort displacement modifier read "${field}", ` +
+          'which the sort pass has no camera for. Use localCenter or cameraLocal.',
+      );
+    };
+    return ({ center, poolIndex, texel }) => {
+      const localCenter = center.toVar();
+      const stack = foldSplatModifierStack(modifiers, localCameraPosition, {
+        index: poolIndex.toVar(),
+        localCenter,
+        color: textureLoad(colorsTexture, texel),
+        // Same least-variance axis as the gather pass, from the pool covariance.
+        makeNormal: () => {
+          const covA = textureLoad(covarianceATexture, texel);
+          const covB = textureLoad(covarianceBTexture, texel);
+          const inverse = mat3(
+            vec3(covA.x.add(1e-8), covA.y, covA.z),
+            vec3(covA.y, covA.w.add(1e-8), covB.x),
+            vec3(covA.z, covB.x, covB.y.add(1e-8)),
+          ).inverse();
+          const toCamera = localCameraPosition.sub(localCenter);
+          const axis = inverse.mul(inverse.mul(toCamera)).normalize();
+          return axis.mul(axis.dot(toCamera).sign());
+        },
+        makeChannel: (name) => {
+          const texture = this.channelTexture(name);
+          if (!texture) {
+            throw new Error(
+              `SplatMesh.sortDisplacement: a modifier reads channel "${name}", which is not defined.`,
+            );
+          }
+          return textureLoad(texture, texel).r;
+        },
+        makeWorldCenter: unavailable('worldCenter'),
+        makeViewCenter: unavailable('viewCenter'),
+        makeLocalToView: unavailable('localToView'),
+      });
+      return stack.offset === null ? localCenter : localCenter.add(stack.offset);
+    };
+  }
+
+  /**
    * Writes the camera/mesh state that can change the selected ordering key.
    * Radial distance is invariant under camera rotation, so its state contains
    * the mesh's world linear transform and camera-relative translation only.
@@ -4879,6 +5011,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
         this.sortMetric,
       );
     }
+    const sortCenter = this.sortCenterAdapter();
     const options = {
       renderer,
       capacity: this.poolRows * SplatMesh.DATA_TEXTURE_WIDTH,
@@ -4887,12 +5020,22 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
       splatIndexAttribute: this.splatIndexAttribute,
       sourceIndexAttribute: this.sourceIndexAttribute,
       ...(this.perSourceSort ? { perSource: this.perSourceSort } : {}),
+      ...(sortCenter ? { sortCenter } : {}),
     };
     if (typeof this.sortStrategy !== 'string') {
       return this.sortStrategy.create({ ...options, sortMetric: this.sortMetric });
     }
     return new ComputeSorter({ ...options, sortMetric: this.sortMetric });
   }
+}
+
+/**
+ * @internal The source's {@link SplatMesh.invalidateSortDisplacement} revision,
+ * so a unified owner can re-sort gathered (already displaced) centers when a
+ * source's displacement moves under a stationary camera.
+ */
+export function getSplatSortDisplacementRevision(mesh: SplatMesh): number {
+  return (mesh as unknown as { sortDisplacementRevision: number }).sortDisplacementRevision;
 }
 
 /** @internal Returns the exact source active-list token for unified rendering. */

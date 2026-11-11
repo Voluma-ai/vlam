@@ -16,7 +16,7 @@ import {
   uint,
   uniform,
 } from 'three/tsl';
-import type { SplatSorter } from './sorter';
+import type { SplatSortCenterAdapter, SplatSorter } from './sorter';
 import type { SplatSortMetric } from './splat-mesh-types';
 import { sourceWorldTransform } from './splat-mesh-material';
 import { intersectSortRange, sceneSortRange, type SplatSortRange } from './splat-sort-bounds';
@@ -56,6 +56,35 @@ function computeSorterBucketCount(count: number): number {
     Math.max(rounded, COMPUTE_SORTER_MIN_BUCKET_COUNT),
     COMPUTE_SORTER_MAX_BUCKET_COUNT,
   );
+}
+
+/**
+ * Rejects a {@link SplatSortCenterAdapter} on inputs it cannot apply to:
+ * gathered work-buffer centers are already displaced (and in world space),
+ * and a per-source placement would place the displacement in the wrong frame.
+ */
+export function assertSortCenterInputs(
+  owner: string,
+  sortCenter: SplatSortCenterAdapter | null,
+  centersBuffer: THREE.StorageBufferAttribute | undefined,
+  perSource: PerSourceSortTransform | undefined,
+): void {
+  if (sortCenter && (centersBuffer || perSource)) {
+    throw new Error(`${owner}: sortCenter applies to texture-read centers without placement only.`);
+  }
+}
+
+/**
+ * The position a sort key is measured at: the adapter's displaced center, or
+ * the pool center itself when there is none (the original graph, unchanged).
+ */
+export function displacedSortCenter(
+  sortCenter: SplatSortCenterAdapter | null,
+  center: THREE.Node<'vec3'>,
+  poolIndex: THREE.Node<'int'>,
+  texel: THREE.Node<'ivec2'>,
+): THREE.Node<'vec3'> {
+  return sortCenter ? sortCenter({ center, poolIndex, texel }) : center;
 }
 
 /**
@@ -185,9 +214,12 @@ export class ComputeSorter implements SplatSorter {
     perSource?: PerSourceSortTransform;
     /** Camera-space ordering key. Default `'depth'`. */
     sortMetric?: SplatSortMetric;
+    /** Displaces texture-read centers before measuring; see `SplatSortCenterAdapter`. */
+    sortCenter?: SplatSortCenterAdapter;
   }) {
     const { renderer, capacity, centersTexture, dataTextureWidth, centersBuffer, perSource } =
       options;
+    const sortCenter = options.sortCenter ?? null;
     const { BUCKET_COUNT, BLOCK_SIZE } = ComputeSorter;
     if (!centersTexture && !centersBuffer) {
       throw new Error('ComputeSorter: provide centersTexture or centersBuffer.');
@@ -198,6 +230,7 @@ export class ComputeSorter implements SplatSorter {
     if (centersBuffer && perSource) {
       throw new Error('ComputeSorter: work-buffer centers are already in world space.');
     }
+    assertSortCenterInputs('ComputeSorter', sortCenter, centersBuffer, perSource);
 
     this.renderer = renderer;
     this.indirectDispatchAttribute = options.indirectDispatchAttribute ?? null;
@@ -275,7 +308,12 @@ export class ComputeSorter implements SplatSorter {
         // Constructor validation requires a texture when no work buffer is supplied.
         const center = workCenters
           ? workCenters.element(poolIndex).xyz
-          : readSplatCenter(centersTexture!, texel as THREE.Node<'ivec2'>);
+          : displacedSortCenter(
+              sortCenter,
+              readSplatCenter(centersTexture!, texel as THREE.Node<'ivec2'>),
+              poolIndex,
+              texel as THREE.Node<'ivec2'>,
+            );
 
         // In a unified pool each splat lives in its source's local frame; move
         // it to world space by that source's matrix before measuring depth, so

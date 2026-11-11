@@ -2,6 +2,7 @@
 export type {
   SplatSortStrategy,
   SplatSortStrategyFactory,
+  SplatSortCenterAdapter,
   SplatSorter,
   SplatSorterOptions,
 } from './strategy-types';

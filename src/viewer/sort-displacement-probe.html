@@ -1,0 +1,103 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Sort displacement probe</title>
+<canvas id="canvas"></canvas>
+<pre id="result"></pre>
+<script type="module">
+  // Checks that `SplatMesh.sortDisplacement` sorts splats where a displacement
+  // modifier draws them. Two interleaved sets share one depth span; a modifier
+  // carries set B farther away. Each step reads the GPU order back and counts
+  // back-to-front inversions against the *displaced* depth.
+  import * as THREE from 'three/webgpu';
+  import { float, uniform, vec3 } from 'three/tsl';
+  import { createWebGPURenderer, SplatMesh } from '../lib/core';
+  import { exactSort, radixSort } from '../lib/sorting/radix';
+  const output = document.querySelector('#result');
+  try {
+    const renderer = await createWebGPURenderer({
+      canvas: document.querySelector('canvas'),
+      requireWebGpu: true,
+      antialias: false,
+    });
+    renderer.setSize(4, 4, false);
+    await renderer.init();
+    const requested = new URLSearchParams(location.search).get('sort') ?? 'counting';
+    const strategy =
+      requested === 'radix' ? radixSort() : requested === 'exact' ? exactSort() : requested;
+    const mesh = new SplatMesh({ capacity: 8192 }, { sortIntervalMs: 0 });
+    await mesh.setSortStrategy(strategy);
+    const scene = new THREE.Scene();
+    scene.add(mesh);
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
+
+    // Set A at x = 100, set B at x = 101, both z ∈ [-1, -21] in 0.01 steps.
+    // Two anchors (set A) widen the bounds to z ∈ [-0.5, -80] so the carried
+    // set stays inside the quantized range.
+    const perSet = 2000;
+    const count = perSet * 2 + 2;
+    const positions = new Float32Array(count * 3);
+    const colors = new Uint8Array(count * 4);
+    const covariances = new Float32Array(count * 6);
+    for (let i = 0; i < count; i++) {
+      const anchor = i >= perSet * 2;
+      positions[i * 3] = !anchor && i % 2 === 1 ? 101 : 100;
+      positions[i * 3 + 2] = anchor
+        ? i === count - 1
+          ? -80
+          : -0.5
+        : -1 - (((Math.floor(i / 2) * 7919) % perSet) / 100);
+      colors[i * 4 + 3] = 255;
+      covariances[i * 6] = covariances[i * 6 + 3] = covariances[i * 6 + 5] = 0.001;
+    }
+    mesh.appendRange({ count, positions, colors, covariances });
+
+    const shift = uniform(-40);
+    const carry = (ctx) => ({
+      offset: ctx.offset.add(
+        vec3(0, 0, ctx.localCenter.x.greaterThan(100.5).select(shift, float(0))),
+      ),
+    });
+    mesh.modifiers = [carry];
+
+    const frame = async () => {
+      // A few frames so a held submission gate releases between reads.
+      for (let i = 0; i < 3; i++) {
+        mesh.update(camera, renderer);
+        renderer.render(scene, camera);
+        await renderer.backend.device.queue.onSubmittedWorkDone();
+      }
+      const order = new Float32Array(
+        await renderer.getArrayBufferAsync(mesh.geometry.getAttribute('splatIndex')),
+      ).slice();
+      const active = mesh.activeCount;
+      let inversions = 0;
+      let last = -Infinity;
+      for (let i = 0; i < active; i++) {
+        const slot = order[i];
+        const x = mesh.backing.centers[slot * 4];
+        const z = mesh.backing.centers[slot * 4 + 2] + (x > 100.5 ? shift.value : 0);
+        if (z < last - (requested === 'counting' ? 0.005 : 0.001)) inversions++;
+        last = z;
+      }
+      return inversions;
+    };
+
+    const reports = {};
+    mesh.sortDisplacement = [carry];
+    reports.displaced = await frame();
+    // Moved without telling the mesh: the stationary camera keeps the old order.
+    // At -10 set B overlaps set A, so the stale "B behind A" order shows.
+    shift.value = -10;
+    reports.staleWithoutInvalidate = await frame();
+    mesh.invalidateSortDisplacement();
+    reports.afterInvalidate = await frame();
+    // Without the opt-in the sort measures pool positions (the original bug).
+    mesh.sortDisplacement = [];
+    reports.withoutDisplacement = await frame();
+    output.textContent = JSON.stringify(reports);
+    mesh.dispose();
+    renderer.dispose();
+  } catch (error) {
+    output.textContent = String(error.stack ?? error);
+  }
+</script>

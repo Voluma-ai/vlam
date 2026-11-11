@@ -25,6 +25,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- **`SplatMesh.sortDisplacement` and `invalidateSortDisplacement()`: sort
+  splats where displacement modifiers draw them.** A standalone WebGPU mesh
+  folds the listed modifiers' `offset` into its counting, radix and exact sort
+  keys, so a chunk a transform volume carries through other geometry blends in
+  the right order. `invalidateSortDisplacement()` re-sorts a stationary camera
+  at the sort cadence after an animated uniform write, on standalone meshes
+  and in unified draws. Opt-in and empty by default (the original sort pass).
+  The WebGL2 worker sorter and placement pools are not covered. See
+  [Sorting displaced splats](docs/guide/effects-and-modifiers.md#sorting-displaced-splats).
+
 - **Experimental `@voluma/vlam/formats/csgs`: Faltwerk 4D Gaussian splat
   sections.** A proof of concept for dynamic (4DGS) playback: `CsgsDecoder`
   decodes version-1 `.csgs` sections (rANS entropy coding, per-splat hat
