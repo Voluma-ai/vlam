@@ -198,10 +198,60 @@ describe('public API surface (vlam)', () => {
   });
 });
 
+describe('public API surface (host helpers)', () => {
+  it('maps sort strategy names to mesh options and back', () => {
+    const names = ['counting', 'worker', 'radix', 'exact'] as const;
+    for (const name of names) {
+      const strategy = radixSorting.sortStrategyFromName(name);
+      expect(vlam.sortStrategyLabel(strategy)).toBe(name);
+    }
+    expect(radixSorting.sortStrategyFromName('counting')).toBe('counting');
+    // One shared factory per name, so two meshes compare equal on strategy.
+    expect(radixSorting.sortStrategyFromName('radix')).toBe(
+      radixSorting.sortStrategyFromName('radix'),
+    );
+    expect(radixSorting.sortStrategyFromName('exact')).toMatchObject({
+      kind: 'radix',
+      exactDepth: true,
+    });
+    expectTypeOf<vlam.SplatSortStrategyName>().toEqualTypeOf<
+      'counting' | 'worker' | 'radix' | 'exact'
+    >();
+  });
+
+  it('exports the pool sizing a host needs to cap a streamed budget', () => {
+    expect(vlam.MAX_DRAWABLE_SPLATS).toBe(2 ** 24);
+    expect(vlam.streamedPoolCapacityFactor({ pageTable: true, stagedSwaps: true })).toBe(2);
+    expect(vlam.streamedPoolCapacityFactor({ pageTable: false, stagedSwaps: true })).toBe(1.5);
+    expect(
+      vlam.streamedPoolCapacityFactor({
+        pageTable: false,
+        stagedSwaps: true,
+        profile: { gpuClass: 'discrete' },
+      }),
+    ).toBe(1.75);
+  });
+
+  it('exports writeCovariance for host-built SplatData', () => {
+    const covariances = new Float32Array(6);
+    vlam.writeCovariance(covariances, 0, 2, 3, 4, 1, 0, 0, 0);
+    expect(Array.from(covariances)).toEqual([4, 0, 0, 9, 0, 16]);
+  });
+
+  it('names the timing and publication records hosts read', () => {
+    expectTypeOf<vlam.SplatUpdateTimings['sortSubmitMs']>().toBeNumber();
+    expectTypeOf<streaming.StreamedSplatUpdateTimings['demandReconcileMs']>().toBeNumber();
+    expectTypeOf<streaming.StreamedSplatUpdateTimings>().toMatchTypeOf<vlam.SplatUpdateTimings>();
+    expectTypeOf<unified.UnifiedDrawPublicationSnapshot['instanceCount']>().toBeNumber();
+    expectTypeOf<unified.UnifiedSplatPerformanceTimings['gatherMs']>().toBeNumber();
+  });
+});
+
 describe('public API surface (experimental strategies)', () => {
   it('keeps radix sorting and compute projection on their opt-in entries', () => {
     expect(typeof radixSorting.radixSort).toBe('function');
     expect(typeof radixSorting.exactSort).toBe('function');
+    expect(typeof radixSorting.sortStrategyFromName).toBe('function');
     expect(typeof computeProjection.computeProjection).toBe('function');
     expect('radixSort' in vlam).toBe(false);
     expect('computeProjection' in vlam).toBe(false);

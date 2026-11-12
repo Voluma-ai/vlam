@@ -25,6 +25,22 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- **Public settle accessors on `StreamedSplatMesh`.** `hasPendingWork`,
+  `isLodCommitBlockedBySort` and `displayGeneration` let a host that sequences
+  crossfades or loading covers around streamed loading read that state without
+  reaching into private fields. `SplatMesh.activeListRevision` and
+  `lastUpdateTimings` (typed `SplatUpdateTimings`, and
+  `StreamedSplatUpdateTimings` with the streaming stages) do the same for
+  diagnostics. (#126)
+- **Exports for values hosts used to mirror.** Core now exports
+  `streamedPoolCapacityFactor` and `MAX_DRAWABLE_SPLATS` (to cap a streamed
+  budget by what the pool textures can hold), `sortStrategyLabel` with the
+  `SplatSortStrategyName` type, and `writeCovariance` (for `SplatData` built
+  from scales and rotations). `@voluma/vlam/sorting/radix` exports
+  `sortStrategyFromName`, which turns `'radix'` and `'exact'` into their
+  factories; `@voluma/vlam/unified` re-exports the
+  `UnifiedDrawPublicationSnapshot` and `UnifiedSplatPerformanceTimings` types.
+  (#130, #133, #132 types, #139 item 2)
 - **`ModifierSlots` hooks for hosts with a unified draw.** `occupiedSlots`
   lists the filled slots in order, the `onOccupancyChange` constructor option
   is called when a slot fills or empties (not on an occupant swap), and

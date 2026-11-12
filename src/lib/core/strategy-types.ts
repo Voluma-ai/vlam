@@ -190,10 +190,18 @@ export function isAutomaticProjectionStrategy(strategy: SplatProjectionStrategy)
   return isComputeProjectionStrategy(strategy) && strategy.mode === 'auto';
 }
 
-/** Returns the public label used by diagnostics and memory accounting. */
-export function sortStrategyLabel(
-  strategy: SplatSortStrategy,
-): 'counting' | 'worker' | 'radix' | 'exact' {
+/**
+ * The four sort strategies by name, as diagnostics, URL parameters and host
+ * configuration spell them. `'radix'` and `'exact'` are names only: a mesh takes
+ * them as factories, see `sortStrategyFromName` in `@voluma/vlam/sorting/radix`.
+ */
+export type SplatSortStrategyName = 'counting' | 'worker' | 'radix' | 'exact';
+
+/**
+ * The name of a sort strategy, for diagnostics and memory accounting. The
+ * reverse of `sortStrategyFromName` in `@voluma/vlam/sorting/radix`.
+ */
+export function sortStrategyLabel(strategy: SplatSortStrategy): SplatSortStrategyName {
   if (strategy === 'counting' || strategy === 'worker') return strategy;
   return strategy.exactDepth ? 'exact' : 'radix';
 }

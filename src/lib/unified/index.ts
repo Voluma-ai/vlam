@@ -10,6 +10,8 @@
 export {
   UnifiedSplatMesh,
   supportsUnifiedSplatMesh,
+  type UnifiedDrawPublicationSnapshot,
+  type UnifiedSplatPerformanceTimings,
   type UnifiedSplatPickResult,
   type UnifiedSplatMeshOptions,
   type UnifiedSplatPrepareStage,

@@ -3,6 +3,7 @@ import * as THREE from 'three/webgpu';
 import { compareDemand } from '../formats/rad/frontier-demand';
 import { experiments } from '../internal/experiments';
 import type { FrontierDemandReply } from '../formats/rad/frontier-worker-protocol';
+import type { StreamedSplatMesh } from '../streaming/streamed-splat-mesh';
 import { createStreamedMeshFixture } from './helpers/streamed-mesh-fixture';
 
 describe('Spark-matching demand order', () => {
@@ -325,6 +326,39 @@ describe('page-table demand reconciliation', () => {
     inner.fetching.clear();
     inner.pendingWork = false;
     expect(inner.isStreaming).toBe(false);
+  });
+
+  it('exposes settle state to hosts through public accessors', () => {
+    const inner = fixture();
+    const mesh = inner as unknown as StreamedSplatMesh;
+    const state = inner as unknown as {
+      lodCommitBlockedBySort: boolean;
+      pageTableDisplayGeneration: number;
+    };
+
+    inner.pendingWork = true;
+    expect(mesh.hasPendingWork).toBe(true);
+    inner.pendingWork = false;
+    expect(mesh.hasPendingWork).toBe(false);
+
+    expect(mesh.isLodCommitBlockedBySort).toBe(false);
+    state.lodCommitBlockedBySort = true;
+    expect(mesh.isLodCommitBlockedBySort).toBe(true);
+
+    // -1 until a generation reaches the draw.
+    expect(mesh.displayGeneration).toBe(-1);
+    state.pageTableDisplayGeneration = 4;
+    expect(mesh.displayGeneration).toBe(4);
+
+    const revision = mesh.activeListRevision;
+    inner.replaceActiveIndices(Uint32Array.from([0, 1]));
+    expect(mesh.activeListRevision).toBeGreaterThan(revision);
+
+    // Base mesh counters and the streaming stages in one record.
+    const timings = mesh.lastUpdateTimings;
+    expect(timings.sortSubmitMs).toBe(0);
+    expect(timings.demandReconcileMs).toBe(0);
+    expect(timings.stageGroupMs).toBe(0);
   });
 
   it('keeps retry state (and its backoff) for a failed chunk a complete demand still wants', async () => {

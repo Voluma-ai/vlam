@@ -7,7 +7,11 @@
  * @module sorting/radix
  */
 import { RadixSorter } from '../../core/radix-sorter';
-import type { SplatSortStrategyFactory } from '../../core/strategy-types';
+import type {
+  SplatSortStrategy,
+  SplatSortStrategyFactory,
+  SplatSortStrategyName,
+} from '../../core/strategy-types';
 
 function createRadixStrategy(exactDepth: boolean): SplatSortStrategyFactory {
   return {
@@ -27,4 +31,19 @@ export function radixSort(): SplatSortStrategyFactory {
  */
 export function exactSort(): SplatSortStrategyFactory {
   return createRadixStrategy(true);
+}
+
+const RADIX_SORT = /* @__PURE__ */ radixSort();
+const EXACT_SORT = /* @__PURE__ */ exactSort();
+
+/**
+ * Maps a strategy name to the `sortStrategy` option a mesh accepts: `'counting'`
+ * and `'worker'` pass through, `'radix'` and `'exact'` become their factories
+ * (one shared instance each). It lives in this entry so that naming a radix
+ * strategy is what pulls the radix code into the bundle.
+ */
+export function sortStrategyFromName(name: SplatSortStrategyName): SplatSortStrategy {
+  if (name === 'radix') return RADIX_SORT;
+  if (name === 'exact') return EXACT_SORT;
+  return name;
 }

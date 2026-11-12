@@ -39,6 +39,7 @@ import {
   type SplatChannelOptions,
   type SplatMeshOptions,
   type SplatUpdateOptions,
+  type SplatUpdateTimings,
 } from '../core/splat-mesh';
 import { splatMeshSourceLabel } from '../core/splat-mesh-types';
 import type { SplatData } from '../core/splat-data';
@@ -420,6 +421,42 @@ export type InitialRevealState =
       readonly readyGroups: number;
       readonly totalGroups: number;
     };
+
+/** Per-update CPU stages a streamed mesh adds to the base timings, all in milliseconds. */
+const createUpdateStageTimings = () => ({
+  cameraSyncMs: 0,
+  shouldRescheduleMs: 0,
+  rescheduleMs: 0,
+  baseUpdateMs: 0,
+  demandPoseMs: 0,
+  demandStateMs: 0,
+  demandReconcileMs: 0,
+  workerPostMs: 0,
+  diagnosticTraceMs: 0,
+  lcc2LevelUpdateMs: 0,
+  lcc2BudgetSelectMs: 0,
+  lcc2CollectCutMs: 0,
+  diagnosticSnapshotMs: 0,
+  classicCameraSelectMs: 0,
+  classicDesiredBookkeepingMs: 0,
+  classicGroupBuildMs: 0,
+  classicSwapApplyMs: 0,
+  classicFinalizeMs: 0,
+  performanceEventMs: 0,
+  applyGroupMs: 0,
+  substituteCoverageMs: 0,
+  canStageGroupMs: 0,
+  groupFullyStagedMs: 0,
+  stageGroupMs: 0,
+});
+
+/**
+ * {@link StreamedSplatMesh.lastUpdateTimings}: the base mesh timings plus the
+ * streaming stages (demand, LOD selection, staging). The stage names are
+ * diagnostic and may change between minor releases.
+ */
+export type StreamedSplatUpdateTimings = SplatUpdateTimings &
+  Readonly<ReturnType<typeof createUpdateStageTimings>>;
 
 /** Options for {@link StreamedSplatMesh.load}. */
 export interface StreamedSplatMeshOptions extends SplatMeshOptions {
@@ -848,32 +885,7 @@ export class StreamedSplatMesh extends SplatMesh {
   /** Worker-side RAD plan cap; separate default, shared explicit override. */
   private readonly pageTableWriteCap: number;
   private readonly onPerformanceEvent: ((event: StreamedSplatPerformanceEvent) => void) | undefined;
-  private readonly updateStageTimings = {
-    cameraSyncMs: 0,
-    shouldRescheduleMs: 0,
-    rescheduleMs: 0,
-    baseUpdateMs: 0,
-    demandPoseMs: 0,
-    demandStateMs: 0,
-    demandReconcileMs: 0,
-    workerPostMs: 0,
-    diagnosticTraceMs: 0,
-    lcc2LevelUpdateMs: 0,
-    lcc2BudgetSelectMs: 0,
-    lcc2CollectCutMs: 0,
-    diagnosticSnapshotMs: 0,
-    classicCameraSelectMs: 0,
-    classicDesiredBookkeepingMs: 0,
-    classicGroupBuildMs: 0,
-    classicSwapApplyMs: 0,
-    classicFinalizeMs: 0,
-    performanceEventMs: 0,
-    applyGroupMs: 0,
-    substituteCoverageMs: 0,
-    canStageGroupMs: 0,
-    groupFullyStagedMs: 0,
-    stageGroupMs: 0,
-  };
+  private readonly updateStageTimings = createUpdateStageTimings();
   private compactionCount = 0;
 
   private readonly cache = new Map<number, CachedChunk>();
@@ -3910,8 +3922,42 @@ export class StreamedSplatMesh extends SplatMesh {
     this.pendingWork = true;
   }
 
-  protected override getUpdateTimings() {
+  protected override getUpdateTimings(): StreamedSplatUpdateTimings {
     return { ...super.getUpdateTimings(), ...this.updateStageTimings };
+  }
+
+  /** The base timings plus the streaming stages; a new object on every read. */
+  override get lastUpdateTimings(): StreamedSplatUpdateTimings {
+    return this.getUpdateTimings();
+  }
+
+  /**
+   * True while this mesh has queued work for a coming {@link update}: a
+   * schedule, an append, a retry or a staged commit. Unlike
+   * {@link isStreaming} it does not count chunk fetches that are still in
+   * flight, so a host can tell "nothing left to apply" from "nothing left to
+   * download".
+   */
+  get hasPendingWork(): boolean {
+    return this.pendingWork;
+  }
+
+  /**
+   * True while a staged classic LOD cut waits for the running GPU sort before
+   * it can commit. {@link isStreaming} stays false for this wait.
+   */
+  get isLodCommitBlockedBySort(): boolean {
+    return this.lodCommitBlockedBySort;
+  }
+
+  /**
+   * The `.rad` page-table generation the draw currently shows, `-1` before the
+   * first one and on a mesh without a page table. A host that sequences work
+   * around a camera move compares two readings: a higher number means a newer
+   * selection reached the screen.
+   */
+  get displayGeneration(): number {
+    return this.pageTableDisplayGeneration;
   }
 
   override update(
