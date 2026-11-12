@@ -303,6 +303,12 @@ export type SplatUpdateTimings = Readonly<{
  *    (palettes are per-file and cannot be merged here).
  */
 export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudgetTenant {
+  /**
+   * Brand shared by every VLAM splat draw (`SplatMesh` and its subclasses, and
+   * both unified meshes), for code that must find them in a scene without
+   * importing each class.
+   */
+  readonly isSplatDraw = true as const;
   private static readonly DATA_TEXTURE_WIDTH = SPLAT_DATA_TEXTURE_WIDTH;
 
   /**
@@ -2268,7 +2274,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
    * splats (a transform or carry volume). The sort folds just these, starting
    * from a zero offset, with a context that has `index`, `localCenter`,
    * `sourceCenter`, `cameraLocal`, `baseColor` (before SH), `normal` and
-   * channels; `worldCenter`, `viewCenter` and `localToView` throw there.
+   * channels; `worldCenter`, `viewCenter`, `localToView` and `cameraWorld` throw there.
    * Only the offset is used. Each extra modifier adds its arithmetic to every
    * sort, so keep the list to the ones that need it.
    *
@@ -4986,6 +4992,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
         makeWorldCenter: unavailable('worldCenter'),
         makeViewCenter: unavailable('viewCenter'),
         makeLocalToView: unavailable('localToView'),
+        makeCameraWorld: unavailable('cameraWorld'),
       });
       return stack.offset === null ? localCenter : localCenter.add(stack.offset);
     };

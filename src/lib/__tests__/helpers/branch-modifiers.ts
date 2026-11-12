@@ -33,6 +33,7 @@ export const contextReads: Record<string, ContextRead> = {
   baseColor: { field: (ctx) => ctx.baseColor, toVec3: (v) => (v as THREE.Node<'vec4'>).rgb },
   worldCenter: { field: (ctx) => ctx.worldCenter, toVec3: asVec3 },
   viewCenter: { field: (ctx) => ctx.viewCenter, toVec3: asVec3 },
+  cameraWorld: { field: (ctx) => ctx.cameraWorld!, toVec3: asVec3 },
   localToView: {
     field: (ctx) => ctx.localToView!,
     toVec3: (v) => (v as THREE.Node<'mat3'>).mul(vec3(1, 0, 0)),

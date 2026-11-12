@@ -292,6 +292,16 @@ describe('UnifiedSplatMesh', () => {
     first.dispose();
   });
 
+  it('carries the shared splat-draw brand, as its sources do', () => {
+    const renderer = mockRenderer();
+    const first = source();
+    const unified = new UnifiedSplatMesh(renderer, 4);
+    expect(unified.isSplatDraw).toBe(true);
+    expect(first.isSplatDraw).toBe(true);
+    unified.dispose();
+    first.dispose();
+  });
+
   it('gathers a newly visible source after an empty frame without a draw callback', () => {
     const renderer = mockRenderer();
     const first = source();

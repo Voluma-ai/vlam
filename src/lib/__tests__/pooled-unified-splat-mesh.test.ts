@@ -293,6 +293,15 @@ describe('PooledUnifiedSplatMesh', () => {
     pool.dispose();
   });
 
+  it('carries the shared splat-draw brand', () => {
+    const renderer = mockRenderer();
+    const pool = new SplatPool({ capacity: W });
+    const pooled = new PooledUnifiedSplatMesh(renderer, pool);
+    expect(pooled.isSplatDraw).toBe(true);
+    pooled.dispose();
+    pool.dispose();
+  });
+
   it('discards an in-flight order when membership changes and re-sorts the new set', () => {
     sent.length = 0;
     const renderer = mockRenderer();

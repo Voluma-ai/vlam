@@ -190,6 +190,12 @@ export function supportsPooledUnifiedSplatMesh(renderer: object): boolean {
  * @experimental May change in a minor release.
  */
 export class PooledUnifiedSplatMesh extends THREE.Mesh {
+  /**
+   * Brand shared by every VLAM splat draw (`SplatMesh` and its subclasses, and
+   * both unified meshes), for code that must find them in a scene without
+   * importing each class.
+   */
+  readonly isSplatDraw = true as const;
   /** Type marker for hosts that cannot import this module eagerly. */
   readonly isPooledUnifiedSplatMesh = true as const;
   readonly pool: SplatPool;

@@ -1,5 +1,5 @@
 import * as THREE from 'three/webgpu';
-import { bool, uniform } from 'three/tsl';
+import { bool, uniform, vec4 } from 'three/tsl';
 import { describe, expect, it, vi } from 'vitest';
 import type { SplatModifier } from '../core/splat-modifier';
 import { WorkBuffer, WorkBufferGather } from '../unified/work-buffer-gather';
@@ -186,6 +186,22 @@ describe('WorkBufferGather modifier branch scoping', () => {
     expect(build(branchShapes['read per branch']!(contextReads.normal!))).toContain(
       'tsl_inverse_mat3(',
     );
+  });
+
+  it('builds ctx.cameraWorld from the source matrix, not the render camera', () => {
+    // TSL cameraPosition has no camera in a compute pass, so a read of it
+    // would throw while the gather builds.
+    const gather = new WorkBufferGather({
+      capacity: 4,
+      sourceCapacity: 4,
+      sourceIndex: new THREE.StorageBufferAttribute(new Uint32Array(4), 1),
+      ...textures(4),
+      modifiers: [(ctx) => ({ color: vec4(ctx.cameraWorld!, ctx.color.a) })],
+    });
+    expect(() =>
+      buildComputeWgsl((gather as unknown as { pass: THREE.ComputeNode }).pass),
+    ).not.toThrow();
+    gather.dispose();
   });
 
   it('flags a read of a var only a sibling branch assigned', () => {

@@ -247,6 +247,12 @@ export function supportsUnifiedSplatMesh(renderer: object): boolean {
  * `SplatSceneBudget` (`@voluma/vlam/loaders`) to keep their sum below it.
  */
 export class UnifiedSplatMesh extends THREE.Mesh {
+  /**
+   * Brand shared by every VLAM splat draw (`SplatMesh` and its subclasses, and
+   * both unified meshes), for code that must find them in a scene without
+   * importing each class.
+   */
+  readonly isSplatDraw = true as const;
   private readonly workBuffer: WorkBuffer;
   private readonly workSourceIndex: THREE.StorageBufferAttribute;
   /** The sorted draw-order buffer; lives outside the geometry, freed on dispose. */

@@ -15,6 +15,8 @@
  *  - {@link worldWarpPreset}: camera-centered sphere wrap (planet / bowl).
  *  - {@link lodLevelDebugModifier}: false-color view of a streamed mesh's
  *    resident LOD levels.
+ *  - {@link renderSplatDepth}: alpha-tested splat depth into a render target,
+ *    for fog, depth of field and other post effects.
  *  - {@link depthOfFieldPreset}: stylized modifier-based depth-of-field (M13).
  *    For physically-modeled camera DoF prefer the core
  *    {@link SplatMesh.setDepthOfField} / `UnifiedSplatMesh.setDepthOfField`
@@ -716,3 +718,5 @@ export function lodLevelDebugModifier(channel: string = LOD_LEVEL_CHANNEL): Spla
     return { color: vec4(rgb, ctx.color.a) };
   };
 }
+
+export { renderSplatDepth, type SplatDepthOptions } from './splat-depth';
