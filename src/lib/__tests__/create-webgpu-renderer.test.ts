@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createWebGPURenderer,
+  isWebGpuBackend,
   type WebGPURendererGpu,
   type WebGPURendererGpuAdapter,
   type WebGPURendererGpuDevice,
@@ -280,5 +281,63 @@ describe('createWebGPURenderer', () => {
     await createWebGPURenderer({ gpu: none.gpu, powerPreference: null });
     expect(none.adapterOptions()).toEqual({});
     expect(lastParams()).not.toHaveProperty('powerPreference');
+  });
+});
+
+describe('createWebGPURenderer - rejectFallbackAdapter', () => {
+  const fallbackGpu = (flag: 'info' | 'legacy') => {
+    const requestDevice = vi.fn(() => Promise.resolve(DEVICE));
+    const adapter: WebGPURendererGpuAdapter = {
+      features: new Set(['core-features-and-limits']),
+      limits: LIMITS,
+      requestDevice,
+      ...(flag === 'info' ? { info: { isFallbackAdapter: true } } : { isFallbackAdapter: true }),
+    };
+    return {
+      gpu: { requestAdapter: () => Promise.resolve(adapter) } as WebGPURendererGpu,
+      requestDevice,
+    };
+  };
+
+  it.each(['info', 'legacy'] as const)(
+    'uses WebGL2 for a software adapter (%s flag)',
+    async (flag) => {
+      const { gpu, requestDevice } = fallbackGpu(flag);
+      await createWebGPURenderer({ gpu, rejectFallbackAdapter: true });
+      expect(requestDevice).not.toHaveBeenCalled();
+      expect(lastParams()).toMatchObject({ forceWebGL: true });
+      expect(lastParams()).not.toHaveProperty('device');
+      expect(lastParams()).not.toHaveProperty('requiredLimits');
+    },
+  );
+
+  it('keeps a software adapter when the option is off', async () => {
+    const { gpu, requestDevice } = fallbackGpu('info');
+    await createWebGPURenderer({ gpu });
+    expect(requestDevice).toHaveBeenCalledOnce();
+    expect(lastParams()).not.toHaveProperty('forceWebGL');
+    expect(lastParams()).toMatchObject({ device: DEVICE });
+  });
+
+  it('keeps a hardware adapter when the option is on', async () => {
+    const { gpu } = fakeGpu();
+    await createWebGPURenderer({ gpu, rejectFallbackAdapter: true });
+    expect(lastParams()).not.toHaveProperty('forceWebGL');
+    expect(lastParams()).toMatchObject({ device: DEVICE });
+  });
+
+  it('throws for a software adapter when WebGPU is required', async () => {
+    const { gpu } = fallbackGpu('info');
+    await expect(
+      createWebGPURenderer({ gpu, rejectFallbackAdapter: true, requireWebGpu: true }),
+    ).rejects.toThrow(/fallback \(software\) WebGPU adapter/);
+  });
+});
+
+describe('isWebGpuBackend', () => {
+  it('reads the backend flag and is false before init', () => {
+    expect(isWebGpuBackend({ backend: { isWebGPUBackend: true } } as never)).toBe(true);
+    expect(isWebGpuBackend({ backend: { isWebGLBackend: true } } as never)).toBe(false);
+    expect(isWebGpuBackend({ backend: undefined } as never)).toBe(false);
   });
 });

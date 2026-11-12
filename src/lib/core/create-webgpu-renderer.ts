@@ -36,6 +36,10 @@ export interface WebGPURendererGpuDevice {
 /** The adapter surface `createWebGPURenderer` reads limits and features from. */
 export interface WebGPURendererGpuAdapter {
   readonly features: ReadonlySet<string>;
+  /** Chrome 130+ reports a software adapter here. */
+  readonly info?: { readonly isFallbackAdapter?: boolean };
+  /** Older Chromium builds report a software adapter on the adapter itself. */
+  readonly isFallbackAdapter?: boolean;
   readonly limits: {
     readonly maxStorageBufferBindingSize: number;
     readonly maxBufferSize: number;
@@ -91,6 +95,16 @@ export interface CreateWebGPURendererOptions extends Omit<
    * @defaultValue `false`
    */
   requireWebGpu?: boolean;
+  /**
+   * Treat a software (fallback) adapter, such as SwiftShader, as no adapter
+   * and use three's WebGL2 backend instead. Chromium offers only a software
+   * adapter on GPUs outside its WebGPU allowlist (common on Linux); splats on
+   * it hang or render black, while WebGL2 on the same machine still reaches
+   * the real GPU. With {@link requireWebGpu} set, a fallback adapter throws.
+   *
+   * @defaultValue `false`
+   */
+  rejectFallbackAdapter?: boolean;
   /**
    * The WebGPU entry point to probe. Defaults to `navigator.gpu`; pass `null`
    * to skip the probe entirely (tests, non-DOM hosts).
@@ -236,6 +250,7 @@ export async function createWebGPURenderer(
   const {
     powerPreference = 'high-performance',
     requireWebGpu = false,
+    rejectFallbackAdapter = false,
     xrCompatible = false,
     gpu,
     ...rendererOptions
@@ -245,6 +260,9 @@ export async function createWebGPURenderer(
 
   let adapter: WebGPURendererGpuAdapter | null = null;
   let device: WebGPURendererGpuDevice | null = null;
+  // Set when a rejected fallback adapter must keep three from requesting the
+  // same software adapter again on its own.
+  let forceWebGL = false;
 
   if (rendererOptions.forceWebGL === true) {
     if (requireWebGpu) {
@@ -279,6 +297,16 @@ export async function createWebGPURenderer(
         }
         warn('No WebGPU adapter was available; falling back to WebGL2.');
       }
+      if (adapter && rejectFallbackAdapter && isFallbackAdapter(adapter)) {
+        if (requireWebGpu) {
+          throw new Error(
+            'vlam: only a fallback (software) WebGPU adapter was available, and requireWebGpu and rejectFallbackAdapter are set.',
+          );
+        }
+        // Not a warning: the host asked for this outcome.
+        adapter = null;
+        forceWebGL = true;
+      }
       if (adapter) {
         try {
           device = await adapter.requestDevice({
@@ -304,6 +332,7 @@ export async function createWebGPURenderer(
   const renderer = new WebGPURenderer({
     antialias: true,
     ...rendererOptions,
+    ...(forceWebGL ? { forceWebGL: true } : {}),
     ...powerOptions,
     // Without a device, leave three to its own request - it fails the same way,
     // but the WebGL2 fallback behind it is still the right outcome.
@@ -317,4 +346,18 @@ export async function createWebGPURenderer(
   // a GPUDevice wrapper even while three still holds the C++ device.
   if (adapter) retainGpuAdapter(renderer, adapter);
   return renderer;
+}
+
+/** True for a software adapter, such as Chromium's SwiftShader fallback. */
+function isFallbackAdapter(adapter: WebGPURendererGpuAdapter): boolean {
+  return adapter.info?.isFallbackAdapter === true || adapter.isFallbackAdapter === true;
+}
+
+/**
+ * Whether a renderer runs on three's WebGPU backend, as opposed to its WebGL2
+ * fallback. Valid after `renderer.init()`; before that the backend is not
+ * chosen yet and this returns `false`.
+ */
+export function isWebGpuBackend(renderer: Pick<WebGPURenderer, 'backend'>): boolean {
+  return (renderer.backend as { isWebGPUBackend?: boolean } | undefined)?.isWebGPUBackend === true;
 }

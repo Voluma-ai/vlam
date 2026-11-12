@@ -156,3 +156,53 @@ describe('ModifierSlots - rebuild vs uniform-update contract (E5)', () => {
     expect(graphRevision(mesh)).toBe(rev + 1);
   });
 });
+
+describe('ModifierSlots - host hooks for unified draws', () => {
+  const tint: SplatModifier = (ctx) => ({ color: vec4(ctx.color.rgb.mul(0.5), ctx.color.a) });
+  const fade: SplatModifier = (ctx) => ({ color: vec4(ctx.color.rgb, ctx.color.a.mul(0.5)) });
+
+  it('lists occupied slots in slot order with a reference stable while occupancy holds', () => {
+    const slots = new ModifierSlots(['reveal', 'sdf', 'opacity']);
+    expect(slots.occupiedSlots).toEqual([]);
+    slots.set('opacity', fade);
+    slots.set('reveal', tint);
+    const occupied = slots.occupiedSlots;
+    expect(occupied).toEqual(['reveal', 'opacity']);
+    // Swapping an occupant keeps the same occupancy, so the same list.
+    slots.set('reveal', fade);
+    expect(slots.occupiedSlots).toBe(occupied);
+    slots.clear('reveal');
+    expect(slots.occupiedSlots).toEqual(['opacity']);
+  });
+
+  it('calls onOccupancyChange when a slot fills or empties, not on a swap or no-op', () => {
+    const onOccupancyChange = vi.fn();
+    const slots = new ModifierSlots(['reveal', 'opacity'], { onOccupancyChange });
+    slots.set('reveal', tint);
+    expect(onOccupancyChange).toHaveBeenCalledTimes(1);
+    expect(onOccupancyChange).toHaveBeenLastCalledWith(slots);
+    // The callback sees the new state.
+    onOccupancyChange.mockImplementationOnce((s: ModifierSlots) =>
+      expect(s.occupiedSlots).toEqual(['reveal', 'opacity']),
+    );
+    slots.set('opacity', fade);
+    expect(onOccupancyChange).toHaveBeenCalledTimes(2);
+    expect(slots.set('reveal', fade)).toBe(true); // structural for the material...
+    expect(onOccupancyChange).toHaveBeenCalledTimes(2); // ...but not for occupancy
+    slots.set('reveal', fade); // no-op
+    slots.clear('reveal');
+    expect(onOccupancyChange).toHaveBeenCalledTimes(3);
+    slots.clear('reveal'); // already empty
+    expect(onOccupancyChange).toHaveBeenCalledTimes(3);
+  });
+
+  it('returns the stack without the named slots and rejects unknown names', () => {
+    const slots = new ModifierSlots(['reveal', 'sdf', 'opacity']);
+    slots.set('reveal', tint);
+    slots.set('opacity', fade);
+    expect(slots.modifiersExcluding(['opacity'])).toEqual([tint]);
+    expect(slots.modifiersExcluding(['sdf'])).toEqual([tint, fade]);
+    expect(slots.modifiersExcluding([])).toEqual(slots.modifiers);
+    expect(() => slots.modifiersExcluding(['lighting'])).toThrow(/unknown slot "lighting"/);
+  });
+});

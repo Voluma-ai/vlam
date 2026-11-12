@@ -105,6 +105,21 @@ export interface SplatOutputs {
  */
 export type SplatModifier = (context: SplatContext) => SplatOutputs;
 
+/** Options for {@link ModifierSlots}. */
+export interface ModifierSlotsOptions {
+  /**
+   * Called after a {@link ModifierSlots.set} changes **which** slots are
+   * occupied (a slot going from empty to filled, or back). Replacing an
+   * occupant with a different function is a structural change for the
+   * material but leaves occupancy alone, so it does not call this.
+   *
+   * Hosts driving a unified draw use it to call
+   * `UnifiedSplatMesh.invalidateSource`, since whether a source's gathered
+   * output can be cached depends on which slots are occupied.
+   */
+  onOccupancyChange?: (slots: ModifierSlots) => void;
+}
+
 /** Anything with a `modifiers` list - {@link ModifierSlots.apply} target. */
 export interface ModifierStackTarget {
   modifiers: readonly SplatModifier[];
@@ -138,9 +153,15 @@ export class ModifierSlots {
   /** Compacted stack in slot order; rebuilt only on structural change so the
    * array reference itself is stable across uniform-only frames. */
   private compacted: readonly SplatModifier[] = [];
+  /** Occupied slot names in slot order; replaced only when occupancy changes. */
+  private occupied: readonly string[] = [];
+  private readonly onOccupancyChange: ((slots: ModifierSlots) => void) | undefined;
 
-  /** @param order Slot names, in fold order. Must be non-empty and unique. */
-  constructor(order: readonly string[]) {
+  /**
+   * @param order Slot names, in fold order. Must be non-empty and unique.
+   * @param options See {@link ModifierSlotsOptions}.
+   */
+  constructor(order: readonly string[], options: ModifierSlotsOptions = {}) {
     if (order.length === 0) {
       throw new Error('ModifierSlots: the slot order must name at least one slot.');
     }
@@ -148,6 +169,7 @@ export class ModifierSlots {
       throw new Error(`ModifierSlots: duplicate slot name in order [${order.join(', ')}].`);
     }
     this.order = [...order];
+    this.onOccupancyChange = options.onOccupancyChange;
   }
 
   /** The declared slot names, in fold order. */
@@ -178,6 +200,11 @@ export class ModifierSlots {
       if (occupant) next.push(occupant);
     }
     this.compacted = next;
+    // Filling or emptying a slot changes occupancy; swapping an occupant does not.
+    if ((current === null) !== (modifier === null)) {
+      this.occupied = this.order.filter((slot) => this.occupants.has(slot));
+      this.onOccupancyChange?.(this);
+    }
     return true;
   }
 
@@ -197,6 +224,39 @@ export class ModifierSlots {
    */
   get modifiers(): readonly SplatModifier[] {
     return this.compacted;
+  }
+
+  /**
+   * Names of the occupied slots, in slot order. The reference is stable while
+   * occupancy is unchanged.
+   */
+  get occupiedSlots(): readonly string[] {
+    return this.occupied;
+  }
+
+  /**
+   * The compacted stack without the named slots, in slot order. For a host
+   * that provides some effects through the draw owner instead - for example
+   * leaving out a per-mesh opacity modifier because the unified mesh's
+   * `setSourceOpacity` covers it. Returns a new array; its elements are the
+   * occupants themselves, so it compares element-wise equal while the
+   * occupants are unchanged. Unknown names throw, as in {@link set}.
+   */
+  modifiersExcluding(names: readonly string[]): readonly SplatModifier[] {
+    for (const name of names) {
+      if (!this.order.includes(name)) {
+        throw new Error(
+          `ModifierSlots: unknown slot "${name}" (declared: ${this.order.join(', ')}).`,
+        );
+      }
+    }
+    const result: SplatModifier[] = [];
+    for (const slot of this.order) {
+      if (names.includes(slot)) continue;
+      const occupant = this.occupants.get(slot);
+      if (occupant) result.push(occupant);
+    }
+    return result;
   }
 
   /**

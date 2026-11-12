@@ -118,6 +118,21 @@ slots.apply(mesh); // free: compacted array reference is stable
 Empty slots cost nothing (an all-empty stack is byte-for-byte the unhooked
 graph), unknown slot names throw, and `apply` is safe to call every frame.
 
+Hosts that drive a unified draw get three more hooks. `occupiedSlots` lists
+the filled slots in order. The `onOccupancyChange` constructor option is
+called when a slot fills or empties (not when an occupant is swapped for
+another function), which is when a unified mesh has to re-read the source:
+
+```ts
+const slots = new ModifierSlots(['reveal', 'sdf', 'opacity'], {
+  onOccupancyChange: () => unified.invalidateSource(mesh),
+});
+```
+
+`modifiersExcluding(['opacity'])` returns the stack without the named slots,
+for an effect the draw owner provides itself (here per-source opacity through
+`setSourceOpacity`).
+
 ## The rebuild vs uniform-update contract
 
 Structural changes recompile; value changes never do. Filling, clearing, or
