@@ -38,6 +38,7 @@ export {
   type UnifiedSourceView,
   type SplatMeshOptions,
   type SplatUpdateOptions,
+  type SplatUpdateTimings,
   type SplatSortStrategy,
   type SplatSortStrategyFactory,
   type ComputeProjectionStrategy,
@@ -103,6 +104,7 @@ export {
   suggestAdaptivePixelRatio,
   ADAPTIVE_PIXEL_RATIO_WARMUP_FRAMES,
   estimateSplatPoolBytes,
+  streamedPoolCapacityFactor,
   type SplatBudgetOptions,
   type SplatCostClass,
   type SplatDeviceProfile,
@@ -131,7 +133,10 @@ export {
   type WebGpuRequiredLimits,
   type WebGpuPowerPreference,
 } from './webgpu-limits';
+export { writeCovariance } from './splat-data';
 export type { SplatData, SplatShData, SplatPackedShData } from './splat-data';
+export { sortStrategyLabel, type SplatSortStrategyName } from './strategy-types';
+export { MAX_DRAWABLE_SPLATS } from '../formats/splat-count-limits';
 // `SplatData.format` and `SplatBudgetOptions.format` name these unions.
 export type { SplatDataFormat, StreamedSplatFormat } from '../loaders/loading';
 export type {

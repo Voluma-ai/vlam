@@ -246,6 +246,27 @@ interface RangeRecord {
   activePrefix?: number;
 }
 
+/** CPU timings and counters of one {@link SplatMesh.update}; see {@link SplatMesh.lastUpdateTimings}. */
+export type SplatUpdateTimings = Readonly<{
+  activeListMs: number;
+  uploadMs: number;
+  sortSubmitMs: number;
+  stagingTextureAllocations: number;
+  textureCopyCount: number;
+  textureCopyBytes: number;
+  activeListUpdateRanges: number;
+  sortSubmissions: number;
+  sortPasses: number;
+  projectionSubmissions: number;
+  projectionPasses: number;
+  sortSerial: number;
+  sortSubmissionFrame: number;
+  sortAction: 'none' | 'submitted' | 'coalesced' | 'suppressed';
+  sortTracking: 'pending' | 'gpu-completion' | 'render-ack-fallback' | null;
+  sortAcknowledgementMs: number | null;
+  sortInputCount: number;
+}>;
+
 /**
  * Renders a set of 3D Gaussians with three.js's WebGPURenderer.
  *
@@ -2644,26 +2665,26 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
   }
 
   /** Returns the render-preparation CPU timings for the current update. */
-  protected getUpdateTimings(): Readonly<{
-    activeListMs: number;
-    uploadMs: number;
-    sortSubmitMs: number;
-    stagingTextureAllocations: number;
-    textureCopyCount: number;
-    textureCopyBytes: number;
-    activeListUpdateRanges: number;
-    sortSubmissions: number;
-    sortPasses: number;
-    projectionSubmissions: number;
-    projectionPasses: number;
-    sortSerial: number;
-    sortSubmissionFrame: number;
-    sortAction: 'none' | 'submitted' | 'coalesced' | 'suppressed';
-    sortTracking: 'pending' | 'gpu-completion' | 'render-ack-fallback' | null;
-    sortAcknowledgementMs: number | null;
-    sortInputCount: number;
-  }> {
+  protected getUpdateTimings(): SplatUpdateTimings {
     return this.updateTimings;
+  }
+
+  /**
+   * CPU timings and counters of the most recent {@link update}, for host
+   * diagnostics. The record is reused between updates: copy what must outlive
+   * the frame. Subclasses add their own stages.
+   */
+  get lastUpdateTimings(): SplatUpdateTimings {
+    return this.getUpdateTimings();
+  }
+
+  /**
+   * Revision of the draw list, bumped by every active-list mutation. Two equal
+   * readings mean the same set of splats is active; it says nothing about
+   * whether that list has been sorted or drawn yet.
+   */
+  get activeListRevision(): number {
+    return this.activeListVersion;
   }
 
   /** True while a GPU sort still owns the shared order buffer. */

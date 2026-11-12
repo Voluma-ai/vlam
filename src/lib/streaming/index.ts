@@ -17,6 +17,7 @@ export {
   type InitialRevealState,
   type PersistentChannelOptions,
   type StreamedSplatPerformanceEvent,
+  type StreamedSplatUpdateTimings,
 } from './streamed-splat-mesh';
 export {
   BudgetGovernor,
