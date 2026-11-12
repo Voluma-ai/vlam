@@ -4,11 +4,8 @@ import type { SplatModifier } from '../lib/core';
 
 type Node<T extends string> = THREE.Node<T>;
 
-/** Channel {@link StreamedSplatMesh.setLodLevelDebug} writes with each run's LOD level. */
-export const LOD_LEVEL_CHANNEL = 'lodLevel';
-
 /**
- * False-color palette:
+ * False-color palette, the one `lodLevelDebugModifier` in the library uses:
  * nearest / finest → red, then orange → yellow → green → blue (farthest / coarsest).
  */
 const C0 = vec3(1.0, 0.05, 0.05);
@@ -16,8 +13,6 @@ const C1 = vec3(1.0, 0.45, 0.0);
 const C2 = vec3(1.0, 0.92, 0.0);
 const C3 = vec3(0.05, 0.85, 0.15);
 const C4 = vec3(0.15, 0.35, 1.0);
-/** Unwritten / invalid channel sample (debug). */
-const CMISS = vec3(1.0, 0.0, 1.0);
 
 /** Maps a float band index 0..4+ onto the debug palette. */
 function paletteFromBand(band: Node<'float'>): Node<'vec3'> {
@@ -32,35 +27,12 @@ function paletteFromBand(band: Node<'float'>): Node<'vec3'> {
 const ORIGINAL_BLEND = 0.6;
 
 /**
- * Colors each splat by the **resident LOD level** written into
- * {@link LOD_LEVEL_CHANNEL} (0 = finest / red … 4+ = coarsest / blue).
- * Unwritten samples (−1 fill) tint magenta.
- *
- * Mixes the palette with the splat's own color so scene content stays
- * readable ({@link ORIGINAL_BLEND} original).
- *
- * Zooming out alone does not change this - only when the mesh swaps resident
- * runs to a coarser level. Use {@link createLodDistanceDebugModifier} to see
- * distance bands while moving the camera.
- */
-export function createLodLevelDebugModifier(channelName = LOD_LEVEL_CHANNEL): SplatModifier {
-  return (context) => {
-    const level = context.channel(channelName);
-    // fill is -1 until a run writes; keep that distinct from true L0 (red).
-    const missing = step(level, float(-0.5));
-    const tint = mix(paletteFromBand(level), CMISS, missing);
-    const rgb = mix(tint, context.color.rgb, float(ORIGINAL_BLEND));
-    return { color: vec4(rgb, context.color.a) };
-  };
-}
-
-/**
  * Colors each splat by camera distance using classic LCC band edges
  * (`lodBaseDistance=10`, `lodMultiplier=2`):
  * ≤10 red, ≤20 orange, ≤40 yellow, ≤80 green, else blue.
  *
  * Uses view-space depth so dolly / zoom changes colors immediately.
- * Blends with the original splat color like {@link createLodLevelDebugModifier}.
+ * Blends with the original splat color like the library's `lodLevelDebugModifier`.
  */
 export function createLodDistanceDebugModifier(
   lodBaseDistance = 10,

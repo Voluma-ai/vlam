@@ -13,6 +13,8 @@
  *  - {@link lightingPreset} / {@link revealPreset}: small reference presets,
  *    starting points rather than a framework (M7.5).
  *  - {@link worldWarpPreset}: camera-centered sphere wrap (planet / bowl).
+ *  - {@link lodLevelDebugModifier}: false-color view of a streamed mesh's
+ *    resident LOD levels.
  *  - {@link depthOfFieldPreset}: stylized modifier-based depth-of-field (M13).
  *    For physically-modeled camera DoF prefer the core
  *    {@link SplatMesh.setDepthOfField} / `UnifiedSplatMesh.setDepthOfField`
@@ -35,6 +37,7 @@ import {
   mix,
   modelViewMatrix,
   smoothstep,
+  step,
   uniform,
   uniformArray,
   vec2,
@@ -44,6 +47,9 @@ import {
 } from 'three/tsl';
 import type { SplatContext, SplatModifier } from '../core/splat-modifier';
 import { warn } from '../core/logging';
+import { LOD_LEVEL_CHANNEL } from '../core/lod-level-channel';
+
+export { LOD_LEVEL_CHANNEL };
 
 type Node<T extends string> = THREE.Node<T>;
 function asNode<T extends string>(node: unknown): Node<T> {
@@ -667,4 +673,46 @@ export function worldWarpPreset(
     };
   };
   return { modifier, intensity, radius };
+}
+
+// --- LOD level debug ---------------------------------------------------------
+
+/** Share of the splat's own color kept under the debug tint. */
+const LOD_DEBUG_ORIGINAL_BLEND = 0.6;
+
+/**
+ * Colors each splat by the LOD level its streamed mesh resolved for it:
+ * 0 (finest) red, then orange, yellow, green, and blue for 4 and coarser.
+ * Magenta marks splats no run has written yet. The tint is mixed with the
+ * splat's own color so the scene stays readable.
+ *
+ * The level comes from the {@link LOD_LEVEL_CHANNEL} channel, so enable it
+ * first with `StreamedSplatMesh.setLodLevelDebug(true)`; a mesh without that
+ * channel throws when its material builds. Works on a standalone mesh on both
+ * backends and inside a `UnifiedSplatMesh` (the channel is gathered per
+ * source). The pooled WebGL2 unified draw carries no per-splat channels, so the
+ * modifier cannot build there.
+ *
+ * @param channel - Channel to read, for a host that writes its own levels.
+ */
+export function lodLevelDebugModifier(channel: string = LOD_LEVEL_CHANNEL): SplatModifier {
+  const palette = [
+    vec3(1.0, 0.05, 0.05),
+    vec3(1.0, 0.45, 0.0),
+    vec3(1.0, 0.92, 0.0),
+    vec3(0.05, 0.85, 0.15),
+    vec3(0.15, 0.35, 1.0),
+  ] as const;
+  const unwritten = vec3(1.0, 0.0, 1.0);
+  return (ctx: SplatContext) => {
+    const level = asNode<'float'>(ctx.channel(channel));
+    let tint: Node<'vec3'> = palette[0];
+    for (let band = 1; band < palette.length; band++) {
+      tint = asNode<'vec3'>(mix(tint, palette[band]!, step(band - 0.5, level)));
+    }
+    // The channel fill is -1 until a run writes: keep that apart from level 0.
+    tint = asNode<'vec3'>(mix(tint, unwritten, step(level, float(-0.5))));
+    const rgb = mix(tint, ctx.color.rgb, float(LOD_DEBUG_ORIGINAL_BLEND));
+    return { color: vec4(rgb, ctx.color.a) };
+  };
 }

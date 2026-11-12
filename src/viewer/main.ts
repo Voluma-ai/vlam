@@ -49,13 +49,10 @@ import {
 } from './paint';
 import { buildDepthPickedBrushStroke, decimatePointerSamples } from './brush-stroke';
 import { buildPaintControls, type PaintBrushSettings } from './paint-controls';
-import {
-  createLodDistanceDebugModifier,
-  createLodLevelDebugModifier,
-  lodDebugLegendHtml,
-} from './lod-debug';
+import { createLodDistanceDebugModifier, lodDebugLegendHtml } from './lod-debug';
 
 import {
+  lodLevelDebugModifier,
   sdfEffects,
   revealPreset,
   worldWarpPreset,
@@ -3535,7 +3532,7 @@ async function main(): Promise<void> {
       // does not change this until resident runs swap.
       setEffectModifiers([
         mesh instanceof StreamedSplatMesh
-          ? createLodLevelDebugModifier()
+          ? lodLevelDebugModifier()
           : createLodDistanceDebugModifier(),
       ]);
       updateEffects = null;

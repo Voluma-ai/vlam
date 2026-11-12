@@ -77,6 +77,21 @@ shapes. Radius, half-extents, cylinder height, and falloff are measured in
 shape-local units. Zero falloff includes the hard boundary (`distance <= 0`).
 Changing shapes within the configured capacity remains a uniform-only update.
 
+To see which LOD level a streamed mesh resolved for each splat, turn on the
+level channel and add `lodLevelDebugModifier`: red is the finest level, then
+orange, yellow, green and blue for the coarsest; magenta marks splats no run
+has written yet.
+
+```ts
+import { lodLevelDebugModifier } from '@voluma/vlam/effects';
+
+streamed.setLodLevelDebug(true); // first: the modifier reads this channel
+streamed.modifiers = [lodLevelDebugModifier()];
+```
+
+It reads a per-splat channel, so it does not build on the pooled WebGL2 unified
+draw (see [Unified rendering](unified-rendering.md)).
+
 ## Stacking effects: `ModifierSlots`
 
 Applications that stack several effects on one mesh should manage them through
