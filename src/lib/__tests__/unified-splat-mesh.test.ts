@@ -647,13 +647,82 @@ describe('UnifiedSplatMesh', () => {
     const unified = new UnifiedSplatMesh(renderer, 1);
     unified.addSource(mesh);
     expect(mesh.visible).toBe(false);
-    expect(pickVisibility).toHaveBeenLastCalledWith(true);
+    expect(pickVisibility).toHaveBeenLastCalledWith(true, unified);
+    expect(mesh.effectiveVisibility).toBe(true);
     unified.setSourceVisible(mesh, false);
-    expect(pickVisibility).toHaveBeenLastCalledWith(false);
+    expect(pickVisibility).toHaveBeenLastCalledWith(false, unified);
+    expect(mesh.effectiveVisibility).toBe(false);
     expect(unified.removeSource(mesh)).toBe(true);
     expect(mesh.visible).toBe(true);
-    expect(pickVisibility).toHaveBeenLastCalledWith(null);
+    expect(pickVisibility).toHaveBeenLastCalledWith(null, unified);
     unified.dispose();
+    mesh.dispose();
+  });
+
+  it('keeps a source owned while another unified mesh still draws it', () => {
+    const renderer = mockRenderer();
+    const mesh = source();
+    const a = new UnifiedSplatMesh(renderer, 1);
+    const b = new UnifiedSplatMesh(renderer, 1);
+    a.addSource(mesh);
+    b.addSource(mesh, { visible: false });
+    // Shown by either owner counts as showing (a budget governor reads this).
+    expect(mesh.effectiveVisibility).toBe(true);
+    a.setSourceVisible(mesh, false);
+    expect(mesh.effectiveVisibility).toBe(false);
+    b.setSourceVisible(mesh, true);
+    expect(mesh.effectiveVisibility).toBe(true);
+
+    // Leaving one owner neither brings back the standalone draw nor drops the other's visibility.
+    expect(a.removeSource(mesh)).toBe(true);
+    expect(mesh.visible).toBe(false);
+    expect(mesh.effectiveVisibility).toBe(true);
+    b.setSourceVisible(mesh, false);
+    expect(mesh.effectiveVisibility).toBe(false);
+
+    // Re-joining and then disposing that owner still leaves b in charge.
+    a.addSource(mesh);
+    a.dispose();
+    expect(mesh.visible).toBe(false);
+    expect(mesh.effectiveVisibility).toBe(false);
+
+    // The last owner restores the visibility from before the first claim.
+    b.dispose();
+    expect(mesh.visible).toBe(true);
+    expect(mesh.effectiveVisibility).toBe(true);
+    mesh.dispose();
+  });
+
+  it('applies an owner-less pick visibility to every owner', () => {
+    const renderer = mockRenderer();
+    const mesh = source();
+    const a = new UnifiedSplatMesh(renderer, 1);
+    const b = new UnifiedSplatMesh(renderer, 1);
+    a.addSource(mesh, { visible: false });
+    b.addSource(mesh, { visible: false });
+    mesh.setUnifiedPickVisibility(true);
+    expect(mesh.effectiveVisibility).toBe(true);
+    a.setSourceVisible(mesh, false);
+    // b's claim was overridden to true too.
+    expect(mesh.effectiveVisibility).toBe(true);
+    mesh.setUnifiedPickVisibility(null);
+    expect(mesh.visible).toBe(true);
+    a.dispose();
+    b.dispose();
+    mesh.dispose();
+  });
+
+  it('reports drawable once an order exists, before any frame was rendered', () => {
+    const renderer = mockRenderer();
+    const mesh = source();
+    const unified = new UnifiedSplatMesh(renderer, 4);
+    expect(unified.getDrawPublicationSnapshot().drawable).toBe(false);
+    unified.addSource(mesh);
+    expect(unified.getDrawPublicationSnapshot().drawable).toBe(false);
+    unified.update(new THREE.PerspectiveCamera());
+    expect(unified.getDrawPublicationSnapshot()).toMatchObject({ drawable: true, ready: false });
+    unified.dispose();
+    expect(unified.getDrawPublicationSnapshot().drawable).toBe(false);
     mesh.dispose();
   });
 
@@ -1086,7 +1155,8 @@ describe('UnifiedSplatMesh', () => {
     unified.dispose();
     expect(mesh.visible).toBe(true);
     expect(pickVisibility).toHaveBeenCalledTimes(1);
-    expect(pickVisibility).toHaveBeenCalledWith(null);
+    expect(pickVisibility).toHaveBeenCalledWith(null, unified);
+    expect(mesh.effectiveVisibility).toBe(true);
     pickVisibility.mockClear();
     unified.dispose();
     expect(pickVisibility).not.toHaveBeenCalled();

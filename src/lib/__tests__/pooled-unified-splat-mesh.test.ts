@@ -194,6 +194,7 @@ describe('PooledUnifiedSplatMesh', () => {
     expect(request.matrices?.[14]).toBeCloseTo(0.5);
     expect(request.matrices?.[16 + 14]).toBeCloseTo(-0.5);
     expect(instanceCount(pooled)).toBe(0);
+    expect(pooled.getDrawPublicationSnapshot().drawable).toBe(false);
 
     // Frame 2: publication - the far source draws first.
     pooled.update(camera);
@@ -211,7 +212,8 @@ describe('PooledUnifiedSplatMesh', () => {
     expect(instanceCount(near)).toBe(0);
     expect(near.activeSplatCount).toBe(1);
     expect(far.activeSplatCount).toBe(1);
-    expect(pooled.getDrawPublicationSnapshot().ready).toBe(false);
+    // An installed order is drawable before the frame that shows it is acknowledged.
+    expect(pooled.getDrawPublicationSnapshot()).toMatchObject({ drawable: true, ready: false });
     pooled.onAfterRender(renderer as never, new THREE.Scene(), camera);
     expect(pooled.getDrawPublicationSnapshot().ready).toBe(true);
 

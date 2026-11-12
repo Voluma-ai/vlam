@@ -128,7 +128,6 @@ interface SourceRecord {
   visible: boolean;
   /** Per-view draw mask ({@link PooledUnifiedSplatMesh.setSourceDrawMask}); never membership. */
   drawMask: boolean;
-  originalVisible: boolean;
   view: UnifiedSourceView | null;
   lastMatrix: THREE.Matrix4;
   /** Active-list token and content revision the in-flight or last capture used. */
@@ -549,7 +548,6 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
       opacity: options.opacity ?? 1,
       visible,
       drawMask: true,
-      originalVisible: source.visible,
       view: null,
       lastMatrix: new THREE.Matrix4().copy(view.matrixWorld),
       capturedActiveListVersion: -1,
@@ -562,8 +560,9 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     this.tables.setMatrix(id, view.matrixWorld);
     this.tables.setParams(id, 0, record.alphaScale);
     this.writeShRange(record, view);
+    // Claim before hiding: the source records its standalone visibility on the first claim.
+    source.setUnifiedPickVisibility(visible, this);
     source.visible = false;
-    source.setUnifiedPickVisibility(visible);
     // Rows this source wrote before joining are already in the pool backing;
     // a sorter created earlier mirrored them at construction only if they
     // existed then. Resend them with the next request to be safe.
@@ -608,7 +607,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     const record = this.recordOf(source);
     if (record.visible === visible) return;
     record.visible = visible;
-    record.source.setUnifiedPickVisibility(visible);
+    record.source.setUnifiedPickVisibility(visible, this);
     this.noteMembershipChange();
   }
 
@@ -795,6 +794,12 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     const installed = this.installed;
     const instanceCount = (this.geometry as THREE.InstancedBufferGeometry).instanceCount;
     return {
+      drawable:
+        !this.disposed &&
+        installed !== null &&
+        installed.count > 0 &&
+        instanceCount > 0 &&
+        this.sources.length > 0,
       ready:
         installed !== null &&
         this.renderedPublicationRevision === installed.revision &&
@@ -903,8 +908,8 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
 
   private detachRecord(record: SourceRecord): void {
     record.publication.release();
-    record.source.visible = record.originalVisible;
-    record.source.setUnifiedPickVisibility(null);
+    // Restores standalone visibility only if no other unified mesh still draws it.
+    record.source.setUnifiedPickVisibility(null, this);
     this.tables.setOpacity(record.id, 0);
     // The installed order may still name this id; keep it out of reuse until
     // the next publication replaces that order.

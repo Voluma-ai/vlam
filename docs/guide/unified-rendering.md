@@ -161,6 +161,18 @@ unified.removeSource(statue); // → true; restores standalone state
 `dispose()`, restores the source's standalone visibility and picking, so
 you can `scene.add(statue)` again afterwards.
 
+A source may be registered with several `UnifiedSplatMesh`es at once, for
+example one per split-screen view, or an old mesh that keeps drawing while its
+replacement prepares. Each mesh keeps its own visibility for the source: the
+source counts as showing (its `effectiveVisibility`, which a
+`CameraBudgetGovernor` reads) while any of them shows it, and its standalone
+draw comes back only when the last of them removes it or is disposed.
+
+When you replace a unified mesh (a larger capacity, another sort strategy),
+keep the old one drawing until the new one's
+`getDrawPublicationSnapshot().drawable` is true. `ready` additionally waits for
+a rendered frame, so it cannot gate the first draw.
+
 ## Per-source modifiers
 
 Effects stay per source: set `mesh.modifiers` (or drive a `ModifierSlots`
