@@ -25,6 +25,19 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- **Sources shared by several unified meshes.** A source registered with more
+  than one `UnifiedSplatMesh` (split-screen views, or an old mesh drawing while
+  its replacement prepares) now keeps one visibility per mesh: it counts as
+  showing while any of them shows it, and its standalone draw comes back only
+  when the last one removes it or is disposed. Before, the last
+  `setSourceVisible` writer decided, and removing the source from one mesh
+  restored its standalone draw under another that still drew it.
+  `SplatMesh.setUnifiedPickVisibility` takes an optional owner; without one it
+  still applies to every claim. (#138, #128)
+- **`drawable` on `getDrawPublicationSnapshot()`** for both unified meshes: the
+  draw has an order to show, without waiting for a rendered frame like `ready`.
+  A host replacing a unified mesh can switch to the new one as soon as it is
+  true. (#138)
 - **`renderSplatDepth` in `@voluma/vlam/effects`: real splat depth for post
   effects.** Renders the alpha-tested depth of every visible splat draw in a
   scene into a render target (default cutoff alpha 0.5), so fog, aerial

@@ -267,6 +267,9 @@ export type SplatUpdateTimings = Readonly<{
   sortInputCount: number;
 }>;
 
+/** Claim key for an owner-less {@link SplatMesh.setUnifiedPickVisibility} call. */
+const DEFAULT_UNIFIED_OWNER = {};
+
 /**
  * Renders a set of 3D Gaussians with three.js's WebGPURenderer.
  *
@@ -649,8 +652,15 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
       applySplatMaterialGraph(material, 'pick', inputs);
     },
   });
-  /** Visibility supplied by an owning unified renderer for source-only picks. */
-  private unifiedPickVisibility: boolean | null = null;
+  /**
+   * One entry per unified mesh that draws this source, with the visibility that
+   * mesh gives it. A source may sit in several unified meshes at once (split
+   * views, a mesh being replaced), so ownership is counted rather than held by
+   * whichever mesh wrote last.
+   */
+  private readonly unifiedClaims = new Map<object, boolean>();
+  /** `Object3D.visible` from before the first unified claim, restored after the last. */
+  private visibleBeforeUnified = true;
   /** Set by {@link dispose}; subclasses use it to drop late async results. */
   protected disposed = false;
   /** The renderer this mesh last updated with, so {@link dispose} can free
@@ -2066,30 +2076,53 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
   }
 
   /**
-   * Marks this mesh as a source drawn by {@link UnifiedSplatMesh}.
-   * The source stays invisible to the regular scene draw, while its own picker
-   * mirrors this resolved visibility so existing per-source hit testing works.
-   * Internal consumers should clear the state with `null` before disposing.
+   * Marks this mesh as a source drawn by a unified mesh. The source stays
+   * invisible to the regular scene draw, while its own picker (and
+   * {@link effectiveVisibility}) follows the visibility the unified meshes give
+   * it: shown when any of them shows it.
+   *
+   * Called by the unified meshes with themselves as `owner`: `null` releases
+   * that owner's claim, and when the last claim goes the source's standalone
+   * `visible` is restored to its value from before the first claim. Without an
+   * `owner`, a boolean overrides every current claim (creating one when there is
+   * none) and `null` releases them all.
    */
-  setUnifiedPickVisibility(visible: boolean | null): void {
+  setUnifiedPickVisibility(visible: boolean | null, owner?: object): void {
     if (visible !== null && this.storageModeValue === 'render-only') {
       throw new Error(
         'SplatMesh.setUnifiedPickVisibility: storageMode "render-only" does not support UnifiedSplatMesh sources.',
       );
     }
-    const ownershipChanged = (this.unifiedPickVisibility === null) !== (visible === null);
-    this.unifiedPickVisibility = visible;
-    if (ownershipChanged) {
-      this.picker.rebuildMaterial();
-      this.picker.markNeedsUpdate();
+    const claims = this.unifiedClaims;
+    const wasOwned = claims.size > 0;
+    if (visible === null) {
+      if (owner === undefined) claims.clear();
+      else claims.delete(owner);
+    } else {
+      if (!wasOwned) this.visibleBeforeUnified = this.visible;
+      if (owner !== undefined) claims.set(owner, visible);
+      else if (wasOwned) for (const key of claims.keys()) claims.set(key, visible);
+      else claims.set(DEFAULT_UNIFIED_OWNER, visible);
     }
-    if (ownershipChanged && visible === null) {
+    const owned = claims.size > 0;
+    if (owned === wasOwned) return;
+    this.picker.rebuildMaterial();
+    this.picker.markNeedsUpdate();
+    if (!owned) {
+      this.visible = this.visibleBeforeUnified;
       // The unified renderer ordered this mesh while it owned the draw; the
       // standalone order is stale (or was never built), and an unmoved camera
       // alone would not re-sort it. Force one, like a pooled release does.
       this.sortedActiveListVersion = -1;
       this.invalidateSort();
     }
+  }
+
+  /** The unified meshes' combined visibility for this source, or `null` when none owns it. */
+  private get unifiedPickVisibility(): boolean | null {
+    if (this.unifiedClaims.size === 0) return null;
+    for (const visible of this.unifiedClaims.values()) if (visible) return true;
+    return false;
   }
 
   /**

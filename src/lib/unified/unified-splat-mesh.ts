@@ -56,7 +56,6 @@ interface SourceRecord {
   cacheModifiers: boolean;
   /** Refresh SH color without re-running cached modifier geometry. */
   shColorRefresh: boolean;
-  originalVisible: boolean;
   lastGather: GatherCacheSnapshot | null;
   /**
    * Opacity baked into `centers.w` of this source's current work-buffer slice.
@@ -98,6 +97,13 @@ interface UnifiedPublication {
 }
 
 export interface UnifiedDrawPublicationSnapshot {
+  /**
+   * The draw has an order to show: a publication with sources and active
+   * splats. Unlike {@link ready} it does not wait for a rendered frame, so a
+   * host replacing a unified mesh can switch to the new one as soon as this is
+   * true instead of showing a blank frame.
+   */
+  readonly drawable: boolean;
   readonly ready: boolean;
   readonly publicationRevision: number;
   readonly renderedPublicationRevision: number;
@@ -659,7 +665,6 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       visible: resolvedVisible,
       cacheModifiers: options.cacheModifiers ?? false,
       shColorRefresh: options.shColorRefresh === true,
-      originalVisible: source.visible,
       lastGather: null,
       drawnOpacity: null,
       liveOpacity: false,
@@ -667,8 +672,9 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       registrationOrder: 0,
       offset: 0,
     });
+    // Claim before hiding: the source records its standalone visibility on the first claim.
+    source.setUnifiedPickVisibility(resolvedVisible, this);
     source.visible = false;
-    source.setUnifiedPickVisibility(resolvedVisible);
   }
 
   /**
@@ -758,7 +764,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     const record = this.sources.find((entry) => entry.source === source);
     if (!record) throw new Error('UnifiedSplatMesh: source is not registered.');
     record.visible = visible;
-    record.source.setUnifiedPickVisibility(visible);
+    record.source.setUnifiedPickVisibility(visible, this);
   }
 
   /**
@@ -859,7 +865,10 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     );
   }
 
-  /** Unregisters a source and restores its standalone draw visibility. */
+  /**
+   * Unregisters a source. Its standalone draw comes back once no other
+   * unified mesh draws it.
+   */
   removeSource(source: SplatMesh): boolean {
     this.assertNotDisposed('removeSource');
     const index = this.sources.findIndex((entry) => entry.source === source);
@@ -869,8 +878,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     const [record] = this.sources.splice(index, 1);
     if (record) {
       record.gather.dispose();
-      record.source.visible = record.originalVisible;
-      record.source.setUnifiedPickVisibility(null);
+      // Restores standalone visibility only if no other unified mesh still draws it.
+      record.source.setUnifiedPickVisibility(null, this);
       record.lastGather = null;
     }
     this.previousLayout = this.previousLayout.filter((entry) => entry.source !== source);
@@ -935,7 +944,14 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       this.readyPublicationOrderRevision === this.unifiedOrderRevision &&
       sourcesMatch &&
       hasDrawableCount;
+    const drawable =
+      !this.disposed &&
+      publication !== null &&
+      publication.length > 0 &&
+      instanceCount > 0 &&
+      this.previousAdmittedTotal > 0;
     return {
+      drawable,
       ready,
       publicationRevision: this.readyPublicationVersion,
       renderedPublicationRevision: this.renderedPublicationVersion,
@@ -1585,8 +1601,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     // throwing here leaves the host without a rebuilt globally sorted draw.
     for (const record of this.sources) {
       record.gather.dispose();
-      record.source.visible = record.originalVisible;
-      record.source.setUnifiedPickVisibility(null);
+      // Restores standalone visibility only if no other unified mesh still draws it.
+      record.source.setUnifiedPickVisibility(null, this);
       record.lastGather = null;
     }
     this.sources.length = 0;
