@@ -313,6 +313,13 @@ export class UnifiedSplatMesh extends THREE.Mesh {
   /** Reused target dimensions for secondary views; avoids per-view garbage. */
   private readonly secondaryViewSize = new THREE.Vector2();
   /**
+   * `renderView` sorted the shared order buffer for another camera. Until a
+   * primary preparation sorts again, a held gate must not keep that order: the
+   * primary draw would show the scene in the secondary view's order (a mirror
+   * camera's order shows the far side of an object through its near side).
+   */
+  private foreignOrder = false;
+  /**
    * Camera gating for the global sorter, mirroring the standalone
    * `SplatMesh.requestSortIfNeeded` path: an unchanged work buffer under a
    * stationary camera skips the whole-buffer re-sort. Content changes
@@ -1007,6 +1014,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       // Invalidate even when its draw throws, or a stationary primary view can
       // render through that foreign order after the host recovers.
       this.sortScheduler.invalidate();
+      this.foreignOrder = true;
     }
   }
 
@@ -1018,8 +1026,9 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     const prepareStartedAt = performance.now();
     const onPrepareStage = this.onPrepareStage;
     const refinementFrame = forceSort ? this.refinementFrameNumber : ++this.refinementFrameNumber;
-    const holdForRefinementSort =
+    const gateHeld =
       !forceSort && this.sortScheduler.beginSubmissionFrame(refinementFrame, prepareStartedAt);
+    const holdForRefinementSort = gateHeld && !this.foreignOrder;
     let gatherMs = 0;
     let sortSubmitted = false;
     let gatherDispatches = 0;
@@ -1439,6 +1448,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       }
     }
     const sortSubmitMs = performance.now() - sortStartedAt;
+    // A primary sort (or an empty buffer, which draws nothing) replaces the foreign order.
+    if (!forceSort && (sortSubmitted || offset === 0)) this.foreignOrder = false;
     if (onPrepareStage) {
       const endedAt = performance.now();
       onPrepareStage('sortSubmit', endedAt - sortStartedAt);

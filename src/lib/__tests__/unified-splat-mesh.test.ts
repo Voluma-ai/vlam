@@ -418,6 +418,49 @@ describe('UnifiedSplatMesh', () => {
     return camera;
   }
 
+  // Voluma split view with ground water (2026-11-12): a mirror renderView between
+  // two primary frames while the previous sort was still in flight left the held
+  // frame drawing through the mirror camera's order, so the car body flickered.
+  it('does not hold the primary on the order a secondary renderView left', async () => {
+    const { renderer, resolve } = pendingGpuCompletion();
+    const target = new THREE.RenderTarget(4, 4);
+    Object.assign(renderer, {
+      getRenderTarget: () => null,
+      setRenderTarget: vi.fn(),
+      render: vi.fn(),
+    });
+    const mesh = source();
+    const unified = new UnifiedSplatMesh(renderer, 1, { projectionStrategy: computeProjection() });
+    unified.addSource(mesh);
+    const scene = new THREE.Scene();
+    const camera = cameraAt(3);
+    const mirror = cameraAt(-3);
+    const { projectedSorter: sorter, sortScheduler } = computeInternals(unified);
+
+    unified.update(camera);
+    unified.onAfterRender(renderer as never, scene, camera);
+    expect(sortScheduler.hasSubmissionInFlight()).toBe(true);
+    const primarySorts = sorter.submissionCount;
+
+    unified.renderView(mirror, renderer, target);
+    expect(sorter.submissionCount).toBe(primarySorts + 1);
+    // The gate is still held by the first sort, but the buffer holds the mirror's order.
+    unified.update(camera);
+    expect(sorter.submissionCount).toBe(primarySorts + 2);
+    expect(unified.performanceTimings.sortSubmitted).toBe(true);
+    unified.onAfterRender(renderer as never, scene, camera);
+
+    // Back to the primary's own order: a held stationary frame keeps it again.
+    unified.update(camera);
+    expect(sorter.submissionCount).toBe(primarySorts + 2);
+
+    resolve();
+    await Promise.resolve();
+    target.dispose();
+    unified.dispose();
+    mesh.dispose();
+  });
+
   it('re-projects a camera move under a held gate with compute projection', async () => {
     // The hardware frame loop: prepare, draw, acknowledge; the GPU completion
     // lands after the next frame's prepare, so that frame finds the gate held.
