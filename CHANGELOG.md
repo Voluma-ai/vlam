@@ -25,6 +25,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- **`ModifierSlots` hooks for hosts with a unified draw.** `occupiedSlots`
+  lists the filled slots in order, the `onOccupancyChange` constructor option
+  is called when a slot fills or empties (not on an occupant swap), and
+  `modifiersExcluding(names)` returns the stack without some slots, for an
+  effect the draw owner provides itself. (#140)
+- **`createWebGPURenderer({ rejectFallbackAdapter: true })` and
+  `isWebGpuBackend(renderer)`.** The option treats a software adapter
+  (SwiftShader) as no adapter and uses three's WebGL2 backend, so a host no
+  longer has to probe the adapter and build the renderer itself. The accessor
+  replaces the `backend.isWebGPUBackend` cast. (#139, item 4)
 - **`SplatMesh.sortDisplacement` and `invalidateSortDisplacement()`: sort
   splats where displacement modifiers draw them.** A standalone WebGPU mesh
   folds the listed modifiers' `offset` into its counting, radix and exact sort

@@ -115,6 +115,7 @@ export {
 export { xrSessionInit } from './xr-view';
 export {
   createWebGPURenderer,
+  isWebGpuBackend,
   type CreateWebGPURendererOptions,
   type WebGPURendererGpu,
   type WebGPURendererGpuAdapter,
@@ -139,7 +140,7 @@ export type {
   SplatOutputs,
   ModifierStackTarget,
 } from './splat-modifier';
-export { ModifierSlots } from './splat-modifier';
+export { ModifierSlots, type ModifierSlotsOptions } from './splat-modifier';
 // Every diagnostic the library emits goes through one hook, so an application can
 // forward VLAM! warnings into its own logger or silence them.
 export { setVlamLogHandler, type VlamLogHandler, type VlamLogLevel } from './logging';
