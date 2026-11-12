@@ -1,4 +1,5 @@
 import * as THREE from 'three/webgpu';
+import { float, vec4 } from 'three/tsl';
 import { createSelectionVolume } from '../selection';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -7,7 +8,10 @@ import {
   revealPreset,
   depthOfFieldPreset,
   worldWarpPreset,
+  lodLevelDebugModifier,
+  LOD_LEVEL_CHANNEL,
 } from '../effects';
+import type { SplatContext } from '../core/splat-modifier';
 
 describe('effects module (M7.4 / M7.5)', () => {
   afterEach(() => vi.restoreAllMocks());
@@ -231,6 +235,21 @@ describe('effects module (M7.4 / M7.5)', () => {
 
   it('throws from the constructor for invalid initial shapes', () => {
     expect(() => sdfEffects([{ kind: 'sphere', mode: 'tint' }])).toThrow(/positive\s+radius/);
+  });
+
+  it('lodLevelDebugModifier tints from the channel StreamedSplatMesh writes', () => {
+    expect(LOD_LEVEL_CHANNEL).toBe('lodLevel');
+    const color = vec4(0.2, 0.4, 0.6, 0.5);
+    const channel = vi.fn(() => float(2));
+    const ctx = { color, channel } as unknown as SplatContext;
+
+    const result = lodLevelDebugModifier()(ctx);
+    expect(channel).toHaveBeenCalledWith('lodLevel');
+    // Color only: the tint never moves, resizes or hides a splat.
+    expect(Object.keys(result ?? {})).toEqual(['color']);
+
+    lodLevelDebugModifier('hostLevels')(ctx);
+    expect(channel).toHaveBeenLastCalledWith('hostLevels');
   });
 
   it('lightingPreset exposes a live direction uniform', () => {

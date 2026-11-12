@@ -25,6 +25,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- **`lodLevelDebugModifier` in `@voluma/vlam/effects`.** The false-color view
+  of a streamed mesh's resident LOD levels (red finest to blue coarsest, magenta
+  where nothing is written yet), which pairs with
+  `StreamedSplatMesh.setLodLevelDebug(true)`. It was demo code that hosts
+  copied; the entry also exports the channel name as `LOD_LEVEL_CHANNEL`. (#136)
 - **Public settle accessors on `StreamedSplatMesh`.** `hasPendingWork`,
   `isLodCommitBlockedBySort` and `displayGeneration` let a host that sequences
   crossfades or loading covers around streamed loading read that state without

@@ -390,6 +390,8 @@ describe('public API surface (@voluma/vlam/effects)', () => {
     expect(typeof effects.revealPreset).toBe('function');
     expect(typeof effects.depthOfFieldPreset).toBe('function');
     expect(typeof effects.worldWarpPreset).toBe('function');
+    expect(typeof effects.lodLevelDebugModifier).toBe('function');
+    expect(effects.LOD_LEVEL_CHANNEL).toBe('lodLevel');
     expectTypeOf<effects.SdfShape>().toBeObject();
     expectTypeOf<effects.SdfShapeKind>().toEqualTypeOf<'sphere' | 'box' | 'cylinder'>();
     expectTypeOf<effects.SdfMode>().toEqualTypeOf<'tint' | 'desaturate' | 'hide' | 'rim'>();

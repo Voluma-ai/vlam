@@ -42,6 +42,7 @@ import {
   type SplatUpdateTimings,
 } from '../core/splat-mesh';
 import { splatMeshSourceLabel } from '../core/splat-mesh-types';
+import { LOD_LEVEL_CHANNEL } from '../core/lod-level-channel';
 import type { SplatData } from '../core/splat-data';
 import { runKey, type LodRun, type LodScheduler } from './lod-scheduler';
 import { buildSogScene, type StreamedScene } from './lod-source';
@@ -4108,14 +4109,15 @@ export class StreamedSplatMesh extends SplatMesh {
 
   /**
    * Enables or disables writing each resident run's **resolved** LOD level into
-   * the `lodLevel` float channel (for a false-color debug modifier: 0 = finest).
+   * the `lodLevel` float channel (0 = finest), which `lodLevelDebugModifier`
+   * from `@voluma/vlam/effects` paints in false color.
    * Values come from applied desired runs after budget resolution - not from
    * distance ambition alone. Call before assigning a modifier that reads the channel.
    */
   setLodLevelDebug(enabled: boolean): void {
     if (enabled) {
       if (!this.lodLevelChannelReady) {
-        this.defineChannel('lodLevel', { type: 'float', fill: -1 });
+        this.defineChannel(LOD_LEVEL_CHANNEL, { type: 'float', fill: -1 });
         this.lodLevelChannelReady = true;
       }
       this.lodLevelDebug = true;
@@ -4173,7 +4175,7 @@ export class StreamedSplatMesh extends SplatMesh {
       this.lodLevelScratch = new Float32Array(handle.count);
     }
     this.lodLevelScratch.fill(level, 0, handle.count);
-    this.writeChannel(handle, 'lodLevel', this.lodLevelScratch.subarray(0, handle.count));
+    this.writeChannel(handle, LOD_LEVEL_CHANNEL, this.lodLevelScratch.subarray(0, handle.count));
   }
 
   /**
