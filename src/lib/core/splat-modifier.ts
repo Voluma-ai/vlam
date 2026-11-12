@@ -40,6 +40,15 @@ export interface SplatContext {
   readonly localToView?: Node<'mat3'>;
   /** Camera position in mesh-local space. */
   readonly cameraLocal: Node<'vec3'>;
+  /**
+   * Camera position in world space, the frame of {@link worldCenter}. Built
+   * lazily from {@link cameraLocal} and the mesh's world matrix, so it also
+   * works inside a unified draw's compute gather, where TSL `cameraPosition`
+   * has no camera and throws. Every context the library builds sets it;
+   * manually constructed contexts may omit it, and on a standalone mesh
+   * `modelWorldMatrix · cameraLocal` is the same value.
+   */
+  readonly cameraWorld?: Node<'vec3'>;
   /** Color + opacity after SH - the stack's input color. */
   readonly baseColor: Node<'vec4'>;
   /** Approximate surface normal (least-variance axis of the splat's

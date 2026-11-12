@@ -34,7 +34,7 @@
  *   vertex stage before any of its own branches.
  */
 import type * as THREE from 'three/webgpu';
-import { Fn, If, bool, float, int, mat3, mat4, vec3, vec4 } from 'three/tsl';
+import { Fn, If, bool, float, int, mat3, mat4, modelWorldMatrix, vec3, vec4 } from 'three/tsl';
 import { asNode } from '../../core/splat-material-types';
 import type { SplatContext, SplatModifier, SplatOutputs } from '../../core/splat-modifier';
 import { ROW_CAMERA_LOCAL, ROW_INVERSE_LINEAR, SOURCE_DATA_ROWS } from './pooled-source-tables';
@@ -282,6 +282,12 @@ function foldInSourceFrame(modifiers: readonly SplatModifier[], frame: SourceFra
     },
     get viewCenter() {
       return lazyInput<'vec3'>(frame, 'viewCenter', () => vec3(ctx.viewCenter));
+    },
+    get cameraWorld() {
+      // World space does not depend on the source's placement.
+      return lazyInput<'vec3'>(frame, 'cameraWorld', () =>
+        vec3(ctx.cameraWorld ?? modelWorldMatrix.mul(vec4(ctx.cameraLocal, 1.0)).xyz),
+      );
     },
     get localToView() {
       // Drawn-frame (world) → view, after the source's linear placement.

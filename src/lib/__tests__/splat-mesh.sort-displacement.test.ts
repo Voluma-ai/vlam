@@ -159,6 +159,17 @@ describe('SplatMesh.sortDisplacement', () => {
     );
   });
 
+  it('rejects ctx.cameraWorld in a sort displacement modifier', () => {
+    const target = mesh();
+    target.sortDisplacement = [(ctx) => ({ offset: ctx.cameraWorld! })];
+    const adapter = (
+      target as unknown as { sortCenterAdapter(): SplatSortCenterAdapter | null }
+    ).sortCenterAdapter()!;
+    expect(() => adapter({ center: vec3(0), poolIndex: int(0), texel: ivec2(0, 0) })).toThrow(
+      /cameraWorld/,
+    );
+  });
+
   it('re-sorts a stationary camera after invalidateSortDisplacement, once per change', () => {
     const target = mesh({ sortIntervalMs: 0 });
     target.sortDisplacement = [carry];

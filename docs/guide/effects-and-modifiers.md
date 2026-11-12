@@ -92,6 +92,29 @@ streamed.modifiers = [lodLevelDebugModifier()];
 It reads a per-splat channel, so it does not build on the pooled WebGL2 unified
 draw (see [Unified rendering](unified-rendering.md)).
 
+Splats write no depth, so a post effect that needs scene depth (fog, aerial
+perspective, depth of field) runs straight through them. `renderSplatDepth`
+draws every visible splat draw's alpha-tested depth into a target you own:
+
+```ts
+import * as THREE from 'three/webgpu';
+import { texture } from 'three/tsl';
+import { renderSplatDepth } from '@voluma/vlam/effects';
+
+const depth = new THREE.DepthTexture(1, 1);
+const target = new THREE.RenderTarget(1, 1, { depthBuffer: true });
+target.depthTexture = depth;
+const splatDepth = texture(depth); // sample it in your post pass
+
+// Per frame, after updating the splats:
+target.setSize(width / 2, height / 2); // half resolution is usually enough
+renderSplatDepth(renderer, scene, camera, target, { alphaThreshold: 0.5 });
+```
+
+It draws what each mesh has prepared, without sorting or LOD work, and does
+not count as a rendered frame, so it never acknowledges a staged streamed
+generation. Only splat draws write depth; render other geometry's depth yourself.
+
 ## Stacking effects: `ModifierSlots`
 
 Applications that stack several effects on one mesh should manage them through
@@ -188,10 +211,12 @@ leave cached colors, visibility, or transforms stale.
 ## Writing a custom modifier
 
 A modifier reads the per-splat `SplatContext` (`localCenter`, `sourceCenter`,
-`sourceToLocal`, `worldCenter`, `viewCenter`, `cameraLocal`, `baseColor` after SH, a lazy
+`sourceToLocal`, `worldCenter`, `viewCenter`, `cameraLocal`, `cameraWorld`, `baseColor` after SH, a lazy
 `normal`, per-splat `channel(name)` reads, and the running
 `color`/`offset`/`scale`/`rotation`/`visible`) and returns only the fields it
-changes:
+changes. For the camera position, read `ctx.cameraWorld` (or `ctx.cameraLocal`)
+rather than TSL `cameraPosition`: a unified draw runs modifiers in a compute
+gather, where `cameraPosition` has no camera and throws.
 
 ```ts
 import { clamp, mix, uniform, vec3, vec4 } from 'three/tsl';
@@ -233,7 +258,7 @@ in `revealPreset`) is WebGPU-only.
 Context fields are safe to read only inside `If` branches (a per-light loop
 that skips out-of-range lights, say), in any number of sibling branches. The
 stack builds each lazy field (`normal`, `worldCenter`, `viewCenter`,
-`localToView`, channels) once per TSL scope that reads it, as a var assigned
+`localToView`, `cameraWorld`, channels) once per TSL scope that reads it, as a var assigned
 in that scope; inputs and earlier modifiers' outputs are assigned before the
 stack runs. Where you read a field decides what it costs:
 
@@ -276,8 +301,8 @@ mesh.invalidateSortDisplacement();
   rate camera motion does, not every frame.
 - **Sort context.** The fold starts from a zero offset and offers `index`,
   `localCenter`, `sourceCenter`, `cameraLocal`, `baseColor` (before SH),
-  `normal` and channels. `worldCenter`, `viewCenter` and `localToView` throw:
-  the sort pass has no camera matrix for them.
+  `normal` and channels. `worldCenter`, `viewCenter`, `localToView` and
+  `cameraWorld` throw: the sort pass has no camera matrix for them.
 - **Unified draws** already sort the gathered, displaced centers and ignore
   the list, but `invalidateSortDisplacement()` still re-sorts them under a
   stationary camera. A source registered with `cacheModifiers` also needs

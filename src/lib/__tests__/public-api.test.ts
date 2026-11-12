@@ -391,6 +391,9 @@ describe('public API surface (@voluma/vlam/effects)', () => {
     expect(typeof effects.depthOfFieldPreset).toBe('function');
     expect(typeof effects.worldWarpPreset).toBe('function');
     expect(typeof effects.lodLevelDebugModifier).toBe('function');
+    expect(typeof effects.renderSplatDepth).toBe('function');
+    expectTypeOf<effects.SplatDepthOptions>().toBeObject();
+    expectTypeOf<vlam.SplatMesh['isSplatDraw']>().toEqualTypeOf<true>();
     expect(effects.LOD_LEVEL_CHANNEL).toBe('lodLevel');
     expectTypeOf<effects.SdfShape>().toBeObject();
     expectTypeOf<effects.SdfShapeKind>().toEqualTypeOf<'sphere' | 'box' | 'cylinder'>();

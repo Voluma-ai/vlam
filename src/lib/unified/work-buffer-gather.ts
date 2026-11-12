@@ -245,6 +245,7 @@ export class WorkBufferGather {
           makeWorldCenter,
           makeViewCenter: () => this.cameraViewMatrix.mul(vec4(makeWorldCenter(), 1.0)).xyz,
           makeLocalToView: () => this.cameraViewMatrix.mul(this.sourceMatrix).toMat3(),
+          makeCameraWorld: () => this.sourceMatrix.mul(vec4(localCameraPosition, 1.0)).xyz,
           makeNormal: () => {
             const inverse = covarianceBase.inverse();
             const toCamera = localCameraPosition.sub(localCenter);

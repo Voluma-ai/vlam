@@ -64,7 +64,7 @@ class ScopedFields {
  *
  * Modifiers are called here, at material build time - they are graph
  * builders, not per-frame callbacks, and may be called more than once. Derived context fields
- * (worldCenter, viewCenter, localToView, normal, channels) are built lazily
+ * (worldCenter, viewCenter, localToView, cameraWorld, normal, channels) are built lazily
  * so only the modifiers that read them add their nodes to the graph, and
  * once per TSL scope that reads them (see {@link ScopedFields}).
  *
@@ -93,6 +93,7 @@ export function foldSplatModifierStack(
     makeWorldCenter?: () => THREE.Node<'vec3'>;
     makeViewCenter?: () => THREE.Node<'vec3'>;
     makeLocalToView?: () => THREE.Node<'mat3'>;
+    makeCameraWorld?: () => THREE.Node<'vec3'>;
   },
 ): {
   color: THREE.Node<'vec4'>;
@@ -161,6 +162,15 @@ export function foldSplatModifierStack(
         inputs.makeLocalToView
           ? inputs.makeLocalToView()
           : asNode<'mat3'>(modelViewMatrix.toMat3()),
+      );
+    },
+    get cameraWorld() {
+      return fields.get('cameraWorld', () =>
+        asNode<'vec3'>(
+          inputs.makeCameraWorld
+            ? inputs.makeCameraWorld()
+            : modelWorldMatrix.mul(vec4(cameraLocal, 1.0)).xyz,
+        ),
       );
     },
     get normal() {

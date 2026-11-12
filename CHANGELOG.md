@@ -25,6 +25,21 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- **`renderSplatDepth` in `@voluma/vlam/effects`: real splat depth for post
+  effects.** Renders the alpha-tested depth of every visible splat draw in a
+  scene into a render target (default cutoff alpha 0.5), so fog, aerial
+  perspective and depth of field can stop at splat surfaces instead of a
+  collision proxy. It draws what is prepared without sorting, updating LOD or
+  acknowledging a staged generation, skips staged draws with color writes off,
+  and works on standalone meshes and both unified draws. The three draw classes
+  now carry a shared `isSplatDraw` brand. (#127)
+- **`ctx.cameraWorld` on `SplatContext`.** The camera position in world space,
+  built lazily from `cameraLocal` and the mesh's (or, in a unified draw, the
+  source's) world matrix. A modifier that needs it no longer has to hand-roll
+  a camera uniform: TSL `cameraPosition` throws in a unified draw's compute
+  gather. Unavailable in `sortDisplacement` modifiers, like `worldCenter`.
+  Optional on the type, like `localToView`, so code that builds its own
+  context still compiles. (#136)
 - **`lodLevelDebugModifier` in `@voluma/vlam/effects`.** The false-color view
   of a streamed mesh's resident LOD levels (red finest to blue coarsest, magenta
   where nothing is written yet), which pairs with
