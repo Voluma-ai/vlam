@@ -657,6 +657,20 @@ export interface StreamedSplatMeshOptions extends SplatMeshOptions {
    */
   radInitialRevealPolicy?: 'progressive' | 'allocation-fraction' | 'projected-quality';
   /**
+   * Chunk-page `.rad` in a shared pool: let a suspended mesh (budget 1) give
+   * the pool page of its coarsest chunk (chunk 0) to a drawing sibling, and
+   * reinstall it from the decoded chunk kept in memory, with no download,
+   * when it draws again. A `.rad` scene already keeps that chunk (its
+   * bootstrap chunk, about 3 MB), so this costs no extra memory there.
+   *
+   * Without it every constructed capture pins that page for its lifetime,
+   * drawn or not. A host that keeps many captures constructed but suspended
+   * (a timeline it scrubs through) then runs a small pool out of pages: the
+   * capture on screen cannot hold one complete cut and evicts its own pages
+   * forever. Default `false`: the page stays pinned.
+   */
+  retainCoarsestChunk?: boolean;
+  /**
    * Crossover first-image target, as a fraction of the granted draw allocation.
    * Used with `radInitialRevealPolicy: 'allocation-fraction'`. Default `0.5`.
    * This is a splat-count threshold, not a fraction of downloaded bytes or of
@@ -976,6 +990,10 @@ export class StreamedSplatMesh extends SplatMesh {
   /** Shared pools must leave governed headroom for sibling marker meshes. */
   private readonly radChunkUsesSharedPool: boolean;
   private readonly radChunkSharedPoolPages: number;
+  /** {@link StreamedSplatMeshOptions.retainCoarsestChunk}. */
+  private readonly radRetainCoarsestChunk: boolean;
+  /** The decoded coarsest chunk, kept to reinstall its page after a suspended mesh shed it. */
+  private radCoarsestChunkData: SplatData | null = null;
   private readonly radChunkPageLookup = new Map<number, number>();
   private radChunkPageLookupRevision = -1;
   private readonly radChunkResidency: boolean;
@@ -1854,6 +1872,11 @@ export class StreamedSplatMesh extends SplatMesh {
     this.radResidencyRequestedValue = radResidencyRequested ? 'chunk-pages' : 'indexed';
     this.radResidencyFallbackReasonValue = radResidencyFallbackReason;
     this.radChunkUsesSharedPool = options.pool !== undefined;
+    this.radRetainCoarsestChunk =
+      options.retainCoarsestChunk === true && radChunkResidency && options.pool !== undefined;
+    if (this.radRetainCoarsestChunk && scene.bootstrapChunk?.file === 0) {
+      this.radCoarsestChunkData = scene.bootstrapChunk.data;
+    }
     this.radChunkSharedPoolPages = options.pool
       ? Math.floor(options.pool.capacity / (scene.chunkSize ?? SLAB_PAGE_SPLATS))
       : 0;
@@ -3380,6 +3403,16 @@ export class StreamedSplatMesh extends SplatMesh {
    * Which `.rad` streaming strategy this mesh selected at load, or `null` when
    * the scene is not a Spark `.rad` capture.
    */
+  /**
+   * True when this mesh keeps its decoded coarsest chunk
+   * ({@link StreamedSplatMeshOptions.retainCoarsestChunk} on a chunk-page
+   * `.rad` in a shared pool): suspended, it holds no pool page a drawing
+   * sibling needs.
+   */
+  get retainsCoarsestChunk(): boolean {
+    return this.radRetainCoarsestChunk;
+  }
+
   get radStrategy(): 'prefix' | 'page-table' | null {
     if (this.scene.chunkOptions?.[0]?.format !== 'rad-chunk') return null;
     return this.frontierWorker ? 'page-table' : 'prefix';
@@ -4331,6 +4364,7 @@ export class StreamedSplatMesh extends SplatMesh {
     if (this.disposed) return;
     this.pageTableDisposed = true;
     this.pendingWork = false;
+    this.radCoarsestChunkData = null;
     for (const resolve of this.snapshotWaiters.values()) resolve(null);
     this.snapshotWaiters.clear();
     this.loader.dispose();
@@ -7422,10 +7456,15 @@ export class StreamedSplatMesh extends SplatMesh {
     return `${this.pageTableDrawBudget}|${fov.coneFov0}|${fov.coneFov}|${fov.coneFoveate}|${fov.behindFoveate}`;
   }
 
-  /** Releases the least-recently-used unprotected chunk page. */
-  private evictRadChunkPage(): boolean {
+  /**
+   * Releases the least-recently-used unprotected chunk page. `includeCoarsest`
+   * also offers chunk 0, which is otherwise never evicted: only a suspended
+   * mesh that retained its data may give it up (see {@link shedPoolRows}).
+   */
+  private evictRadChunkPage(includeCoarsest = false): boolean {
     const protectionStartedAt = performance.now();
     const protectedFiles = this.protectedRadChunkFiles();
+    if (includeCoarsest) protectedFiles.delete(0);
     this.planTimingsValue.protectionMs = performance.now() - protectionStartedAt;
     let oldestFile: number | undefined;
     let oldestTime = Infinity;
@@ -7593,17 +7632,32 @@ export class StreamedSplatMesh extends SplatMesh {
 
   /**
    * Pool tenant hook: drops least-recently-used pages outside the displayed
-   * and pending cuts while this mesh holds more than one cut's pages.
+   * and pending cuts while this mesh holds more than one cut's pages. A
+   * suspended mesh displays nothing, so it gives up every page: the pages it
+   * keeps (its coarsest chunk, for an instant resume) are held only while no
+   * drawing sibling needs the rows.
    */
   shedPoolRows(rows: number): number {
     const allocator = this.radChunkAllocator;
     if (!this.radChunkUsesSharedPool || !allocator || this.pageTableDisposed) return 0;
-    const keep = this.radChunkCutPages();
+    const keep = this.radChunkSuspended ? 0 : this.radChunkCutPages();
     let freed = 0;
     while (freed < rows && allocator.residentCount > keep) {
       const before = this.radChunkPoolRows();
       if (!this.evictRadChunkPage()) break;
       freed += before - this.radChunkPoolRows();
+    }
+    // Last resort, after every finer page went: the coarsest chunk of a
+    // suspended mesh that kept its data. It comes back from memory, with no
+    // download, the moment the mesh gets a budget again (see requestChunk).
+    if (
+      freed < rows &&
+      this.radChunkSuspended &&
+      this.radCoarsestChunkData !== null &&
+      this.radChunkPages.has(0)
+    ) {
+      const before = this.radChunkPoolRows();
+      if (this.evictRadChunkPage(true)) freed += before - this.radChunkPoolRows();
     }
     return freed;
   }
@@ -7725,6 +7779,8 @@ export class StreamedSplatMesh extends SplatMesh {
   private forwardChunkToWorker(file: number, data: SplatData): void {
     const tree = data.radTree;
     if (!tree) return;
+    // Chunk-page mode posts copies to the worker, so these arrays stay valid.
+    if (file === 0 && this.radRetainCoarsestChunk) this.radCoarsestChunkData = data;
     if (this.radChunkResidency && this.pageTableInFlight && this.radChunkPagesFull()) {
       this.radChunkInstallQueue.set(file, data);
       return;
@@ -7924,11 +7980,18 @@ export class StreamedSplatMesh extends SplatMesh {
       this.cache.has(file) ||
       this.pageTableCachedFiles.has(file) ||
       this.radChunkInstallQueue.has(file) ||
-      this.fetching.has(file) ||
-      this.fetching.size >= this.maxInflight
+      this.fetching.has(file)
     ) {
       return;
     }
+    // A suspended mesh shed its coarsest page (shedPoolRows) and kept the
+    // decoded chunk: reinstall from memory once it draws again, never while it
+    // is still suspended (a sibling asked for those rows).
+    if (file === 0 && this.radCoarsestChunkData !== null && this.radChunkResidency) {
+      if (!this.radChunkSuspended) this.forwardChunkToWorker(0, this.radCoarsestChunkData);
+      return;
+    }
+    if (this.fetching.size >= this.maxInflight) return;
     if (
       this.frontierWorker &&
       kind === 'priority' &&
