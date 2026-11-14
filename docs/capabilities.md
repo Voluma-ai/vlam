@@ -12,7 +12,7 @@ and [`architecture.md`](architecture.md).
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | **PLY** (3DGS INRIA) | ✅ |, | ✅ file | ✅ | ✅ packed shN (`f_rest_*`, bands 1–3) | `parse-splat-ply.test.ts` | orbit; SH vs DC |
 | **Compressed PLY** (SuperSplat) | ✅ |, | ✅ file | ✅ | ✅ packed shN when `sh` element present | `parse-compressed-ply.test.ts` | large capture |
-| **SOG** v2 (bundled ZIP) | ✅ |, | ✅ bundled `.sog` file | ✅ | ✅ palette shN | `parse-sog.test.ts` | demo default scene |
+| **SOG** v2 / v3 (bundled ZIP) | ✅ |, | ✅ bundled `.sog` file | ✅ (v3 opacity > 1 clamped) | ✅ palette shN (v3 band 4 dropped) | `parse-sog.test.ts` | demo default scene |
 | **Streamed SOG** (`lod-meta.json`) |, | ✅ | ✅ directory | ✅ | ✅ peek `meta.json` `shN` (re-quantized packed; off on `smooth`) | `lod-scheduler`, `sog-scene-shn`, `peek-sog-sh` | `?sh=0` vs `?sh=N` |
 | **SPLAT** (antimatter15) | ✅ |, | ✅ file | ✅ | ❌ DC only (32-byte record has no SH) | `parse-splat.test.ts` |, |
 | **KSPLAT** | ✅ |, | ✅ file | ✅ | ✅ packed shN (SH degrees 1–2) | `parse-ksplat.test.ts` |, |

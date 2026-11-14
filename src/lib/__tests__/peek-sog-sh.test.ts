@@ -38,7 +38,7 @@ describe('sogShBandsFromMeta', () => {
     expect(sogShBandsFromMeta(null)).toBe(0);
     expect(sogShBandsFromMeta({})).toBe(0);
     expect(sogShBandsFromMeta({ shN: { bands: 0 } })).toBe(0);
-    expect(sogShBandsFromMeta({ shN: { bands: 4 } })).toBe(0);
+    expect(sogShBandsFromMeta({ shN: { bands: 5 } })).toBe(0);
     expect(sogShBandsFromMeta({ shN: { bands: '3' } })).toBe(0);
   });
 
@@ -46,6 +46,10 @@ describe('sogShBandsFromMeta', () => {
     expect(sogShBandsFromMeta({ shN: { bands: 1 } })).toBe(1);
     expect(sogShBandsFromMeta({ shN: { bands: 2 } })).toBe(2);
     expect(sogShBandsFromMeta({ shN: { bands: 3 } })).toBe(3);
+  });
+
+  it('reports a v3 4-band palette as the 3 bands the decoder keeps', () => {
+    expect(sogShBandsFromMeta({ version: 3, shN: { bands: 4 } })).toBe(3);
   });
 });
 

@@ -14,7 +14,7 @@ import {
 import { readZipEntries } from './zip';
 
 /**
- * Decoder for PlayCanvas's SOG format (v2), Voluma's canonical delivery
+ * Decoder for PlayCanvas's SOG format (versions 2 and 3), Voluma's canonical delivery
  * format: `meta.json` plus WebP-encoded attribute images, delivered either
  * as a ZIP bundle (`.sog` file) or as an unbundled directory (the form
  * Streamed SOG chunks use).
@@ -23,6 +23,19 @@ import { readZipEntries } from './zip';
  * (an open specification; PlayCanvas explicitly invites third-party
  * implementations). The decoder below is an original implementation of that
  * spec. Splat i lives at pixel (i % width, ⌊i / width⌋) in every image.
+ *
+ * Version 3 differs from version 2 only in what some bytes mean:
+ * - rotations are a 24-bit exponential map in RGB instead of smallest-three;
+ * - opacity is `(a / 204)²`, reaching 1.5625 at byte 255. This renderer has
+ *   no opaque-core profile for values above 1, so it clamps them to 1 as
+ *   the spec requires of such renderers;
+ * - shN may hold 4 bands and up to 2²⁴ palette entries (24-bit labels). The
+ *   renderer evaluates at most 3 bands, so band 4 is dropped while decoding,
+ *   which the spec allows;
+ * - `model: "antialiased"` replaces v2's `antialias: true`. `model: "2dgs"`
+ *   needs no special handling here: its zero-thickness third axis is
+ *   already in the scale codebook. `blind`, `extras` and `comments` are
+ *   optional and do not change rendering, so they are ignored.
  *
  * Note: this prototype decodes on the CPU for simplicity. SOG is designed
  * to be GPU-ready - a later optimization is uploading the WebP images as
@@ -33,8 +46,10 @@ import { readZipEntries } from './zip';
 interface SogMeta {
   version: number;
   count: number;
-  /** Optional: the scene was exported with antialiasing (Mip-Splatting). */
+  /** v2: the scene was exported with antialiasing (Mip-Splatting). */
   antialias?: boolean;
+  /** v3: `"antialiased"` (Mip-Splatting) or `"2dgs"`. Absent → plain 3DGS. */
+  model?: unknown;
   means: { mins: [number, number, number]; maxs: [number, number, number]; files: string[] };
   scales: { codebook: number[]; files: string[] };
   quats: { files: string[] };
@@ -206,7 +221,7 @@ async function parseSogFromEntries(
   // [-√½, +√½]; alpha − 252 says which component was omitted (the largest,
   // reconstructed from unit length). Component order is (w, x, y, z).
   const quatComponent = (byte: number): number => (byte / 255 - 0.5) * Math.SQRT2;
-  const quaternion = (p: number): readonly [number, number, number, number] => {
+  const smallestThree = (p: number): readonly [number, number, number, number] => {
     const a = quatComponent(quats.data[p + 0] as number);
     const b = quatComponent(quats.data[p + 1] as number);
     const c = quatComponent(quats.data[p + 2] as number);
@@ -220,6 +235,27 @@ async function parseSogFromEntries(
           ? [a, b, d, c]
           : [a, b, c, d];
   };
+  // v3 quaternions: an exponential map. RGB hold a point p in the unit ball,
+  // p_c = (byte − 128) / 127; the rotation is θ = (π/2)·|p| about p, so
+  // q = (cos θ, p̂·sin θ). Bytes (128, 128, 128) are the identity. |p| may
+  // round slightly above 1, which is still a valid rotation.
+  const exponentialMap = (p: number): readonly [number, number, number, number] => {
+    const x = ((quats.data[p + 0] as number) - 128) / 127;
+    const y = ((quats.data[p + 1] as number) - 128) / 127;
+    const z = ((quats.data[p + 2] as number) - 128) / 127;
+    const r = Math.sqrt(x * x + y * y + z * z);
+    if (r === 0) return [1, 0, 0, 0];
+    const theta = (Math.PI / 2) * r;
+    const s = Math.sin(theta) / r;
+    return [Math.cos(theta), x * s, y * s, z * s];
+  };
+  const quaternion = meta.version === 3 ? exponentialMap : smallestThree;
+  // Opacity byte → stored alpha byte. v2 stores the activated opacity
+  // linearly; v3 stores √opacity scaled so byte 204 is exactly 1.
+  const alphaByte = new Uint8Array(256);
+  for (let a = 0; a < 256; a++) {
+    alphaByte[a] = meta.version === 3 ? Math.round(Math.min(1, (a / 204) ** 2) * 255) : a;
+  }
   const scale = (p: number, axis: number): number =>
     Math.exp(meta.scales.codebook[scales.data[p + axis] as number] as number);
 
@@ -255,7 +291,7 @@ async function parseSogFromEntries(
       const [qw, qx, qy, qz] = quaternion(p);
       writeCovariance(diagonal, 0, scale(p, 0), scale(p, 1), scale(p, 2), qw, qx, qy, qz);
       scores[i] = importanceScore(
-        (sh0.data[p + 3] as number) / 255,
+        (alphaByte[sh0.data[p + 3] as number] as number) / 255,
         (diagonal[0] as number) + (diagonal[3] as number) + (diagonal[5] as number),
       );
     }
@@ -281,25 +317,27 @@ async function parseSogFromEntries(
     }
 
     // SH0: RGB are codebook indices for the DC term; alpha is the opacity,
-    // stored already activated (no sigmoid, unlike PLY).
+    // stored already activated (no sigmoid, unlike PLY), see `alphaByte`.
     colors[o * 4 + 0] = toColorByte(meta.sh0.codebook[sh0.data[p + 0] as number] as number);
     colors[o * 4 + 1] = toColorByte(meta.sh0.codebook[sh0.data[p + 1] as number] as number);
     colors[o * 4 + 2] = toColorByte(meta.sh0.codebook[sh0.data[p + 2] as number] as number);
-    colors[o * 4 + 3] = sh0.data[p + 3] as number;
+    colors[o * 4 + 3] = alphaByte[sh0.data[p + 3] as number] as number;
 
     const [qw, qx, qy, qz] = quaternion(p);
     writeCovariance(covariances, o, scale(p, 0), scale(p, 1), scale(p, 2), qw, qx, qy, qz);
   }
 
   signal?.throwIfAborted();
-  const sh = meta.shN ? await decodeShN(meta.shN, count, readEntry, keep, kept) : undefined;
+  const sh = meta.shN
+    ? await decodeShN(meta.shN, meta.version, count, readEntry, keep, kept)
+    : undefined;
   return {
     count: kept,
     positions,
     colors,
     covariances,
     sh,
-    antialias: meta.antialias === true,
+    antialias: meta.antialias === true || meta.model === 'antialiased',
     ...(keep ? { sourceCount: count } : {}),
   };
 }
@@ -311,7 +349,9 @@ async function parseSogFromEntries(
  * numbers (image bytes index them unchecked in the hot loop).
  */
 function validateMeta(meta: SogMeta): void {
-  if (meta.version !== 2) throw new Error(`Unsupported SOG version: ${meta.version}.`);
+  if (meta.version !== 2 && meta.version !== 3) {
+    throw new Error(`Unsupported SOG version: ${meta.version}.`);
+  }
   if (!Number.isSafeInteger(meta.count) || meta.count < 0) {
     throw new Error(`SOG meta.json declares an invalid splat count: ${meta.count}.`);
   }
@@ -327,7 +367,8 @@ function validateMeta(meta: SogMeta): void {
   if (meta.shN) {
     validateCodebook(meta.shN.codebook, 'shN');
     const bands = meta.shN.bands;
-    if (!Number.isInteger(bands) || bands < 1 || bands > 3) {
+    const maxBands = meta.version === 3 ? 4 : 3;
+    if (!Number.isInteger(bands) || bands < 1 || bands > maxBands) {
       throw new Error(`SOG meta.json declares an invalid shN band count: ${bands}.`);
     }
   }
@@ -383,13 +424,19 @@ function assertPlainRelativeName(name: string): void {
   }
 }
 
+/** SH bands the renderer evaluates; a v3 file's band 4 is dropped. */
+const MAX_RENDERED_SH_BANDS = 3;
+
 /**
- * Decodes the palette-compressed higher-order SH data: per-splat 16-bit
- * labels plus a centroids image whose bytes are codebook indices. The
- * centroids keep their SOG grid layout so they can be uploaded as-is.
+ * Decodes the palette-compressed higher-order SH data: per-splat labels
+ * (16-bit in v2, 24-bit in v3) plus a centroids image whose bytes are
+ * codebook indices. The centroids keep their SOG grid layout so they can be
+ * uploaded as-is; a 4-band palette is narrowed to its first 3 bands (the
+ * first 15 of each entry's 24 coefficients) in the same layout.
  */
 async function decodeShN(
   meta: NonNullable<SogMeta['shN']>,
+  version: number,
   count: number,
   readEntry: (name: string) => Promise<Uint8Array>,
   keep: Uint8Array | null,
@@ -404,13 +451,16 @@ async function decodeShN(
   // A label indexes a palette entry laid out 64 entries per row, each entry
   // `coeffs` texels wide. Bound every decoded label against the centroids
   // image so a hostile labels image cannot address texels outside it.
-  const coeffs = meta.bands === 1 ? 3 : meta.bands === 2 ? 8 : 15;
+  const coeffs = shCoefficients(meta.bands);
   const labels = new Uint32Array(kept);
+  const labelBytes = version === 3 ? 3 : 2;
   let out = 0;
   for (let i = 0; i < count; i++) {
     if (keep && !keep[i]) continue;
     const label =
-      (labelsImage.data[i * 4] as number) | ((labelsImage.data[i * 4 + 1] as number) << 8);
+      (labelsImage.data[i * 4] as number) |
+      ((labelsImage.data[i * 4 + 1] as number) << 8) |
+      (labelBytes === 3 ? (labelsImage.data[i * 4 + 2] as number) << 16 : 0);
     const row = Math.floor(label / 64);
     const column0 = (label % 64) * coeffs;
     if (row >= centroids.height || column0 + coeffs > centroids.width) {
@@ -422,20 +472,47 @@ async function decodeShN(
     labels[out++] = label;
   }
 
-  const palette = new Float32Array(centroids.width * centroids.height * 4);
-  for (let i = 0; i < centroids.width * centroids.height; i++) {
-    palette[i * 4 + 0] = meta.codebook[centroids.data[i * 4 + 0] as number] as number;
-    palette[i * 4 + 1] = meta.codebook[centroids.data[i * 4 + 1] as number] as number;
-    palette[i * 4 + 2] = meta.codebook[centroids.data[i * 4 + 2] as number] as number;
+  const bands = Math.min(meta.bands, MAX_RENDERED_SH_BANDS);
+  const keptCoeffs = shCoefficients(bands);
+  if (keptCoeffs === coeffs) {
+    const palette = new Float32Array(centroids.width * centroids.height * 4);
+    for (let i = 0; i < centroids.width * centroids.height; i++) {
+      palette[i * 4 + 0] = meta.codebook[centroids.data[i * 4 + 0] as number] as number;
+      palette[i * 4 + 1] = meta.codebook[centroids.data[i * 4 + 1] as number] as number;
+      palette[i * 4 + 2] = meta.codebook[centroids.data[i * 4 + 2] as number] as number;
+    }
+    return {
+      bands,
+      labels,
+      palette,
+      paletteWidth: centroids.width,
+      paletteHeight: centroids.height,
+    };
   }
 
-  return {
-    bands: meta.bands,
-    labels,
-    palette,
-    paletteWidth: centroids.width,
-    paletteHeight: centroids.height,
-  };
+  // Narrow each entry from `coeffs` to `keptCoeffs` texels, keeping the
+  // layout (64 entries per row) so labels still address the same entries.
+  const entriesPerRow = Math.floor(centroids.width / coeffs);
+  const width = entriesPerRow * keptCoeffs;
+  const height = centroids.height;
+  const palette = new Float32Array(width * height * 4);
+  for (let row = 0; row < height; row++) {
+    for (let entry = 0; entry < entriesPerRow; entry++) {
+      for (let c = 0; c < keptCoeffs; c++) {
+        const source = (row * centroids.width + entry * coeffs + c) * 4;
+        const target = (row * width + entry * keptCoeffs + c) * 4;
+        palette[target + 0] = meta.codebook[centroids.data[source + 0] as number] as number;
+        palette[target + 1] = meta.codebook[centroids.data[source + 1] as number] as number;
+        palette[target + 2] = meta.codebook[centroids.data[source + 2] as number] as number;
+      }
+    }
+  }
+  return { bands, labels, palette, paletteWidth: width, paletteHeight: height };
+}
+
+/** Coefficients per color channel for SH bands 1-4: 3, 8, 15 or 24. */
+function shCoefficients(bands: number): number {
+  return (bands + 1) * (bands + 1) - 1;
 }
 
 let webpReadbackContext: WebGL2RenderingContext | undefined;

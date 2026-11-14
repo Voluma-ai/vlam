@@ -1,5 +1,5 @@
 /**
- * `@voluma/vlam/formats/sog` - PlayCanvas SOG (v2) decoder, for both the
+ * `@voluma/vlam/formats/sog` - PlayCanvas SOG (v2 and v3) decoder, for both the
  * bundled `.sog` ZIP and the unbundled directory form Streamed SOG chunks use.
  *
  * Loading through {@link loadSplatData} / {@link StreamedSplatMesh.load} does not
