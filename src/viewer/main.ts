@@ -3731,6 +3731,12 @@ async function main(): Promise<void> {
           false,
         );
       }
+      if (!options.sideView) {
+        // fitToBox snaps to the nearest top-down or level view. Start level,
+        // so the fit sizes the scene from the side; the object branch below
+        // then opens on the cinematic orbit, as landscapes (Tempel) do.
+        controls.rotatePolarTo(Math.PI / 2, false);
+      }
       await controls.fitToBox(cameraBounds, false);
       if (options.sideView) {
         // Leave a lot more breathing room than the tight box fit so the
@@ -3802,6 +3808,44 @@ async function main(): Promise<void> {
         const offsetX = cinematicOrbitPosition.x - cinematicOrbitCenter.x;
         const offsetZ = cinematicOrbitPosition.z - cinematicOrbitCenter.z;
         cinematicOrbitPhase = (((Math.atan2(offsetX, offsetZ) / (Math.PI * 2)) % 1) + 1) % 1;
+        if (!options.sideView) {
+          // Open on the orbit's pose at this heading and zoom, like the
+          // landscape branch above, so the opening view looks across the
+          // subject and the auto-orbit later starts without a jump.
+          const pathOptions = {
+            framing: 'object' as const,
+            verticalSpan: cinematicOrbitVerticalSpan,
+            spanHeights: false,
+          };
+          cinematicOrbitDistance = baseDistanceForOrbitalCameraPath(
+            cinematicOrbitPhase,
+            cinematicOrbitDistance,
+            pathOptions,
+          );
+          evaluateOrbitalCameraPath(
+            cinematicOrbitPhase,
+            cinematicOrbitCenter,
+            cinematicOrbitDistance,
+            cinematicOrbitPosition,
+            cinematicOrbitTarget,
+            pathOptions,
+          );
+          // The previous scene's limit would clamp this dolly; the new limits
+          // are set from this scene's bounds below.
+          controls.maxDistance = Math.max(
+            controls.maxDistance,
+            cinematicOrbitPosition.distanceTo(cinematicOrbitTarget) * 1.01,
+          );
+          controls.setLookAt(
+            cinematicOrbitPosition.x,
+            cinematicOrbitPosition.y,
+            cinematicOrbitPosition.z,
+            cinematicOrbitTarget.x,
+            cinematicOrbitTarget.y,
+            cinematicOrbitTarget.z,
+            false,
+          );
+        }
       }
       cinematicOrbitLastInteraction = performance.now();
       cinematicOrbitWasMoving = false;
