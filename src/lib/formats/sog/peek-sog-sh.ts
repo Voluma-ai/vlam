@@ -31,13 +31,16 @@ export interface PaletteShPeekTarget {
   readonly path: string;
 }
 
-/** Reads `shN.bands` from a SOG `meta.json` object. Invalid or absent → 0. */
+/**
+ * Reads `shN.bands` from a SOG `meta.json` object. Invalid or absent → 0.
+ * A v3 file's 4 bands report as 3: the decoder drops band 4.
+ */
 export function sogShBandsFromMeta(json: unknown): PaletteShBands {
   if (typeof json !== 'object' || json === null) return 0;
   const shN = (json as { shN?: unknown }).shN;
   if (typeof shN !== 'object' || shN === null) return 0;
   const bands = (shN as { bands?: unknown }).bands;
-  return bands === 1 || bands === 2 || bands === 3 ? bands : 0;
+  return bands === 1 || bands === 2 || bands === 3 ? bands : bands === 4 ? 3 : 0;
 }
 
 /**

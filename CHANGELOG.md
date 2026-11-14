@@ -25,6 +25,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- **SOG version 3.** `parseSog`, `parseSogDirectory` and every loader that
+  reads SOG (bundled `.sog`, Streamed SOG chunks, `.lcc2` tiles) now decode
+  version 3 alongside version 2: exponential-map rotations, `(a / 204)²`
+  opacity (values above 1 clamp to 1), 24-bit shN labels, and 4-band shN
+  (band 4 is dropped, rendering 3 bands). `model: "antialiased"` sets
+  `antialias`; `blind`, `extras` and `comments` are ignored.
 - **`StreamedSplatMeshOptions.retainCoarsestChunk`** (and the
   `retainsCoarsestChunk` getter). A suspended chunk-page `.rad` mesh in a shared
   pool (budget 1) can now give the pool page of its coarsest chunk to a drawing

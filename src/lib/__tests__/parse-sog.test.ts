@@ -324,12 +324,30 @@ describe('parseSog', () => {
   });
 
   it('rejects an invalid shN band count', async () => {
-    for (const bands of [0, 4, 2.5, '3']) {
+    const cases: Array<[number, unknown]> = [
+      [2, 0],
+      [2, 4],
+      [2, 2.5],
+      [2, '3'],
+      [3, 0],
+      [3, 5],
+    ];
+    for (const [version, bands] of cases) {
       const meta = makeMeta(1, {
+        version,
         shN: { count: 1, bands, codebook, files: ['shN_centroids.webp', 'shN_labels.webp'] },
       });
       await expect(parseSog(buildZip({ 'meta.json': JSON.stringify(meta) }))).rejects.toThrow(
         /invalid shN band count/,
+      );
+    }
+  });
+
+  it('rejects SOG versions other than 2 and 3', async () => {
+    for (const version of [1, 4, '3']) {
+      const meta = makeMeta(1, { version });
+      await expect(parseSog(buildZip({ 'meta.json': JSON.stringify(meta) }))).rejects.toThrow(
+        /Unsupported SOG version/,
       );
     }
   });
@@ -442,6 +460,139 @@ function makeRandomBundle(count: number): ArrayBuffer {
     'shN_labels.webp': image(() => [byte() & 3, 0, 0, 255]),
   });
 }
+
+/** A one-splat bundle with the given quats / sh0 pixels and extra entries. */
+function makeV3Bundle(
+  meta: Record<string, unknown>,
+  quats: number[],
+  sh0: number[],
+  extra: Record<string, Uint8Array> = {},
+): ArrayBuffer {
+  return buildZip({
+    'meta.json': JSON.stringify(meta),
+    'means_l.webp': fakeImage(1, 1),
+    'means_u.webp': fakeImage(1, 1),
+    'quats.webp': fakeImage(1, 1, quats),
+    'scales.webp': fakeImage(1, 1, [0, 0, 255, 255]),
+    'sh0.webp': fakeImage(1, 1, sh0),
+    ...extra,
+  });
+}
+
+describe('parseSog version 3', () => {
+  // Distinct scales (e⁰, e⁰, e¹) make the rotation visible in Σ.
+  const v3Codebook = Array.from({ length: 256 }, (_, i) => i / 255);
+
+  it('decodes the exponential-map rotation: identity at 128, ~90° about x at 192', async () => {
+    vi.stubGlobal('ImageDecoder', StubImageDecoder);
+    const meta = makeMeta(1, {
+      version: 3,
+      scales: { codebook: v3Codebook, files: ['scales.webp'] },
+    });
+    const e2 = Math.exp(2);
+
+    const identity = await parseSog(makeV3Bundle(meta, [128, 128, 128, 0], [0, 0, 0, 204]));
+    [1, 0, 0, 1, 0, e2].forEach((value, i) =>
+      expect(identity.covariances[i]).toBeCloseTo(value, 5),
+    );
+
+    // p = (64/127, 0, 0) → half-angle θ = (π/2)·|p|, a rotation by φ = 2θ
+    // (≈ 90.7°) about x: the z scale moves (almost entirely) onto y.
+    const phi = Math.PI * (64 / 127);
+    const c = Math.cos(phi);
+    const s = Math.sin(phi);
+    const rotated = await parseSog(makeV3Bundle(meta, [192, 128, 128, 0], [0, 0, 0, 204]));
+    [1, 0, 0, c * c + s * s * e2, c * s * (1 - e2), s * s + c * c * e2].forEach((value, i) =>
+      expect(rotated.covariances[i]).toBeCloseTo(value, 4),
+    );
+    expect(rotated.covariances[3]).toBeGreaterThan(7);
+
+    // |p| = 1 is a half turn, which leaves this axis-aligned Σ unchanged.
+    const halfTurn = await parseSog(makeV3Bundle(meta, [255, 128, 128, 0], [0, 0, 0, 204]));
+    [1, 0, 0, 1, 0, e2].forEach((value, i) =>
+      expect(halfTurn.covariances[i]).toBeCloseTo(value, 4),
+    );
+  });
+
+  it('decodes opacity as (a / 204)² and clamps values above 1', async () => {
+    vi.stubGlobal('ImageDecoder', StubImageDecoder);
+    const meta = makeMeta(1, { version: 3, opacity: { max: 1.5625 } });
+    const alpha = async (a: number): Promise<number> =>
+      (await parseSog(makeV3Bundle(meta, [128, 128, 128, 0], [0, 0, 0, a]))).colors[3] as number;
+    expect(await alpha(204)).toBe(255);
+    expect(await alpha(255)).toBe(255);
+    expect(await alpha(102)).toBe(Math.round(0.25 * 255));
+    expect(await alpha(0)).toBe(0);
+  });
+
+  it('reads model "antialiased" and ignores blind, extras and comments', async () => {
+    vi.stubGlobal('ImageDecoder', StubImageDecoder);
+    const meta = makeMeta(1, {
+      version: 3,
+      model: 'antialiased',
+      blind: [{ files: ['blind_0.webp'], fields: [{ name: 'id', type: 'u8' }] }],
+      extras: { app: true },
+      comments: ['made by a test'],
+    });
+    const data = await parseSog(makeV3Bundle(meta, [128, 128, 128, 0], [0, 0, 0, 204]));
+    expect(data.antialias).toBe(true);
+  });
+
+  it('reads 24-bit labels and keeps the first 3 of 4 SH bands', async () => {
+    vi.stubGlobal('ImageDecoder', StubImageDecoder);
+    // 65,537 palette entries → label 65,536 sits at row 1024, column 0.
+    const rows = 1025;
+    const width = 64 * 24;
+    const centroids = new Array<number>(width * rows * 4).fill(0);
+    for (let c = 0; c < 24; c++) {
+      const texel = (1024 * width + c) * 4;
+      centroids[texel] = c; // R channel: codebook index c → c / 255.
+      centroids[texel + 1] = 100;
+      centroids[texel + 2] = 200;
+    }
+    const meta = makeMeta(1, {
+      version: 3,
+      shN: {
+        count: 65537,
+        bands: 4,
+        codebook: v3Codebook,
+        files: ['shN_centroids.webp', 'shN_labels.webp'],
+      },
+    });
+    const data = await parseSog(
+      makeV3Bundle(meta, [128, 128, 128, 0], [0, 0, 0, 204], {
+        'shN_centroids.webp': fakeImage(width, rows, centroids),
+        'shN_labels.webp': fakeImage(1, 1, [0, 0, 1, 255]),
+      }),
+    );
+
+    const sh = data.sh!;
+    expect(sh.bands).toBe(3);
+    expect(Array.from(sh.labels)).toEqual([65536]);
+    expect(sh.paletteWidth).toBe(64 * 15);
+    expect(sh.paletteHeight).toBe(rows);
+    for (let c = 0; c < 15; c++) {
+      const texel = (1024 * sh.paletteWidth + c) * 4;
+      expect(sh.palette[texel]).toBeCloseTo(c / 255, 6);
+      expect(sh.palette[texel + 1]).toBeCloseTo(100 / 255, 6);
+      expect(sh.palette[texel + 2]).toBeCloseTo(200 / 255, 6);
+    }
+  });
+
+  it('keeps reading v2 labels as 16-bit', async () => {
+    vi.stubGlobal('ImageDecoder', StubImageDecoder);
+    const meta = makeMeta(1, {
+      shN: { count: 1, bands: 1, codebook, files: ['shN_centroids.webp', 'shN_labels.webp'] },
+    });
+    const data = await parseSog(
+      makeV3Bundle(meta, [128, 128, 128, 255], [0, 0, 0, 200], {
+        'shN_centroids.webp': fakeImage(3, 1),
+        'shN_labels.webp': fakeImage(1, 1, [0, 0, 7, 255]),
+      }),
+    );
+    expect(Array.from(data.sh!.labels)).toEqual([0]);
+  });
+});
 
 describe('parseSog in-decode thinning', () => {
   it('keeps exactly the set limitSplatCount would keep from the full decode', async () => {
