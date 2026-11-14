@@ -25,6 +25,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- **`StreamedSplatMeshOptions.retainCoarsestChunk`** (and the
+  `retainsCoarsestChunk` getter). A suspended chunk-page `.rad` mesh in a shared
+  pool (budget 1) can now give the pool page of its coarsest chunk to a drawing
+  sibling and reinstall it from the decoded chunk the scene already keeps, with
+  no download, when it draws again. Without it every constructed capture pins
+  that page for its lifetime: a host that kept a timeline's captures constructed
+  but suspended ran a phone's 19-page pool out of pages, and the capture on
+  screen evicted its own pages forever (0 splats drawn at a 1.1M budget).
+  Default `false`, so existing hosts keep the pinned page.
 - **Sources shared by several unified meshes.** A source registered with more
   than one `UnifiedSplatMesh` (split-screen views, or an old mesh drawing while
   its replacement prepares) now keeps one visibility per mesh: it counts as
@@ -130,6 +139,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Changed
 
+- **A suspended chunk-page mesh sheds every finer page under pool pressure.**
+  `shedPoolRows` kept one cut's pages (at least one) even for a mesh suspended
+  at budget 1, which displays nothing. It now keeps none of them, so a drawing
+  sibling can use the rows; the coarsest chunk still stays unless
+  `retainCoarsestChunk` is set.
 - Developed and tested against three.js r187, with `@types/three@0.187.0`
   declarations in full: the r186 declaration shim is gone. The peer range
   stays `three >=0.186.0`, and every fix below also runs on r186.
