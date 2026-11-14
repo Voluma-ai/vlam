@@ -591,6 +591,90 @@ describe('page-table demand reconciliation', () => {
     expect(mesh.fetching.has(5)).toBe(false);
   });
 
+  // A host that keeps a timeline's captures constructed but suspended ran a
+  // phone's 19-page pool out of pages: each one pinned its coarsest chunk, and
+  // the capture on screen evicted its own pages forever.
+  function sharedPoolShell(retain: boolean) {
+    const { inner } = chunkPagesFixture();
+    const released: number[] = [];
+    const mesh = inner as typeof inner & {
+      radChunkUsesSharedPool: boolean;
+      radChunkSuspended: boolean;
+      radRetainCoarsestChunk: boolean;
+      radCoarsestChunkData: ReturnType<typeof decodedChunk> | null;
+      shedPoolRows: (rows: number) => number;
+      forwardChunkToWorker: (file: number, data: ReturnType<typeof decodedChunk>) => void;
+      syncRadChunkPages: () => void;
+    };
+    const chunk = decodedChunk();
+    mesh.radChunkUsesSharedPool = true;
+    mesh.radRetainCoarsestChunk = retain;
+    mesh.radCoarsestChunkData = retain ? chunk : null;
+    // One pool row per page, so freed rows count pages.
+    for (const page of mesh.radChunkPages.values()) page.ranges = [{}];
+    mesh.radChunkPages.get(1)!.lastUsed = 1;
+    mesh.radChunkAllocator = {
+      ...mesh.radChunkAllocator!,
+      get residentCount() {
+        return mesh.radChunkPages.size;
+      },
+      release: (file: number) => released.push(file),
+    } as typeof mesh.radChunkAllocator;
+    (mesh as unknown as { removeRange: () => void }).removeRange = () => {};
+    mesh.syncRadChunkPages = () => {};
+    mesh.pageTableCachedFiles.add(0);
+    mesh.pageTableCachedFiles.add(1);
+    return { mesh, chunk, released };
+  }
+
+  it('keeps the coarsest page of a suspended mesh that did not retain its chunk', () => {
+    const { mesh, released } = sharedPoolShell(false);
+    mesh.radChunkSuspended = true;
+
+    expect(mesh.shedPoolRows(8)).toBe(1);
+
+    // The finer page went; chunk 0 could only come back through a download.
+    expect(released).toEqual([1]);
+    expect(mesh.radChunkPages.has(0)).toBe(true);
+  });
+
+  it('sheds the coarsest page of a suspended mesh last and reinstalls it from memory', () => {
+    const { mesh, chunk, released } = sharedPoolShell(true);
+
+    // A drawing mesh never gives chunk 0 up, whatever a sibling asks for.
+    mesh.shedPoolRows(8);
+    expect(mesh.radChunkPages.has(0)).toBe(true);
+
+    mesh.radChunkPages.set(1, {
+      ranges: [{}],
+      starts: Uint32Array.from([4]),
+      count: 4,
+      lastUsed: 1,
+    });
+    released.length = 0;
+    mesh.radChunkSuspended = true;
+    // One row asked: the finer page goes first and chunk 0 stays.
+    expect(mesh.shedPoolRows(1)).toBe(1);
+    expect(released).toEqual([1]);
+    expect(mesh.radChunkPages.has(0)).toBe(true);
+    // Still short: now the coarsest page goes too.
+    expect(mesh.shedPoolRows(1)).toBe(1);
+    expect(released).toEqual([1, 0]);
+    expect(mesh.pageTableCachedFiles.has(0)).toBe(false);
+
+    // While suspended a sibling owns those rows: no reinstall and no download.
+    const forward = vi.spyOn(mesh, 'forwardChunkToWorker').mockImplementation(() => {});
+    mesh.requestChunk(0, 'priority');
+    expect(forward).not.toHaveBeenCalled();
+    expect(mesh.fetching.has(0)).toBe(false);
+
+    // Drawing again: the page comes back from the retained chunk.
+    mesh.radChunkSuspended = false;
+    mesh.requestChunk(0, 'priority');
+    expect(forward).toHaveBeenCalledWith(0, chunk);
+    expect(mesh.fetching.has(0)).toBe(false);
+  });
+
   it('bounds a chunk-page cut that cannot keep the capture resident', () => {
     const { inner } = chunkPagesFixture();
     inner.pageTableInFlight = false;
