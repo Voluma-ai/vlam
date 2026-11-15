@@ -29,6 +29,8 @@ import * as lcc from '../formats/lcc';
 import * as spz from '../formats/spz';
 import * as splat from '../formats/splat';
 import * as ksplat from '../formats/ksplat';
+import * as csgs from '../formats/csgs';
+import * as dynamic from '../dynamic';
 
 const movedOffRoot = [
   'loadSplatData',
@@ -454,6 +456,34 @@ describe('public API surface (@voluma/vlam/formats/*)', () => {
     expect(typeof spz.parseSpz).toBe('function');
     expect(typeof splat.parseSplat).toBe('function');
     expect(typeof ksplat.parseKsplat).toBe('function');
+  });
+
+  it('csgs / dynamic', () => {
+    expect(typeof csgs.CsgsDecoder).toBe('function');
+    expect(typeof csgs.evaluateCsgsFrame).toBe('function');
+    // The GPU layout is an implementation detail of /dynamic.
+    expect('packCsgsGpuSection' in csgs).toBe(false);
+    expect(Object.keys(dynamic).sort()).toEqual([
+      'SKINNED_SPLAT_MAX_BONES',
+      'SPLAT_CLIP_FORMATS',
+      'SkinnedSplatMesh',
+      'SplatClipMesh',
+      'SplatClipStagingBudget',
+      'computeSplatSkinWeights',
+      'fetchCsgsScene',
+      'loadCsgsClip',
+      'loadSplatClip',
+      'loadSplatGltf',
+      'splatFrameBounds',
+    ]);
+    expect(dynamic.SPLAT_CLIP_FORMATS).toEqual(['csgs']);
+    expect(Object.getPrototypeOf(dynamic.SplatClipMesh)).toBe(vlam.SplatMesh);
+    expect(Object.getPrototypeOf(dynamic.SkinnedSplatMesh)).toBe(vlam.SplatMesh);
+    // The format driver stays internal: an app's clip needs only the public members.
+    expectTypeOf<dynamic.SplatClip>().not.toHaveProperty('evaluate');
+    expectTypeOf<dynamic.CsgsClip>().toExtend<dynamic.SplatClip>();
+    expectTypeOf<dynamic.SplatClipMeshOptions['renderer']>().not.toBeUndefined();
+    expect('SplatClipMesh' in vlam).toBe(false);
   });
 
   it('ply / sog', () => {

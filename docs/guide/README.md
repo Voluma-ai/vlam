@@ -30,7 +30,11 @@ Every multi-line code sample is a real TypeScript file under
    generation for decoded scenes, not bounded-memory streaming.
 9. [Picking & queries](picking-and-queries.md): GPU picks, CPU spatial
    queries, coordinate spaces, and multi-source pick semantics.
-10. [Troubleshooting](troubleshooting.md): symptom → cause → fix for the
+10. [Dynamic splats](dynamic-splats.md) _(experimental)_: animated splats,
+   all driven by an `AnimationMixer`: captured 4D clips (`loadSplatClip`,
+   `SplatClipMesh`) and rigged splats (`SkinnedSplatMesh` and a
+   `THREE.Skeleton`); playback paths, the unified draw, known limits.
+11. [Troubleshooting](troubleshooting.md): symptom → cause → fix for the
    failures embedders hit most: colour space, WebGPU storage-buffer limits,
    `206 Range` requirements, WebGL2 differences, and tuning knobs.
 

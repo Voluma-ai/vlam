@@ -26,6 +26,7 @@
       "@voluma/vlam/projection/compute": ["../../../src/lib/projection/compute/index.ts"],
       "@voluma/vlam/selection": ["../../../src/lib/selection/index.ts"],
       "@voluma/vlam/effects": ["../../../src/lib/effects/index.ts"],
+      "@voluma/vlam/dynamic": ["../../../src/lib/dynamic/index.ts"],
       "@voluma/vlam/formats/*": ["../../../src/lib/formats/*/index.ts"]
     }
   },

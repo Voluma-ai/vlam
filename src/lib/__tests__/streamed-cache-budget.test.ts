@@ -231,6 +231,17 @@ describe('StreamedSplatMesh chunk cache budget', () => {
     expect(state.boundingSphereLocal).toEqual(withEnvironment);
   });
 
+  it('keeps declared displacement bounds on top of the scene bounds', () => {
+    const mesh = track(makeClassicMesh());
+    const state = inner(mesh);
+    const reach = new THREE.Vector3(0, 400, 0);
+    mesh.displacementBounds = new THREE.Box3(reach, reach);
+    state.refreshSortBounds();
+    expect(state.boundingSphereLocal.containsPoint(reach)).toBe(true);
+    expect(state.boundingSphereLocal.containsPoint(new THREE.Vector3(100, 100, 100))).toBe(true);
+    expect(mesh.computeSplatBounds().max.y).toBe(400);
+  });
+
   it('caps the worker at the scene allowance instead, when one is shared', () => {
     const cacheBudget = new ChunkCacheBudget({ totalBytes: 128 * MIB, perMeshFloorBytes: 8 * MIB });
     const mesh = track(makeMesh({ cacheBudget, fetchWeight: () => 1 }));

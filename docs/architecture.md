@@ -53,11 +53,18 @@ src/
  unified-harness.ts / .html UnifiedSplatMesh GPU harness (`/unified-harness.html`)
  budget-harness.ts / .html several whole files under one SplatSceneBudget (`/budget-harness.html`)
  rad-parity-harness.ts / .html Opt-in streamed `.rad` direct/unified screenshot run
- csgs-harness.ts / .html Faltwerk `.csgs` 4DGS playback proof of concept (`/csgs-harness.html`)
- csgs-decode-worker.ts its section decode worker
+ csgs-harness.ts / .html `.csgs` 4DGS playback through `@voluma/vlam/dynamic` (`/csgs-harness.html`)
+ csgs-effect.ts, csgs-demo.ts the demo's lazy `4dgs` effect and its linked demo clip URL
+ csgs-procedural.ts procedural GPU-eligible clip for tests and `clip=procedural`
+ goose-procedural.ts, goose-rig.ts, goose-clips.ts `?scene=procedural:goose`: a goose generated in code,
+      rigged on `SkinnedSplatMesh` with a lighting modifier after the skin
+ skinned-splat-probe.ts / .html GPU skin vs its CPU twin, and posed picking (`browser-tests/skinned-splat-mesh.spec.ts`)
+ skinned-splat-bench.ts / .html dev bench: GPU cost of 0/1/2/4 bones per splat on a large synthetic limb
  sort-benchmark.ts frame/sort timing rig behind ?benchmarkSeconds
  render-benchmark.html / .ts settled plain-SplatMesh device benchmark
  memory-benchmark.html / .ts static/streamed load + retained-memory benchmark
+ tools/csgs/ dev-only `.csgs` encoder and the goose demo clip builder
+      (`scripts/generate-goose-clip.mjs` → `assets/goose-walk/`); never imported by lib/
  lib/ the published library ("@voluma/vlam" on npm); folders match package
       subpaths (each `index.ts` is the published entry)
  core/ → `@voluma/vlam` (SplatMesh, MergedSplatMesh, renderer, sort)
@@ -78,7 +85,13 @@ src/
  spz/ → `@voluma/vlam/formats/spz`
  splat/ → `@voluma/vlam/formats/splat`
  ksplat/ → `@voluma/vlam/formats/ksplat`
- csgs/ → `@voluma/vlam/formats/csgs` (parse-csgs, csgs-frame; experimental 4DGS)
+ csgs/ → `@voluma/vlam/formats/csgs` (parse-csgs, csgs-frame; csgs-gpu-layout is internal to dynamic/)
+ dynamic/ → `@voluma/vlam/dynamic` (experimental animated splats). Format-neutral: splat-clip
+      (the public `SplatClip`), load-splat-clip (format dispatch), splat-clip-mesh (transport
+      only), splat-clip-playback (internal driver contract), frame-playback (the frame path
+      every format has), skinned-splat-mesh + splat-skin-weights (rigged splats).
+      Per format: csgs-clip + csgs-decode-worker + csgs-worker-protocol (loading),
+      csgs-gpu-playback + csgs-curve-modifier (the `.csgs` GPU driver)
 
  -- core/ rendering / mesh --
  splat-mesh.ts SplatMesh: the pool, range lifecycle, active list, sort wiring

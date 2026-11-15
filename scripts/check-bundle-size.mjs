@@ -52,6 +52,10 @@ const BUDGET_GZIP_BYTES = {
   './sorting/radix': 21_000,
   './projection/compute': 22_000,
   './selection': 20_000,
+  // 100,500 B measured (core graph plus clip loading with its inlined decode
+  // worker, the .csgs GPU driver, SplatClipMesh and SkinnedSplatMesh) × 1.15,
+  // rounded to 1 kB.
+  './dynamic': 116_000,
 };
 
 /**
@@ -227,6 +231,9 @@ mustNotContain(
   'auto-large-static-discrete-sh',
   'automatic compute projection policy belongs in /projection/compute',
 );
+mustNotContain('.', 'csgsLife', '.csgs GPU playback belongs in /dynamic');
+mustNotContain('.', 'CSGS: the clip was disposed.', '.csgs clip loading belongs in /dynamic');
+mustNotContain('./formats/csgs', 'SplatClipMesh', 'the decoder subpath stays free of playback');
 mustNotContain('./unified', 'RadixSorter', 'radix sorting belongs in /sorting/radix');
 mustNotContain(
   './unified',
@@ -290,6 +297,9 @@ mustContain(
   'Static LOD build aborted.',
   'static-lod entry owns StaticLodSplatMesh',
 );
+mustContain('./dynamic', 'csgsLife', 'dynamic entry owns GPU clip playback');
+mustContain('./dynamic', 'vlamSkinIndex01', 'dynamic entry owns skinned splats');
+mustNotContain('.', 'vlamSkinIndex01', 'skinned splats belong in /dynamic');
 mustContain('./relighting', 'attachRelighting', 'relighting entry owns the display attachment');
 mustContain(
   './unified',

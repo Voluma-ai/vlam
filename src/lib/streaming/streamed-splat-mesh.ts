@@ -4121,7 +4121,7 @@ export class StreamedSplatMesh extends SplatMesh {
 
   /** Root bounds of the whole scene, valid before any chunk has loaded. */
   override computeSplatBounds(): THREE.Box3 {
-    return this.scene.bounds.clone();
+    return this.withDisplacementBounds(this.scene.bounds).clone();
   }
 
   /**
@@ -4136,7 +4136,8 @@ export class StreamedSplatMesh extends SplatMesh {
    */
   protected override refreshSortBounds(): void {
     if (!this.boundsDirty) return;
-    this.localBounds.union(this.scene.bounds).getBoundingSphere(this.boundingSphereLocal);
+    this.localBounds.union(this.scene.bounds);
+    this.withDisplacementBounds(this.localBounds).getBoundingSphere(this.boundingSphereLocal);
     this.boundsDirty = false;
   }
 

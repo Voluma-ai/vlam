@@ -30,6 +30,8 @@ Each is a standalone program. Follow the link for the explanation and a live run
 <<< ../../docs/examples/samples/splats-and-objects.ts
 :::
 
+### Going further
+
 ::: details many-captures.ts, `MergedSplatMesh` with three sources · [walkthrough](/examples/many-captures)
 <<< ../../docs/examples/samples/many-captures.ts
 :::
@@ -40,8 +42,6 @@ Each is a standalone program. Follow the link for the explanation and a live run
 <<< ../../docs/examples/samples/collision-world.ts
 :::
 
-### Going further
-
 ::: details frame-the-camera.ts, `computeSplatBounds` and fitting the view · [walkthrough](/examples/frame-the-camera)
 <<< ../../docs/examples/samples/frame-the-camera.ts
 :::
@@ -49,6 +49,8 @@ Each is a standalone program. Follow the link for the explanation and a live run
 ::: details stand-on-surface.ts, `queryHeight` floor probes and `queryNearest` · [walkthrough](/examples/surface-queries)
 <<< ../../docs/examples/samples/stand-on-surface.ts
 :::
+
+### Effects
 
 ::: details change-the-look.ts, stacked `sdfEffects` + `lightingPreset` + `revealPreset` · [walkthrough](/examples/shader-effects)
 <<< ../../docs/examples/samples/change-the-look.ts
@@ -76,6 +78,16 @@ Each is a standalone program. Follow the link for the explanation and a live run
 
 ::: details custom-effect.ts, a hand-written TSL `SplatModifier` · [walkthrough](/examples/custom-effect)
 <<< ../../docs/examples/samples/custom-effect.ts
+:::
+
+### Animation
+
+::: details play-4dgs-clip.ts, experimental `loadSplatClip` + `SplatClipMesh` under an `AnimationMixer`, playing the goose clip · [walkthrough](/examples/play-4dgs-clip)
+<<< ../../docs/examples/samples/play-4dgs-clip.ts
+:::
+
+::: details rigged-splats.ts, experimental `SkinnedSplatMesh`: a static splat bound to a `THREE.Skeleton`, bone clips cross-faded under an `AnimationMixer` · [walkthrough](/examples/rigged-splats)
+<<< ../../docs/examples/samples/rigged-splats.ts
 :::
 
 ### Shipping it
@@ -232,6 +244,16 @@ Short reference snippets from `docs/guide/samples/`, mostly exported functions r
 
 ::: details unified-capacity.ts, sizing the unified splat pool
 <<< ../../docs/guide/samples/unified-capacity.ts
+:::
+
+### Dynamic splats
+
+::: details dynamic-splats.ts, experimental 4DGS clips in a unified draw with a shared `SplatClipStagingBudget`
+<<< ../../docs/guide/samples/dynamic-splats.ts
+:::
+
+::: details splat-gltf.ts, experimental rigged splats from a `KHR_gaussian_splatting` glTF, clips played by their hints
+<<< ../../docs/guide/samples/splat-gltf.ts
 :::
 
 Try scenes live in the <a href="/demo/" target="_self">full viewer</a>.
