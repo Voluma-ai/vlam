@@ -69,6 +69,13 @@ interface SourceRecord {
    * rather than baked by the gather. Assigned per prepare (bounded table).
    */
   liveOpacity: boolean;
+  /**
+   * The source's world matrix and sort-displacement revision (a skin or clip
+   * pose) as of its last gather, to tell a source that moved since from one
+   * that did not. The view's own `matrixWorld` is the live source matrix, so
+   * it cannot answer that. `null` before the first gather.
+   */
+  gatheredPose: { matrixWorld: THREE.Matrix4; displacementRevision: number } | null;
   /** Per-prepare scratch: the source view snapshot for the current frame. */
   view: UnifiedSourceView | null;
   /** Per-prepare scratch: registration index for stable priority ordering. */
@@ -337,6 +344,8 @@ export class UnifiedSplatMesh extends THREE.Mesh {
    * means some source's displaced centers moved since the last sort.
    */
   private sortedDisplacementKey = 0;
+  /** Reused per held prepare: moved sources and their views, interleaved. */
+  private readonly heldMoveScratch: Array<SourceRecord | UnifiedSourceView> = [];
   /**
    * Total admitted splats in the last prepared frame. `removeSource` filters
    * {@link previousLayout} directly, so a tail source's removal can leave the
@@ -675,6 +684,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       lastGather: null,
       drawnOpacity: null,
       liveOpacity: false,
+      gatheredPose: null,
       view: null,
       registrationOrder: 0,
       offset: 0,
@@ -1085,6 +1095,9 @@ export class UnifiedSplatMesh extends THREE.Mesh {
     }
     const updated = this.candidateScratch;
     updated.length = 0;
+    // Held frames only: moved sources re-gathered in place (record, view pairs).
+    const heldMoves = this.heldMoveScratch;
+    heldMoves.length = 0;
     for (let i = 0; i < this.sources.length; i++) {
       const record = this.sources[i] as SourceRecord;
       // Children take the application camera: they resolve the XR view for
@@ -1116,13 +1129,46 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         const endedAt = performance.now();
         onPrepareStage('sourceComparison', endedAt - comparisonStartedAt);
       }
-      if (holdForRefinementSort) continue;
+      if (holdForRefinementSort) {
+        if (this.canRegatherHeldInPlace(record, view)) heldMoves.push(record, view);
+        continue;
+      }
       record.view = view;
       record.registrationOrder = i;
       updated.push(record);
     }
     if (holdForRefinementSort) {
-      this.sortScheduler.markSubmissionSuppressed(contentChanged);
+      // A moving source (an animated avatar walking with the camera) must not
+      // freeze for the frames the queued sort holds the order buffer: it
+      // would trail the camera and snap forward when the gate frees. Its slots
+      // are unchanged, so re-gathering them in place keeps the queued
+      // permutation valid (it only lags in blend order), and WebGPU runs that
+      // queued sort before this gather, so the sort still reads its own input.
+      const heldGatherStartedAt = performance.now();
+      for (let i = 0; i < heldMoves.length; i += 2) {
+        const record = heldMoves[i] as SourceRecord;
+        const view = heldMoves[i + 1] as UnifiedSourceView;
+        const effectiveOpacity = this.gatherOpacityOf(record, view);
+        record.gather.gather(
+          this.renderer,
+          view.activeCount,
+          record.offset,
+          view.matrixWorld,
+          viewCamera.matrixWorldInverse,
+          effectiveOpacity,
+        );
+        record.view = view;
+        if (record.lastGather !== null) {
+          writeGatherCache(record.lastGather, view, record.offset, effectiveOpacity);
+        }
+        record.drawnOpacity = effectiveOpacity;
+        this.recordGatheredPose(record, view);
+        gatherDispatches++;
+        fullGatherDispatches++;
+      }
+      gatherMs = heldMoves.length > 0 ? performance.now() - heldGatherStartedAt : 0;
+      heldMoves.length = 0;
+      this.sortScheduler.markSubmissionSuppressed(contentChanged || gatherDispatches > 0);
       // Content changes keep coalescing; only a camera move under compute
       // projection re-projects the already-gathered work buffer right away.
       const sortStartedAt = performance.now();
@@ -1133,11 +1179,11 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       const sortSubmissionsAfter =
         (this.sorter.submissionCount ?? 0) + (this.projectedSorter?.submissionCount ?? 0);
       this.performanceTimingsValue.totalMs = performance.now() - prepareStartedAt;
-      this.performanceTimingsValue.gatherMs = 0;
+      this.performanceTimingsValue.gatherMs = gatherMs;
       this.performanceTimingsValue.sortSubmitMs = sortSubmitMs;
       this.performanceTimingsValue.sortSubmitted = reprojected;
-      this.performanceTimingsValue.gatherDispatches = 0;
-      this.performanceTimingsValue.fullGatherDispatches = 0;
+      this.performanceTimingsValue.gatherDispatches = gatherDispatches;
+      this.performanceTimingsValue.fullGatherDispatches = fullGatherDispatches;
       this.performanceTimingsValue.colorGatherDispatches = 0;
       this.performanceTimingsValue.cacheHits = 0;
       this.performanceTimingsValue.gatherSlots = this.previousAdmittedTotal;
@@ -1266,6 +1312,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         !view.hasSourcePlacement;
       if (reusable) {
         cacheHits++;
+        this.recordGatheredPose(record, view);
         continue;
       }
       gatherDispatches++;
@@ -1300,6 +1347,7 @@ export class UnifiedSplatMesh extends THREE.Mesh {
         writeGatherCache(record.lastGather, view, sliceOffset, effectiveOpacity);
       }
       record.drawnOpacity = effectiveOpacity;
+      this.recordGatheredPose(record, view);
     }
     if (onPrepareStage) {
       const endedAt = performance.now();
@@ -1674,6 +1722,60 @@ export class UnifiedSplatMesh extends THREE.Mesh {
       performance.now(),
       completion,
     );
+  }
+
+  /**
+   * Whether a held frame may re-gather this source in place: it moved (world
+   * matrix or sort displacement, such as a skin pose) since its last gather,
+   * and nothing about its slots changed, so the queued order still indexes
+   * the same splats. A new cut, content, graph, slot or size keeps holding as
+   * before: drawing it through the old permutation is the stale-scatter
+   * flash the gate exists to prevent. Compute projection draws from projected
+   * centers, which a gather does not refresh, so it keeps holding too. Static
+   * sources (a scan main) never move, so the hold keeps saving their gathers.
+   */
+  private canRegatherHeldInPlace(record: SourceRecord, view: UnifiedSourceView): boolean {
+    const previous = record.view;
+    const pose = record.gatheredPose;
+    if (
+      this.computeProjectionActive ||
+      previous === null ||
+      pose === null ||
+      record.lastGather === null ||
+      !record.visible ||
+      view.activeCount === 0 ||
+      view.hasSourcePlacement ||
+      view.activeCount !== previous.activeCount ||
+      view.activeListVersion !== previous.activeListVersion ||
+      view.contentRevision !== previous.contentRevision ||
+      view.graphRevision !== previous.graphRevision ||
+      view.graphRevision !== record.graphRevision ||
+      view.centersTexture !== previous.centersTexture
+    ) {
+      return false;
+    }
+    const slot = this.previousLayoutBySource.get(record.source);
+    if (
+      slot === undefined ||
+      slot.offset !== record.offset ||
+      slot.activeCount !== view.activeCount
+    ) {
+      return false;
+    }
+    return (
+      !pose.matrixWorld.equals(view.matrixWorld) ||
+      pose.displacementRevision !== getSplatSortDisplacementRevision(record.source)
+    );
+  }
+
+  private recordGatheredPose(record: SourceRecord, view: UnifiedSourceView): void {
+    const displacementRevision = getSplatSortDisplacementRevision(record.source);
+    if (record.gatheredPose === null) {
+      record.gatheredPose = { matrixWorld: view.matrixWorld.clone(), displacementRevision };
+      return;
+    }
+    record.gatheredPose.matrixWorld.copy(view.matrixWorld);
+    record.gatheredPose.displacementRevision = displacementRevision;
   }
 
   /**
