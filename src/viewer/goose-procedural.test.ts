@@ -25,7 +25,10 @@ function sameValues(a: ArrayLike<number>, b: ArrayLike<number>): boolean {
   return true;
 }
 
-describe('goose-procedural', () => {
+// Each createProceduralGoose() is ~0.8 s idle and several times that on a loaded CI runner.
+const BUILD_TIMEOUT = 30_000;
+
+describe('goose-procedural', { timeout: BUILD_TIMEOUT }, () => {
   const goose = createProceduralGoose();
 
   it('builds valid splat data', () => {

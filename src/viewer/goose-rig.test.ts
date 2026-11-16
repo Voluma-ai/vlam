@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { createProceduralGoose } from './goose-procedural';
 import { createGooseRig, packGooseSurface, unpackGooseNormal } from './goose-rig';
 
-describe('goose-rig', () => {
+// Each createProceduralGoose() is ~0.8 s idle and several times that on a loaded CI runner.
+const BUILD_TIMEOUT = 30_000;
+
+describe('goose-rig', { timeout: BUILD_TIMEOUT }, () => {
   it('packs the surface into a value a float32 holds exactly', () => {
     const packed = packGooseSurface(0, -1, 0, 1);
     expect(Number.isInteger(packed)).toBe(true);
