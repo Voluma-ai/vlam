@@ -195,14 +195,14 @@ function nodeIndexOf(gltf: GLTF, object: THREE.Object3D): number | undefined {
  * import * as THREE from 'three/webgpu';
  * import { loadSplatGltf } from '@voluma/vlam/dynamic';
  *
- * const goose = await loadSplatGltf('/procedural-goose.glb');
- * scene.add(goose.scene);
- * const mixer = new THREE.AnimationMixer(goose.scene);
- * mixer.clipAction(THREE.AnimationClip.findByName(goose.animations, 'idle')!).play();
+ * const model = await loadSplatGltf('/character.glb');
+ * scene.add(model.scene);
+ * const mixer = new THREE.AnimationMixer(model.scene);
+ * mixer.clipAction(THREE.AnimationClip.findByName(model.animations, 'idle')!).play();
  *
  * renderer.setAnimationLoop(() => {
  *   mixer.update(timer.getDelta());
- *   for (const mesh of goose.meshes) mesh.update(camera, renderer);
+ *   for (const mesh of model.meshes) mesh.update(camera, renderer);
  *   renderer.render(scene, camera);
  * });
  * ```

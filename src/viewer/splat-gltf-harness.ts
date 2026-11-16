@@ -4,8 +4,8 @@
  * `AnimationMixer`, honouring the clips' `extras.vlam` hints.
  *
  * Query parameters:
- *  - `url=<glb>`: the file (default `/benchmark-assets/procedural-goose.glb`,
- *    written by `node scripts/export-goose-glb.mjs`)
+ *  - `url=<glb>`: the file (required), plain or with its splats under
+ *    `EXT_meshopt_compression`
  *  - `clip=<name>|none`: the clip to play (default the first one); `none`
  *    shows the bind pose
  *  - `time=<s>`: hold the clip at this time instead of playing
@@ -13,11 +13,13 @@
  */
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createWebGPURenderer } from '../lib/core';
 import { SkinnedSplatMesh, loadSplatGltf, type SplatGltfClipHints } from '../lib/dynamic';
 
 const query = new URLSearchParams(location.search);
-const url = query.get('url') ?? '/benchmark-assets/procedural-goose.glb';
+const url = query.get('url');
 const held = query.has('time') ? Number(query.get('time')) || 0 : null;
 const canvas = document.getElementById('canvas') as HTMLCanvasElement;
 const status = document.getElementById('status')!;
@@ -26,6 +28,10 @@ const playButton = document.getElementById('play') as HTMLButtonElement;
 const scrub = document.getElementById('scrub') as HTMLInputElement;
 
 async function main(): Promise<void> {
+  if (!url) {
+    status.textContent = 'Pass the splat glTF to play as ?url=<glb>.';
+    return;
+  }
   const renderer = await createWebGPURenderer({
     canvas,
     antialias: false,
@@ -37,7 +43,10 @@ async function main(): Promise<void> {
   await renderer.init();
 
   const started = performance.now();
-  const loaded = await loadSplatGltf(url);
+  // With a meshopt decoder, so files written compressed load too.
+  const loaded = await loadSplatGltf(url, {
+    loader: new GLTFLoader().setMeshoptDecoder(MeshoptDecoder),
+  });
   const loadMs = performance.now() - started;
   const scene = new THREE.Scene();
   scene.add(loaded.scene);
