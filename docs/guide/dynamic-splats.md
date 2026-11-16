@@ -238,12 +238,21 @@ The full setup, with the clip hints below, is
   (`AnimationUtils.makeClipAdditive`, from its first frame), so it layers
   on top of the others; a plain glTF player ignores the hints.
 
-VLAM's own procedural goose exports as such a file, with its five clips:
-`node scripts/export-goose-glb.mjs` writes
-`.tmp/benchmark-assets/procedural-goose.glb` (about 22 MB), and
-`/splat-gltf-harness.html?clip=idle` plays it on the dev server. The writer
-behind it (`src/tools/splat-gltf/write-splat-glb.ts`) is a repo tool, not
-part of the package.
+A file can store its splats compressed under `EXT_meshopt_compression`,
+often a fifth of the size. The accessors are the same, so `loadSplatGltf`
+reads it once its loader has a meshopt decoder:
+
+```ts
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const model = await loadSplatGltf(url, {
+  loader: new GLTFLoader().setMeshoptDecoder(MeshoptDecoder),
+});
+```
+
+On the dev server, `/splat-gltf-harness.html?url=<glb>` plays a splat glTF,
+compressed or not, with a clip picker and a scrub bar.
 
 ## Displaced splats and their bounds
 

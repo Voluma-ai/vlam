@@ -64,9 +64,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
     (`skinning: false` loads it unskinned, in the bind pose). Clips may carry
     playback hints in `extras.vlam` (`SplatGltfClipHints`: `loop`,
     `repetitions`, `additive`), and clips flagged additive are made additive.
-    Degree-0 color only. The procedural goose exports as such a file with its
-    five clips (`scripts/export-goose-glb.mjs`, about 22 MB, not checked
-    in), played by `/splat-gltf-harness.html`.
+    Degree-0 color only. A file with its splats under
+    `EXT_meshopt_compression` loads given a `GLTFLoader` with a meshopt
+    decoder (the `loader` option), and `/splat-gltf-harness.html?url=<glb>`
+    plays either kind on the dev server.
   - The demo's `?effects=4dgs`, `/csgs-harness.html` and the rigged
     procedural goose (`?scene=procedural:goose`) run on this API. VLAM's own
     clip, the goose walking and honking (`assets/goose-walk/`, 3.2 MB,
