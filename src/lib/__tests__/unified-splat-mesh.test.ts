@@ -652,6 +652,63 @@ describe('UnifiedSplatMesh', () => {
     mesh.dispose();
   });
 
+  // Regression (Voluma chase-cam splat avatar, 2026-11-16): a skinned avatar
+  // walking with the camera froze for every frame a large main's sort held the
+  // gate, then snapped forward when it freed, so it rubber-banded and stuttered.
+  it('re-gathers a moving source in place on a held frame, leaving static sources held', () => {
+    const { renderer } = pendingGpuCompletion();
+    const main = source();
+    const avatar = new SplatMesh({ capacity: 4096 });
+    avatar.appendRange(splatChunk());
+    const unified = new UnifiedSplatMesh(renderer, 4);
+    unified.addSource(main);
+    unified.addSource(avatar);
+    const scene = new THREE.Scene();
+    const sortScheduler = computeInternals(unified).sortScheduler;
+    const [mainGather, avatarGather] = gatherSpies(unified).map((spy) => spy.gather);
+
+    unified.update(cameraAt(3));
+    unified.onAfterRender(renderer as never, scene, cameraAt(3));
+    expect(sortScheduler.hasSubmissionInFlight()).toBe(true);
+    const mainGathers = mainGather!.mock.calls.length;
+    const avatarGathers = avatarGather!.mock.calls.length;
+    const serial = sortScheduler.submissionDiagnostics().serial;
+
+    // Held frame, avatar moved: it re-gathers into its own slot with its new
+    // world matrix; the main, unmoved, is not gathered; no sort is stacked.
+    avatar.position.set(0, 0, 1);
+    unified.update(cameraAt(3));
+    expect(avatarGather!.mock.calls.length).toBe(avatarGathers + 1);
+    const call = avatarGather!.mock.lastCall!;
+    expect(call[2]).toBe(1);
+    expect((call[3] as THREE.Matrix4).elements[14]).toBe(1);
+    expect(mainGather!.mock.calls.length).toBe(mainGathers);
+    expect(sortScheduler.submissionDiagnostics().serial).toBe(serial);
+    expect(sortScheduler.submissionDiagnostics().action).toBe('coalesced');
+    expect(unified.performanceTimings.gatherDispatches).toBe(1);
+
+    // A sort-displacement bump (a skin pose) under a still matrix also counts.
+    avatar.invalidateSortDisplacement();
+    unified.update(cameraAt(3));
+    expect(avatarGather!.mock.calls.length).toBe(avatarGathers + 2);
+
+    // Nothing moved: the held frame gathers nothing, as before.
+    unified.update(cameraAt(3));
+    expect(avatarGather!.mock.calls.length).toBe(avatarGathers + 2);
+    expect(mainGather!.mock.calls.length).toBe(mainGathers);
+
+    // A cut change keeps holding even when the source moved with it: its slots
+    // changed, so drawing it through the queued permutation would scatter.
+    avatar.appendRange(splatChunk());
+    avatar.position.set(0, 0, 2);
+    unified.update(cameraAt(3));
+    expect(avatarGather!.mock.calls.length).toBe(avatarGathers + 2);
+
+    unified.dispose();
+    main.dispose();
+    avatar.dispose();
+  });
+
   // Regression (Voluma timeline crossfade): the host invalidated every source's
   // gather cache on a frame the gather was held. The live table skipped sources
   // without a cache entry, so the fading marker drew at full opacity for a frame.
