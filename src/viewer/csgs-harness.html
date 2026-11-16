@@ -18,7 +18,24 @@
   <body>
     <div id="controls">
       <button id="play" type="button">Pause</button>
-      <input id="scrub" type="range" min="0" max="0" step="1" value="0" />
+      <button id="stop" type="button">Stop</button>
+      <input id="scrub" type="range" min="0" max="0" step="any" value="0" aria-label="time (s)" />
+      <label>speed
+        <select id="speed">
+          <option value="-1">−1×</option>
+          <option value="0.25">0.25×</option>
+          <option value="0.5">0.5×</option>
+          <option value="1" selected>1×</option>
+          <option value="2">2×</option>
+        </select>
+      </label>
+      <label>loop
+        <select id="loop">
+          <option value="repeat" selected>repeat</option>
+          <option value="pingpong">ping-pong</option>
+          <option value="once">once</option>
+        </select>
+      </label>
       <span id="frame">frame 0</span>
     </div>
     <div id="stage">

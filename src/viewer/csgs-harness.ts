@@ -1,47 +1,58 @@
 /**
- * `.csgs` (Faltwerk 4DGS) playback harness: a proof of concept that plays a
- * scene of `.csgs` sections through a dynamic-capacity `SplatMesh`.
- *
- * Every section is decoded once in a worker; each displayed frame is then
- * evaluated on the CPU and swapped into the pool whole (remove + append), so
- * nothing in the renderer knows about time. That is the simplest correct
- * path (depth sorting sees the true positions) and the upload cost is what a
- * modifier-based GPU evaluation would remove later.
- * Loading and the sort-gated swap live in `csgs-playback.ts`, shared with
- * the demo viewer's `4dgs` effect.
+ * `.csgs` (Faltwerk 4DGS) playback harness: plays a clip through
+ * `SplatClipMesh` (`@voluma/vlam/dynamic`), its `time` driven by an
+ * `AnimationMixer`, and measures single frames against the scene's
+ * reference thumbnails.
  *
  * Query parameters:
  *  - `scene=<url>`: a Faltwerk `scene_*.json` (default {@link CSGS_DEMO_SCENE}, linked)
+ *  - `clip=procedural`: the procedural GPU-eligible clip (`csgs-procedural.ts`)
+ *    instead of a scene file; no download
  *  - `backend=webgpu|webgl2`
+ *  - `playback=auto|gpu|frames`: `SplatClipMesh`'s path (default `auto`; `cpu` also
+ *    means `frames`)
+ *  - `unified=1`: draw the mesh through a `UnifiedSplatMesh` (WebGPU)
+ *  - `resident=<n>|all`: GPU path resident sections
+ *  - `stageBudget=<bytes>`: GPU staging per frame (default 4 MB)
  *  - `cam=<name>`: pin the view to one of the scene's test cameras (`c00`…)
  *  - `frame=<n>`: show one frame instead of playing; writes metrics to `#result`
  *  - `scale=<f>`: canvas size relative to the test camera's resolution (default 0.5)
  *  - `sh=0`: DC color only (no higher-order SH)
  *  - `static=1`: draw the fixed frame through a plain static `SplatMesh`
- *  - `gpu=1`: evaluate the curves on the GPU (`csgs-gpu.ts`) through a
- *    `UnifiedSplatMesh`, WebGPU only; `stageBudget=<bytes>` sets how much of
- *    the next section it stages per frame
  *  - `nocanvas=1`: render only into the readback target (headless checks)
  */
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { SplatMesh, createWebGPURenderer } from '../lib/core';
 import { UnifiedSplatMesh } from '../lib/unified';
-import { CSGS_STAGE_BYTES_PER_FRAME, CsgsGpuPlaybackMesh } from './csgs-gpu';
 import {
-  CSGS_DEMO_SCENE,
-  CsgsPlaybackMesh,
+  SplatClipMesh,
+  SplatClipStagingBudget,
   fetchCsgsScene,
   loadCsgsClip,
+  type CsgsClip,
   type CsgsSceneFile,
   type CsgsTestCamera,
-} from './csgs-playback';
+} from '../lib/dynamic';
+import { CSGS_DEMO_SCENE } from './csgs-demo';
+import { createProceduralClip, type ProceduralClip } from './csgs-procedural';
 
 /** Thumbnail size of the reference strips (`synth/<clip>/<cam>.jpg`, one per frame). */
 const THUMB = { width: 64, height: 116 } as const;
 
+type Orbit = NonNullable<CsgsSceneFile['orbit']>;
+/** The view of the procedural clip, which has no scene file. */
+const PROCEDURAL_ORBIT: Orbit = {
+  center: [0, 1, 0],
+  up: [0, 1, 0],
+  front: [0, 0, 1],
+  dist: 1.6,
+  fovy_deg: 45,
+};
+
 const query = new URLSearchParams(location.search);
 const backend = query.get('backend') === 'webgl2' ? 'webgl2' : 'webgpu';
+const procedural = query.get('clip') === 'procedural';
 const sceneUrl = new URL(query.get('scene') ?? CSGS_DEMO_SCENE, location.href);
 const pinnedCamera = query.get('cam');
 const fixedFrame = query.has('frame') ? Number(query.get('frame')) : null;
@@ -50,12 +61,20 @@ const scale = Number(query.get('scale') ?? '0.5');
 const shBands = query.get('sh') === '0' ? 0 : 3;
 /** `static=1` draws the fixed frame through a plain static `SplatMesh` (no dynamic pool). */
 const staticMesh = query.get('static') === '1';
-/** `gpu=1` plays through `CsgsGpuPlaybackMesh` in a `UnifiedSplatMesh` (WebGPU). */
-const gpuPlayback = query.get('gpu') === '1';
-/** `stageBudget=<bytes>`: GPU staging per frame (default `CSGS_STAGE_BYTES_PER_FRAME`). */
-const stageBudget = query.has('stageBudget')
-  ? Number(query.get('stageBudget'))
-  : CSGS_STAGE_BYTES_PER_FRAME;
+const playbackParam = query.get('playback');
+// `cpu` is the frame path's old name, still accepted for saved harness links.
+const playback =
+  playbackParam === 'gpu' || playbackParam === 'frames'
+    ? playbackParam
+    : playbackParam === 'cpu'
+      ? 'frames'
+      : 'auto';
+/** `unified=1` draws the clip through a `UnifiedSplatMesh` (WebGPU). */
+const unifiedDraw = query.get('unified') === '1';
+const residentParam = query.get('resident');
+const residentSections =
+  residentParam === null ? undefined : residentParam === 'all' ? 'all' : Number(residentParam);
+const stageBudget = query.has('stageBudget') ? Number(query.get('stageBudget')) : undefined;
 /**
  * `nocanvas=1` renders only into the readback target, never the canvas. The
  * headless browser check needs it: presenting to a canvas on the SwiftShader
@@ -68,7 +87,10 @@ const canvas = document.querySelector<HTMLCanvasElement>('#canvas')!;
 const statusEl = document.querySelector<HTMLDivElement>('#status')!;
 const resultEl = document.querySelector<HTMLOutputElement>('#result')!;
 const playButton = document.querySelector<HTMLButtonElement>('#play')!;
+const stopButton = document.querySelector<HTMLButtonElement>('#stop')!;
 const scrub = document.querySelector<HTMLInputElement>('#scrub')!;
+const speedSelect = document.querySelector<HTMLSelectElement>('#speed')!;
+const loopSelect = document.querySelector<HTMLSelectElement>('#loop')!;
 const frameLabel = document.querySelector<HTMLSpanElement>('#frame')!;
 const referenceFigure = document.querySelector<HTMLElement>('#reference')!;
 const referenceImage = document.querySelector<HTMLImageElement>('#reference-image')!;
@@ -81,6 +103,8 @@ window.addEventListener('error', (event) => errors.push(event.message));
 function print(message: string): void {
   statusEl.textContent = message;
 }
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A three.js camera at a Faltwerk test camera's pose and intrinsics. */
 function cameraFromTestCamera(testCamera: CsgsTestCamera): THREE.PerspectiveCamera {
@@ -108,9 +132,10 @@ function cameraFromTestCamera(testCamera: CsgsTestCamera): THREE.PerspectiveCame
   return camera;
 }
 
-function cameraFromOrbit(scene: CsgsSceneFile, aspect: number): THREE.PerspectiveCamera {
-  const { center, front, up, dist, fovy_deg } = scene.orbit;
-  const camera = new THREE.PerspectiveCamera(fovy_deg, aspect, 0.01, 100);
+function cameraFromOrbit(orbit: Orbit, aspect: number): THREE.PerspectiveCamera {
+  const { center, front, up, dist, fovy_deg } = orbit;
+  // Faltwerk's synthetic stress streams are kilometres across.
+  const camera = new THREE.PerspectiveCamera(fovy_deg, aspect, 0.01, Math.max(100, dist * 10));
   const target = new THREE.Vector3(center[0], center[1], center[2]);
   camera.position.set(front[0]!, front[1]!, front[2]).multiplyScalar(dist).add(target);
   camera.up.set(up[0]!, up[1]!, up[2]);
@@ -280,13 +305,13 @@ function compare(
 }
 
 async function run(): Promise<void> {
-  const scene = await fetchCsgsScene(sceneUrl);
+  const scene = procedural ? null : await fetchCsgsScene(sceneUrl);
   const testCamera = pinnedCamera
-    ? (scene.testcams.find((c) => c.name === pinnedCamera) ?? null)
+    ? (scene?.testcams?.find((c) => c.name === pinnedCamera) ?? null)
     : null;
   if (pinnedCamera && !testCamera) throw new Error(`No test camera "${pinnedCamera}".`);
-  canvas.width = Math.round((testCamera?.w ?? 704) * scale);
-  canvas.height = Math.round((testCamera?.h ?? 1280) * scale);
+  canvas.width = Math.round((testCamera?.w ?? (procedural ? 512 : 704)) * scale);
+  canvas.height = Math.round((testCamera?.h ?? (procedural ? 512 : 1280)) * scale);
 
   // The renderer comes first so the GPU device exists before the heavy fetch
   // and worker decode; it also shows the canvas while the clip loads.
@@ -310,7 +335,9 @@ async function run(): Promise<void> {
     }
   ).device;
   device?.lost.then((info) => {
-    errors.push(`device lost (${info.reason}) during "${stage}": ${info.message}`);
+    if (info.reason !== 'destroyed') {
+      errors.push(`device lost (${info.reason}) during "${stage}": ${info.message}`);
+    }
   });
   device?.addEventListener('uncapturederror', (event) => {
     const message = (event as { error?: { message?: string } }).error?.message ?? String(event);
@@ -318,62 +345,71 @@ async function run(): Promise<void> {
   });
 
   stage = 'fetch';
-  const clip = await loadCsgsClip(
-    sceneUrl,
-    (message) => {
-      if (message.startsWith('Decoding')) stage = 'decode';
-      print(message);
-    },
-    scene,
-  );
-  const { totalFrames, decodeMs } = clip;
+  const clip: CsgsClip | ProceduralClip = procedural
+    ? createProceduralClip()
+    : await loadCsgsClip(sceneUrl, {
+        scene: scene!,
+        onProgress: (event) => {
+          stage = event.stage;
+          print(event.message);
+        },
+      });
+  const decodeMs: readonly number[] = procedural ? [] : (clip as CsgsClip).decodeMs;
+  const { totalFrames, fps } = clip;
   const clipName = clip.name;
-  const ready = clip.sections;
   stage = 'mesh';
 
   const three = new THREE.Scene();
   // The clips are already Y-up (the orbit's up vector is +Y), so the 3DGS
   // 180°-X correction must not be applied.
-  if (gpuPlayback && backend !== 'webgpu') throw new Error('gpu=1 needs the WebGPU backend.');
-  if (gpuPlayback && !clip.sections.every((s) => s.halfSafe)) {
-    throw new Error('gpu=1: the clip has knots beyond the half-float range.');
-  }
-  const mesh = staticMesh
-    ? new SplatMesh((await clip.evaluate(fixedFrame ?? 0)).data, {
+  const clipMesh = staticMesh
+    ? null
+    : new SplatClipMesh(clip, {
+        renderer,
+        playback,
         shBands,
-        orientation: 'source',
-      })
-    : gpuPlayback
-      ? new CsgsGpuPlaybackMesh(clip, renderer, { shBands, orientation: 'source' })
-      : new CsgsPlaybackMesh(clip, { shBands, orientation: 'source' });
+        ...(residentSections !== undefined ? { residentSections } : {}),
+        ...(stageBudget !== undefined ? { staging: new SplatClipStagingBudget(stageBudget) } : {}),
+      });
+  clipMesh?.addEventListener('error', ({ error }) => {
+    errors.push(`playback error: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  const mesh: SplatMesh =
+    clipMesh ??
+    new SplatMesh(await clip.frame(fixedFrame ?? 0), {
+      shBands,
+      orientation: 'source',
+    });
   three.add(mesh);
-  // GPU playback moves splats in the modifier, which only the unified draw
-  // sorts by; the mesh stays in the scene graph for its transform.
-  const unified =
-    mesh instanceof CsgsGpuPlaybackMesh ? new UnifiedSplatMesh(renderer, mesh.capacity) : null;
+  if (unifiedDraw && backend !== 'webgpu') throw new Error('unified=1 needs the WebGPU backend.');
+  // The mesh stays in the scene graph for its transform; the unified draw updates it.
+  const unified = unifiedDraw ? new UnifiedSplatMesh(renderer, mesh.capacity) : null;
   if (unified) {
-    unified.addSource(mesh, { visible: true, cacheModifiers: true });
+    unified.addSource(mesh, { visible: true });
     three.add(unified);
   }
+  const orbit = scene?.orbit ?? PROCEDURAL_ORBIT;
   const camera = testCamera
     ? cameraFromTestCamera(testCamera)
-    : cameraFromOrbit(scene, canvas.width / canvas.height);
+    : cameraFromOrbit(orbit, canvas.width / canvas.height);
   const controls = testCamera ? null : new OrbitControls(camera, canvas);
   if (controls) {
-    const { center } = scene.orbit;
+    const { center } = orbit;
     controls.target.set(center[0]!, center[1]!, center[2]);
     controls.update();
   }
 
-  let shownFrame = -1;
-  const playback = mesh instanceof CsgsPlaybackMesh ? mesh : null;
-  /** Playback counters; the static mesh shows its one frame whole. */
+  // Transport: the same AnimationMixer/AnimationAction a glTF animation uses.
+  const mixer = clipMesh ? new THREE.AnimationMixer(clipMesh) : null;
+  const action = clipMesh && mixer ? mixer.clipAction(clipMesh.animation) : null;
+  action?.play();
+  if (action && fixedFrame !== null) action.paused = true;
+
   const stats = () => ({
-    alive:
-      playback?.alive ?? (mesh instanceof CsgsGpuPlaybackMesh ? mesh.alive : mesh.activeSplatCount),
-    evalMs: playback?.evalMs ?? 0,
-    swapMs: playback?.swapMs ?? 0,
-    heldSwaps: playback?.heldSwaps ?? 0,
+    alive: clipMesh ? clipMesh.alive : mesh.activeSplatCount,
+    evalMs: clipMesh?.playbackStats.evalMs ?? 0,
+    swapMs: clipMesh?.playbackStats.swapMs ?? 0,
+    heldSwaps: clipMesh?.playbackStats.heldSwaps ?? 0,
   });
   let lastReadback: Readback | null = null;
   let measuring = false;
@@ -384,39 +420,8 @@ async function run(): Promise<void> {
   });
   target.texture.colorSpace = renderer.outputColorSpace;
 
-  /**
-   * Moves playback toward frame time `t` (see `CsgsPlaybackMesh.advance`);
-   * `exact` waits for that very frame. Returns whether it is shown.
-   */
-  function showFrame(t: number, exact: boolean): boolean {
-    const frame = Math.floor(t);
-    if (mesh instanceof CsgsGpuPlaybackMesh) {
-      // Seeking shows the whole frame; playing interpolates between frames.
-      // A seek waits for its section without showing a held frame first: the
-      // unified draw publishes frames late, and `measure` must not read one.
-      if (mesh.setTime(exact ? frame : t, !exact)) unified!.invalidateSource(mesh);
-      mesh.stage(stageBudget);
-      if (!mesh.shows(frame)) return false;
-      if (frame !== shownFrame) {
-        shownFrame = frame;
-        scrub.value = String(frame);
-        frameLabel.textContent = `frame ${frame} / ${totalFrames - 1}`;
-      }
-      return true;
-    }
-    if (!(mesh instanceof CsgsPlaybackMesh)) {
-      shownFrame = frame;
-      return true;
-    }
-    const shown = mesh.advance(frame, exact);
-    if (mesh.shownFrame !== shownFrame) {
-      shownFrame = mesh.shownFrame;
-      if (!stage.startsWith('measure')) stage = `frame ${shownFrame}`;
-      scrub.value = String(shownFrame);
-      frameLabel.textContent = `frame ${shownFrame} / ${totalFrames - 1}`;
-    }
-    return shown;
-  }
+  /** Seconds of integer frame `frame`. */
+  const secondsOf = (frame: number) => frame / fps;
 
   function render(): void {
     controls?.update();
@@ -432,18 +437,53 @@ async function run(): Promise<void> {
     renderer.render(three, camera);
   }
 
-  scrub.max = String(totalFrames - 1);
-  let playing = fixedFrame === null;
-  let time = fixedFrame ?? 0;
-  playButton.textContent = playing ? 'Pause' : 'Play';
+  function syncControls(): void {
+    const shown = clipMesh?.shownFrame ?? fixedFrame ?? 0;
+    if (document.activeElement !== scrub && action) scrub.value = String(action.time);
+    frameLabel.textContent = `frame ${shown} / ${totalFrames - 1}`;
+  }
+
+  scrub.max = String(clip.duration);
+  scrub.step = String(1 / fps / 4);
+  const setPaused = (paused: boolean) => {
+    if (!action) return;
+    action.paused = paused;
+    playButton.textContent = paused ? 'Play' : 'Pause';
+  };
+  setPaused(fixedFrame !== null);
   playButton.onclick = () => {
-    playing = !playing;
-    playButton.textContent = playing ? 'Pause' : 'Play';
+    if (!action) return;
+    // A finished LoopOnce action restarts from the start.
+    if (!action.isRunning() && !action.paused) action.reset().play();
+    setPaused(!action.paused);
+  };
+  stopButton.onclick = () => {
+    action?.stop();
+    action?.play();
+    setPaused(true);
   };
   scrub.oninput = () => {
-    playing = false;
-    playButton.textContent = 'Play';
-    time = Number(scrub.value);
+    if (!action) return;
+    setPaused(true);
+    action.time = Number(scrub.value);
+  };
+  speedSelect.onchange = () => {
+    if (action) action.timeScale = Number(speedSelect.value);
+  };
+  loopSelect.onchange = () => {
+    if (!action) return;
+    const mode = loopSelect.value;
+    action.clampWhenFinished = mode === 'once';
+    action.setLoop(
+      mode === 'once'
+        ? THREE.LoopOnce
+        : mode === 'pingpong'
+          ? THREE.LoopPingPong
+          : THREE.LoopRepeat,
+      Infinity,
+    );
+    action.reset().play();
+    setPaused(false);
   };
 
   let referenceStrip: HTMLImageElement | null = null;
@@ -465,11 +505,51 @@ async function run(): Promise<void> {
     }
   }
 
+  /**
+   * Moves the clip to integer frame `frame` and renders until it is drawn.
+   * With `from`, first walks there one frame per rendered frame (playback in
+   * either direction, holds allowed). Returns whether it was shown in time.
+   */
+  async function showFrame(frame: number, from?: number): Promise<boolean> {
+    if (!action || !mixer || !clipMesh) {
+      render();
+      return true;
+    }
+    action.paused = true;
+    if (from !== undefined) {
+      const step = frame >= from ? 1 : -1;
+      for (let f = from; f !== frame; f += step) {
+        action.time = secondsOf(f);
+        mixer.update(0);
+        render();
+        await sleep(16);
+      }
+    }
+    action.time = secondsOf(frame);
+    mixer.update(0);
+    let shown = false;
+    void clipMesh.whenShown().then(
+      () => (shown = true),
+      () => undefined,
+    );
+    for (let wait = 0; !shown && wait < 400; wait++) {
+      render();
+      await sleep(25);
+    }
+    return shown;
+  }
+
   const harness = {
-    scene: { clip: clipName, fps: scene.fps, totalFrames, sections: ready.map((s) => s.count) },
+    scene: {
+      clip: clipName,
+      fps,
+      totalFrames,
+      sections: clip.sections.map((s) => s.count),
+    },
     decodeMs,
+    playback: clipMesh?.playback ?? 'static',
     get frame() {
-      return shownFrame;
+      return clipMesh?.shownFrame ?? fixedFrame ?? 0;
     },
     get alive() {
       return stats().alive;
@@ -478,25 +558,27 @@ async function run(): Promise<void> {
     get mesh() {
       return mesh;
     },
+    get action() {
+      return action;
+    },
     /** Swaps deferred because the previous frame's sort was still in flight. */
     get heldSwaps() {
       return stats().heldSwaps;
     },
     errors,
-    /** Shows one frame and returns its metrics (and a reference diff when pinned to a test camera). */
-    async measure(frame: number) {
+    /**
+     * Shows one frame and returns its metrics (and a reference diff when
+     * pinned to a test camera). `from` walks there frame by frame first.
+     */
+    async measure(frame: number, options: { from?: number } = {}) {
       stage = `measure ${frame}`;
       // The animation loop must not render into the target while an
       // asynchronous readback of it is pending (the WebGL2 readback then never
       // completes on SwiftShader).
       measuring = true;
-      playing = false;
-      time = frame;
+      setPaused(true);
       const before = lastReadback;
-      for (let wait = 0; !showFrame(frame, true) && wait < 80; wait++) {
-        render();
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
+      const shownInTime = await showFrame(frame, options.from);
       render();
       // A unified draw keeps its last publication on screen until the new
       // gather's sort lands (slow on SwiftShader); wait until it shows the
@@ -506,7 +588,7 @@ async function run(): Promise<void> {
         unified && !unified.getDrawPublicationSnapshot().ready && wait < 200;
         wait++
       ) {
-        await new Promise((resolve) => setTimeout(resolve, 25));
+        await sleep(25);
         render();
       }
       // The worker sort (WebGL2, or `sortStrategy: 'worker'`) keeps the last
@@ -519,15 +601,14 @@ async function run(): Promise<void> {
         (before !== null && before.alpha.every((a, i) => a === read.alpha[i]));
       let attempts = 0;
       for (; attempts < 80 && unchanged(); attempts++) {
-        await new Promise((resolve) => setTimeout(resolve, 25));
+        await sleep(25);
         render();
         read = await readFrame(renderer, target, three, camera);
       }
-      // GPU playback on SwiftShader lands its new section a few frames after
-      // the publication reports ready; the seeked frame is static, so read
-      // until two readbacks agree.
-      for (let settle = 0; unified && settle < 40; settle++) {
-        await new Promise((resolve) => setTimeout(resolve, 25));
+      // Sorts land a few frames after the content on SwiftShader; the
+      // measured frame is static, so read until two readbacks agree.
+      for (let settle = 0; settle < 40; settle++) {
+        await sleep(25);
         render();
         const next = await readFrame(renderer, target, three, camera);
         const settled = next.rgb.every((value, i) => value === read.rgb[i]);
@@ -553,7 +634,10 @@ async function run(): Promise<void> {
       measuring = false;
       return {
         backend,
+        playback: harness.playback,
         frame,
+        shownFrame: harness.frame,
+        shownInTime,
         ...stats(),
         coverage,
         reference,
@@ -562,7 +646,29 @@ async function run(): Promise<void> {
         shBands: mesh.shBands,
         attempts,
         activeSplatCount: mesh.activeSplatCount,
+        /** The downsampled readback (premultiplied RGB bytes, coverage), for cross-run diffs. */
+        thumb: { rgb: Array.from(small.rgb, Math.round), alpha: Array.from(small.alpha) },
       };
+    },
+    /**
+     * Moves the clip to `frame` and disposes the mesh right away, while the
+     * section may still be staging; the page must report no errors after.
+     */
+    async disposeWhileStaging(frame: number) {
+      if (action && mixer) {
+        action.time = secondsOf(frame);
+        mixer.update(0);
+      }
+      render();
+      unified?.removeSource(mesh);
+      three.remove(mesh);
+      mesh.dispose();
+      for (let i = 0; i < 10; i++) {
+        unified?.update(camera);
+        renderer.render(three, camera);
+        await sleep(25);
+      }
+      return errors;
     },
     /**
      * Stops the animation loop and releases the GPU resources. The headless
@@ -589,30 +695,27 @@ async function run(): Promise<void> {
   };
   Object.assign(window, { __csgsHarness: harness });
 
-  let last = performance.now();
+  const timer = new THREE.Timer();
   const loop = (): void => {
     if (disposed) return;
-    if (measuring) {
-      requestAnimationFrame(loop);
-      return;
+    timer.update();
+    const delta = timer.getDelta();
+    if (!measuring) {
+      mixer?.update(delta);
+      render();
+      syncControls();
+      print(
+        `${clipName}: ${stats().alive} alive of ${clip.sections.map((s) => s.count).join('/')} · ` +
+          `${harness.playback}${unified ? ' unified' : ''} · ` +
+          `eval ${stats().evalMs.toFixed(1)} ms · swap ${stats().swapMs.toFixed(1)} ms · ` +
+          `held swaps ${stats().heldSwaps} · decode ${decodeMs.map((ms) => ms.toFixed(0)).join('/')} ms · ${backend}`,
+      );
     }
-    const now = performance.now();
-    if (playing) {
-      time = (time + ((now - last) / 1000) * scene.fps) % totalFrames;
-    }
-    last = now;
-    showFrame(time, !playing);
-    render();
-    print(
-      `${clipName}: ${stats().alive} alive of ${ready.map((s) => s.count).join('/')} · ` +
-        `eval ${stats().evalMs.toFixed(1)} ms · swap ${stats().swapMs.toFixed(1)} ms · ` +
-        `held swaps ${stats().heldSwaps} · decode ${decodeMs.map((ms) => ms.toFixed(0)).join('/')} ms · ${backend}`,
-    );
     requestAnimationFrame(loop);
   };
 
   if (fixedFrame !== null) {
-    const metrics = await harness.measure(fixedFrame);
+    const { thumb: _thumb, ...metrics } = await harness.measure(fixedFrame);
     resultEl.textContent = JSON.stringify({ ...metrics, errors, decodeMs });
   }
   requestAnimationFrame(loop);

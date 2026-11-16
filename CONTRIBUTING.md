@@ -120,7 +120,12 @@ served by `npm run dev` at `/chunk-harness.html`, `/unified-harness.html`,
 The memory page records load checkpoints, sampled main-isolate heap, optional
 browser-wide measurements, and explicit CPU/GPU allocation estimates; see
 [`docs/memory-benchmark.md`](docs/memory-benchmark.md). The RAD parity page is
-opt-in (`?url=` to a `.rad`); missing remote assets must not fail CI. The render
+opt-in (`?url=` to a `.rad`); missing remote assets must not fail CI. The `.csgs`
+page plays the linked Faltwerk demo clip by default (`?scene=` for another,
+`?clip=procedural` for the download-free procedural clip), with
+`?playback=auto|gpu|frames`, `?unified=1`, `?resident=<n>|all` and `?frame=<n>`
+for a measured single frame; the full list is in
+[`csgs-harness.ts`](src/viewer/csgs-harness.ts). The render
 benchmark uses a fixed 800×600 canvas and reports settled frame percentiles, CPU
 render-submit time, sampled GPU timestamps, and separate total/splat draw
 submissions as downloadable JSON. Its screenshot remains available after GPU

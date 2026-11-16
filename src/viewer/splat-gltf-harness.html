@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VLAM! splat glTF harness</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #2b2b2b; color: #ddd; font: 14px/1.5 system-ui, sans-serif; }
+      canvas { display: block; width: 100%; height: 100%; }
+      #controls { position: fixed; top: 12px; left: 12px; display: flex; gap: 10px; align-items: center; background: #0008; padding: 6px 10px; border-radius: 6px; }
+      #status { position: fixed; bottom: 12px; left: 12px; white-space: pre-wrap; font-family: ui-monospace, monospace; background: #0008; padding: 6px 10px; border-radius: 6px; }
+      input[type="range"] { width: 280px; }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+    <div id="controls">
+      <label>clip <select id="clip"></select></label>
+      <button id="play" type="button">Pause</button>
+      <input id="scrub" type="range" min="0" max="1" step="any" value="0" aria-label="time (s)" />
+    </div>
+    <div id="status">Loading…</div>
+    <script type="module" src="/src/viewer/splat-gltf-harness.ts"></script>
+  </body>
+</html>

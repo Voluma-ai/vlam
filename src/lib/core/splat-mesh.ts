@@ -496,6 +496,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
   protected readonly localBounds = new THREE.Box3().makeEmpty();
   protected readonly boundingSphereLocal = new THREE.Sphere();
   protected boundsDirty = true;
+  /** See {@link displacementBounds}; a private copy, never the caller's box. */
+  private declaredDisplacementBounds: THREE.Box3 | null = null;
+  /** Scratch for {@link withDisplacementBounds}, so `localBounds` stays grow-only data bounds. */
+  private readonly displacedBoundsScratch = new THREE.Box3();
   /** Cached {@link getUnifiedSourceView} result; see the invalidation checks there. */
   private cachedUnifiedView: UnifiedSourceView | null = null;
   private readonly cachedUnifiedViewMatrixWorld = new THREE.Matrix4().makeScale(0, 0, 0);
@@ -2303,8 +2307,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
    * where they are drawn instead of at their pool position. Opt-in and empty
    * by default: with an empty list the sort pass is the original graph.
    *
-   * List only modifiers that are also in {@link modifiers} and that move
-   * splats (a transform or carry volume). The sort folds just these, starting
+   * List modifiers that move splats (a transform or carry volume): usually
+   * the displacing members of {@link modifiers}, or a cheaper stand-in that
+   * computes only their offset (a clip's position curve without its color
+   * and shape), which need not be in {@link modifiers}. The sort folds just these, starting
    * from a zero offset, with a context that has `index`, `localCenter`,
    * `sourceCenter`, `cameraLocal`, `baseColor` (before SH), `normal` and
    * channels; `worldCenter`, `viewCenter`, `localToView` and `cameraWorld` throw there.
@@ -2319,7 +2325,8 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
    * a per-source placement pool. A unified draw already sorts gathered,
    * displaced centers and ignores this list, but still honours
    * {@link invalidateSortDisplacement}. Splats carried outside the mesh
-   * bounds clamp to the nearest or farthest sort key.
+   * bounds clamp to the nearest or farthest sort key: set
+   * {@link displacementBounds} to where the modifiers can carry them.
    */
   get sortDisplacement(): readonly SplatModifier[] {
     return this.sortDisplacementList;
@@ -2350,6 +2357,50 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
    */
   invalidateSortDisplacement(): void {
     this.sortDisplacementRevision++;
+  }
+
+  /**
+   * Mesh-local box that every splat stays inside while {@link modifiers} move
+   * it (an animation's reach: a clip's every pose, a rig's every limb), or
+   * `null` (default) for the appended data alone.
+   *
+   * The sort quantizes depth over the mesh bounds, and a splat carried outside
+   * them clamps to the nearest or farthest key, so a modifier that moves
+   * splats away from where they were written declares here how far. The box
+   * is united with the data bounds for every sort path and for a unified
+   * draw's view of this mesh, and {@link computeSplatBounds} reports the union.
+   *
+   * The box is copied: assign again after changing it. Setting it re-sorts.
+   *
+   * @experimental The API may change in a minor release.
+   */
+  get displacementBounds(): THREE.Box3 | null {
+    return this.declaredDisplacementBounds?.clone() ?? null;
+  }
+
+  set displacementBounds(value: THREE.Box3 | null) {
+    const current = this.declaredDisplacementBounds;
+    if (value === null ? current === null : current !== null && current.equals(value)) return;
+    this.declaredDisplacementBounds = value === null || value.isEmpty() ? null : value.clone();
+    this.invalidateSort();
+  }
+
+  /**
+   * `bounds` united with {@link displacementBounds}, in a scratch box the
+   * next call overwrites. Subclasses that build their own sort bound call it
+   * (or {@link includeDisplacementBounds}) so the declared reach is kept.
+   */
+  protected withDisplacementBounds(bounds: THREE.Box3): THREE.Box3 {
+    const box = this.displacedBoundsScratch.copy(bounds);
+    if (this.declaredDisplacementBounds) box.union(this.declaredDisplacementBounds);
+    return box;
+  }
+
+  /** Grows a sort sphere (in the same frame as {@link displacementBounds}) to contain it. */
+  protected includeDisplacementBounds(sphere: THREE.Sphere): THREE.Sphere {
+    const declared = this.declaredDisplacementBounds;
+    if (declared) sphere.union(declared.getBoundingSphere(new THREE.Sphere()));
+    return sphere;
   }
 
   /**
@@ -2805,9 +2856,12 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
     }
   }
 
-  /** Bounding box of the appended splats, in this mesh's local space. */
+  /**
+   * Bounding box of the appended splats, in this mesh's local space, united
+   * with {@link displacementBounds} when one is set.
+   */
   computeSplatBounds(): THREE.Box3 {
-    return this.localBounds.clone();
+    return this.withDisplacementBounds(this.localBounds).clone();
   }
 
   /**
@@ -4930,12 +4984,14 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
   /**
    * Refreshes {@link boundingSphereLocal} - the sphere the sorter quantizes
    * depth over - when {@link boundsDirty}. The base mesh uses its local splat
-   * bounds; a unified {@link MergedSplatMesh} overrides this to supply a world-space
-   * bound spanning all its sources (whose transforms live in the shader).
+   * bounds and {@link displacementBounds}; a unified {@link MergedSplatMesh}
+   * overrides this to supply a world-space bound spanning all its sources
+   * (whose transforms live in the shader). Overrides keep the declared reach
+   * through {@link withDisplacementBounds} or {@link includeDisplacementBounds}.
    */
   protected refreshSortBounds(): void {
     if (!this.boundsDirty) return;
-    this.localBounds.getBoundingSphere(this.boundingSphereLocal);
+    this.withDisplacementBounds(this.localBounds).getBoundingSphere(this.boundingSphereLocal);
     this.boundsDirty = false;
   }
 

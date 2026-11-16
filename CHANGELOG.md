@@ -6,8 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 > **Versioning.** From `1.0.0` the public API follows semantic versioning:
-> breaking changes only land in a major release, are marked **Breaking** under
-> _Changed_, and come with a note in the [migration guide](site/migration.md).
+> breaking changes only land in a major release and are marked **Breaking**
+> under _Changed_.
 > Anything marked `@experimental` in the API reference is outside that
 > guarantee and may change in a minor release: today the
 > `@voluma/vlam/projection/compute` strategy, the `@voluma/vlam/unified/pooled`
@@ -25,6 +25,60 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- **Experimental `@voluma/vlam/dynamic`: animated Gaussian splats.** One
+  app-facing API, all driven by a three.js `AnimationMixer`, with formats
+  behind it:
+  - **Captured 4D clips.** `loadSplatClip(url, { format, onProgress, signal })`
+    loads a clip in any format VLAM reads (`SPLAT_CLIP_FORMATS`; today
+    Faltwerk `.csgs`, given by its `scene_*.json`, also through
+    `loadCsgsClip`) and returns a format-neutral `SplatClip` (`fps`,
+    `totalFrames`, `bounds`, `shBands`, `frame(index)` for a snapshot).
+    `SplatClipMesh` plays any `SplatClip` with the transport of a glTF
+    animation: an `AnimationMixer` rooted at the mesh drives its `time`
+    (seconds) through `mesh.animation`, so pause, scrub, `timeScale`, reverse
+    and the loop modes come from the `AnimationAction`. A format may bring a
+    GPU path: for `.csgs` on WebGPU a `SplatModifier` evaluates the curves,
+    standalone or as a `UnifiedSplatMesh` source, with resident sections
+    (`residentSections`) and direction-aware staging under a shared
+    `SplatClipStagingBudget`. Every format plays on the frame path
+    (`playback: 'frames'`: WebGL2, a worker sorter, or a clip the GPU path
+    cannot hold), and an app can play its own format by implementing
+    `SplatClip`. `whenShown()` resolves once
+    the drawn frame is exactly `time`'s (and rejects if it failed); failures
+    fire an `error` event, logged when nobody listens.
+  - **Rigged splats.** `SkinnedSplatMesh` skins a static splat by a
+    `THREE.Skeleton`, like `THREE.SkinnedMesh`: up to four bone indices and
+    weights per splat, `bind(skeleton, bindMatrix?)`, a skin modifier and its
+    position-only sort twin, sort bounds that follow the pose, and
+    `posedSplatData()` for CPU queries. glTF bone clips, cross-fades, action
+    weights, additive clips and IK all apply. `computeSplatSkinWeights`
+    transfers a rigged proxy mesh's skin to a splat (`splatToProxy` when the
+    two were made in different frames).
+  - **Rigged splats in glTF.** `loadSplatGltf(source, options)` loads
+    Gaussian splats from a glTF under the ratified `KHR_gaussian_splatting`
+    extension, from a URL, the file's bytes, or a glTF the app's own
+    `GLTFLoader` already parsed. Each splat primitive becomes a `SplatMesh`
+    in place in the glTF's scene; a primitive with `JOINTS_0` / `WEIGHTS_0`
+    on a skinned node becomes a `SkinnedSplatMesh` bound to that skeleton, so
+    the file's clips under an `AnimationMixer` move the splats
+    (`skinning: false` loads it unskinned, in the bind pose). Clips may carry
+    playback hints in `extras.vlam` (`SplatGltfClipHints`: `loop`,
+    `repetitions`, `additive`), and clips flagged additive are made additive.
+    Degree-0 color only. The procedural goose exports as such a file with its
+    five clips (`scripts/export-goose-glb.mjs`, about 22 MB, not checked
+    in), played by `/splat-gltf-harness.html`.
+  - The demo's `?effects=4dgs`, `/csgs-harness.html` and the rigged
+    procedural goose (`?scene=procedural:goose`) run on this API. VLAM's own
+    clip, the goose walking and honking (`assets/goose-walk/`, 3.2 MB,
+    written by `scripts/generate-goose-clip.mjs` with a dev-only `.csgs`
+    encoder), plays in the new "Play a Faltwerk 4DGS" example, and "Rig and
+    animate splats" rigs `assets/goose.sog` with bone clips. The decoder
+    subpath `@voluma/vlam/formats/csgs` stays worker-safe and three-free.
+    See `docs/guide/dynamic-splats.md`.
+- **`SplatMesh.displacementBounds`** (experimental): a mesh-local box a
+  modifier declares for the splats it moves, united with the data bounds for
+  every sort path, a unified draw's view of the mesh and `computeSplatBounds`,
+  so displaced splats no longer clamp to the end sort keys.
 - **SOG version 3.** `parseSog`, `parseSogDirectory` and every loader that
   reads SOG (bundled `.sog`, Streamed SOG chunks, `.lcc2` tiles) now decode
   version 3 alongside version 2: exponential-map rotations, `(a / 204)²`

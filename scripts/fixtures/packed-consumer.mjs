@@ -27,6 +27,8 @@ for (const path of [
   '@voluma/vlam/formats/spz',
   '@voluma/vlam/formats/splat',
   '@voluma/vlam/formats/ksplat',
+  '@voluma/vlam/formats/csgs',
+  '@voluma/vlam/dynamic',
 ]) {
   assert.ok(Object.keys(await import(path)).length > 0, path);
 }

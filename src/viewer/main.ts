@@ -80,6 +80,7 @@ import {
 } from './vlam-logo';
 import { createProxyDepth, type ProxyDepth } from './proxy-depth';
 import type { CsgsEffect } from './csgs-effect';
+import type { ProceduralGoose } from './goose-procedural';
 import { createVolumeFire, type VolumeFire } from './volume-fire';
 import { createPostDepthOfField, type PostDepthOfField } from './post-dof';
 import { showError, hideError, isErrorVisible, describeLoadError } from './failure';
@@ -200,6 +201,50 @@ const LOGO_FIRE_TOWARD_STROKE = 0.5;
 const LOGO_SPOT_MARGIN = 1.05;
 /** Soft fraction of the white spot's cone edge. */
 const LOGO_SPOT_PENUMBRA = 0.15;
+
+/**
+ * `?scene=procedural:goose` builds the goose of `goose-procedural.ts` instead
+ * of loading a file, rigged (`goose-rig.ts`) and playing its clips on their
+ * schedule (`GooseChoreography` in `goose-clips.ts`).
+ * `?wingFold=` (0 spread to 1 folded), `?neckCurl=` and `?billOpen=` (radians)
+ * pose it instead, and a posed goose or `?animate=0` is a plain static mesh.
+ * `?gooseTime=<seconds>` holds the schedule at one moment, and `?ground=0`
+ * leaves out the patch of ground it stands on.
+ */
+const PROCEDURAL_GOOSE_SCENE = 'procedural:goose';
+const GOOSE_POSE_PARAMS = ['wingFold', 'neckCurl', 'billOpen'] as const;
+
+/** The rig and clip modules and source goose of each animated goose scene's data. */
+const animatedGeese = new WeakMap<
+  SplatData,
+  {
+    readonly goose: ProceduralGoose;
+    readonly rig: typeof import('./goose-rig');
+    readonly clips: typeof import('./goose-clips');
+  }
+>();
+
+async function loadProceduralGoose(params: URLSearchParams): Promise<SplatData> {
+  const { createProceduralGoose } = await import('./goose-procedural');
+  const number = (name: string, fallback: number): number => {
+    const value = Number(params.get(name) ?? Number.NaN);
+    return Number.isFinite(value) ? value : fallback;
+  };
+  const goose = createProceduralGoose({
+    pose: {
+      wingFold: number('wingFold', 1),
+      neckCurl: number('neckCurl', 0),
+      billOpen: number('billOpen', 0),
+    },
+    ground: params.get('ground') !== '0',
+  });
+  const posed = GOOSE_POSE_PARAMS.some((name) => params.has(name));
+  if (!posed && params.get('animate') !== '0') {
+    const [rig, clips] = await Promise.all([import('./goose-rig'), import('./goose-clips')]);
+    animatedGeese.set(goose.data, { goose, rig, clips });
+  }
+  return goose.data;
+}
 
 /** Absolute URL or site-root path for a scene name from `?scene=`. */
 function resolveSceneUrl(scene: string): string {
@@ -2117,6 +2162,8 @@ async function main(): Promise<void> {
   };
   let sceneNote = '';
   let updateEffects: ((elapsed: number) => void) | null = null;
+  /** The mounted scene's own per-frame animation (the rigged goose), if it has one. */
+  let animateScene: ((elapsed: number) => void) | null = null;
   let paintTool: PaintTool | null = null;
   let separateTool: SeparateTool | null = null;
   /** Which click tool is armed; see the tool picker in the bottom chrome. */
@@ -3326,6 +3373,10 @@ async function main(): Promise<void> {
     readonly worldBounds?: THREE.Box3;
     /** Source transforms already include host orientation/rotation/scale. */
     readonly preservesTransform?: boolean;
+    /** Called every frame with the elapsed seconds, for a scene that animates itself. */
+    readonly animate?: (elapsed: number) => void;
+    /** Modifiers the scene needs under every effect (a rig's skin, then its lighting). */
+    readonly baseModifiers?: readonly [SplatModifier, SplatModifier?];
   }
 
   /**
@@ -3338,6 +3389,37 @@ async function main(): Promise<void> {
    */
   const buildStaticScene = (data: SplatData, title: string): LoadedScene => {
     const paintable = effectMode === 'paint';
+    const animated = animatedGeese.get(data);
+    if (animated && !chunked) {
+      const rig = animated.rig.createGooseRig(animated.goose, meshOptions(title));
+      // The rig's one range takes the mask, so paint needs no chunked rebuild.
+      // The brush picks the goose where it is drawn, so it selects against the
+      // posed splats rather than the baked ones.
+      const paint = paintable
+        ? createPaintTool(rig.mesh, [{ range: rig.range, data, posed: () => rig.posedData() }])
+        : null;
+      // The clips play on a puppet of joint angles, as a glTF's play on its
+      // nodes: `look` loops and the gestures fire on a schedule.
+      const puppet = new animated.clips.GoosePuppet();
+      const choreography = new animated.clips.GooseChoreography(puppet);
+      // `?gooseTime=<seconds>` holds the schedule at one moment, for captures.
+      const held = params.has('gooseTime') ? Number(params.get('gooseTime')) || 0 : null;
+      let last: number | null = null;
+      return {
+        mesh: rig.mesh,
+        data,
+        title,
+        note: paintable ? ' (rigged, paint)' : ' (rigged)',
+        paint,
+        animate: (elapsed) => {
+          if (held !== null) choreography.seek(held);
+          else choreography.update(last === null ? 0 : elapsed - last);
+          last = elapsed;
+          rig.setPose(puppet);
+        },
+        baseModifiers: rig.modifiers,
+      };
+    }
     if (!chunked && !paintable) {
       return { mesh: new SplatMesh(data, meshOptions(title)), data, title, note: '', paint: null };
     }
@@ -3431,7 +3513,13 @@ async function main(): Promise<void> {
    * effect produced. `effectExtra` exists because one preset (`demo`) ships two
    * modifiers.
    */
-  const modifierSlots = new ModifierSlots(['effect', 'effectExtra', 'selection']);
+  const modifierSlots = new ModifierSlots([
+    'base',
+    'baseLight',
+    'effect',
+    'effectExtra',
+    'selection',
+  ]);
   /** The mesh the slots are applied to; re-applied whenever a slot changes. */
   let modifierTarget: SplatMesh | null = null;
   const applyModifierSlots = (): void => {
@@ -3579,12 +3667,20 @@ async function main(): Promise<void> {
    *
    * @param options.frame - Fit the camera to the new scene (default). Passed
    * `false` when the mesh is rebuilt for the same scene (an effect switch),
-   * where moving the viewer's camera would be jarring. `sideView` is used
-   * only for the initial built-in goose, never for dropped or explicit scenes.
+   * where moving the viewer's camera would be jarring. `sideView` frames a
+   * standing goose from the side: the initial built-in goose and the
+   * procedural one, never dropped or other explicit scenes. `builtIn` says the
+   * scene is the built-in goose, which keeps the full welcome panel; it
+   * defaults to `sideView`.
    */
   const applyScene = async (
     next: LoadedScene,
-    options: { frame?: boolean; sideView?: boolean; keepWelcome?: boolean } = {},
+    options: {
+      frame?: boolean;
+      sideView?: boolean;
+      builtIn?: boolean;
+      keepWelcome?: boolean;
+    } = {},
   ): Promise<void> => {
     await applyOwnedScene(
       next.mesh,
@@ -3595,7 +3691,12 @@ async function main(): Promise<void> {
 
   const mountScene = async (
     next: LoadedScene,
-    options: { frame?: boolean; sideView?: boolean; keepWelcome?: boolean } = {},
+    options: {
+      frame?: boolean;
+      sideView?: boolean;
+      builtIn?: boolean;
+      keepWelcome?: boolean;
+    } = {},
   ): Promise<void> => {
     const nextSortScene =
       next.sortScene ?? ((options.frame ?? true) ? next.title : currentSortScene);
@@ -3689,6 +3790,9 @@ async function main(): Promise<void> {
     // Re-point the slot stack before any slot is filled: the old mesh is gone,
     // and every effect/preview modifier belongs to the new one.
     modifierTarget = next.mesh;
+    modifierSlots.set('base', next.baseModifiers?.[0] ?? null);
+    modifierSlots.set('baseLight', next.baseModifiers?.[1] ?? null);
+    animateScene = next.animate ?? null;
     if (next.mesh instanceof StreamedSplatMesh && effectMode === 'paint') {
       wireStreamedPaint(next.mesh);
     } else {
@@ -3874,11 +3978,10 @@ async function main(): Promise<void> {
     // huge or tiny scene still gets a sane body rather than one scaled to it.
     collisionRadius = THREE.MathUtils.clamp(interactionRadius * 0.005, 0.1, 0.4);
     attachCollision(next.mesh);
-    // A framed mount is a scene change (URL load or drop). `sideView` is only
-    // set for the initial built-in goose; effect rebuilds pass `frame: false`
-    // and leave this flag alone.
+    // A framed mount is a scene change (URL load or drop). Effect rebuilds
+    // pass `frame: false` and leave this flag alone.
     if (options.frame ?? true) {
-      isDefaultGoose = options.sideView === true;
+      isDefaultGoose = (options.builtIn ?? options.sideView) === true;
       // A new non-goose scene starts collapsed unless the docs CTA asked to
       // keep the file pickers open (`?welcome=1` via `keepWelcome`).
       welcomeExpanded = (options.keepWelcome ?? false) && !isDefaultGoose;
@@ -4338,20 +4441,27 @@ async function main(): Promise<void> {
     if (!streamed) {
       // `?scene=` can point at a scene as big as any drop, so it reports the
       // download the same way.
-      const data = await loadSplatData(resolveSceneUrl(sceneName), {
-        onStatus: (status) => {
-          if (!dropMounted) noteLoadStatus(status);
-        },
-        onProgress: (loaded, total) => {
-          if (!dropMounted) noteLoadProgress(loaded, total);
-        },
-      });
+      const data =
+        sceneName === PROCEDURAL_GOOSE_SCENE
+          ? await loadProceduralGoose(params)
+          : await loadSplatData(resolveSceneUrl(sceneName), {
+              onStatus: (status) => {
+                if (!dropMounted) noteLoadStatus(status);
+              },
+              onProgress: (loaded, total) => {
+                if (!dropMounted) noteLoadProgress(loaded, total);
+              },
+            });
       // A still-decoding drop does not block this: it mounts, and the drop
       // replaces it on arrival - so the render loop always has a scene, even
       // if that drop turns out to be corrupt.
       if (!dropMounted) {
         await applyScene(buildStaticScene(data, sceneLabel(sceneName)), {
-          sideView: isDefaultGoose,
+          // The procedural goose stands like the built-in one, so it is framed
+          // the same way; the detail-based framing would zoom into its finest
+          // feathers.
+          sideView: isDefaultGoose || sceneName === PROCEDURAL_GOOSE_SCENE,
+          builtIn: isDefaultGoose,
           keepWelcome: keepWelcomeExpanded,
         });
         // applyScene syncs the welcome panel (full for goose, collapsed otherwise).
@@ -5321,6 +5431,7 @@ async function main(): Promise<void> {
       }
     }
     updateEffects?.(timer.getElapsed());
+    animateScene?.(timer.getElapsed());
     // The mark faces the camera it is born under, so it waits for the start
     // pose: the camera sits at the origin until the initial-view hold lifts.
     if (mounted && !nearL0HoldActive && logoParts !== null && !logo) void mountLogo();

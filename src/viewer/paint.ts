@@ -25,9 +25,22 @@ export interface PaintTool {
   clear(): void;
 }
 
+/** One range of a paintable mesh and the data it was appended from. */
+export interface PaintChunk {
+  readonly range: SplatRange;
+  readonly data: SplatData;
+  /**
+   * Where the splats are drawn now, for a mesh whose modifiers move them (the
+   * rigged goose). The brush picks on the GPU, so it hits posed positions and
+   * has to select against the same ones. Defaults to {@link data}.
+   */
+  readonly posed?: () => SplatData;
+}
+
 interface Chunk {
   readonly range: SplatRange;
   readonly data: SplatData;
+  readonly posed: (() => SplatData) | undefined;
   /** Palette index per splat in this chunk (0 = unpainted). */
   readonly mask: Uint8Array;
 }
@@ -113,22 +126,21 @@ export function createMaskHighlightModifier(channelName = 'mask'): SplatModifier
 
 /**
  * Wires a paint tool onto a mesh whose content was appended as the given
- * chunks (each with its own {@link SplatRange} handle and source data). Sets
- * the highlight modifier as the mesh's sole modifier.
+ * chunks (each with its own {@link SplatRange} handle and source data). Folds
+ * the highlight modifier in after whatever the mesh already runs (a rig's
+ * skinning), so the tint lands on the posed, lit color.
  */
-export function createPaintTool(
-  mesh: SplatMesh,
-  chunks: { range: SplatRange; data: SplatData }[],
-): PaintTool {
+export function createPaintTool(mesh: SplatMesh, chunks: readonly PaintChunk[]): PaintTool {
   mesh.defineChannel('mask', { type: 'byte' });
 
-  const painted: Chunk[] = chunks.map(({ range, data }) => ({
+  const painted: Chunk[] = chunks.map(({ range, data, posed }) => ({
     range,
     data,
+    posed,
     mask: new Uint8Array(data.count),
   }));
 
-  mesh.modifiers = [createMaskHighlightModifier('mask')];
+  mesh.modifiers = [...mesh.modifiers, createMaskHighlightModifier('mask')];
 
   return {
     paintAt(worldPoint, radius): void {
@@ -141,7 +153,8 @@ export function createPaintTool(
       const index = getPaintBrushIndex();
       mesh.updateWorldMatrix(true, false);
       for (const chunk of painted) {
-        const selected = selectBrushStrokeInData(chunk.data, stroke, options, mesh.matrixWorld);
+        const source = chunk.posed?.() ?? chunk.data;
+        const selected = selectBrushStrokeInData(source, stroke, options, mesh.matrixWorld);
         let changed = false;
         for (const i of selected) {
           if ((chunk.mask[i] as number) !== 0) continue; // keep first color

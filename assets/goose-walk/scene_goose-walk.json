@@ -1,0 +1,45 @@
+{
+  "fps": 32,
+  "sections": [
+    {
+      "url": "s0000.csgs",
+      "g0": 0,
+      "nframes": 16
+    },
+    {
+      "url": "s0001.csgs",
+      "g0": 16,
+      "nframes": 16
+    },
+    {
+      "url": "s0002.csgs",
+      "g0": 32,
+      "nframes": 16
+    },
+    {
+      "url": "s0003.csgs",
+      "g0": 48,
+      "nframes": 16
+    }
+  ],
+  "orbit": {
+    "center": [
+      0,
+      0.5,
+      0
+    ],
+    "up": [
+      0,
+      1,
+      0
+    ],
+    "front": [
+      0,
+      0,
+      1
+    ],
+    "dist": 2.6,
+    "fovy_deg": 30
+  },
+  "testcams": []
+}

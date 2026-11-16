@@ -345,7 +345,7 @@ export class MergedSplatMesh extends SplatMesh {
     if (!this.boundsDirty) return;
     const live: SourceBounds[] = [];
     for (const source of this.sources) if (source) live.push(source);
-    worldBoundsOf(live, this.boundingSphereLocal);
+    this.includeDisplacementBounds(worldBoundsOf(live, this.boundingSphereLocal));
     this.boundsDirty = false;
   }
 
@@ -366,6 +366,6 @@ export class MergedSplatMesh extends SplatMesh {
       if (!source) continue;
       bounds.union(placed.copy(source.box).applyMatrix4(source.matrix));
     }
-    return bounds;
+    return this.withDisplacementBounds(bounds).clone();
   }
 }

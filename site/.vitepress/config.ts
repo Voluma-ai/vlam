@@ -78,7 +78,6 @@ export default defineConfig({
       { text: 'Home', link: '/' },
       { text: 'Get started', link: '/get-started' },
       { text: 'Examples', link: '/examples/' },
-      { text: 'Migration', link: '/migration' },
       { text: 'FAQ', link: '/faq' },
       { text: 'API', link: '/api/' },
       // Same tab: the demo has its own menu back into the docs, so opening a
@@ -102,15 +101,20 @@ export default defineConfig({
             { text: '3. Streaming big scenes', link: '/examples/big-scenes' },
             { text: '4. Click on the world', link: '/examples/click-the-world' },
             { text: '5. Splats + 3D objects', link: '/examples/splats-and-objects' },
-            { text: '6. Several captures', link: '/examples/many-captures' },
-            { text: '7. Collision walk', link: '/examples/collision-walk' },
           ],
         },
         {
           text: 'Going further',
           items: [
+            { text: '6. Several captures', link: '/examples/many-captures' },
+            { text: '7. Collision walk', link: '/examples/collision-walk' },
             { text: '8. Frame the capture', link: '/examples/frame-the-camera' },
             { text: '9. Surface queries', link: '/examples/surface-queries' },
+          ],
+        },
+        {
+          text: 'Effects',
+          items: [
             { text: '10. Shader effects', link: '/examples/shader-effects' },
             { text: '11. Select and cut', link: '/examples/select-and-cut' },
             { text: '12. Depth of field', link: '/examples/depth-of-field' },
@@ -121,14 +125,24 @@ export default defineConfig({
           ],
         },
         {
+          text: 'Animation',
+          items: [
+            { text: '17. Play a Faltwerk 4DGS', link: '/examples/play-4dgs-clip' },
+            {
+              text: '18. Rig and animate splats',
+              link: '/examples/rigged-splats',
+            },
+          ],
+        },
+        {
           text: 'Shipping it',
           items: [
-            { text: '17. Use it from React', link: '/examples/react-viewer' },
-            { text: '18. Annotations', link: '/examples/annotations' },
-            { text: '19. Fast on a phone', link: '/examples/fast-on-phones' },
-            { text: '20. The WebGL2 fallback', link: '/examples/webgl-fallback' },
-            { text: '21. View it in VR', link: '/examples/in-vr' },
-            { text: '22. Share a viewpoint', link: '/examples/share-a-viewpoint' },
+            { text: '19. Use it from React', link: '/examples/react-viewer' },
+            { text: '20. Annotations', link: '/examples/annotations' },
+            { text: '21. Fast on a phone', link: '/examples/fast-on-phones' },
+            { text: '22. The WebGL2 fallback', link: '/examples/webgl-fallback' },
+            { text: '23. View it in VR', link: '/examples/in-vr' },
+            { text: '24. Share a viewpoint', link: '/examples/share-a-viewpoint' },
           ],
         },
         {

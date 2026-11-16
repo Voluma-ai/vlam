@@ -10,13 +10,16 @@ the same source file shown below.
 3. **[Huge scenes that load as you walk](/examples/big-scenes)**: stream large captures with level of detail and a splat budget.
 4. **[Click on the world](/examples/click-the-world)**: find and mark the point beneath the cursor.
 5. **[Mix splats with ordinary 3D objects](/examples/splats-and-objects)**: use a capture and ordinary three.js geometry in one scene.
-6. **[Several captures in one scene](/examples/many-captures)**: sort and blend overlapping captures as one.
-7. **[Walk with collision detection](/examples/collision-walk)**: use Tempel's triangle meshes for solid floors, walls, gravity, and jumping.
 
 ## Going further
 
+6. **[Several captures in one scene](/examples/many-captures)**: sort and blend overlapping captures as one.
+7. **[Walk with collision detection](/examples/collision-walk)**: use Tempel's triangle meshes for solid floors, walls, gravity, and jumping.
 8. **[Frame the capture](/examples/frame-the-camera)**: measure bounds and fit the camera.
 9. **[Surface queries](/examples/surface-queries)**: use CPU queries for floor probes and measurements.
+
+## Effects
+
 10. **[Shader effects](/examples/shader-effects)**: cut away, relight, or reveal a capture without changing its data.
 11. **[Select and cut away part of a capture](/examples/select-and-cut)**: select a volume, count its splats, and split the capture.
 12. **[Cinematic depth of field](/examples/depth-of-field)**: focus and aperture like a real lens, plus click-to-focus.
@@ -25,14 +28,19 @@ the same source file shown below.
 15. **[Tiny planet](/examples/tiny-planet)**: wrap a streamed street under your feet, or up into a bowl.
 16. **[Write your own effect](/examples/custom-effect)**: build an efficient modifier from scratch.
 
+## Animation
+
+17. **[Play a Faltwerk 4DGS](/examples/play-4dgs-clip)** _(experimental)_: the goose walks and honks: a captured 4D clip driven by an `AnimationMixer`, with play, pause and scrub.
+18. **[Rig and animate splats](/examples/rigged-splats)** _(experimental)_: bind a splat to a `THREE.Skeleton` and animate it with bone clips, cross-fades and an additive gesture.
+
 ## Shipping it
 
-17. **[Use it from React](/examples/react-viewer)**: mount and dispose a viewer safely.
-18. **[Annotations pinned to the capture](/examples/annotations)**: add HTML labels that track and hide behind the capture.
-19. **[Make it fast on a phone](/examples/fast-on-phones)**: tune pixel ratio and device-derived settings.
-20. **[Works everywhere: the WebGL2 fallback](/examples/webgl-fallback)**, support browsers without WebGPU.
-21. **[View it in VR](/examples/in-vr)**: start a headset session and manage its budget.
-22. **[Save and share a viewpoint](/examples/share-a-viewpoint)**: store a camera view in the URL and animate between views.
+19. **[Use it from React](/examples/react-viewer)**: mount and dispose a viewer safely.
+20. **[Annotations pinned to the capture](/examples/annotations)**: add HTML labels that track and hide behind the capture.
+21. **[Make it fast on a phone](/examples/fast-on-phones)**: tune pixel ratio and device-derived settings.
+22. **[Works everywhere: the WebGL2 fallback](/examples/webgl-fallback)**, support browsers without WebGPU.
+23. **[View it in VR](/examples/in-vr)**: start a headset session and manage its budget.
+24. **[Save and share a viewpoint](/examples/share-a-viewpoint)**: store a camera view in the URL and animate between views.
 
 ## Reference
 

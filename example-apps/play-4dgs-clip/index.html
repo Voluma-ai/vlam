@@ -1,0 +1,70 @@
+<!doctype html>
+<!-- Live runner for site/examples/play-4dgs-clip.md. See first-viewer/index.html. -->
+<html lang="en">
+ <head>
+ <meta charset="UTF-8" />
+ <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+ <link rel="icon" href="/favicon.ico" sizes="any" />
+ <title>Play a Faltwerk 4DGS. VLAM! example</title>
+ <style>
+ html,
+ body {
+ margin: 0;
+ height: 100%;
+ overflow: hidden;
+ background: #1a1a1f;
+ font: 14px/1.4 system-ui, sans-serif;
+ }
+ canvas {
+ touch-action: none;
+ }
+ #controls {
+ position: fixed;
+ bottom: 16px;
+ left: 16px;
+ right: 16px;
+ z-index: 1;
+ display: flex;
+ flex-wrap: wrap;
+ align-items: center;
+ gap: 12px;
+ color: #fff;
+ text-shadow: 0 1px 4px #000;
+ }
+ #scrub {
+ flex: 1 1 160px;
+ }
+ #status {
+ position: fixed;
+ top: 12px;
+ left: 16px;
+ color: #ccc;
+ text-shadow: 0 1px 4px #000;
+ }
+ </style>
+ </head>
+ <body>
+ <div id="status">Loading…</div>
+ <div id="controls">
+ <button id="play" type="button">Pause</button>
+ <input id="scrub" type="range" min="0" max="1" step="any" value="0" aria-label="Time" />
+ <label
+ >Speed
+ <select id="speed">
+ <option value="-1">−1×</option>
+ <option value="0.25">0.25×</option>
+ <option value="1" selected>1×</option>
+ <option value="2">2×</option>
+ </select></label
+ >
+ <label
+ >Loop
+ <select id="loop">
+ <option value="repeat" selected>repeat</option>
+ <option value="pingpong">ping-pong</option>
+ </select></label
+ >
+ </div>
+ <script type="module" src="../../docs/examples/samples/play-4dgs-clip.ts"></script>
+ </body>
+</html>

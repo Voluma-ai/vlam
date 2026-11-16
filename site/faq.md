@@ -33,7 +33,7 @@ See [Get started](/get-started) for install and a minimal three.js example.
 <summary>Is VLAM! ready for production?</summary>
 
 Yes. From v1.0.0 the public API follows semantic versioning: breaking changes
-only land in a major version and come with a [migration guide](/migration).
+only land in a major version.
 Anything marked `@experimental` in the API reference is outside that
 guarantee and may change in a minor release: the `projection/compute`
 strategy, the `unified/pooled` entry, the raw `getUnifiedSourceView()` layout,

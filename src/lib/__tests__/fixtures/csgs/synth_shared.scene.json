@@ -1,0 +1,9 @@
+{
+  "fps": 10,
+  "sections": [
+    { "url": "synth_shared_s0000.csgs", "g0": 0, "nframes": 8 },
+    { "url": "synth_shared_s0001.csgs", "g0": 8, "nframes": 8 },
+    { "url": "synth_shared_s0002.csgs", "g0": 16, "nframes": 5 }
+  ],
+  "orbit": { "center": [0, 0, 0], "up": [0, 1, 0], "front": [0, 0, 1], "dist": 6000, "fovy_deg": 60 }
+}

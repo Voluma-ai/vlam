@@ -8,7 +8,7 @@ Git history, not in this queue.
 ## Next
 
 - Nothing queued. `1.0.0` shipped the stability contract (frozen API,
-  migration guide, changelog, capability matrix with the non-Pro iPhone 15
+  changelog, capability matrix with the non-Pro iPhone 15
   gate; Galaxy S7/WebGL2 stays a smoke-test floor, not a performance target).
   Promote an item from the opportunities below when work on it starts.
 
@@ -69,18 +69,22 @@ Brush lifecycle or stale-pick fixes discovered during existing selection
 validation fit stabilization. Defer new storage modes, rendering paths, and
 selection features until their benefits are measured and visually validated.
 
-- **4DGS playback: Faltwerk `.csgs` MVP** — the proof of concept ships the
-  experimental `@voluma/vlam/formats/csgs` decoder (version 1, bit-exact
-  against the reference fixtures) and the `/csgs-harness.html` playback page
-  (worker decode, CPU frame evaluation, whole-set pool swap per frame; see
-  `docs/formats/csgs-notes.md`). Next: GPU curve evaluation through a
-  `SplatModifier` reading per-section knot textures (covariance via the linear
-  `rotation` output), section fetch lookahead with region-atomic swaps,
-  `scene.json` loading, a demo timeline, and the later container versions.
-  **Acceptance:** real-time playback of the public demo clips on WebGPU and
-  WebGL2 with the test-camera reference comparison unchanged, no per-frame
-  pool re-upload, and a license-cleared clip before anything appears on the
-  public demo site.
+- **Animated splats: next steps** — the experimental `@voluma/vlam/dynamic`
+  subpath has one app-facing API for animated splats, all driven by an
+  `AnimationMixer`: captured 4D clips (`loadSplatClip` → `SplatClipMesh`,
+  today Faltwerk `.csgs` with a GPU path on WebGPU and the frame path
+  elsewhere) and rigged splats (`SkinnedSplatMesh` bound to a
+  `THREE.Skeleton`). See `docs/guide/dynamic-splats.md`. Next: new clip
+  formats as they become public (each a loader behind `loadSplatClip`, with
+  an optional GPU driver); `.csgs` section fetch/decode lookahead with
+  region-atomic swaps (everything is decoded up front today), later container
+  versions and compacting dead splats out of slots; for rigged splats, SH
+  rotated with the bone (a pre-fold deformation hook in core), posed centers
+  for the WebGL2 worker sorter, and loading a rig and weights from a glTF in
+  one call. **Acceptance:** each step keeps the `.csgs` test-camera reference
+  comparison unchanged on both backends and the GPU path within 1/255 of the
+  frame path, a skinned probe matches its CPU-posed reference, and nothing
+  appears on the public demo site before a license-cleared clip.
 - **Radix sorter: r186 workgroup atomics** — replace
   the global-storage ranking bitmasks in
   [`radix-sorter.ts`](src/lib/core/radix-sorter.ts) with atomic workgroup arrays.

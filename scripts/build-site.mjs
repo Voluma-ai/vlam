@@ -6,7 +6,7 @@
  *   3. Interactive viewer at /demo/
  */
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, rmSync, existsSync, copyFileSync } from 'node:fs';
+import { mkdirSync, rmSync, existsSync, copyFileSync, cpSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -41,5 +41,7 @@ run('npx', ['vite', 'build', '--config', 'scripts/vite.config.examples.ts']);
 // bundle's own public dir - because that is the URL their published source
 // shows. One copy serves every page.
 copyFileSync(join(root, 'assets', 'goose.sog'), join(distSite, 'goose.sog'));
+// Likewise the 4DGS example's clip (scripts/generate-goose-clip.mjs writes it).
+cpSync(join(root, 'assets', 'goose-walk'), join(distSite, 'goose-walk'), { recursive: true });
 
 console.log('Built documentation site → dist-site/');
