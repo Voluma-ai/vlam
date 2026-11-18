@@ -125,7 +125,7 @@ export default defineConfig({
           ],
         },
         {
-          text: 'Animation',
+          text: 'Animated splats',
           items: [
             { text: '17. Play a Faltwerk 4DGS', link: '/examples/play-4dgs-clip' },
             {

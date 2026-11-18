@@ -80,7 +80,7 @@ Each is a standalone program. Follow the link for the explanation and a live run
 <<< ../../docs/examples/samples/custom-effect.ts
 :::
 
-### Animation
+### Animated splats
 
 ::: details play-4dgs-clip.ts, experimental `loadSplatClip` + `SplatClipMesh` under an `AnimationMixer`, playing the goose clip · [walkthrough](/examples/play-4dgs-clip)
 <<< ../../docs/examples/samples/play-4dgs-clip.ts

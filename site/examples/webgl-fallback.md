@@ -3,7 +3,7 @@
 **What you get:** a viewer that runs on WebGPU or WebGL2 and can force the
 fallback for testing.
 
-<ExampleEmbed slug="webgl-fallback" hint="Says which backend it got, the link forces the fallback" />
+<ExampleEmbed slug="webgl-fallback" hint="Shows which backend it got. The link forces the fallback" />
 
 ## You already have a fallback
 
@@ -17,7 +17,7 @@ const renderer = await createWebGPURenderer(); // WebGPU if possible, WebGL2 oth
 const isWebGPU = renderer.backend.isWebGPUBackend === true;
 ```
 
-Pass `requireWebGpu: true` if you would rather fail loudly than degrade, reasonable when your app genuinely depends on a WebGPU-only feature, and better than shipping something subtly broken.
+Pass `requireWebGpu: true` if you would rather fail loudly than degrade. That is reasonable when your app genuinely depends on a WebGPU-only feature, and better than shipping something subtly broken.
 
 ## What actually differs
 
@@ -31,7 +31,7 @@ Pass `requireWebGpu: true` if you would rather fail loudly than degrade, reasona
 | `MergedSplatMesh` (many captures, one sort) | ✓ | **unavailable** |
 | `UnifiedSplatMesh` | ✓ | **unavailable** |
 
-**"Inert" is the dangerous word.** A `wgslFn`-based modifier on WebGL2 does not throw and does not warn, it simply does nothing. If your load sequence hides the capture behind a reveal that never plays, the capture never appears, and the bug report you get says "black screen on my work laptop".
+**"Inert" is the dangerous word.** A `wgslFn`-based modifier on WebGL2 does not throw and does not warn; it simply does nothing. If your load sequence hides the capture behind a reveal that never plays, the capture never appears, and the bug report you get says "black screen on my work laptop".
 
 Branch on the backend and use an alternative path:
 
@@ -49,7 +49,7 @@ const useWebGL = new URLSearchParams(location.search).get('backend') === 'webgl'
 const renderer = await createWebGPURenderer(useWebGL ? { forceWebGL: true } : {});
 ```
 
-(`forceWebGL` and `requireWebGpu` are mutually exclusive, asking for both throws, since there is no sensible answer.)
+(`forceWebGL` and `requireWebGpu` are mutually exclusive; asking for both throws, since there is no sensible answer.)
 
 Wire this to a development query parameter to test the fallback easily. The
 [full viewer](/demo/) uses the same `?backend=webgl` switch.
@@ -90,7 +90,7 @@ Wire this to a development query parameter to test the fallback easily. The
 
 :::
 
-## Performance is different, not simply worse
+## Performance is different
 
 Captures render properly on the fallback, but sorting and projection work
 differently. A scene that performs well on WebGPU may be demanding on WebGL2.
@@ -99,7 +99,7 @@ Treat it as its own performance target: measure there, and consider a smaller bu
 
 ## Should you tell the user?
 
-The banner here exists to demonstrate the detection. In a real product, mostly **no**, a message about graphics APIs is noise to someone who just wants to look at a capture, and there is usually nothing they can do about it.
+The banner here exists to demonstrate the detection. In a real product, mostly **no**: a message about graphics APIs is noise to someone who just wants to look at a capture, and there is usually nothing they can do about it.
 
 Say something only when it changes what they can do: a disabled feature that they might otherwise go looking for, or a "this will look better in a newer browser" note where that is genuinely true. Log the backend for yourself either way; when a support ticket arrives, it is the first thing worth knowing.
 

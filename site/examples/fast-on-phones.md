@@ -10,7 +10,7 @@ On mobile, splat rendering is usually **fill-bound**, not memory-bound: the GPU
 struggles to shade covered pixels rather than store splats. Reducing splat count
 often helps less than reducing render resolution.
 
-## Pixel ratio is the biggest single number
+## Pixel ratio
 
 A phone screen reports `devicePixelRatio` 3. Render at that and you are shading **nine times** the fragments of ratio 1, for a display so small and so close that most of it is invisible to the eye.
 
@@ -24,7 +24,7 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, recommendedMaxPixelRatio()));
 
 For many apps, this is the most effective performance setting.
 
-## Then let it adjust itself
+## Adjust based on fps
 
 A fixed ceiling is a guess about the worst case. `suggestAdaptivePixelRatio` turns it into a measurement: hand it the frame time each frame and it tells you whether to spend or save.
 
@@ -32,7 +32,7 @@ It smooths the input and separates the "speed up" and "slow down" thresholds, so
 
 The viewer stays sharp when it has headroom and lowers resolution when needed.
 
-## Laptops are not workstations
+## Lower-end desktops
 
 A MacBook or Windows iGPU reports as *desktop* in the user agent, so without a
 GPU class it would inherit the multi-million splat workstation budget. Probe the
@@ -54,11 +54,11 @@ keeps the legacy desktop defaults.
 
 Three settings are device-derived unless you override them:
 
-**The splat budget**, `resolveSplatBudget()`. How many splats may be active. A hardcoded number that suits your workstation is the classic way to make a phone worse.
+**The splat budget**: `resolveSplatBudget()`. How many splats may be active. A hardcoded number that suits your workstation is the classic way to make a phone worse.
 
-**The performance profile**, `resolveSplatPerformanceProfile()` picks `'smooth'` on mobile and fill-constrained desktops, and full-detail `'quality'` on other desktops. Opt into SH-preserving `'balanced'` culls only after measuring your scene.
+**The performance profile**: `resolveSplatPerformanceProfile()` picks `'smooth'` on mobile and fill-constrained desktops, and full-detail `'quality'` on other desktops. Opt into SH-preserving `'balanced'` culls only after measuring your scene.
 
-**Coverage and rendering defaults**, device-derived, and generally not worth touching until you have measured a specific problem. The public demo's performance mode (on by default on phones and on integrated / fallback desktops) is the exception: it uses a 3σ Gaussian cutoff, because 4σ plus renderer MSAA was what made a 600k scene on an iPhone 15 Pro miss vsync during a hard orbit (the demo no longer multisamples splat-only frames in HD either; MSAA switches on only while a hard-edged overlay such as the separate-tool gizmo or an XR session is on screen). A MacBook Air M3 and a Galaxy S24 Ultra keep that same SD default: goose on the Ultra is locked 60 in SD (p99 60, missed 0) and still ~58 rAF in HD, and streamed million-splat scenes already miss 60 Hz before HD on both. `?maxStdDev=` and `?rendererAntialias=` pin those for A/B.
+**Coverage and rendering defaults**: device-derived, and generally not worth touching until you have measured a specific problem. The public demo's performance mode (on by default on phones and on integrated / fallback desktops) is the exception: it uses a 3σ Gaussian cutoff, because 4σ plus renderer MSAA was what made a 600k scene on an iPhone 15 Pro miss vsync during a hard orbit (the demo no longer multisamples splat-only frames in HD either; MSAA switches on only while a hard-edged overlay such as the separate-tool gizmo or an XR session is on screen). A MacBook Air M3 and a Galaxy S24 Ultra keep that same SD default: goose on the Ultra is locked 60 in SD (p99 60, missed 0) and still ~58 rAF in HD, and streamed million-splat scenes already miss 60 Hz before HD on both. `?maxStdDev=` and `?rendererAntialias=` pin those for A/B.
 
 ::: warning A cap is not a pin
 If you want "the usual settings, but no more than N", use `budgetCap`, not `budget`. `budget` is absolute and overrides the device tier entirely, which has shipped as a bug more than once, in the form of a "performance mode" that raised the load on the weakest device it was meant to help.
@@ -104,7 +104,7 @@ If you want "the usual settings, but no more than N", use `budgetCap`, not `budg
 ## Testing it honestly
 
 - **A desktop window shrunk to phone size proves nothing.** Same GPU, same fill rate. Use a real device.
-- **iOS reports no `deviceMemory`.** Any `?? fallback` you write is the iPhone path, whether you meant it or not: so make that fallback the conservative one.
+- **iOS reports no `deviceMemory`.** Any `?? fallback` you write is the iPhone path, whether you meant it or not, so make that fallback the conservative one.
 - **Check it warm, not cold.** Phones throttle. A capture that runs at 60 fps for twenty seconds and 30 fps after two minutes is the normal shape of the problem, and it is exactly what the adaptive ratio exists to absorb.
 
 ## Next

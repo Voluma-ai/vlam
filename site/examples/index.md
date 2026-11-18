@@ -28,7 +28,7 @@ the same source file shown below.
 15. **[Tiny planet](/examples/tiny-planet)**: wrap a streamed street under your feet, or up into a bowl.
 16. **[Write your own effect](/examples/custom-effect)**: build an efficient modifier from scratch.
 
-## Animation
+## Animated splats
 
 17. **[Play a Faltwerk 4DGS](/examples/play-4dgs-clip)** _(experimental)_: the goose walks and honks: a captured 4D clip driven by an `AnimationMixer`, with play, pause and scrub.
 18. **[Rig and animate splats](/examples/rigged-splats)** _(experimental)_: bind a splat to a `THREE.Skeleton` and animate it with bone clips, cross-fades and an additive gesture.
