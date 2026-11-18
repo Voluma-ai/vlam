@@ -71,4 +71,4 @@ world unit tall; real captures need scale calibration before room-scale use.
 ## Next
 
 - [Make it fast on a phone](/examples/fast-on-phones)
-- [Huge scenes that load as you walk](/examples/big-scenes)
+- [Streaming scenes](/examples/big-scenes)

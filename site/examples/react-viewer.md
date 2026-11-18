@@ -3,14 +3,14 @@
 **What you get:** a `<SplatViewer src="…" />` component that creates and
 disposes a viewer safely, including in-flight loads.
 
-<ExampleEmbed slug="react-viewer" hint="Toggle the viewer on and off, it survives StrictMode's double mount" />
+<ExampleEmbed slug="react-viewer" hint="Toggle the viewer on and off. It survives StrictMode's double mount" />
 
-## VLAM! is not a React library, and does not need to be
+## Using it with React
 
 `SplatMesh` is a three.js object and the renderer owns its canvas. In React, use
 one `useEffect` to create them and its cleanup to dispose them.
 
-## Why cleanup matters more here than usual
+## The importance of cleaning up
 
 A leaked viewer retains a GPU device, splat-pool memory, sorter and picking
 resources, and a running animation loop. Browsers do not reclaim these resources
@@ -36,9 +36,9 @@ Two guards handle it:
 
 **A `disposed` flag,** checked after every `await`. If the effect was cleaned up while you were waiting, throw away whatever you just built instead of attaching it.
 
-**An `AbortController`,** passed to `loadSplatData`. This cancels the download itself rather than letting a hundred-megabyte capture finish arriving for a component that no longer exists. The resulting rejection is an abort, not a failure, `isAbortError` is how you tell them apart, and showing an error state for a cancelled load is a bug users will see as a flash of "something went wrong" during normal navigation.
+**An `AbortController`,** passed to `loadSplatData`. This cancels the download itself rather than letting a hundred-megabyte capture finish arriving for a component that no longer exists. The resulting rejection is an abort, not a failure, and `isAbortError` is how you tell them apart. Showing an error state for a cancelled load is a bug users will see as a flash of "something went wrong" during normal navigation.
 
-## StrictMode is doing you a favour
+## StrictMode
 
 In development, React's `StrictMode` mounts, unmounts, and remounts components.
 It is a useful lifecycle test for route changes, conditional rendering, and hot
@@ -62,7 +62,7 @@ reloads.
 
 **Size from the container, not the window.** A component does not own the viewport. A `ResizeObserver` on the host element handles sidebars, split panes and layout shifts that a `resize` listener never sees.
 
-**Re-run on `src`, and nothing else.** The dependency array here is `[src]`. Adding an object or a callback that is recreated every render tears down and rebuilds the entire viewer on every parent render, the worst possible outcome, arrived at by a one-character mistake.
+**Re-run on `src`, and nothing else.** The dependency array here is `[src]`. Adding an object or a callback that is recreated every render tears down and rebuilds the entire viewer on every parent render: the worst possible outcome, caused by a one-character mistake.
 
 ## Other frameworks
 
@@ -70,5 +70,5 @@ Nothing above is React-specific in substance. Vue's `onMounted` / `onUnmounted`,
 
 ## Next
 
-- [Frame the capture](/examples/frame-the-camera), what a component should do once the capture arrives
-- [Your first viewer](/examples/first-viewer), the same app without a framework, for comparison
+- [Frame the capture](/examples/frame-the-camera): what a component should do once the capture arrives
+- [Your first viewer](/examples/first-viewer): the same app without a framework, for comparison

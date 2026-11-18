@@ -3,9 +3,9 @@
 **What you get:** HTML labels pinned to points on a capture. They follow their
 point as you orbit, and hide when the capture covers them.
 
-<ExampleEmbed slug="annotations" hint="Click to pin labels, then orbit, they track, and hide when covered" />
+<ExampleEmbed slug="annotations" hint="Click to pin labels, then orbit. They track, and hide when covered" />
 
-## Why HTML instead of 3D text
+## HTML instead of 3D text
 
 For survey markers, defect tags, hotspots, and room labels, HTML is usually a
 better fit than 3D text. It stays crisp, uses your existing styles, supports
@@ -14,7 +14,7 @@ label per frame and no GPU work.
 
 The technique is the same one three.js's `CSS2DRenderer` uses. It is short enough to write yourself, which is what this example does.
 
-## Project, then position
+## Project and position
 
 `Vector3.project` maps a world point into normalized device coordinates, and a little arithmetic turns that into pixels:
 
@@ -26,7 +26,7 @@ const y = (-p.y * 0.5 + 0.5) * innerHeight;
 
 Two details matter:
 
-**Check `p.z > 1`.** That means the point is *behind* the camera, and the x/y you get back are mirrored garbage, labels for things behind you appear on screen, in the wrong place. Hide them.
+**Check `p.z > 1`.** That means the point is *behind* the camera, and the x/y you get back are mirrored garbage: labels for things behind you appear on screen in the wrong place. Hide them.
 
 **Position after the render, not before.** `controls.update()` moves the camera, so projecting before the frame is drawn puts the labels one frame behind the image. Over a fast orbit that reads as labels sliding around loosely.
 
@@ -34,7 +34,7 @@ Use a `transform: translate(...)` rather than `left`/`top`. It stays on the comp
 
 ## Hide labels behind the capture
 
-A label pinned to the far side of an object should disappear when the object gets in the way. Projection alone cannot tell you that, it does not know what is in front of what.
+A label pinned to the far side of an object should disappear when the object gets in the way. Projection alone cannot tell you that; it does not know what is in front of what.
 
 `pick` does. It reports the distance to whatever is actually drawn at a pixel, so an annotation is covered when something solid is closer than the annotation itself:
 
@@ -99,7 +99,7 @@ flight, so the cost is fixed no matter how many labels exist.
 
 :::
 
-`pointer-events: none` on the layer is not a detail, without it the overlay swallows every click and drag that lands on a label. If a label needs to be clickable, put `pointer-events: auto` back on that element alone.
+`pointer-events: none` on the layer is not a detail: without it the overlay swallows every click and drag that lands on a label. If a label needs to be clickable, put `pointer-events: auto` back on that element alone.
 
 ## Fade, don't pop
 

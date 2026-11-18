@@ -4,7 +4,7 @@
 
 <ExampleEmbed slug="share-a-viewpoint" hint="Orbit, copy the link, or fly between the saved viewpoints" />
 
-## This is what turns a viewer into a tool
+## What is a viewpoint?
 
 A viewpoint stores the camera position and target as six numbers, compact enough
 for a URL without a server or account:
@@ -26,7 +26,7 @@ if (n.length !== 6 || n.some((v) => !Number.isFinite(v))) return null; // fall b
 
 Validate, and fall back to your default view. Three decimal places is plenty of precision and keeps the link short enough to paste anywhere.
 
-## Update the address bar, don't navigate
+## Update the address bar
 
 ```ts
 history.replaceState(null, '', url);
@@ -34,7 +34,7 @@ history.replaceState(null, '', url);
 
 Assigning to `location.search` reloads the page, throwing away the capture the user just waited to download, to arrive at the view they were already looking at. `replaceState` changes the URL in place and costs nothing.
 
-## Flying, not teleporting
+## Move to the new position
 
 Interpolating between viewpoints helps users keep their bearings. About one second
 is usually enough.
@@ -43,7 +43,7 @@ Two things make it feel right:
 
 **Ease in and out.** Linear interpolation starts and stops abruptly and reads as mechanical. A cubic ease makes the same movement feel deliberate.
 
-**Interpolate position and target separately.** Both are just `lerpVectors` between the start and end, and moving the target alongside the position keeps the subject in frame throughout, the camera swings *around* the scene rather than sailing past it.
+**Interpolate position and target separately.** Both are just `lerpVectors` between the start and end, and moving the target alongside the position keeps the subject in frame throughout: the camera swings *around* the scene rather than sailing past it.
 
 ## The code
 
@@ -92,11 +92,11 @@ Note that the clipboard write has a failure path. `navigator.clipboard` needs a 
 
 ## Where this goes next
 
-- **A guided tour.** The same flight, run through a list on a timer, is a walkthrough, a first-run experience that shows the capture off without the user having to learn the controls.
+- **A guided tour.** The same flight, run through a list on a timer, is a walkthrough: a first-run experience that shows the capture off without the user having to learn the controls.
 - **Put the scene in the link too.** Add `?scene=` alongside `?view=` and one URL identifies both what to load and where to stand. That is exactly what the [full viewer](/demo/) does.
 - **Frame first, then save.** [Frame the capture](/examples/frame-the-camera) gives you the sensible default view that a link-less visitor should land on.
 
 ## Next
 
-- [Frame the capture](/examples/frame-the-camera), the view people get when there is no link
-- [Annotations pinned to the capture](/examples/annotations), the other half of "look at this bit"
+- [Frame the capture](/examples/frame-the-camera): the view people get when there is no link
+- [Annotations pinned to the capture](/examples/annotations): the other half of "look at this bit"

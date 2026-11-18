@@ -7,9 +7,9 @@ the same source file shown below.
 
 1. **[Your first viewer](/examples/first-viewer)**: load a capture with orbit controls.
 2. **[Open a file from your computer](/examples/open-local-file)**: add a file picker, drag-and-drop, progress, and error handling.
-3. **[Huge scenes that load as you walk](/examples/big-scenes)**: stream large captures with level of detail and a splat budget.
-4. **[Click on the world](/examples/click-the-world)**: find and mark the point beneath the cursor.
-5. **[Mix splats with ordinary 3D objects](/examples/splats-and-objects)**: use a capture and ordinary three.js geometry in one scene.
+3. **[Streaming scenes](/examples/big-scenes)**: stream large captures with level of detail and a splat budget.
+4. **[Pointer interaction](/examples/click-the-world)**: find and mark the point beneath the cursor.
+5. **[Mix in 3D objects](/examples/splats-and-objects)**: use a capture and ordinary three.js geometry in one scene.
 
 ## Going further
 
@@ -28,7 +28,7 @@ the same source file shown below.
 15. **[Tiny planet](/examples/tiny-planet)**: wrap a streamed street under your feet, or up into a bowl.
 16. **[Write your own effect](/examples/custom-effect)**: build an efficient modifier from scratch.
 
-## Animation
+## Animated splats
 
 17. **[Play a Faltwerk 4DGS](/examples/play-4dgs-clip)** _(experimental)_: the goose walks and honks: a captured 4D clip driven by an `AnimationMixer`, with play, pause and scrub.
 18. **[Rig and animate splats](/examples/rigged-splats)** _(experimental)_: bind a splat to a `THREE.Skeleton` and animate it with bone clips, cross-fades and an additive gesture.

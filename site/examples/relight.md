@@ -19,9 +19,9 @@ follows those triangles. Splat foliage cannot cast.
 This example streams the same Tempel `.lcc2` the
 <a href="/demo/?scene=/remote/voluma/cultural-heritage/Tempel/Tempel.lcc2&effects=relight&fallback=goose" target="_self">viewer</a>
 opens with `?effects=relight`. How streaming itself works is
-[Huge scenes](/examples/big-scenes).
+[Streaming scenes](/examples/big-scenes).
 
-## It is a lighting pass, not a modifier
+## Changing screen pixels instead of splats
 
 Same class of feature as [depth of field](/examples/depth-of-field): a draw-time
 material setting, not a `SplatModifier`. Coverage is per pixel, so it cannot

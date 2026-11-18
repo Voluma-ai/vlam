@@ -2,15 +2,15 @@
 
 **What you get:** overlapping captures sorted and blended as one cloud.
 
-<ExampleEmbed slug="many-captures" hint="Three sources, one shared sort, watch where they overlap" />
+<ExampleEmbed slug="many-captures" hint="Three sources, one shared sort. Watch where they overlap" />
 
-## Why two meshes are not enough
+## Unify sort to blend different splats
 
 Separate `SplatMesh` objects sort only their own splats. That works until they
 overlap: transparent splats require a single shared draw order. `MergedSplatMesh`
 places every capture in one pool and sorts them together.
 
-## The trade: capacity up front
+## Capacity
 
 ```ts
 const scene = new MergedSplatMesh({ capacity: data.count * 3 });
@@ -22,7 +22,7 @@ size it for the scene you expect to build.
 
 `addSource` copies a capture into the pool in its own local frame and returns an id. The placement you pass is *not* baked into the data; it is a matrix the shader applies while drawing.
 
-## Moving a source is a uniform write
+## Moving a source
 
 Move a source by updating its matrix:
 
@@ -33,7 +33,7 @@ scene.setSourceTransform(id, matrix); // safe every frame, while dragging
 No data is copied or re-uploaded, and the shared sort keeps the source correctly
 interleaved with the others.
 
-Each source keeps its own upright correction too, so captures from different tools with different up-axes still line up, pass `orientation: 'source'` per source if you would rather place the raw data frame yourself.
+Each source keeps its own upright correction too, so captures from different tools with different up-axes still line up. Pass `orientation: 'source'` per source if you would rather place the raw data frame yourself.
 
 ## The code
 
@@ -76,5 +76,5 @@ Each source keeps its own upright correction too, so captures from different too
 
 ## Next
 
-- [Mix splats with ordinary 3D objects](/examples/splats-and-objects), the other kind of "two things in one scene"
+- [Mix in 3D objects](/examples/splats-and-objects): the other kind of "two things in one scene"
 - [All samples](/examples/all-samples): `UnifiedSplatMesh`, capacity sizing, and picking with a source id

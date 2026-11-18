@@ -5,7 +5,7 @@ or up into a bowl over your head, while orbit still works.
 
 <ExampleEmbed slug="tiny-planet" hint="Give it a moment to stream in, then drag Fold / Planet" />
 
-## The camera does not move
+## Displacing splats
 
 `worldWarpPreset` is a `SplatModifier`. It displaces splat centres (and rotates
 their ellipsoids with the wrap) in the shader. WASD, orbit, and pointer-lock
@@ -18,17 +18,17 @@ Here the 3D capture is still a 3D capture. You can walk around on it.
 This example streams the same Tempel `.lcc2` the
 <a href="/demo/?scene=/remote/voluma/cultural-heritage/Tempel/Tempel.lcc2&effects=warp&fallback=goose" target="_self">viewer</a>
 opens with `?effects=warp`. How streaming itself works is
-[Huge scenes](/examples/big-scenes).
+[Streaming scenes](/examples/big-scenes).
 
-## One signed dial
+## Adjusting the effect
 
 **`intensity`**, in `[-1, 1]`. Positive wraps the far field *down* so you stand
 on the planet. Negative wraps it *up* so you stand in the bowl. `0` is
-identity. Mutate `.value` to animate, no recompile.
+identity. Mutate `.value` to animate; no recompile is needed.
 
-**`radius`**, the distance at which the wrap becomes strong. Nearby splats
+**`radius`**: the distance at which the wrap becomes strong. Nearby splats
 (`depth ≪ radius`) barely move, which is why walking still reads as walking.
-The viewer uses about `0.22 ×` the capture's bounding-span.
+The viewer uses about `0.22 ×` the capture's bounding span.
 
 Build the preset once, assign `splats.modifiers = [warp.modifier]`, and drive
 the uniforms from a slider.

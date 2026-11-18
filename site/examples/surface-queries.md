@@ -4,7 +4,7 @@
 
 <ExampleEmbed slug="stand-on-surface" hint="Click twice to measure · markers settle onto the surface" />
 
-## Two questions the GPU should not be asked
+## Fast CPU queries
 
 [Picking](/examples/click-the-world) answers what is under the cursor. Many
 other questions are about geometry rather than pixels:
@@ -14,7 +14,7 @@ other questions are about geometry rather than pixels:
 
 `queryHeight` and `queryNearest` run on the CPU over the splat centers the mesh
 currently holds, using a spatial grid it maintains for this. They return
-immediately, no promise, no GPU round trip, so they are suitable for drag
+immediately (no promise, no GPU round trip), so they are suitable for drag
 handlers and per-frame use.
 
 | | Question | Cost |
@@ -89,5 +89,5 @@ These queries work on splat *centers*, not on a reconstructed surface. On a dens
 
 ## Next
 
-- [Select and cut away part of a capture](/examples/select-and-cut), the same centers, tested against a volume
-- [Click on the world](/examples/click-the-world), the GPU question, for comparison
+- [Select and cut away part of a capture](/examples/select-and-cut): the same centers, tested against a volume
+- [Pointer interaction](/examples/click-the-world): the GPU question, for comparison

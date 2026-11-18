@@ -98,9 +98,9 @@ export default defineConfig({
             { text: 'Overview', link: '/examples/' },
             { text: '1. Your first viewer', link: '/examples/first-viewer' },
             { text: '2. Open a local file', link: '/examples/open-local-file' },
-            { text: '3. Streaming big scenes', link: '/examples/big-scenes' },
-            { text: '4. Click on the world', link: '/examples/click-the-world' },
-            { text: '5. Splats + 3D objects', link: '/examples/splats-and-objects' },
+            { text: '3. Streaming scenes', link: '/examples/big-scenes' },
+            { text: '4. Pointer interaction', link: '/examples/click-the-world' },
+            { text: '5. Mix in 3D objects', link: '/examples/splats-and-objects' },
           ],
         },
         {
@@ -125,7 +125,7 @@ export default defineConfig({
           ],
         },
         {
-          text: 'Animation',
+          text: 'Animated splats',
           items: [
             { text: '17. Play a Faltwerk 4DGS', link: '/examples/play-4dgs-clip' },
             {

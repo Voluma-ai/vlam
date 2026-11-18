@@ -6,7 +6,7 @@ walk around the beam to see the cone through the fog.
 
 <ExampleEmbed slug="flashlight-fog" hint="Give it a moment to stream in. Look around with the light, then press F to put it down and orbit the beam" />
 
-## Three layers, one light
+## Multiple layers
 
 The look is built from three independent pieces that share one `SpotLight` and
 one fog density:
@@ -22,7 +22,7 @@ one fog density:
 Relighting runs after the modifier, so splats deep in the fog are still lit
 where the beam reaches them.
 
-## Night is a brightness setting
+## Applying darkness
 
 The factor map is a multiplier. Pass a low `brightness` and the same
 `background`, and the whole capture sits at that level. Unlit coverage is
@@ -35,7 +35,7 @@ attachRelighting(splats, { map, brightness: 0.05, background: 0.05, ... });
 The flashlight's fill is added on top of the 1 before that multiply, so a fill of
 about `1 / brightness` brings a facing wall back to its captured colour.
 
-## The rings are a beam profile
+## Adjusting the rings
 
 There is no flashlight API. The rings come from a **beam profile**: a 1D texture
 over `angle / light.angle` that multiplies the spot's fill. The sample bakes it

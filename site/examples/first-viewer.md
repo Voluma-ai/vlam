@@ -63,12 +63,12 @@ final camera pose.
 
 **Nothing appears, no error.** The camera is probably inside or behind the capture. Try `camera.position.set(0, 0, 3)` and `controls.target.set(0, 0, 0)`, then scroll out.
 
-**It loads but it is on its side.** Different capture tools disagree about which axis is "up". VLAM! stands known formats upright by default; if yours still leans, see [`orientation`](/api/core/interfaces/SplatMeshOptions) on the `SplatMesh` constructor, and [Mix splats with ordinary 3D objects](/examples/splats-and-objects).
+**It loads but it is on its side.** Different capture tools disagree about which axis is "up". VLAM! stands known formats upright by default; if yours still leans, see [`orientation`](/api/core/interfaces/SplatMeshOptions) on the `SplatMesh` constructor, and [Mix in 3D objects](/examples/splats-and-objects).
 
 **`await` at the top level fails.** The example uses top-level `await`, which needs `<script type="module">` and a modern bundler target. If your setup rejects it, wrap the body in an `async function main() { … }` and call it.
 
 **It is slow on a phone.** Large captures are demanding on mobile GPUs. Streamed
-formats load detail only where it is needed; see [Huge scenes](/examples/big-scenes).
+formats load detail only where it is needed; see [Streaming scenes](/examples/big-scenes).
 
 ## Next
 
