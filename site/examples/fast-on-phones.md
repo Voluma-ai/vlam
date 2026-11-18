@@ -109,5 +109,5 @@ If you want "the usual settings, but no more than N", use `budgetCap`, not `budg
 
 ## Next
 
-- [Huge scenes that load as you walk](/examples/big-scenes): the budget in its natural habitat
+- [Streaming scenes](/examples/big-scenes): the budget in its natural habitat
 - [View it in VR](/examples/in-vr): the same reasoning, with a much harder frame deadline

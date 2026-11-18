@@ -11,7 +11,7 @@ walls, gravity, steps, and jumping.
 Click **Start walking** to capture the mouse. Move with WASD, hold Shift to run,
 press Space to jump, and press Escape when you want the pointer back.
 
-## The splats are not the collider
+## Using collision meshes
 
 A splat capture is a transparent point cloud, not a watertight surface. Testing
 the camera against every splat would be both expensive and physically vague.
@@ -88,7 +88,7 @@ raise it for scrambling over rough reconstruction geometry.
 
 ## Next
 
-- [Huge scenes that load as you walk](/examples/big-scenes): streaming and
+- [Streaming scenes](/examples/big-scenes): streaming and
   quality budgets without collision
 - [Surface queries](/examples/surface-queries): lightweight height and nearest
   probes when you do not need solid walls

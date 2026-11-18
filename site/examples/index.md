@@ -7,9 +7,9 @@ the same source file shown below.
 
 1. **[Your first viewer](/examples/first-viewer)**: load a capture with orbit controls.
 2. **[Open a file from your computer](/examples/open-local-file)**: add a file picker, drag-and-drop, progress, and error handling.
-3. **[Huge scenes that load as you walk](/examples/big-scenes)**: stream large captures with level of detail and a splat budget.
-4. **[Click on the world](/examples/click-the-world)**: find and mark the point beneath the cursor.
-5. **[Mix splats with ordinary 3D objects](/examples/splats-and-objects)**: use a capture and ordinary three.js geometry in one scene.
+3. **[Streaming scenes](/examples/big-scenes)**: stream large captures with level of detail and a splat budget.
+4. **[Pointer interaction](/examples/click-the-world)**: find and mark the point beneath the cursor.
+5. **[Mix in 3D objects](/examples/splats-and-objects)**: use a capture and ordinary three.js geometry in one scene.
 
 ## Going further
 

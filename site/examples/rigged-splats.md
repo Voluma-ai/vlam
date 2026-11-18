@@ -69,6 +69,6 @@ has the details. The <a href="/demo/?scene=procedural:goose" target="_self">full
 viewer</a> shows a goose generated in code and rigged the same way, with 78
 bones and its own lighting modifier stacked after the skin.
 
-## The whole program
+## The code
 
 <<< ../../docs/examples/samples/rigged-splats.ts

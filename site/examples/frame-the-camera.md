@@ -15,7 +15,7 @@ If a loaded capture shows a black screen, the usual causes are:
 
 Measure the capture bounds instead of guessing coordinates.
 
-## Bounds, then a bit of trigonometry
+## Measuring bounds
 
 The mesh will tell you its own extent. `computeSplatBounds` measures the splats in the mesh's local space, so the mesh's matrix, which holds the [upright correction](/examples/splats-and-objects) as well as anything you set, still has to be applied:
 
@@ -24,7 +24,7 @@ const box = splats.computeSplatBounds().applyMatrix4(splats.matrixWorld);
 ```
 
 ::: warning Not `Box3.setFromObject`
-The usual three.js way to measure an object silently returns nonsense here. A `SplatMesh`'s geometry is a **single instanced unit quad**, the splats live in textures, not in vertex attributes, so `setFromObject` reports a ~2-unit box at the origin regardless of what the capture contains. Use `computeSplatBounds`.
+The usual three.js way to measure an object silently returns nonsense here. A `SplatMesh`'s geometry is a **single instanced unit quad**; the splats live in textures, not in vertex attributes, so `setFromObject` reports a ~2-unit box at the origin regardless of what the capture contains. Use `computeSplatBounds`.
 :::
 
 From the box you get a bounding sphere, and from the sphere the distance at which it fills the view:
@@ -35,7 +35,7 @@ const distance = (sphere.radius * margin) / Math.sin(fov / 2);
 
 The one subtlety worth copying: use the **smaller** of the vertical and horizontal fields of view. Vertical alone looks right on a wide monitor and crops the capture on a narrow window or a phone in portrait.
 
-## Set the clip planes too
+## Adjust camera clipping planes
 
 Set clip planes from the measured bounds too:
 
@@ -102,5 +102,5 @@ So the same three lines frame a two-gigabyte scan and a one-megabyte object, and
 
 ## Next
 
-- [Open a file from your computer](/examples/open-local-file), framing matters most when you did not choose the capture
-- [Save and share a viewpoint](/examples/share-a-viewpoint), once framed, make the view shareable
+- [Open a file from your computer](/examples/open-local-file): framing matters most when you did not choose the capture
+- [Save and share a viewpoint](/examples/share-a-viewpoint): once framed, make the view shareable

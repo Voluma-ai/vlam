@@ -17,7 +17,7 @@ const height = smoothstep(-0.5, 0.5, ctx.localCenter.y);
 This builds the expression that computes height on the GPU. Changes to the
 calculation require a new shader; changes to uniforms do not.
 
-## What you get, and what you may return
+## Return modified properties
 
 The context carries the splat as a set of nodes:
 
@@ -33,7 +33,7 @@ Return only what you want to change. `color` and `offset` are used here; anythin
 
 Use `ctx.color` rather than `ctx.baseColor` when you want to build on the modifier before you in the list, which is nearly always.
 
-## Uniforms are the dials you keep
+## Uniforms
 
 Anything you want to change later must be a `uniform` declared outside the modifier:
 
@@ -103,13 +103,13 @@ renderer.setAnimationLoop(() => {
 });
 ```
 
-Define the function once, keep the reference, and drive it with uniforms. If you are stacking several effects and toggling them independently, `ModifierSlots` manages exactly this for you, see [All samples](/examples/all-samples).
+Define the function once, keep the reference, and drive it with uniforms. If you are stacking several effects and toggling them independently, `ModifierSlots` manages exactly this for you; see [All samples](/examples/all-samples).
 
 ## Portability
 
-Plain TSL arithmetic, `mix`, `smoothstep`, `sin`, vector maths, runs on both backends. Anything built on `wgslFn`, including the reveal preset's noise, is WebGPU only and inert on the WebGL2 fallback. If you need an effect to work everywhere, stay in the portable subset and test on both.
+Plain TSL arithmetic (`mix`, `smoothstep`, `sin`, vector maths) runs on both backends. Anything built on `wgslFn`, including the reveal preset's noise, is WebGPU only and inert on the WebGL2 fallback. If you need an effect to work everywhere, stay in the portable subset and test on both.
 
 ## Next
 
-- [Shader effects](/examples/shader-effects), the presets, now that you know what they are made of
+- [Shader effects](/examples/shader-effects): the presets, now that you know what they are made of
 - [All samples](/examples/all-samples): `ModifierSlots`, the rebuild contract as a do/don't pair

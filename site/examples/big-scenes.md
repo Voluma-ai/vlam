@@ -1,4 +1,4 @@
-# Huge scenes that load as you walk
+# Streaming scenes
 
 **What you get:** a large capture that streams detail near the camera and drops
 unneeded chunks.
@@ -7,7 +7,7 @@ unneeded chunks.
 
 Hold the left button still for a moment to walk forward; a drag in that window still orbits. Once you are walking, moving the mouse looks around.
 
-## Why a big capture cannot just be loaded
+## Interact with a scene as soon as possible
 
 Large captures can exceed GPU memory and practical download sizes. They are split
 into chunks at several levels of detail, with a manifest describing each chunk.
@@ -19,12 +19,12 @@ This example streams the same Tempel `.lcc2` the
 opens. `/remote/…` is the docs/demo proxy onto `assets.voluma.ai`. Point
 `StreamedSplatMesh.load` at your own manifest when you copy this out.
 
-## How the splat budget works
+## Budget splats to fit in memory
 
 **Budget = the maximum active splat count.** The streamer spends it where detail
 is most useful.
 
-Raise it and you get more detail, more memory, more time per frame. Lower it and everything gets softer but faster. Left out, the library picks a number from what it can tell about the device, a phone gets a smaller one than a desktop.
+Raise it for more detail, at the cost of more memory and more time per frame. Lower it and everything gets softer but faster. Left out, the library picks a number from what it can tell about the device; a phone gets a smaller one than a desktop.
 
 **Start with the default.** It is device-derived. For a quality slider, scale the
 resolved default instead of choosing a fixed number.
@@ -82,13 +82,13 @@ Changing the budget does not reload anything. The mesh just re-decides which chu
 | `.lcc` / `.lcc2` | the `.lcc` file; its `data.bin` is read in ranges |
 | `.rad` | the `.rad` file (not a `.radc` chunk) |
 
-All of them need a host that answers HTTP range requests, any normal static host or CDN does. If the capture sits on a different origin than your page, that origin needs CORS headers, or the fetches fail before anything renders.
+All of them need a host that answers HTTP range requests, which any normal static host or CDN does. If the capture sits on a different origin than your page, that origin needs CORS headers, or the fetches fail before anything renders.
 
 For a folder the user drags in from their own disk, use `StreamedSplatMesh.loadLocal` instead; it takes a map of files and needs no server at all. The <a href="/demo/" target="_self">viewer</a> takes that path when you drop a streamed folder onto it.
 
 ## Troubleshooting
 
-**It stays blurry.** The camera may be outside the range where fine detail is used. Raise `lodBaseDistance`, or check the scene's scale, a capture in millimetres puts the camera thousands of units away by accident.
+**It stays blurry.** The camera may be outside the range where fine detail is used. Raise `lodBaseDistance`, or check the scene's scale: a capture in millimetres puts the camera thousands of units away by accident.
 
 **Detail pops in visibly.** That is chunks arriving. It is worse on slow connections and unavoidable to some degree; a lower budget makes it less frequent, not less visible.
 
@@ -97,4 +97,4 @@ For a folder the user drags in from their own disk, use `StreamedSplatMesh.loadL
 ## Next
 
 - [Relight a capture](/examples/relight): sun and shadows on this same street
-- [Click on the world](/examples/click-the-world), picking works the same on a streamed mesh
+- [Pointer interaction](/examples/click-the-world): picking works the same on a streamed mesh

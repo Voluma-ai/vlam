@@ -109,4 +109,4 @@ That is the whole feature. Tap-to-focus, exactly like a phone camera, in three l
 ## Next
 
 - [Relight a capture](/examples/relight): sun and shadows, also a draw-time material setting
-- [Click on the world](/examples/click-the-world): the pick behind click-to-focus
+- [Pointer interaction](/examples/click-the-world): the pick behind click-to-focus

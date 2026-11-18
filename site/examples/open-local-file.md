@@ -8,22 +8,22 @@ drop, with progress and useful errors.
  hint="Drop one of your own captures onto the frame, or open it full page, which is easier to drag onto"
 />
 
-## The bytes stay on the device
+## Viewing a local file
 
 `loadSplatDataFile` accepts a `File` from an `<input type="file">` or drop event
 and decodes it in a Web Worker. The file stays on the device and the page stays
 responsive while it loads.
 
-## Loading is slow, so plan for the three outcomes
+## Handling load and progress events
 
 A capture can be tens or hundreds of megabytes. Handle these cases:
 
-**It takes a while.** `onProgress` fires as bytes are read. When the size is unknown you get `total === 0`, show a spinner rather than a fake percentage.
+**It takes a while.** `onProgress` fires as bytes are read. When the size is unknown you get `total === 0`; show a spinner rather than a fake percentage.
 
 **The user changes their mind.** Use an `AbortSignal` to cancel the previous
 load. Otherwise, a slow file may replace the newer selection.
 
-**It fails.** A `SplatLoadError` carries a `phase`. `'fetch'` is the network; `'decode'` almost always means the file is not the format its name claims, a `.ply` that is a mesh export rather than a splat capture is the classic one. Say that in words the user can act on.
+**It fails.** A `SplatLoadError` carries a `phase`. `'fetch'` is the network; `'decode'` almost always means the file is not the format its name claims. A `.ply` that is a mesh export rather than a splat capture is the classic case. Say that in words the user can act on.
 
 ## The code
 
@@ -66,7 +66,7 @@ load. Otherwise, a slow file may replace the newer selection.
 
 ## Why this example uses `createWebGPURenderer`
 
-The first example viewer uses a regular `THREE.WebGPURenderer` because that is all
+The first example uses a regular `THREE.WebGPURenderer` because that is all
 `SplatMesh` requires. This example introduces VLAM!'s optional
 [`createWebGPURenderer()`](/api/core/functions/createWebGPURenderer) helper so
 you can choose it when an app may grow into large streamed or unified scenes.
@@ -102,7 +102,7 @@ not reclaim automatically.
 
 ## Keeping your bundle small
 
-`loadSplatData` and `loadSplatDataFile` accept anything, which means they must be able to reach every parser. If your app only ever loads one format, your own pipeline's output, say, you are shipping five decoders you will never call.
+`loadSplatData` and `loadSplatDataFile` accept anything, which means they must be able to reach every parser. If your app only ever loads one format (your own pipeline's output, say), you are shipping five decoders you will never call.
 
 Each format is a separate entry point, so import just the one you need:
 
@@ -117,9 +117,9 @@ The effects presets work the same way. They live behind `@voluma/vlam/effects` a
 
 Use the general `loadSplatData` when the user chooses the file, as they do here. Reach for a direct parser when *you* choose it.
 
-Folders of streamed data, a `.lcc` directory, a streamed SOG capture, go through `StreamedSplatMesh.loadLocal` instead, since those are many files rather than one. See [Huge scenes](/examples/big-scenes).
+Folders of streamed data (a `.lcc` directory, a streamed SOG capture) go through `StreamedSplatMesh.loadLocal` instead, since those are many files rather than one. See [Streaming scenes](/examples/big-scenes).
 
 ## Next
 
-- [Huge scenes that load as you walk](/examples/big-scenes), when one file is too big to hold at once
-- [Click on the world](/examples/click-the-world), find the point under the cursor
+- [Streaming scenes](/examples/big-scenes): when one file is too big to hold at once
+- [Pointer interaction](/examples/click-the-world): find the point under the cursor
