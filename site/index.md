@@ -11,6 +11,7 @@ title: VLAM!
     <p class="vlam-lead">
       A WebGPU Gaussian splat viewer for three.js.
       Load common formats, stream large scenes, add custom shader effects and render inside your own scene graph.
+      Animated 4DGS clips and rigged splats play through three.js's <code>AnimationMixer</code>.
     </p>
     <p class="vlam-actions">
       <a class="vlam-btn" href="/get-started">Get started</a>
