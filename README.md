@@ -13,15 +13,6 @@ A WebGPU Gaussian Splat viewer for three.js, extensible with TSL shader modifier
 
 Local site and generated API: `npm run dev` [http://localhost:5170](http://localhost:5170)
 
-## Stability
-
-`1.0.0` is a stable release. The public API follows
-[semantic versioning](https://semver.org/spec/v2.0.0.html): breaking changes
-only land in a major version.
-Anything marked `@experimental` in the API reference may change in a minor
-release: the `projection/compute` strategy, the `unified/pooled` entry, the raw
-`getUnifiedSourceView()` layout, and the `foveationMode` option.
-
 ## Install
 
 ```bash
@@ -62,6 +53,10 @@ device limits and preserves MSAA where supported.
 
 
 Supported formats: `.sog`, `.ply`, `.spz`, `.splat`, `.ksplat`, `.lcc`, `.lcc2`, `.rad`.
+Animated splats, meaning captured 4D Gaussian splat (4DGS) clips and splats rigged to a
+`THREE.Skeleton`, play through a standard three.js `AnimationMixer`, the same way a glTF
+animation does (`@voluma/vlam/dynamic`, experimental). The 4D format supported today is
+Faltwerk `.csgs`; see the [dynamic splats guide](docs/guide/dynamic-splats.md).
 Optional proxy-mesh relighting is available from `@voluma/vlam/relighting`;
 see the [relighting guide](docs/guide/relighting.md). Support and remaining
 device-validation gates are tracked separately in the
