@@ -130,7 +130,7 @@ export default defineConfig({
             { text: '17. Play a Faltwerk 4DGS', link: '/examples/play-4dgs-clip' },
             { text: '18. Play an Animated SOG clip', link: '/examples/play-asog-clip' },
             {
-              text: '19. Animate a rigged splat',
+              text: '19. Rig and animate splats',
               link: '/examples/rigged-splats',
             },
           ],

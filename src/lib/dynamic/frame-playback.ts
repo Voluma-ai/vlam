@@ -111,6 +111,7 @@ export function defaultFrameDriver(clip: SplatClip): SplatClipDriver {
 class FramePlayback implements ClipPlayback {
   alive = 0;
   shownFrame = -1;
+  private shownDirection: 1 | -1 = 1;
   private evalMs = 0;
   private swapMs = 0;
   private heldSwaps = 0;
@@ -154,10 +155,15 @@ class FramePlayback implements ClipPlayback {
     const late = Math.min(LATE_UPDATES * Math.max(step, 1), (total - 1) >> 1);
     /** How far `frame` is ahead of the target in the direction of play (0 = on time). */
     const aheadOf = (frame: number) => mod((frame - target) * direction, total);
+    const shownBehind = mod((target - this.shownFrame) * direction, total);
     const showable = (entry: { frame: SplatClipFrame; direction: 1 | -1 }): boolean => {
       const ahead = aheadOf(entry.frame.frame);
-      const behind = ahead === 0 ? 0 : total - ahead;
-      return ahead === 0 || (!exact && behind <= late && entry.direction === direction);
+      if (ahead === 0) return true;
+      const behind = total - ahead;
+      // Another evaluator may already have shown a newer frame.
+      const newer =
+        this.shownFrame < 0 || this.shownDirection !== direction || behind < shownBehind;
+      return !exact && newer && behind <= late && entry.direction === direction;
     };
     // Play order: frames behind the target first, then on time, then ahead.
     const signed = (frame: number) => {
@@ -182,7 +188,7 @@ class FramePlayback implements ClipPlayback {
           continue;
         }
         if (this.host.sortInFlight()) this.heldSwaps++;
-        else this.swap(entry);
+        else this.swap(entry, direction);
         break;
       }
       // A jump (or a pause on another frame) left it stale; a prefetch waits.
@@ -278,7 +284,7 @@ class FramePlayback implements ClipPlayback {
     if (entry.frame.buffers) this.spare.push(entry.frame.buffers);
   }
 
-  private swap(entry: { frame: SplatClipFrame }): void {
+  private swap(entry: { frame: SplatClipFrame }, direction: 1 | -1): void {
     const { frame } = entry;
     const started = performance.now();
     if (frame.section !== this.slotSection) {
@@ -295,6 +301,7 @@ class FramePlayback implements ClipPlayback {
     this.evalMs = frame.evalMs;
     this.alive = frame.alive;
     this.shownFrame = frame.frame;
+    this.shownDirection = direction;
     // The pool holds its own copy, so the buffers are free again.
     this.discard(entry);
   }

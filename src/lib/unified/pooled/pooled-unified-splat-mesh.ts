@@ -1249,6 +1249,19 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     const pending = this.pending;
     if (pending === null) return;
     this.pending = null;
+    // Live rows can advance while the worker sorts or while its reply waits
+    // for update. Only publish them with an order for their current slots.
+    const staleLiveList = pending.parts.some(
+      (part) =>
+        part.requestId < 0 && part.record.view?.activeListVersion !== part.activeListVersion,
+    );
+    if (staleLiveList) {
+      for (const part of pending.parts) {
+        if (part.requestId >= 0) part.record.publication.discard();
+      }
+      this.sortScheduler.invalidateContent();
+      return;
+    }
     const published: { record: SourceRecord; activeListVersion: number }[] = [];
     for (const part of pending.parts) {
       if (part.requestId < 0) {

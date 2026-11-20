@@ -293,6 +293,6 @@ Runnable pages: "Play a Faltwerk 4DGS"
 ([source](../examples/samples/play-4dgs-clip.ts)) plays VLAM's own clip,
 `assets/goose-walk/`; "Play an Animated SOG clip"
 ([source](../examples/samples/play-asog-clip.ts)) plays a synthetic `.asog`
-(`assets/asog-sample/`), or any `?src=` URL with its soundtrack; "Animate a rigged splat"
-([source](../examples/samples/rigged-splats.ts)) plays the clips of a rigged
-splat glTF (Santa Claus, hosted on storage.voluma.ai).
+(`assets/asog-sample/`), or any `?src=` URL with its soundtrack. "Rig and
+animate splats" ([source](../examples/samples/rigged-splats.ts)) rigs
+`assets/goose.sog`.

@@ -102,10 +102,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
     procedural goose (`?scene=procedural:goose`) run on this API. VLAM's own
     clip, the goose walking and honking (`assets/goose-walk/`, 3.2 MB,
     written by `scripts/generate-goose-clip.mjs` with a dev-only `.csgs`
-    encoder), plays in the new "Play a Faltwerk 4DGS" example, and "Animate a
-    rigged splat" plays a rigged splat glTF (Santa Claus, 20 MB,
-    loaded from storage.voluma.ai): idle, walk and run cross-faded, a
-    one-shot jump and laugh, and an additive wave. The decoder
+    encoder), plays in the new "Play a Faltwerk 4DGS" example, and "Rig and
+    animate splats" rigs `assets/goose.sog` with bone clips. The decoder
     subpath `@voluma/vlam/formats/csgs` stays worker-safe and three-free.
     See `docs/guide/dynamic-splats.md`.
 - **`SplatMesh.displacementBounds`** (experimental): a mesh-local box a

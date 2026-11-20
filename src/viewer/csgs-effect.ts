@@ -246,99 +246,122 @@ export async function mountCsgsEffect(host: CsgsEffectHost): Promise<CsgsEffect 
   const meshes: SplatClipMesh[] = [];
   const mixers: THREE.AnimationMixer[] = [];
   const groups: THREE.Group[] = [];
-  loaded.forEach(({ clip, yDown, bounds: clipBounds }, index) => {
-    const mesh = new SplatClipMesh(clip, {
-      renderer,
-      staging,
-      sortMetric,
-      srgbOutput: sceneView.srgbOutput,
-      maxStdDev: sceneView.maxStdDev,
-      minSplatSizePx: sceneView.minSplatSizePx,
-      minPixelSize: sceneView.minPixelSize,
-      minContribution: sceneView.minContribution,
-      projectedFilterProfile: sceneView.projectedFilterProfile,
-      antialias: sceneView.antialias,
-      ...(pool ? { pool } : {}),
-    });
-    mesh.addEventListener('error', ({ error }) => console.error('4DGS playback failed', error));
-    // Feet on the group's origin: the clip's lowest splats (outliers aside)
-    // at its height, the clip's horizontal center over it.
-    const clipCenter = clipBounds.getCenter(new THREE.Vector3());
-    mesh.position.set(-clipCenter.x, -clipBounds.min.y, -clipCenter.z);
-    if (yDown) mesh.rotation.x = Math.PI;
-    // Around the circle, facing outward; the first dancer faces the camera.
-    // The orbit's `front` points from the subject to its front camera.
-    const facing = towardAngle + (index * 2 * Math.PI) / loaded.length;
-    const orbit = (clip as { scene?: { orbit?: { front?: number[] } } }).scene?.orbit;
-    const [frontX = 0, , frontZ = 1] = orbit?.front ?? [];
-    const group = new THREE.Group();
-    group.position.set(
-      center.x + radius * Math.sin(facing),
-      center.y,
-      center.z + radius * Math.cos(facing),
-    );
-    group.rotation.y = facing - Math.atan2(frontX, frontZ);
-    group.add(mesh);
-    scene.add(group);
-    group.updateMatrixWorld(true);
-    // Same transport as a glTF animation: one mixer per clip, looping.
-    const mixer = new THREE.AnimationMixer(mesh);
-    mixer.clipAction(mesh.animation).play();
-    meshes.push(mesh);
-    mixers.push(mixer);
-    groups.push(group);
-  });
-
   let unifiedDraw: UnifiedSplatMesh | PooledUnifiedSplatMesh | null = null;
-  if (pool) {
-    const pooled = new PooledUnifiedSplatMesh(renderer, pool, {
-      srgbOutput: sceneView.srgbOutput,
-      sortMetric,
-    });
-    pooled.addSource(splats, { visible: true });
-    // Clips rewrite fixed slots every frame: upload them as they are written,
-    // and let the shared sort trail behind (it is ~0.25 s over a large scene).
-    for (const mesh of meshes) pooled.addSource(mesh, { visible: true, liveContent: true });
-    unifiedDraw = pooled;
-    scene.add(pooled);
-  } else if (unified) {
-    const capacity = meshes.reduce((sum, mesh) => sum + mesh.capacity, splats.capacity);
-    unifiedDraw = new UnifiedSplatMesh(renderer, capacity, {
-      performanceProfile: splats.performanceProfile,
-      srgbOutput: sceneView.srgbOutput,
-      minPixelSize: sceneView.minPixelSize,
-      minContribution: sceneView.minContribution,
-      sortMetric,
-    });
-    unifiedDraw.addSource(splats, { visible: true });
-    // Not cached: the unified draw re-gathers the clips every frame and
-    // re-sorts on their sort-displacement revision, so the host calls nothing.
-    for (const mesh of meshes) unifiedDraw.addSource(mesh, { visible: true });
-    scene.add(unifiedDraw);
-  } else {
-    // Separate meshes do not sort against each other: draw the dancers after
-    // the scene, so they are never hidden behind the floor behind them.
-    for (const mesh of meshes) mesh.renderOrder = 1;
-  }
-
-  // Soundtracks (`.asog` files may carry one), heard from where each clip
-  // stands once the page has had a click or key press.
-  const sounds = (
-    await Promise.all(
-      loaded.map(({ clip }, index) =>
-        createClipSound(clip, meshes[index]!, camera).catch((error: unknown) => {
-          console.warn('4DGS clip soundtrack could not be decoded', error);
-          return null;
-        }),
-      ),
-    )
-  ).filter((sound): sound is ClipSound => sound !== null);
-
+  const sounds: ClipSound[] = [];
+  let disposed = false;
   const banner = createCreditBanner(
     host.clipUrl === null,
     loaded.some(({ clip }) => clip.format === 'csgs'),
     loaded.some(({ clip }) => clip.format === 'asog'),
   );
+  const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    if (unifiedDraw) {
+      // Disposing hands the scene mesh its own draw back.
+      scene.remove(unifiedDraw);
+      unifiedDraw.dispose();
+    }
+    for (const mixer of mixers) mixer.stopAllAction();
+    for (const sound of sounds) sound.dispose();
+    for (const group of groups) scene.remove(group);
+    for (const mesh of meshes) mesh.dispose();
+    banner.remove();
+  };
+  try {
+    loaded.forEach(({ clip, yDown, bounds: clipBounds }, index) => {
+      const mesh = new SplatClipMesh(clip, {
+        renderer,
+        staging,
+        sortMetric,
+        srgbOutput: sceneView.srgbOutput,
+        maxStdDev: sceneView.maxStdDev,
+        minSplatSizePx: sceneView.minSplatSizePx,
+        minPixelSize: sceneView.minPixelSize,
+        minContribution: sceneView.minContribution,
+        projectedFilterProfile: sceneView.projectedFilterProfile,
+        antialias: sceneView.antialias,
+        ...(pool ? { pool } : {}),
+      });
+      meshes.push(mesh);
+      mesh.addEventListener('error', ({ error }) => console.error('4DGS playback failed', error));
+      // Feet on the group's origin: the clip's lowest splats (outliers aside)
+      // at its height, the clip's horizontal center over it.
+      const clipCenter = clipBounds.getCenter(new THREE.Vector3());
+      mesh.position.set(-clipCenter.x, -clipBounds.min.y, -clipCenter.z);
+      if (yDown) mesh.rotation.x = Math.PI;
+      // Around the circle, facing outward; the first dancer faces the camera.
+      // The orbit's `front` points from the subject to its front camera.
+      const facing = towardAngle + (index * 2 * Math.PI) / loaded.length;
+      const orbit = (clip as { scene?: { orbit?: { front?: number[] } } }).scene?.orbit;
+      const [frontX = 0, , frontZ = 1] = orbit?.front ?? [];
+      const group = new THREE.Group();
+      group.position.set(
+        center.x + radius * Math.sin(facing),
+        center.y,
+        center.z + radius * Math.cos(facing),
+      );
+      group.rotation.y = facing - Math.atan2(frontX, frontZ);
+      group.add(mesh);
+      groups.push(group);
+      scene.add(group);
+      group.updateMatrixWorld(true);
+      // Same transport as a glTF animation: one mixer per clip, looping.
+      const mixer = new THREE.AnimationMixer(mesh);
+      mixer.clipAction(mesh.animation).play();
+      mixers.push(mixer);
+    });
+
+    if (pool) {
+      const pooled = new PooledUnifiedSplatMesh(renderer, pool, {
+        srgbOutput: sceneView.srgbOutput,
+        sortMetric,
+      });
+      unifiedDraw = pooled;
+      pooled.addSource(splats, { visible: true });
+      // Clips rewrite fixed slots every frame: upload them as they are written,
+      // and let the shared sort trail behind (it is ~0.25 s over a large scene).
+      for (const mesh of meshes) pooled.addSource(mesh, { visible: true, liveContent: true });
+      scene.add(pooled);
+    } else if (unified) {
+      const capacity = meshes.reduce((sum, mesh) => sum + mesh.capacity, splats.capacity);
+      unifiedDraw = new UnifiedSplatMesh(renderer, capacity, {
+        performanceProfile: splats.performanceProfile,
+        srgbOutput: sceneView.srgbOutput,
+        minPixelSize: sceneView.minPixelSize,
+        minContribution: sceneView.minContribution,
+        sortMetric,
+      });
+      unifiedDraw.addSource(splats, { visible: true });
+      // Not cached: the unified draw re-gathers the clips every frame and
+      // re-sorts on their sort-displacement revision, so the host calls nothing.
+      for (const mesh of meshes) unifiedDraw.addSource(mesh, { visible: true });
+      scene.add(unifiedDraw);
+    } else {
+      // Separate meshes do not sort against each other: draw the dancers after
+      // the scene, so they are never hidden behind the floor behind them.
+      for (const mesh of meshes) mesh.renderOrder = 1;
+    }
+  } catch (error) {
+    dispose();
+    throw error;
+  }
+
+  // Soundtracks (`.asog` files may carry one), heard from where each clip
+  // stands once the page has had a click or key press.
+  loaded.forEach(({ clip }, index) => {
+    void createClipSound(clip, meshes[index]!, camera).then(
+      (sound) => {
+        if (!sound) return;
+        if (disposed || !host.isCurrent()) sound.dispose();
+        else sounds.push(sound);
+      },
+      (error: unknown) => {
+        if (!disposed) console.warn('4DGS clip soundtrack could not be decoded', error);
+      },
+    );
+  });
+
   document.body.append(banner);
 
   const timer = new THREE.Timer();
@@ -352,17 +375,6 @@ export async function mountCsgsEffect(host: CsgsEffectHost): Promise<CsgsEffect 
       // The unified draw updates its sources itself.
       if (!unifiedDraw) for (const mesh of meshes) mesh.update(camera, renderer);
     },
-    dispose(): void {
-      if (unifiedDraw) {
-        // Disposing hands the scene mesh its own draw back.
-        scene.remove(unifiedDraw);
-        unifiedDraw.dispose();
-      }
-      for (const mixer of mixers) mixer.stopAllAction();
-      for (const sound of sounds) sound.dispose();
-      for (const group of groups) scene.remove(group);
-      for (const mesh of meshes) mesh.dispose();
-      banner.remove();
-    },
+    dispose,
   };
 }

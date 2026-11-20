@@ -32,7 +32,7 @@ the same source file shown below.
 
 17. **[Play a Faltwerk 4DGS](/examples/play-4dgs-clip)** _(experimental)_: the goose walks and honks: a captured 4D clip driven by an `AnimationMixer`, with play, pause and scrub.
 18. **[Play an Animated SOG clip](/examples/play-asog-clip)** _(experimental)_: one `.asog` file decoded in a worker and played on the GPU, with its soundtrack through three.js audio.
-19. **[Animate a rigged splat](/examples/rigged-splats)** _(experimental)_: load a rigged splat character from a glTF and play its bone clips: cross-faded loops, a one-shot jump and laugh, and an additive wave.
+19. **[Rig and animate splats](/examples/rigged-splats)** _(experimental)_: bind the pixel-art goose to a `THREE.Skeleton`, cross-fade between look and walk loops, and add a honk over either.
 
 ## Shipping it
 

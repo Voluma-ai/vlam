@@ -43,5 +43,6 @@ run('npx', ['vite', 'build', '--config', 'scripts/vite.config.examples.ts']);
 copyFileSync(join(root, 'assets', 'goose.sog'), join(distSite, 'goose.sog'));
 // Likewise the 4DGS example's clip (scripts/generate-goose-clip.mjs writes it).
 cpSync(join(root, 'assets', 'goose-walk'), join(distSite, 'goose-walk'), { recursive: true });
+cpSync(join(root, 'assets', 'asog-sample'), join(distSite, 'asog-sample'), { recursive: true });
 
 console.log('Built documentation site → dist-site/');

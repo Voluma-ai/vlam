@@ -330,6 +330,33 @@ describe('PooledUnifiedSplatMesh', () => {
     pool.dispose();
   });
 
+  it('discards a live source order when its active list changes before publication', () => {
+    const renderer = mockRenderer();
+    const pool = new SplatPool({ capacity: 2 * W });
+    const source = new SplatMesh({ capacity: 2 * W }, { pool });
+    const pooled = new PooledUnifiedSplatMesh(renderer, pool);
+    source.appendRange(splat());
+    pooled.addSource(source, { liveContent: true });
+    const camera = cameraAt(3);
+
+    holdReplies = true;
+    try {
+      pooled.update(camera);
+      source.appendRange(splat());
+      flushReplies();
+      pooled.update(camera); // The first order describes only one range.
+      expect(instanceCount(pooled)).toBe(0);
+      flushReplies();
+      pooled.update(camera);
+      expect(instanceCount(pooled)).toBe(2);
+    } finally {
+      holdReplies = false;
+      pooled.dispose();
+      source.dispose();
+      pool.dispose();
+    }
+  });
+
   // A host can keep updating a source as if it drew standalone (a handoff while
   // the pooled draw has no order yet). Its own sort would queue a publication
   // only the owner may release, so the owner could never capture it again.

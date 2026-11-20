@@ -90,7 +90,7 @@ Each is a standalone program. Follow the link for the explanation and a live run
 <<< ../../docs/examples/samples/play-asog-clip.ts
 :::
 
-::: details rigged-splats.ts, experimental `loadSplatGltf`: a rigged splat character (`SkinnedSplatMesh`) from a glTF, its bone clips cross-faded and layered under an `AnimationMixer` · [walkthrough](/examples/rigged-splats)
+::: details rigged-splats.ts, experimental `SkinnedSplatMesh`: a static splat bound to a `THREE.Skeleton`, bone clips cross-faded under an `AnimationMixer` · [walkthrough](/examples/rigged-splats)
 <<< ../../docs/examples/samples/rigged-splats.ts
 :::
 

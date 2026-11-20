@@ -29,6 +29,7 @@ export async function applyOwnedScene(
   mesh: SplatMesh,
   mount: () => Promise<void>,
   isMounted: () => boolean,
+  release?: () => void,
 ): Promise<void> {
   try {
     await mount();
@@ -36,6 +37,7 @@ export async function applyOwnedScene(
     if (!isMounted()) {
       mesh.removeFromParent();
       mesh.dispose();
+      release?.();
     }
     throw error;
   }

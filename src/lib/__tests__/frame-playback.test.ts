@@ -98,6 +98,26 @@ describe('frame path with several evaluators', () => {
     expect(pending.map((p) => p.frame)).toEqual([3, 4]);
   });
 
+  it('discards an older frame that arrives after a newer frame has shown', async () => {
+    const { source, pending } = manualSource(2);
+    const { host, shown } = fakeHost(clip);
+    const playback = framePlan(clip, source).create(host);
+    playback.apply(0, 1, true);
+    pending.shift()!.resolve();
+    await settle();
+    playback.apply(0, 1, false);
+
+    pending.pop()!.resolve(); // Frame 2 completes before frame 1.
+    await settle();
+    playback.apply(2, 1, false);
+    expect(shown).toEqual([0, 2]);
+
+    pending.shift()!.resolve(); // Frame 1 is late, with frame 3 still in flight.
+    await settle();
+    playback.apply(3, 1, false);
+    expect(shown).toEqual([0, 2]);
+  });
+
   it('keeps a single evaluation in flight with one evaluator', async () => {
     const { source, pending } = manualSource(1);
     const { host } = fakeHost(clip);

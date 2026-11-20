@@ -159,8 +159,11 @@ describe('parseAsog', () => {
       for (let i = 0; i < data.count; i++) {
         for (let c = 0; c < 3; c++) {
           const x = buffers.positions[i * 3 + c]!;
-          expect(x).toBeGreaterThanOrEqual(min[c]!);
-          expect(x).toBeLessThanOrEqual(max[c]!);
+          if (!(min[c]! <= x && x <= max[c]!)) {
+            expect.fail(
+              `Frame ${frame}, splat ${i}, axis ${c}: ${x} outside [${min[c]}, ${max[c]}]`,
+            );
+          }
         }
       }
     }

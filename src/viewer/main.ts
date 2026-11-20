@@ -3180,7 +3180,7 @@ async function main(): Promise<void> {
     try {
       const { mountCsgsEffect } = await import('./csgs-effect');
       if (!isCurrent()) return;
-      csgsEffect = await mountCsgsEffect({
+      const effect = await mountCsgsEffect({
         clipUrl: params.get('clips') ?? params.get('csgs'),
         scene,
         splats,
@@ -3192,6 +3192,8 @@ async function main(): Promise<void> {
         pool: clipPool,
         isCurrent,
       });
+      if (isCurrent()) csgsEffect = effect;
+      else effect?.dispose();
     } catch (error) {
       if (sequence !== csgsSequence) return;
       console.error('4DGS clip failed to load', error);
@@ -3447,6 +3449,8 @@ async function main(): Promise<void> {
     readonly worldBounds?: THREE.Box3;
     /** Source transforms already include host orientation/rotation/scale. */
     readonly preservesTransform?: boolean;
+    /** Shared scene-and-clips pool owned by this scene. */
+    readonly ownedPool?: SplatPool;
     /** Called every frame with the elapsed seconds, for a scene that animates itself. */
     readonly animate?: (elapsed: number) => void;
     /** Modifiers the scene needs under every effect (a rig's skin, then its lighting). */
@@ -3760,6 +3764,7 @@ async function main(): Promise<void> {
       next.mesh,
       () => mountScene(next, options),
       () => mounted && splats === next.mesh && next.mesh.parent === scene,
+      () => next.ownedPool?.dispose(),
     );
   };
 
@@ -3789,11 +3794,15 @@ async function main(): Promise<void> {
         benchmarkUnified.dispose();
         benchmarkUnified = null;
       }
+      // Release the clip tenants before disposing the scene's shared pool.
+      teardownCsgs();
       // The mark belongs to the scene it was placed in; it remounts on the next.
       unmountLogo();
       restoreXrMaterial();
       scene.remove(splats);
       splats.dispose();
+      clipPool?.dispose();
+      clipPool = null;
       mounted = false;
       // The paint tool holds the old mesh's range handles and cannot survive
       // the swap; benchmark points likewise belong to the old scene's space.
@@ -3836,6 +3845,7 @@ async function main(): Promise<void> {
       placeXrDiagnosticProbe(next.mesh);
     }
     if (options.frame ?? true) suppressStreamedUpdate = true;
+    clipPool = next.ownedPool ?? null;
     mounted = true;
     if (options.frame ?? true) {
       resetAdaptivePixelRatio();
@@ -4565,62 +4575,82 @@ async function main(): Promise<void> {
         else console.info(`[vlam] ${message}`);
       },
     });
-    const playbackParam = params.get('playback');
-    const mesh = new SplatClipMesh(clip, {
-      renderer,
-      ...(playbackParam === 'gpu' || playbackParam === 'frames' ? { playback: playbackParam } : {}),
-      ...(requestedShBands() === undefined ? {} : { shBands: requestedShBands() }),
-    });
-    mesh.addEventListener('error', ({ error }) => console.error('[vlam] clip playback', error));
-    // A clip pool has no source format, so it is never auto-oriented: .asog is
-    // y down (TRiGS/COLMAP), stood up by the same 180°-X turn as SOG and PLY.
-    if (orientation === 'y-up') mesh.rotation.x = Math.PI;
-    mesh.updateMatrixWorld(true);
-    const held = params.has('clipTime') ? Number(params.get('clipTime')) || 0 : null;
-    // Show the first frame before mounting: the clip uploads on `update`, and
-    // the viewer frames the camera on what the mesh holds when it mounts.
-    mesh.time = held ?? 0;
-    let shown = false;
-    void mesh.whenShown().then(
-      () => (shown = true),
-      () => (shown = true),
-    );
-    for (let wait = 0; !shown && wait < 200; wait++) {
-      mesh.update(camera, renderer);
-      await new Promise((resolve) => setTimeout(resolve, 16));
-    }
-    // Frame the subject, not the stray splats a capture carries far out (which
-    // the clip's bounds and its pool hold): the 2nd to 98th percentile of the
-    // first frame's centres.
-    const first = await clip.frame(
-      Math.min(Math.round((held ?? 0) * clip.fps), clip.totalFrames - 1),
-    );
-    const worldBounds = percentileBounds(first.positions, first.count).applyMatrix4(
-      mesh.matrixWorld,
-    );
-    // The soundtrack, if the file has one; it goes when the scene is replaced.
-    const sound = await import('./clip-sound')
-      .then(({ createClipSound }) => createClipSound(clip, mesh, camera, { positional: false }))
-      .catch((error: unknown) => {
-        console.warn('[vlam] clip soundtrack could not be decoded', error);
-        return null;
+    let candidate: InstanceType<typeof SplatClipMesh> | undefined;
+    try {
+      const playbackParam = params.get('playback');
+      const mesh = new SplatClipMesh(clip, {
+        renderer,
+        sortStrategy: sortStrategyFor(name),
+        ...(playbackParam === 'gpu' || playbackParam === 'frames'
+          ? { playback: playbackParam }
+          : {}),
+        ...(requestedShBands() === undefined ? {} : { shBands: requestedShBands() }),
       });
-    if (sound) mesh.addEventListener('removed', () => sound.dispose());
-    // The GPU path's motion modifier must survive the effect slots' rebuilds.
-    const motion = mesh.modifiers[0];
-    return {
-      mesh,
-      data: null,
-      title: sceneLabel(name),
-      note: ` (4D clip, ${mesh.playback})`,
-      paint: null,
-      ...(worldBounds.isEmpty() ? {} : { worldBounds }),
-      animate: (elapsed) => {
-        mesh.time = held ?? elapsed % clip.duration;
-        sound?.update();
-      },
-      ...(motion ? { baseModifiers: [motion] as const } : {}),
-    };
+      candidate = mesh;
+      mesh.addEventListener('error', ({ error }) => console.error('[vlam] clip playback', error));
+      // A clip pool has no source format, so it is never auto-oriented: .asog is
+      // y down (TRiGS/COLMAP), stood up by the same 180°-X turn as SOG and PLY.
+      if (orientation === 'y-up') mesh.rotation.x = Math.PI;
+      mesh.updateMatrixWorld(true);
+      const held = params.has('clipTime') ? Number(params.get('clipTime')) || 0 : null;
+      // Show the first frame before mounting: the clip uploads on `update`, and
+      // the viewer frames the camera on what the mesh holds when it mounts.
+      mesh.time = held ?? 0;
+      let shown = false;
+      void mesh.whenShown().then(
+        () => (shown = true),
+        () => (shown = true),
+      );
+      for (let wait = 0; !shown && wait < 200; wait++) {
+        mesh.update(camera, renderer);
+        await new Promise((resolve) => setTimeout(resolve, 16));
+      }
+      // Frame the subject, not the stray splats a capture carries far out (which
+      // the clip's bounds and its pool hold): the 2nd to 98th percentile of the
+      // first frame's centres.
+      const first = await clip.frame(Math.floor(mesh.frame));
+      const worldBounds = percentileBounds(first.positions, first.count).applyMatrix4(
+        mesh.matrixWorld,
+      );
+      // The soundtrack, if the file has one; it goes when the scene is replaced.
+      const sound =
+        held === null
+          ? await import('./clip-sound')
+              .then(({ createClipSound }) =>
+                createClipSound(clip, mesh, camera, { positional: false }),
+              )
+              .catch((error: unknown) => {
+                console.warn('[vlam] clip soundtrack could not be decoded', error);
+                return null;
+              })
+          : null;
+      // Three emits dispose even when a superseded drop never joined the scene.
+      const events = mesh as unknown as THREE.EventDispatcher<{ dispose: Record<string, never> }>;
+      events.addEventListener('dispose', () => {
+        sound?.dispose();
+        clip.dispose();
+      });
+      // The GPU path's motion modifier must survive the effect slots' rebuilds.
+      const motion = mesh.modifiers[0];
+      return {
+        mesh,
+        data: null,
+        title: sceneLabel(name),
+        sortScene: name,
+        note: ` (4D clip, ${mesh.playback})`,
+        paint: null,
+        ...(worldBounds.isEmpty() ? {} : { worldBounds }),
+        animate: (elapsed) => {
+          mesh.time = held ?? elapsed % clip.duration;
+          sound?.update();
+        },
+        ...(motion ? { baseModifiers: [motion] as const } : {}),
+      };
+    } catch (error) {
+      candidate?.dispose();
+      clip.dispose();
+      throw error;
+    }
   }
 
   /**
@@ -4729,7 +4759,6 @@ async function main(): Promise<void> {
     // scene only when both draw from one pool: size it here, for the scene's
     // budget and the clips, before the scene allocates its own.
     const shared = await sharedClipPool(budgetCap, shBands, experimentalStagedSwaps);
-    clipPool = shared?.pool ?? null;
     const mesh = await StreamedSplatMesh.load(resolveSceneUrl(sceneName), {
       onStatus: (status) => {
         if (!dropMounted) noteLoadStatus(status);
@@ -4779,12 +4808,15 @@ async function main(): Promise<void> {
             },
           }
         : {}),
+    }).catch((error: unknown) => {
+      shared?.pool.dispose();
+      throw error;
     });
-    // A file dropped while this was loading has already taken the screen -
-    // mounting now would replace it. Nothing referenced the mesh yet, so
-    // dispose it here or its chunk loader would keep streaming unseen.
+    // A drop that mounted during loading owns the screen. Release the
+    // unused mesh and its shared pool before returning.
     if (dropMounted) {
       mesh.dispose();
+      shared?.pool.dispose();
     } else {
       await applyScene(
         {
@@ -4794,6 +4826,7 @@ async function main(): Promise<void> {
           sortScene: sceneName,
           note: '',
           paint: null,
+          ...(shared ? { ownedPool: shared.pool } : {}),
         },
         { keepWelcome: keepWelcomeExpanded },
       );
