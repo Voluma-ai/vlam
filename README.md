@@ -55,8 +55,8 @@ device limits and preserves MSAA where supported.
 Supported formats: `.sog`, `.ply`, `.spz`, `.splat`, `.ksplat`, `.lcc`, `.lcc2`, `.rad`.
 Animated splats, meaning captured 4D Gaussian splat (4DGS) clips and splats rigged to a
 `THREE.Skeleton`, play through a standard three.js `AnimationMixer`, the same way a glTF
-animation does (`@voluma/vlam/dynamic`, experimental). The 4D format supported today is
-Faltwerk `.csgs`; see the [dynamic splats guide](docs/guide/dynamic-splats.md).
+animation does (`@voluma/vlam/dynamic`, experimental). The 4D formats supported today are
+Animated SOG `.asog` and Faltwerk `.csgs`; see the [dynamic splats guide](docs/guide/dynamic-splats.md).
 Optional proxy-mesh relighting is available from `@voluma/vlam/relighting`;
 see the [relighting guide](docs/guide/relighting.md). Support and remaining
 device-validation gates are tracked separately in the

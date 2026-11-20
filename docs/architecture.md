@@ -20,7 +20,7 @@ directory name and `package.json` disagree, trust `package.json`.
 | Command | What it does |
 | --- | --- |
 | `npm install` | install dependencies (also registers lint + typecheck + docs:check git hooks) |
-| `npm run dev` | VitePress docs site → http://localhost:5170 (port pinned; interactive viewer at `/demo/`, harnesses at `/chunk-harness.html` / `/unified-harness.html` / `/rad-parity-harness.html` / `/csgs-harness.html`, settled render and memory benchmarks at `/render-benchmark.html` / `/memory-benchmark.html`) |
+| `npm run dev` | VitePress docs site → http://localhost:5170 (port pinned; interactive viewer at `/demo/`, harnesses at `/chunk-harness.html` / `/unified-harness.html` / `/rad-parity-harness.html` / `/csgs-harness.html` / `/asog-harness.html`, settled render and memory benchmarks at `/render-benchmark.html` / `/memory-benchmark.html`) |
 | `npm run build:site` | docs site + viewer + TypeDoc HTML → `dist-site/` |
 | `npm run build:lib` | library ES build + `.d.ts` → `dist/` |
 | `npm run build` | site + library |
@@ -56,6 +56,7 @@ src/
  csgs-harness.ts / .html `.csgs` 4DGS playback through `@voluma/vlam/dynamic` (`/csgs-harness.html`)
  csgs-effect.ts, csgs-demo.ts the demo's lazy `4dgs` effect and its linked demo clip URL
  csgs-procedural.ts procedural GPU-eligible clip for tests and `clip=procedural`
+ asog-harness.ts / .html `.asog` playback through `@voluma/vlam/dynamic` (`/asog-harness.html`)
  goose-procedural.ts, goose-rig.ts, goose-clips.ts `?scene=procedural:goose`: a goose generated in code,
       rigged on `SkinnedSplatMesh` with a lighting modifier after the skin
  skinned-splat-probe.ts / .html GPU skin vs its CPU twin, and posed picking (`browser-tests/skinned-splat-mesh.spec.ts`)
@@ -63,6 +64,7 @@ src/
  sort-benchmark.ts frame/sort timing rig behind ?benchmarkSeconds
  render-benchmark.html / .ts settled plain-SplatMesh device benchmark
  memory-benchmark.html / .ts static/streamed load + retained-memory benchmark
+ tools/asog/ dev-only `.asog` writer and synthetic test clips; never imported by lib/
  tools/csgs/ dev-only `.csgs` encoder and the goose demo clip builder
       (`scripts/generate-goose-clip.mjs` → `assets/goose-walk/`); never imported by lib/
  lib/ the published library ("@voluma/vlam" on npm); folders match package
@@ -86,12 +88,15 @@ src/
  splat/ → `@voluma/vlam/formats/splat`
  ksplat/ → `@voluma/vlam/formats/ksplat`
  csgs/ → `@voluma/vlam/formats/csgs` (parse-csgs, csgs-frame; csgs-gpu-layout is internal to dynamic/)
+ asog/ → `@voluma/vlam/formats/asog` (asog-container, parse-asog, asog-motion)
  dynamic/ → `@voluma/vlam/dynamic` (experimental animated splats). Format-neutral: splat-clip
       (the public `SplatClip`), load-splat-clip (format dispatch), splat-clip-mesh (transport
       only), splat-clip-playback (internal driver contract), frame-playback (the frame path
       every format has), skinned-splat-mesh + splat-skin-weights (rigged splats).
       Per format: csgs-clip + csgs-decode-worker + csgs-worker-protocol (loading),
-      csgs-gpu-playback + csgs-curve-modifier (the `.csgs` GPU driver)
+      csgs-gpu-playback + csgs-curve-modifier (the `.csgs` GPU driver);
+      asog-clip + asog-decode-worker + asog-worker-handler + asog-worker-protocol (loading),
+      asog-gpu-playback + asog-motion-modifier (the `.asog` driver)
 
  -- core/ rendering / mesh --
  splat-mesh.ts SplatMesh: the pool, range lifecycle, active list, sort wiring

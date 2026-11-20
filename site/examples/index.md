@@ -31,16 +31,17 @@ the same source file shown below.
 ## Animated splats
 
 17. **[Play a Faltwerk 4DGS](/examples/play-4dgs-clip)** _(experimental)_: the goose walks and honks: a captured 4D clip driven by an `AnimationMixer`, with play, pause and scrub.
-18. **[Rig and animate splats](/examples/rigged-splats)** _(experimental)_: bind a splat to a `THREE.Skeleton` and animate it with bone clips, cross-fades and an additive gesture.
+18. **[Play an Animated SOG clip](/examples/play-asog-clip)** _(experimental)_: one `.asog` file decoded in a worker and played on the GPU, with its soundtrack through three.js audio.
+19. **[Animate a rigged splat](/examples/rigged-splats)** _(experimental)_: load a rigged splat character from a glTF and play its bone clips: cross-faded loops, a one-shot jump and laugh, and an additive wave.
 
 ## Shipping it
 
-19. **[Use it from React](/examples/react-viewer)**: mount and dispose a viewer safely.
-20. **[Annotations pinned to the capture](/examples/annotations)**: add HTML labels that track and hide behind the capture.
-21. **[Make it fast on a phone](/examples/fast-on-phones)**: tune pixel ratio and device-derived settings.
-22. **[Works everywhere: the WebGL2 fallback](/examples/webgl-fallback)**, support browsers without WebGPU.
-23. **[View it in VR](/examples/in-vr)**: start a headset session and manage its budget.
-24. **[Save and share a viewpoint](/examples/share-a-viewpoint)**: store a camera view in the URL and animate between views.
+20. **[Use it from React](/examples/react-viewer)**: mount and dispose a viewer safely.
+21. **[Annotations pinned to the capture](/examples/annotations)**: add HTML labels that track and hide behind the capture.
+22. **[Make it fast on a phone](/examples/fast-on-phones)**: tune pixel ratio and device-derived settings.
+23. **[Works everywhere: the WebGL2 fallback](/examples/webgl-fallback)**, support browsers without WebGPU.
+24. **[View it in VR](/examples/in-vr)**: start a headset session and manage its budget.
+25. **[Save and share a viewpoint](/examples/share-a-viewpoint)**: store a camera view in the URL and animate between views.
 
 ## Reference
 

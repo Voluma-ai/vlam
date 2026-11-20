@@ -71,7 +71,7 @@ one frame in the direction of play; a late frame still shows while time
 advances (up to 8 frames behind), and a jump or a reversal discards the
 stale one.
 
-The harness and the demo viewer's **Faltwerk 4DGS** effect
+The harness and the demo viewer's **4DGS clips** effect (which also plays `.asog` clips given by `?clips=`)
 (`/demo/?effects=4dgs`) both run on the public API. The effect lives in
 `src/viewer/csgs-effect.ts`, which `main.ts` loads with a dynamic `import()`:
 it and `@voluma/vlam/dynamic` form one lazy chunk (the viewer build keeps

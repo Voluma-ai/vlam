@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- Live runner for site/examples/play-asog-clip.md. See first-viewer/index.html. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <title>Play an Animated SOG clip. VLAM! example</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+        font: 14px/1.4 system-ui, sans-serif;
+      }
+      canvas {
+        touch-action: none;
+      }
+      #sound {
+        position: fixed;
+        bottom: 16px;
+        left: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <button id="sound" type="button" hidden>Play sound</button>
+    <script type="module" src="../../docs/examples/samples/play-asog-clip.ts"></script>
+  </body>
+</html>

@@ -9,7 +9,7 @@
  * while a drag actually carries files, so it never blocks orbiting.
  */
 
-import { SINGLE_FILE_LIST as SUPPORTED_LIST, isSupportedSplatFile } from './scene-url';
+import { SINGLE_FILE_LIST as SUPPORTED_LIST, isClipScene, isSupportedSplatFile } from './scene-url';
 
 export interface DropZoneOptions {
   /** A single self-contained splat file was dropped. */
@@ -113,7 +113,9 @@ function classify(
 
   // A single self-contained file wins: dropping goose.ply should not be read
   // as a one-file folder.
-  const supported = Array.from(transfer.files).find((file) => isSupportedSplatFile(file.name));
+  const supported = Array.from(transfer.files).find(
+    (file) => isSupportedSplatFile(file.name) || isClipScene(file.name),
+  );
   if (supported && directories.length === 0) return { file: supported };
 
   if (directories.length === 1) return { directory: directories[0] as DirectoryEntry };

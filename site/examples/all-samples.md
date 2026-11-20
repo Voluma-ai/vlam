@@ -86,7 +86,11 @@ Each is a standalone program. Follow the link for the explanation and a live run
 <<< ../../docs/examples/samples/play-4dgs-clip.ts
 :::
 
-::: details rigged-splats.ts, experimental `SkinnedSplatMesh`: a static splat bound to a `THREE.Skeleton`, bone clips cross-faded under an `AnimationMixer` · [walkthrough](/examples/rigged-splats)
+::: details play-asog-clip.ts, experimental `loadSplatClip` + `SplatClipMesh` playing an Animated SOG `.asog` file and its soundtrack (three.js audio) · [walkthrough](/examples/play-asog-clip)
+<<< ../../docs/examples/samples/play-asog-clip.ts
+:::
+
+::: details rigged-splats.ts, experimental `loadSplatGltf`: a rigged splat character (`SkinnedSplatMesh`) from a glTF, its bone clips cross-faded and layered under an `AnimationMixer` · [walkthrough](/examples/rigged-splats)
 <<< ../../docs/examples/samples/rigged-splats.ts
 :::
 
@@ -254,6 +258,10 @@ Short reference snippets from `docs/guide/samples/`, mostly exported functions r
 
 ::: details splat-gltf.ts, experimental rigged splats from a `KHR_gaussian_splatting` glTF, clips played by their hints
 <<< ../../docs/guide/samples/splat-gltf.ts
+:::
+
+::: details rigged-splats.ts, experimental `SkinnedSplatMesh` rigged in code: a proxy mesh's skin (`computeSplatSkinWeights`), or a skin, skeleton and clip computed from the splats
+<<< ../../docs/guide/samples/rigged-splats.ts
 :::
 
 Try scenes live in the <a href="/demo/" target="_self">full viewer</a>.

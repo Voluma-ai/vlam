@@ -109,13 +109,14 @@ output. Pull requests have no description template; write what the change does.
 [`src/viewer/unified-harness.html`](src/viewer/unified-harness.html),
 [`src/viewer/budget-harness.html`](src/viewer/budget-harness.html), and
 [`src/viewer/rad-parity-harness.html`](src/viewer/rad-parity-harness.html),
-[`src/viewer/csgs-harness.html`](src/viewer/csgs-harness.html), plus
+[`src/viewer/csgs-harness.html`](src/viewer/csgs-harness.html),
+[`src/viewer/asog-harness.html`](src/viewer/asog-harness.html), plus
 [`src/viewer/render-benchmark.html`](src/viewer/render-benchmark.html),
 [`src/viewer/memory-benchmark.html`](src/viewer/memory-benchmark.html),
 are standalone browser pages for poking at one subsystem in isolation. They are
 served by `npm run dev` at `/chunk-harness.html`, `/unified-harness.html`,
 `/budget-harness.html`,
-`/rad-parity-harness.html`, `/csgs-harness.html`, `/render-benchmark.html`, and
+`/rad-parity-harness.html`, `/csgs-harness.html`, `/asog-harness.html`, `/render-benchmark.html`, and
 `/memory-benchmark.html`.
 The memory page records load checkpoints, sampled main-isolate heap, optional
 browser-wide measurements, and explicit CPU/GPU allocation estimates; see
@@ -125,7 +126,9 @@ page plays the linked Faltwerk demo clip by default (`?scene=` for another,
 `?clip=procedural` for the download-free procedural clip), with
 `?playback=auto|gpu|frames`, `?unified=1`, `?resident=<n>|all` and `?frame=<n>`
 for a measured single frame; the full list is in
-[`csgs-harness.ts`](src/viewer/csgs-harness.ts). The render
+[`csgs-harness.ts`](src/viewer/csgs-harness.ts). The `.asog` page plays a synthetic
+clip written in the page by default (`?src=<url>` for a real one), with the same
+`?playback=`, `?unified=1` and `?frame=`; see [`asog-harness.ts`](src/viewer/asog-harness.ts). The render
 benchmark uses a fixed 800×600 canvas and reports settled frame percentiles, CPU
 render-submit time, sampled GPU timestamps, and separate total/splat draw
 submissions as downloadable JSON. Its screenshot remains available after GPU

@@ -53,6 +53,7 @@ the constructor. A host that does not want a mixer sets `mesh.time` itself.
 | Format | Given by | Notes |
 |---|---|---|
 | `'csgs'` | a [Faltwerk](https://github.com/edrethardo/Faltwerk) `scene_*.json`, with its `.csgs` sections beside it | Version-1 containers. Also loadable with `loadCsgsClip`, which returns the `.csgs` details (`scene`, `sections`). Format notes: [`docs/formats/csgs-notes.md`](../formats/csgs-notes.md) |
+| `'asog'` | an [Animated SOG](https://github.com/arrival-space/animated-sog) `.asog` file | Format v1, multi-clip timelines included. Also loadable with `loadAsogClip`, which returns the soundtrack (`audio`, not played) and `clipCount`. The clip is y down: set `mesh.rotation.x = Math.PI` to stand it up. Format notes: [`docs/formats/asog-notes.md`](../formats/asog-notes.md) |
 
 Anything else is rejected with an error that lists the supported formats.
 `SPLAT_CLIP_FORMATS` lists them in code. A new format arrives as one more
@@ -99,7 +100,7 @@ where the GPU path is not possible, and `'frames'` always plays frames.
 
 | | A format's GPU path | The frame path |
 |---|---|---|
-| When | the format has one and the device can hold it (`.csgs`: WebGPU, every section `gpuEligible`, the knot texture fits) | WebGL2, a worker sorter, a format without a GPU path, a clip the GPU path cannot hold |
+| When | the format has one and the device can hold it (`.csgs`: WebGPU, every section `gpuEligible`, the knot texture fits; `.asog`: WebGPU, the motion texture fits) | WebGL2, a worker sorter, a format without a GPU path, a clip the GPU path cannot hold |
 | Per frame | a `SplatModifier` evaluates the motion at a time uniform; nothing is uploaded | the clip evaluates the frame (in its worker), the mesh writes it into its pool |
 | Sorting | the standalone WebGPU sort folds a position-only modifier (`sortDisplacement`) | CPU centers, any sorter |
 | Fractional time | interpolates between frames | floors to a frame |
@@ -160,9 +161,9 @@ The **skin** is up to four bone indices and weights per splat
 (`SplatSkinData`, `bonesPerSplat: 1 | 2 | 4`). Take it from a rigged proxy
 with `computeSplatSkinWeights` (each splat takes the nearest proxy vertex's
 weights; pass `splatToProxy` when the splat and the proxy were not made in
-the same frame), or compute it yourself from where the splats sit: the
-[Rig and animate splats](../examples/samples/rigged-splats.ts) example cuts a
-goose into parts and builds its skeleton in code.
+the same frame), or compute it yourself from where the splats sit. Both are
+in [`samples/rigged-splats.ts`](samples/rigged-splats.ts), the second with a
+skeleton and a clip built in code.
 
 **Binding** works like `SkinnedMesh.bind`: with no bind matrix the current
 pose becomes the bind pose; `bindMode` is `'attached'` (default) or
@@ -290,5 +291,8 @@ the bind-pose centers.
 
 Runnable pages: "Play a Faltwerk 4DGS"
 ([source](../examples/samples/play-4dgs-clip.ts)) plays VLAM's own clip,
-`assets/goose-walk/`; "Rig and animate splats"
-([source](../examples/samples/rigged-splats.ts)) rigs `assets/goose.sog`.
+`assets/goose-walk/`; "Play an Animated SOG clip"
+([source](../examples/samples/play-asog-clip.ts)) plays a synthetic `.asog`
+(`assets/asog-sample/`), or any `?src=` URL with its soundtrack; "Animate a rigged splat"
+([source](../examples/samples/rigged-splats.ts)) plays the clips of a rigged
+splat glTF (Santa Claus, hosted on storage.voluma.ai).

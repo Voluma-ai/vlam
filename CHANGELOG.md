@@ -25,6 +25,36 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- **Experimental Animated SOG (`.asog`) clips.** `loadSplatClip` reads
+  [Animated SOG](https://github.com/arrival-space/animated-sog) v1 files
+  (by the `.asog` extension or `format: 'asog'`), also through
+  `loadAsogClip`, which returns an `AsogClip` with the soundtrack's bytes
+  (`audio`, not played) and `clipCount`. The loader, its decode worker and
+  GPU driver are a separate chunk (about 13 kB gzip) fetched on the first
+  `.asog` load, so `@voluma/vlam/dynamic` stays the size it was.
+- **`SplatClipMesh` frame path evaluates ahead.** Frames are requested as
+  soon as there is room in the prefetch window instead of after the previous
+  one is shown, and a clip whose source has several workers keeps that many
+  evaluations in flight (`.asog` uses two; `.csgs` one). `.asog` frames also
+  skip every splat outside its life window (Rubloff, 400k splats: 27 ms per
+  frame, from 54 ms). On WebGPU a `SplatModifier`
+  evaluates every splat's TRiGS rigid-body motion from a motion texture
+  uploaded once; WebGL2 and worker sorters play worker-evaluated frames.
+  Multi-clip timelines with fades are supported. The worker-safe decoder and
+  CPU motion are on the new `@voluma/vlam/formats/asog` subpath (`parseAsog`,
+  `evaluateAsogFrame`), a port of the MIT reference decoder that keeps the
+  motion in float32. Clips are y down: turn the mesh 180° about X.
+  `/asog-harness.html?src=<url>` plays a clip on the dev server.
+- **`PooledUnifiedSplatMesh` `liveContent` sources (experimental).**
+  `addSource(mesh, { liveContent: true })` uploads a source that rewrites
+  fixed slots every frame (a `SplatClipMesh` on its frame path) as it is
+  written, drawn through the last installed order, instead of holding it for
+  the next combined CPU sort. On WebGL2 a clip in a large scene then moves at
+  frame rate while its depth order against the scene trails by one sort.
+- The demo viewer plays `.asog` clips from `?scene=`, from a dropped or picked
+  file, and inside another scene with `?clips=<url>[,…]` (sorted with the
+  scene on WebGPU, and on WebGL2 through one shared pool and a pooled draw).
+
 - **Experimental `@voluma/vlam/dynamic`: animated Gaussian splats.** One
   app-facing API, all driven by a three.js `AnimationMixer`, with formats
   behind it:
@@ -72,8 +102,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
     procedural goose (`?scene=procedural:goose`) run on this API. VLAM's own
     clip, the goose walking and honking (`assets/goose-walk/`, 3.2 MB,
     written by `scripts/generate-goose-clip.mjs` with a dev-only `.csgs`
-    encoder), plays in the new "Play a Faltwerk 4DGS" example, and "Rig and
-    animate splats" rigs `assets/goose.sog` with bone clips. The decoder
+    encoder), plays in the new "Play a Faltwerk 4DGS" example, and "Animate a
+    rigged splat" plays a rigged splat glTF (Santa Claus, 20 MB,
+    loaded from storage.voluma.ai): idle, walk and run cross-faded, a
+    one-shot jump and laugh, and an additive wave. The decoder
     subpath `@voluma/vlam/formats/csgs` stays worker-safe and three-free.
     See `docs/guide/dynamic-splats.md`.
 - **`SplatMesh.displacementBounds`** (experimental): a mesh-local box a

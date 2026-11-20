@@ -31,6 +31,8 @@ export default tseslint.config(
       'blob-report/',
       'site/site-worker.js',
       'scripts/',
+      // Vendored, unmodified animated-sog reference decoder (test oracle only).
+      'src/lib/__tests__/fixtures/animated-sog/',
       '.cursor/',
       // Git-ignored tooling scratch (agent worktrees carry their own
       // node_modules and VitePress dep caches, which are not ours to lint).

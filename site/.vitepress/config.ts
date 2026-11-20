@@ -128,8 +128,9 @@ export default defineConfig({
           text: 'Animated splats',
           items: [
             { text: '17. Play a Faltwerk 4DGS', link: '/examples/play-4dgs-clip' },
+            { text: '18. Play an Animated SOG clip', link: '/examples/play-asog-clip' },
             {
-              text: '18. Rig and animate splats',
+              text: '19. Animate a rigged splat',
               link: '/examples/rigged-splats',
             },
           ],
@@ -137,12 +138,12 @@ export default defineConfig({
         {
           text: 'Shipping it',
           items: [
-            { text: '19. Use it from React', link: '/examples/react-viewer' },
-            { text: '20. Annotations', link: '/examples/annotations' },
-            { text: '21. Fast on a phone', link: '/examples/fast-on-phones' },
-            { text: '22. The WebGL2 fallback', link: '/examples/webgl-fallback' },
-            { text: '23. View it in VR', link: '/examples/in-vr' },
-            { text: '24. Share a viewpoint', link: '/examples/share-a-viewpoint' },
+            { text: '20. Use it from React', link: '/examples/react-viewer' },
+            { text: '21. Annotations', link: '/examples/annotations' },
+            { text: '22. Fast on a phone', link: '/examples/fast-on-phones' },
+            { text: '23. The WebGL2 fallback', link: '/examples/webgl-fallback' },
+            { text: '24. View it in VR', link: '/examples/in-vr' },
+            { text: '25. Share a viewpoint', link: '/examples/share-a-viewpoint' },
           ],
         },
         {

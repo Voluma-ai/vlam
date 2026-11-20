@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VLAM! .asog playback harness</title>
+    <style>
+      body { margin: 0; background: #111; color: #ddd; font: 14px/1.5 system-ui, sans-serif; }
+      #stage { margin: 16px; }
+      canvas { display: block; border: 1px solid #444; max-width: 100%; }
+      #controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 16px 16px 0; }
+      #status { margin: 16px; white-space: pre-wrap; font-family: ui-monospace, monospace; }
+      #result { display: block; margin: 16px; white-space: pre-wrap; font-family: ui-monospace, monospace; color: #9c9; }
+      input[type="range"] { width: 320px; }
+    </style>
+  </head>
+  <body>
+    <div id="controls">
+      <button id="play" type="button">Pause</button>
+      <input id="scrub" type="range" min="0" max="0" step="any" value="0" aria-label="time (s)" />
+      <label>speed
+        <select id="speed">
+          <option value="-1">−1×</option>
+          <option value="0.25">0.25×</option>
+          <option value="0.5">0.5×</option>
+          <option value="1" selected>1×</option>
+          <option value="2">2×</option>
+        </select>
+      </label>
+      <span id="frame">frame 0</span>
+    </div>
+    <div id="stage"><canvas id="canvas" width="768" height="768"></canvas></div>
+    <div id="status">Starting .asog playback harness…</div>
+    <output id="result" data-testid="result"></output>
+    <script type="module" src="/src/viewer/asog-harness.ts"></script>
+  </body>
+</html>

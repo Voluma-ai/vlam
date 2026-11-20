@@ -5,6 +5,7 @@
  * entry in `SPLAT_CLIP_FORMATS` (`splat-clip.ts`) and one more branch here; the app's
  * call and the {@link SplatClip} it gets back stay the same.
  */
+import { loadAsogClip } from './load-asog-clip';
 import { isCsgsSceneFile, loadCsgsClip } from './csgs-clip';
 import type { SplatClip, SplatClipFormat, SplatClipLoadOptions } from './splat-clip';
 
@@ -15,9 +16,10 @@ import type { SplatClip, SplatClipFormat, SplatClipLoadOptions } from './splat-c
  */
 export interface LoadSplatClipOptions extends SplatClipLoadOptions {
   /**
-   * `'auto'` (default) picks the format from the URL: a `.json` is read and
-   * accepted when it is a Faltwerk scene file. Name the format for a URL
-   * that does not say what it is (an API endpoint, a blob URL).
+   * `'auto'` (default) picks the format from the URL: an `.asog` is an
+   * Animated SOG clip, and a `.json` is read and accepted when it is a
+   * Faltwerk scene file. Name the format for a URL that does not say what it
+   * is (an API endpoint, a blob URL).
    */
   format?: 'auto' | SplatClipFormat;
 }
@@ -30,8 +32,8 @@ function abortError(signal: AbortSignal): Error {
 
 function unsupported(href: string, why: string): Error {
   return new Error(
-    `${href}: ${why}. Supported 4D splat clips: Faltwerk .csgs, given by its scene_*.json ` +
-      `(or pass format: 'csgs').`,
+    `${href}: ${why}. Supported 4D splat clips: Animated SOG .asog (or pass format: 'asog'), ` +
+      `and Faltwerk .csgs, given by its scene_*.json (or pass format: 'csgs').`,
   );
 }
 
@@ -61,9 +63,11 @@ export async function loadSplatClip(
   const { signal } = loadOptions;
   signal?.throwIfAborted();
   if (format === 'csgs') return loadCsgsClip(url, loadOptions);
+  if (format === 'asog') return loadAsogClip(url, loadOptions);
 
   const resolved = new URL(url, globalThis.location?.href);
   const extension = resolved.pathname.toLowerCase().match(/\.[a-z0-9]+$/)?.[0] ?? '';
+  if (extension === '.asog') return loadAsogClip(resolved, loadOptions);
   if (extension === '.csgs') {
     throw unsupported(resolved.href, 'a single .csgs section has no frame rate or neighbours');
   }

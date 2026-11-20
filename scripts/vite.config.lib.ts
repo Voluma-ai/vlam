@@ -103,6 +103,7 @@ export default defineConfig({
         'formats/splat': 'src/lib/formats/splat/index.ts',
         'formats/ksplat': 'src/lib/formats/ksplat/index.ts',
         'formats/csgs': 'src/lib/formats/csgs/index.ts',
+        'formats/asog': 'src/lib/formats/asog/index.ts',
         dynamic: 'src/lib/dynamic/index.ts',
       },
       formats: ['es'],
