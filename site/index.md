@@ -9,9 +9,8 @@ title: VLAM!
     <img class="vlam-logo vlam-logo-dark" src="/vlam.png" alt="VLAM!" width="120" height="120" />
     <h1 class="visually-hidden">VLAM!</h1>
     <p class="vlam-lead">
-      A WebGPU Gaussian splat viewer for three.js.
-      Load common formats, stream large scenes, add custom shader effects and render inside your own scene graph.
-      Animated 4DGS clips and rigged splats play through three.js's <code>AnimationMixer</code>.
+      A WebGPU Gaussian splat viewer for three.js: load common formats, stream large scenes, add shader effects,
+      and animate 4DGS clips and rigged splats.
     </p>
     <p class="vlam-actions">
       <a class="vlam-btn" href="/get-started">Get started</a>
