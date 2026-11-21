@@ -100,11 +100,13 @@ splats, SH degree 3, 6 s; a 1 s cut of it for the decoder comparison).
   clip.
 - `asog-clip.test.ts` runs the clip worker in-process: format dispatch,
   snapshots, and path planning.
-- `browser-tests/asog-playback.spec.ts` plays a synthetic clip on both
-  backends, and on WebGPU holds the GPU path against the frame path (mean
-  thumbnail difference below 0.5/255; measured 0.05 to 0.08), and a
-  `UnifiedSplatMesh` source against the standalone GPU path (measured 0 to
-  0.0007/255).
+- `browser-tests/asog-playback.spec.ts` plays a synthetic clip at four
+  frames on both backends, and on WebGPU holds the GPU path against the frame
+  path (mean thumbnail difference below 0.5/255; measured 0.05 to 0.08). On a
+  native adapter (`npm run test:browser:hardware`) it also holds a
+  `UnifiedSplatMesh` source against the standalone GPU path (measured below
+  0.0002/255 on an RTX 3090); CI's SwiftShader run leaves that pass out for
+  time.
 - `/asog-harness.html?src=<url>` plays any clip on the dev server
   (`playback=`, `frame=`, `orbit=`, `flip=0`, `sh=0`, `sort=exact`). The 6 s
   capture in Chrome on an RTX 3090: decoded in 1.5 s;

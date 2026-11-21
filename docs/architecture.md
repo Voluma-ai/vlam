@@ -26,7 +26,7 @@ directory name and `package.json` disagree, trust `package.json`.
 | `npm run build` | site + library |
 | `npm test` | Vitest unit tests (dev-only; not shipped in the package) |
 | `npm run test:browser` | Headless Chromium real-splat render checks for WebGPU and forced WebGL2 (run `npx playwright install chromium` once) |
-| `npm run test:browser:hardware` | Native-GPU projection/SH route; fails without a non-software WebGPU adapter and attaches browser, adapter/driver, and viewport metadata. It uses `/usr/bin/chromium` here; set `VLAM_HARDWARE_CHROMIUM` to the installed desktop Chromium path on another host. Run it separately from SwiftShader CI. |
+| `npm run test:browser:hardware` | Native-GPU projection/SH route, plus the `.asog` unified-draw pass of `asog-playback.spec.ts`; fails without a non-software WebGPU adapter and attaches browser, adapter/driver, and viewport metadata. It uses `/usr/bin/chromium` here; set `VLAM_HARDWARE_CHROMIUM` to the installed desktop Chromium path on another host. Run it separately from SwiftShader CI. |
 
 If a local mkcert pair makes the dev server use HTTPS but a fresh Chromium
 profile does not trust that CA, run `VLAM_DEV_HTTP=1 VLAM_DEV_PORT=5171 npm run dev`

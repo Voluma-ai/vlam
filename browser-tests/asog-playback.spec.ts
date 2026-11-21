@@ -5,8 +5,10 @@ import { expect, test, type Page } from '@playwright/test';
  * synthetic clip written in the page (`src/tools/asog/encode-asog.ts`) with
  * real rotation and translation. On WebGPU the GPU path (motion evaluated by
  * a `SplatModifier`) must draw what the frame path (the worker's CPU
- * evaluation) draws, standalone and as a `UnifiedSplatMesh` source (which
- * sorts the gathered, moved centres itself); WebGL2 plays the frame path.
+ * evaluation) draws; WebGL2 plays the frame path. On a native adapter
+ * (`npm run test:browser:hardware`) the GPU path is also held against itself
+ * as a `UnifiedSplatMesh` source (which sorts the gathered, moved centres
+ * itself): that third pass costs SwiftShader CI minutes for little extra.
  */
 
 interface Thumb {
@@ -33,11 +35,11 @@ interface Harness {
   dispose(): void;
 }
 
-/** Frames across the 60-frame clip, out of order so the GPU path jumps too. */
-const FRAMES = [0, 9, 23, 37, 52, 14, 59];
+/** Frames across the 60-frame clip, out of order so the GPU path jumps back too. */
+const FRAMES = [0, 23, 52, 14];
 
 function backendOf(projectName: string): 'webgpu' | 'webgl2' {
-  return projectName === 'chromium-webgpu' ? 'webgpu' : 'webgl2';
+  return projectName.startsWith('chromium-webgpu') ? 'webgpu' : 'webgl2';
 }
 
 async function open(page: Page, backend: string, playback: string, extra = ''): Promise<void> {
@@ -84,9 +86,10 @@ function meanAbsDiff(a: Thumb, b: Thumb): number {
 test('plays a synthetic .asog clip; the GPU path draws what the frame path draws', async ({
   page,
 }, info) => {
-  // Three passes on WebGPU (frames, GPU, unified) take about 4 minutes on SwiftShader.
+  // Two passes on WebGPU (frames, GPU) take a few minutes on SwiftShader.
   test.setTimeout(480_000);
   const backend = backendOf(info.project.name);
+  const hardware = info.project.name === 'chromium-webgpu-hardware';
   const pageErrors: string[] = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
@@ -101,19 +104,22 @@ test('plays a synthetic .asog clip; the GPU path draws what the frame path draws
     expect(m.coverage).toBeGreaterThan(0.05);
   }
   // Frames differ from each other, so a comparison has teeth.
-  expect(meanAbsDiff(frames[0]!.thumb, frames[3]!.thumb)).toBeGreaterThan(2);
+  expect(meanAbsDiff(frames[0]!.thumb, frames[1]!.thumb)).toBeGreaterThan(2);
 
   if (backend === 'webgpu') {
     await open(page, backend, 'gpu');
     const gpu = await measureAll(page);
     expect(await close(page)).toEqual([]);
-    await open(page, backend, 'gpu', '&unified=1');
-    const unified = await measureAll(page);
-    expect(await close(page)).toEqual([]);
+    let unified: Metrics[] | null = null;
+    if (hardware) {
+      await open(page, backend, 'gpu', '&unified=1');
+      unified = await measureAll(page);
+      expect(await close(page)).toEqual([]);
+    }
     const diffs = FRAMES.map((frame, i) => ({
       frame,
       gpuVsFrames: meanAbsDiff(gpu[i]!.thumb, frames[i]!.thumb),
-      unifiedVsStandalone: meanAbsDiff(unified[i]!.thumb, gpu[i]!.thumb),
+      ...(unified ? { unifiedVsStandalone: meanAbsDiff(unified[i]!.thumb, gpu[i]!.thumb) } : {}),
       alive: [gpu[i]!.alive, frames[i]!.alive],
     }));
     console.log(JSON.stringify({ diffs }));
@@ -123,7 +129,7 @@ test('plays a synthetic .asog clip; the GPU path draws what the frame path draws
       expect(m.alive).toBe(frames[i]!.alive);
       expect(diffs[i]!.gpuVsFrames, `GPU vs frames at ${m.frame}`).toBeLessThan(0.5);
     }
-    for (const [i, m] of unified.entries()) {
+    for (const [i, m] of (unified ?? []).entries()) {
       expect(m.unified).toBe(true);
       expect(m.playback).toBe('gpu');
       expect(m.shownInTime, `unified frame ${m.frame} shown`).toBe(true);

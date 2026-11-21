@@ -232,6 +232,8 @@ async function run(): Promise<void> {
   let measuring = false;
   let disposed = false;
   let lastReadback: Readback | null = null;
+  /** Frame `lastReadback` shows, or null before the first measurement. */
+  let lastMeasuredFrame: number | null = null;
 
   function render(): void {
     controls.update();
@@ -285,12 +287,17 @@ async function run(): Promise<void> {
     /** Shows integer frame `frame`, waits for the sort to settle, and measures it. */
     async measure(frame: number) {
       measuring = true;
+      // The frame already measured (the page's own `?frame=`): time does not
+      // move, so neither a new order nor a changed picture will come; waiting
+      // for them would only run out the waits below.
+      const moved = frame !== lastMeasuredFrame;
       const orderBefore = unified?.getDrawPublicationSnapshot().orderRevision ?? 0;
       const shownInTime = await showFrame(frame);
       // A unified draw re-sorts its gathered centres when the clip's time
       // moves: wait for an order newer than the one before the change, and for
       // it to be the one on screen.
       for (let wait = 0; unified && wait < 400; wait++) {
+        if (!moved && unified.getDrawPublicationSnapshot().ready) break;
         const snapshot = unified.getDrawPublicationSnapshot();
         if (snapshot.ready && snapshot.orderRevision > orderBefore) break;
         render();
@@ -317,7 +324,7 @@ async function run(): Promise<void> {
       let read = await readFrame(renderer, target, scene, camera);
       const unchanged = (): boolean =>
         !read.alpha.some((a) => a > 0) ||
-        (before !== null && before.alpha.every((a, i) => a === read.alpha[i]));
+        (moved && before !== null && before.alpha.every((a, i) => a === read.alpha[i]));
       for (let attempt = 0; attempt < 80 && unchanged(); attempt++) {
         await sleep(25);
         render();
@@ -332,6 +339,7 @@ async function run(): Promise<void> {
         if (settled) break;
       }
       lastReadback = read;
+      lastMeasuredFrame = frame;
       let coverage = 0;
       for (const a of read.alpha) if (a > 0.05) coverage++;
       measuring = false;
