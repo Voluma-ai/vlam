@@ -459,9 +459,13 @@ export async function parseAsog(input: ArrayBuffer | Uint8Array): Promise<AsogDa
     },
   };
 
+  // Looked up by the file's own stream names: a Map, so a name such as
+  // `constructor` or `toString` finds no decoder on `Object.prototype` (and
+  // skips the shape checks above, which only know the real names).
+  const decoderByName = new Map(Object.entries(decoders));
   const decoded = new Set<string>();
   for (const s of [...manifest.streams].sort((a, b) => a.byteOffset - b.byteOffset)) {
-    const decode = decoders[s.name];
+    const decode = decoderByName.get(s.name);
     // Shapes and byte ranges were checked above.
     if (!decode || (!hasSh && (s.name === 'shlabels' || s.name === 'shpalette'))) continue;
     for (const need of STREAM_NEEDS[s.name] ?? []) {

@@ -262,6 +262,22 @@ describe('parseAsog', () => {
     // The untouched file still parses.
     await expect(parseAsog(withManifest(bytes, () => undefined))).resolves.toBeTruthy();
   });
+
+  it('ignores streams named after Object.prototype members', async () => {
+    const { manifest, streams } = syntheticAsogStreams({ count: 64, coeffs: 0 });
+    const extra = ['constructor', 'toString', '__proto__'].map((name) => ({
+      name,
+      count: 1,
+      channels: 1,
+      values: [0],
+    }));
+    // Each claims a gigabyte: decoding it would allocate that much.
+    const bytes = withManifest(await encodeAsog(manifest, [...streams, ...extra]), (m) => {
+      for (const s of m.streams) if (s.count === 1) s.count = 2 ** 30;
+    });
+    const data = await parseAsog(bytes);
+    expect(data.count).toBe(64);
+  });
 });
 
 /**
