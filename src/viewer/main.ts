@@ -1907,8 +1907,18 @@ async function main(): Promise<void> {
       console.error('Could not switch the scene sorter.', error);
     });
   };
+  // Demo opt-in, not a library default: static whole files on a Mac desktop take
+  // `balanced` (2 px / 3 contribution culls). Measured on an Apple M3 in Safari at
+  // DPR 2, 4.59M-splat PLY under compute projection: `quality` 181 ms behind the
+  // GPU, `balanced` 34 ms. Streamed scenes keep the library default; a host that
+  // mixes static and streamed sources in one unified draw must pick one profile
+  // for all of them.
+  const defaultProfileFor = (source: string): SplatPerformanceProfile | undefined =>
+    performanceProfile ??
+    (deviceProfile.isMacDesktop === true && !isStreamedScene(source) ? 'balanced' : undefined);
   const meshOptions = (source = currentSortScene): SplatMeshOptions => {
     const cutoff = resolvedMaxStdDev();
+    const profile = defaultProfileFor(source);
     return {
       sortStrategy: sortStrategyFor(source),
       sortMetric,
@@ -1916,7 +1926,7 @@ async function main(): Promise<void> {
       orientation,
       ...(sparkColorOutput ? { srgbOutput: true } : {}),
       ...(projectionStrategy === undefined ? {} : { projectionStrategy }),
-      ...(performanceProfile === undefined ? {} : { performanceProfile }),
+      ...(profile === undefined ? {} : { performanceProfile: profile }),
       // ?sh=N overrides the profile's SH default on every path, so `?sh=3`
       // turns view-dependent color back on under the mobile `smooth` profile
       // for static scenes too, not just streamed ones.
@@ -6286,7 +6296,9 @@ async function main(): Promise<void> {
       // session keeps the stereo cap instead of restoring the page budget.
       applySplatBudget();
       if (performanceProfile === undefined) {
-        splats.setPerformanceProfile(enabled ? 'smooth' : 'quality');
+        splats.setPerformanceProfile(
+          enabled ? 'smooth' : (defaultProfileFor(currentSortScene) ?? 'quality'),
+        );
       }
       if (pinnedMaxStdDev === undefined) {
         splats.setMaxStdDev(enabled ? PERF_MODE_MAX_STD_DEV : qualityMaxStdDev());

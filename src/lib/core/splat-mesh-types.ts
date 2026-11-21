@@ -93,13 +93,7 @@ export function resolveSplatPerformanceProfile(
   explicit?: SplatPerformanceProfile,
   profile: SplatDeviceProfile | undefined = detectSplatDeviceProfile(),
 ): SplatPerformanceProfile {
-  if (explicit) return explicit;
-  if (isFillConstrainedSplatDevice(profile)) return 'smooth';
-  // Macs share one GPU and memory pool with the system (Apple Silicon) or have a
-  // weak one (Intel), and a Retina display doubles the fill. Measured 2026-11-21
-  // on an Apple M3 in Safari at DPR 2, 4.59M-splat PLY under compute projection:
-  // `quality` ran 181 ms behind the page, `balanced` 34 ms. `balanced` keeps SH.
-  return profile?.isMacDesktop === true ? 'balanced' : 'quality';
+  return explicit ?? (isFillConstrainedSplatDevice(profile) ? 'smooth' : 'quality');
 }
 
 /**
@@ -215,7 +209,7 @@ export interface SplatMeshOptions {
    * `smooth` additionally suppresses default SH for fill-constrained devices.
    *
    * The default is device-aware: `smooth` on mobile and fill-constrained
-   * desktops, `balanced` on Mac desktops, `quality` elsewhere. Passing a value opts out of the detection;
+   * desktops, `quality` elsewhere. Passing a value opts out of the detection;
    * use `balanced` to enable contribution culling while preserving source SH.
    */
   performanceProfile?: SplatPerformanceProfile;

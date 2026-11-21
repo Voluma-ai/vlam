@@ -704,12 +704,6 @@ describe('SplatMesh sort scheduling', () => {
   });
 
   it('preserves full detail off mobile', () => {
-    // A non-Mac desktop: Mac desktops default to `balanced` (see the profile tests).
-    vi.stubGlobal('navigator', {
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/150.0.0.0 Safari/537.36',
-      platform: 'Win32',
-      maxTouchPoints: 0,
-    });
     const mesh = new SplatMesh({ capacity: 4096 });
     meshes.push(mesh);
     const defaults = mesh as unknown as {

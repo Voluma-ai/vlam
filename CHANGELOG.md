@@ -248,14 +248,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   Apple M3 a 4.59M-splat PLY went from 18 to 57 fps and a 4M SH3 SOG from 14
   to 32 fps. The demo now passes the `auto` strategy unless
   `?projectionStrategy=` is set.
-- **Mac desktops default to the `balanced` performance profile.** Without an
-  explicit `performanceProfile`, a Mac desktop browser (macOS, no touch; new
-  `SplatDeviceProfile.isMacDesktop`) now resolves `balanced` instead of
-  `quality`: splats under 2 px or with negligible coverage are culled and SH is
-  kept. Fill-constrained devices still resolve `smooth`. On an Apple M3 in
-  Safari at DPR 2, a 4.59M-splat PLY under compute projection went from 181 ms
-  to 34 ms between submitting a frame and the GPU finishing it. Pass
-  `performanceProfile: 'quality'` for full detail.
+- **`SplatDeviceProfile.isMacDesktop`** flags a Mac desktop browser (macOS, no
+  touch). The library default profile is unchanged; the demo uses it to opt
+  static whole-file scenes into `balanced` on Macs (an Apple M3 in Safari at
+  DPR 2, 4.59M-splat PLY under compute projection: 181 ms to 34 ms between
+  submitting a frame and the GPU finishing it). Streamed scenes keep `quality`.
 - **A suspended chunk-page mesh sheds every finer page under pool pressure.**
   `shedPoolRows` kept one cut's pages (at least one) even for a mesh suspended
   at budget 1, which displays nothing. It now keeps none of them, so a drawing

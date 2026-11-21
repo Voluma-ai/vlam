@@ -144,7 +144,7 @@ Rules of the road:
   `maxStdDev`, `antialias`, and the resolved `minPixelSize` /
   `minContribution` contribution culls. `UnifiedSplatMesh` defaults to the
   same device-aware profile as `SplatMesh`: `smooth` on mobile and
-  fill-constrained desktops, `balanced` on Mac desktops, `quality` elsewhere. Keep the same profile on the
+  fill-constrained desktops, `quality` elsewhere. Keep the same profile on the
   unified mesh and its sources.
 - `unified.update(camera)` replaces the per-mesh `update` calls; do not also
   call `source.update()` yourself.

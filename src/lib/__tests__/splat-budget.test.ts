@@ -909,39 +909,24 @@ describe('desktop GPU class budgets', () => {
   });
 });
 
-describe('default performance profile', () => {
-  const stubNavigator = (nav: Partial<Navigator> & { userAgentData?: { platform: string } }) =>
+describe('Mac desktop detection', () => {
+  const stubNavigator = (nav: Partial<Navigator>) =>
     vi.stubGlobal('navigator', { userAgent: '', maxTouchPoints: 0, platform: '', ...nav });
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it('detects a Mac desktop and defaults it to balanced', () => {
+  it('flags a Mac desktop without changing the library default profile', () => {
     stubNavigator({ userAgent: DESKTOP_MAC_UA, platform: 'MacIntel' });
     const profile = detectSplatDeviceProfile();
     expect(profile?.isMacDesktop).toBe(true);
-    expect(resolveSplatPerformanceProfile(undefined, profile)).toBe('balanced');
-    expect(resolveSplatPerformanceProfile('quality', profile)).toBe('quality');
-  });
-
-  it('keeps an iPad that reports MacIntel on the mobile profile', () => {
-    stubNavigator({ userAgent: DESKTOP_MAC_UA, platform: 'MacIntel', maxTouchPoints: 5 });
-    const profile = detectSplatDeviceProfile();
-    expect(profile?.isMacDesktop).toBe(false);
-    expect(resolveSplatPerformanceProfile(undefined, profile)).toBe('smooth');
-  });
-
-  it('keeps other desktops on full-detail quality', () => {
-    stubNavigator({ userAgent: DESKTOP_UA, platform: 'Win32' });
-    const profile = detectSplatDeviceProfile();
-    expect(profile?.isMacDesktop).toBe(false);
+    // Hosts opt in to `balanced` per scene; the library keeps full detail.
     expect(resolveSplatPerformanceProfile(undefined, profile)).toBe('quality');
   });
 
-  it('lets a fill-constrained Mac keep smooth', () => {
-    expect(
-      resolveSplatPerformanceProfile(undefined, { isMacDesktop: true, gpuClass: 'integrated' }),
-    ).toBe('smooth');
+  it('does not flag an iPad that reports MacIntel', () => {
+    stubNavigator({ userAgent: DESKTOP_MAC_UA, platform: 'MacIntel', maxTouchPoints: 5 });
+    expect(detectSplatDeviceProfile()?.isMacDesktop).toBe(false);
   });
 });
 
