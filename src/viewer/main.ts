@@ -1765,9 +1765,11 @@ async function main(): Promise<void> {
   ) {
     throw new Error('Invalid projectionStrategy: expected auto, vertex or compute.');
   }
+  // Omitted, the demo lets the library's measured `auto` policy choose (vertex
+  // unless the scene and device are in a measured compute cohort).
   const projectionStrategy =
     projectionStrategyParam === undefined || projectionStrategyParam === null
-      ? undefined
+      ? computeProjection({ mode: 'auto' })
       : projectionStrategyParam === 'compute'
         ? computeProjection()
         : projectionStrategyParam === 'auto'

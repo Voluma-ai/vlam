@@ -74,6 +74,12 @@ export interface SplatDeviceProfile {
    */
   hasWebGpu?: boolean;
   /**
+   * Whether the runtime is a Mac desktop browser (macOS, no touch). An iPad
+   * that reports `MacIntel` has touch points and is mobile instead. visionOS
+   * Safari presents as a Mac too, which suits the same default.
+   */
+  isMacDesktop?: boolean;
+  /**
    * Desktop GPU class from {@link probeSplatGpuClass} / {@link classifySplatGpuClass}.
    * Omit when unknown so workstations without adapter info keep the 8M path.
    */
@@ -407,10 +413,17 @@ export function detectSplatDeviceProfile(): SplatDeviceProfile | undefined {
   // Galaxy A51 this exists for is octa-core while an iPhone 15 Pro reports 6.
   const isLowPower =
     (isMobile || isHeadset) && nav.deviceMemory !== undefined && nav.deviceMemory <= 4;
+  const platform =
+    (nav as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ??
+    nav.platform ??
+    '';
+  const isMacDesktop =
+    !isMobile && !isHeadset && (/mac/i.test(platform) || /Macintosh/.test(nav.userAgent));
   return {
     ...(nav.deviceMemory === undefined ? {} : { deviceMemoryGb: nav.deviceMemory }),
     isIOS,
     isMobile: isMobile || isHeadset,
+    isMacDesktop,
     isHeadset,
     isLowPower,
     hasWebGpu: 'gpu' in nav,

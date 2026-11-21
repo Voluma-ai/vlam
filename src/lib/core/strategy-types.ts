@@ -146,6 +146,8 @@ export interface AutomaticProjectionPolicyInput {
   readonly usesFoveation: boolean;
   readonly gpuClass: 'discrete' | 'integrated' | 'fallback' | undefined;
   readonly isValidatedDeviceClass: boolean;
+  /** Identified Apple Silicon Mac (macOS, no touch, Apple/Metal adapter); unified memory, integrated GPU. */
+  readonly isAppleSiliconMac?: boolean;
   readonly isMobile: boolean;
 }
 

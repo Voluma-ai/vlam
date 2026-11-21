@@ -64,6 +64,7 @@ describe('detectSplatDeviceProfile', () => {
       isMobile: true,
       isHeadset: false,
       isLowPower: false,
+      isMacDesktop: false,
       hasWebGpu: false,
     });
   });
@@ -75,6 +76,7 @@ describe('detectSplatDeviceProfile', () => {
       isMobile: true,
       isHeadset: false,
       isLowPower: false,
+      isMacDesktop: false,
       hasWebGpu: false,
     });
   });
@@ -92,6 +94,7 @@ describe('detectSplatDeviceProfile', () => {
       isMobile: false,
       isHeadset: false,
       isLowPower: false,
+      isMacDesktop: false,
       hasWebGpu: false,
     });
   });
@@ -124,6 +127,7 @@ describe('detectSplatDeviceProfile', () => {
       isMobile: true,
       isHeadset: true,
       isLowPower: false,
+      isMacDesktop: false,
       hasWebGpu: false,
     });
   });
@@ -902,6 +906,42 @@ describe('desktop GPU class budgets', () => {
     expect(resolveSplatPerformanceProfile(undefined, integrated)).toBe('smooth');
     expect(isFillConstrainedSplatDevice({ ...desktop, gpuClass: 'discrete' })).toBe(false);
     expect(recommendedMaxPixelRatio({ ...desktop, gpuClass: 'discrete' })).toBe(2);
+  });
+});
+
+describe('default performance profile', () => {
+  const stubNavigator = (nav: Partial<Navigator> & { userAgentData?: { platform: string } }) =>
+    vi.stubGlobal('navigator', { userAgent: '', maxTouchPoints: 0, platform: '', ...nav });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('detects a Mac desktop and defaults it to balanced', () => {
+    stubNavigator({ userAgent: DESKTOP_MAC_UA, platform: 'MacIntel' });
+    const profile = detectSplatDeviceProfile();
+    expect(profile?.isMacDesktop).toBe(true);
+    expect(resolveSplatPerformanceProfile(undefined, profile)).toBe('balanced');
+    expect(resolveSplatPerformanceProfile('quality', profile)).toBe('quality');
+  });
+
+  it('keeps an iPad that reports MacIntel on the mobile profile', () => {
+    stubNavigator({ userAgent: DESKTOP_MAC_UA, platform: 'MacIntel', maxTouchPoints: 5 });
+    const profile = detectSplatDeviceProfile();
+    expect(profile?.isMacDesktop).toBe(false);
+    expect(resolveSplatPerformanceProfile(undefined, profile)).toBe('smooth');
+  });
+
+  it('keeps other desktops on full-detail quality', () => {
+    stubNavigator({ userAgent: DESKTOP_UA, platform: 'Win32' });
+    const profile = detectSplatDeviceProfile();
+    expect(profile?.isMacDesktop).toBe(false);
+    expect(resolveSplatPerformanceProfile(undefined, profile)).toBe('quality');
+  });
+
+  it('lets a fill-constrained Mac keep smooth', () => {
+    expect(
+      resolveSplatPerformanceProfile(undefined, { isMacDesktop: true, gpuClass: 'integrated' }),
+    ).toBe('smooth');
   });
 });
 
