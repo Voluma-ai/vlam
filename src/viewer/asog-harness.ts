@@ -19,6 +19,10 @@
  *  - `unified=1`: draw the clip through a `UnifiedSplatMesh` (WebGPU), which
  *    sorts its gathered, moved centres instead of the mesh's own sort
  *  - `nocanvas=1`: render only into the readback target (headless checks)
+ *  - `bg=<hex>`: background colour (default 202020)
+ *  - `srgb=1`: blend the stored sRGB colours as they are (`srgbOutput`, the
+ *    renderer's output conversion off), as 3DGS training and the reference
+ *    players do; default: VLAM's linear blending
  */
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -44,6 +48,8 @@ const playback = playbackParam === 'gpu' || playbackParam === 'frames' ? playbac
 const skipCanvas = query.get('nocanvas') === '1';
 const exact = query.get('sort') === 'exact';
 const unifiedDraw = query.get('unified') === '1';
+const background = parseInt(query.get('bg') ?? '202020', 16);
+const srgbBlend = query.get('srgb') === '1';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#canvas')!;
 const statusEl = document.querySelector<HTMLDivElement>('#status')!;
@@ -85,7 +91,7 @@ async function readFrame(
     renderer.render(scene, camera);
   } finally {
     renderer.setRenderTarget(previous);
-    renderer.setClearColor(0x202020, 1);
+    renderer.setClearColor(background, 1);
   }
   const source = await renderer.readRenderTargetPixelsAsync(target, 0, 0, width, height);
   const rowBytes = width * 4;
@@ -149,7 +155,9 @@ async function run(): Promise<void> {
     requireWebGpu: backend === 'webgpu',
   });
   renderer.setSize(size, size, false);
-  renderer.setClearColor(0x202020, 1);
+  renderer.setClearColor(background, 1);
+  // `srgbOutput` emits sRGB values as they are: the renderer must not encode again.
+  if (srgbBlend) renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
   await renderer.init();
 
   const loadStarted = performance.now();
@@ -165,9 +173,16 @@ async function run(): Promise<void> {
   const mesh = new SplatClipMesh(clip, {
     renderer,
     playback,
+    ...(srgbBlend ? { srgbOutput: true } : {}),
     ...(shBands !== undefined ? { shBands } : {}),
     ...(exact ? { sortStrategy: exactSort() } : {}),
   });
+  // Fetch start → the first frame on screen (the time a viewer waits).
+  let firstShownMs = Number.NaN;
+  void mesh.whenShown().then(
+    () => (firstShownMs = performance.now() - loadStarted),
+    () => undefined,
+  );
   mesh.addEventListener('error', ({ error }) => {
     errors.push(`playback error: ${error instanceof Error ? error.message : String(error)}`);
   });
@@ -276,6 +291,9 @@ async function run(): Promise<void> {
       shBands: clip.shBands,
       decodeMs: clip.decodeMs,
       loadMs,
+      get firstShownMs() {
+        return firstShownMs;
+      },
     },
     get mesh() {
       return mesh;
@@ -284,6 +302,9 @@ async function run(): Promise<void> {
       return action;
     },
     camera,
+    /** For side-by-side captures: set `controls.target` with the camera. */
+    controls,
+    renderer,
     /** Shows integer frame `frame`, waits for the sort to settle, and measures it. */
     async measure(frame: number) {
       measuring = true;
@@ -389,7 +410,7 @@ async function run(): Promise<void> {
       print(
         `${clip.name}: ${mesh.alive} alive of ${clip.maxCount} · ${mesh.playback} · ` +
           `eval ${(mesh.playbackStats.evalMs ?? 0).toFixed(1)} ms · decode ${clip.decodeMs.toFixed(0)} ms · ` +
-          `load ${loadMs.toFixed(0)} ms · ${backend}`,
+          `load ${loadMs.toFixed(0)} ms · first shown ${firstShownMs.toFixed(0)} ms · ${backend}`,
       );
     }
     requestAnimationFrame(loop);

@@ -1,9 +1,17 @@
 /**
  * A 4D clip's soundtrack in the demo viewer: an `.asog` file's `audio`, played
  * as a `THREE.PositionalAudio` on the clip's mesh (so it comes from where the
- * clip stands) and kept at the mesh's `time`, restarted there whenever the two
- * drift more than 60 ms apart (each loop, a hitch), and stopped while the
- * clip's time holds still.
+ * clip stands) and kept at the mesh's `time` (format v1 section 6):
+ *
+ * - The sound plays at the clip's rate (`options.rate`, e.g. the mixer
+ *   action's effective time scale), so 0.5× and 2× stay in step without
+ *   restarts.
+ * - Where the sound is heard is integrated frame by frame at the rate it
+ *   played at; when it drifts more than 60 ms from `mesh.time` (each loop
+ *   restart, a scrub, a hitch), the sound restarts at `mesh.time`.
+ * - It is silent while the clip's time holds still (paused), plays in
+ *   reverse, or runs slower than 0.25× or faster than 4×, and past the end
+ *   of a sound shorter than the clip.
  *
  * Browsers start audio only after a user gesture: the sound waits for the
  * first click, tap or key press on the page.
@@ -13,11 +21,40 @@ import type { SplatClip, SplatClipMesh } from '../lib/dynamic';
 
 /** Drift between the sound and the clip that restarts the sound, in seconds. */
 const MAX_DRIFT = 0.06;
+/** Slowest and fastest clip rates the sound plays at; outside them it is silent. */
+const MIN_RATE = 0.25;
+const MAX_RATE = 4;
 
 /** One playing soundtrack; call {@link ClipSound.update} every frame. */
 export interface ClipSound {
   update(): void;
   dispose(): void;
+  /**
+   * Seconds between where the sound is heard and `mesh.time` after the last
+   * update (0 while silent), and the largest such gap since the last restart
+   * of the sound, and the drift that caused the last restart (NaN for a
+   * start from silence or after the sound ended). For checks; a restart
+   * resets `maxDrift`.
+   */
+  readonly stats: {
+    drift: number;
+    maxDrift: number;
+    restarts: number;
+    restartDrift: number;
+    playing: boolean;
+  };
+}
+
+/** Options of {@link createClipSound}. */
+export interface ClipSoundOptions {
+  /** A `THREE.PositionalAudio` on the mesh (default) or a plain `THREE.Audio`. */
+  positional?: boolean;
+  /**
+   * The clip's playback rate: seconds of `mesh.time` per second of real time
+   * (negative in reverse). Default 1. With an `AnimationMixer`, pass
+   * `() => action.getEffectiveTimeScale() * mixer.timeScale`.
+   */
+  rate?: () => number;
 }
 
 let sharedListener: THREE.AudioListener | null = null;
@@ -30,7 +67,7 @@ export async function createClipSound(
   clip: SplatClip,
   mesh: SplatClipMesh,
   camera: THREE.Camera,
-  options: { positional?: boolean } = {},
+  options: ClipSoundOptions = {},
 ): Promise<ClipSound | null> {
   const audio = (clip as { audio?: { bytes: Uint8Array } | null }).audio;
   if (!audio) return null;
@@ -59,28 +96,61 @@ export async function createClipSound(
     for (const type of gestures) addEventListener(type, resume, { capture: true });
   }
 
-  let started = 0; // context time at which the sound was at second 0
+  const stats = { drift: 0, maxDrift: 0, restarts: 0, restartDrift: Number.NaN, playing: false };
+  /** Where in the sound it is heard now, integrated at the rate it plays at. */
+  let heard = 0;
+  let lastNow = 0;
   let lastTime = Number.NaN;
+  const silence = (): void => {
+    if (sound.isPlaying) sound.stop();
+    stats.drift = 0;
+    stats.playing = false;
+  };
   return {
+    stats,
     update(): void {
       if (context.state !== 'running') return;
+      const now = context.currentTime;
       const time = mesh.time;
       const held = time === lastTime;
       lastTime = time;
-      if (held || time >= buffer.duration) {
-        // A held clip is silent, and a shorter sound waits for the loop.
-        if (sound.isPlaying) sound.stop();
+      const rate = options.rate?.() ?? 1;
+      if (held || !(rate >= MIN_RATE && rate <= MAX_RATE) || time >= buffer.duration) {
+        // Paused, reversed or at an extreme rate: silent. A shorter sound
+        // waits for the loop.
+        silence();
         return;
       }
-      const heard = context.currentTime - started;
-      if (sound.isPlaying && Math.abs(heard - time) < MAX_DRIFT) return;
-      if (sound.isPlaying) sound.stop();
+      stats.restartDrift = Number.NaN;
+      if (sound.isPlaying) {
+        heard += (now - lastNow) * sound.playbackRate;
+        lastNow = now;
+        if (sound.playbackRate !== rate) sound.setPlaybackRate(rate);
+        stats.drift = heard - time;
+        if (Math.abs(stats.drift) < MAX_DRIFT) {
+          stats.maxDrift = Math.max(stats.maxDrift, Math.abs(stats.drift));
+          return;
+        }
+        stats.restartDrift = stats.drift;
+        sound.stop();
+      } else if (buffer.duration - time < MAX_DRIFT) {
+        // The sound ran out a frame ahead of the clip: wait for the loop
+        // rather than start it for its last few milliseconds.
+        silence();
+        return;
+      }
+      sound.setPlaybackRate(rate);
       sound.offset = time;
       sound.play();
-      started = context.currentTime - time;
+      heard = time;
+      lastNow = now;
+      stats.drift = 0;
+      stats.maxDrift = 0;
+      stats.restarts++;
+      stats.playing = true;
     },
     dispose(): void {
-      if (sound.isPlaying) sound.stop();
+      silence();
       sound.removeFromParent();
       sound.disconnect();
       stopListening();

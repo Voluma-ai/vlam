@@ -36,6 +36,13 @@ export type AsogWorkerRequest =
   /** Decode one whole file (transferred). */
   | { readonly type: 'decode'; readonly bytes: ArrayBuffer }
   /**
+   * The next bytes of a file being downloaded (transferred): the first chunk
+   * starts a decode that reads each stream as soon as its bytes are there.
+   */
+  | { readonly type: 'chunk'; readonly bytes: ArrayBuffer }
+  /** The download is complete. */
+  | { readonly type: 'end' }
+  /**
    * Evaluate integer frame `frame`, splat `i` in slot `i`; `buffers` are a
    * previous reply's buffers handed back for reuse (transferred). `sh` asks
    * for the packed SH too, which only the first frame needs. `compact` packs
@@ -59,6 +66,13 @@ export type AsogWorkerReply =
       /** Range of the packed SH every frame uses. */
       readonly shRange: SplatPackedShData['range'];
       readonly audio: { readonly mime: string; readonly bytes: Uint8Array } | null;
+    }
+  /** A stream of the file is decoded: `done` of `total`. */
+  | {
+      readonly type: 'progress';
+      readonly stream: string;
+      readonly done: number;
+      readonly total: number;
     }
   | {
       readonly type: 'frame';

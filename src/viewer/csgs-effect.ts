@@ -50,6 +50,11 @@ const CIRCLE_RADIUS = 0.8;
 export interface CsgsEffectHost {
   /** `?clips=` / `?csgs=` (clip URLs, comma-separated), or null for the public demo clips. */
   readonly clipUrl: string | null;
+  /**
+   * `?clipSpeed=`: the clips' playback rate (default 1; negative plays in
+   * reverse). Soundtracks follow it, and are silent in reverse.
+   */
+  readonly clipSpeed?: number;
   readonly scene: THREE.Scene;
   /** The mounted scene mesh; joins the unified draw while the effect runs. */
   readonly splats: SplatMesh;
@@ -74,6 +79,10 @@ export interface CsgsEffectHost {
 export interface CsgsEffect {
   /** The scene + clips draw to update instead of the scene mesh, else null. */
   readonly unifiedDraw: UnifiedSplatMesh | PooledUnifiedSplatMesh | null;
+  /** Each clip's mixer action (for the console: `timeScale`, `time`, `paused`). */
+  readonly actions: readonly THREE.AnimationAction[];
+  /** The soundtracks playing so far (their `stats` for checks). */
+  readonly sounds: readonly ClipSound[];
   /** Advances the clips to wall-clock time; call once per frame before the scene update. */
   update(): void;
   /** Removes the clips and hands the scene mesh its own draw back. */
@@ -266,6 +275,7 @@ export async function mountCsgsEffect(host: CsgsEffectHost): Promise<CsgsEffect 
   const staging = new SplatClipStagingBudget();
   const meshes: SplatClipMesh[] = [];
   const mixers: THREE.AnimationMixer[] = [];
+  const actions: THREE.AnimationAction[] = [];
   const groups: THREE.Group[] = [];
   let unifiedDraw: UnifiedSplatMesh | PooledUnifiedSplatMesh | null = null;
   const sounds: ClipSound[] = [];
@@ -330,8 +340,11 @@ export async function mountCsgsEffect(host: CsgsEffectHost): Promise<CsgsEffect 
       group.updateMatrixWorld(true);
       // Same transport as a glTF animation: one mixer per clip, looping.
       const mixer = new THREE.AnimationMixer(mesh);
-      mixer.clipAction(mesh.animation).play();
+      const action = mixer.clipAction(mesh.animation);
+      action.timeScale = host.clipSpeed ?? 1;
+      action.play();
       mixers.push(mixer);
+      actions.push(action);
     });
 
     if (pool) {
@@ -372,7 +385,12 @@ export async function mountCsgsEffect(host: CsgsEffectHost): Promise<CsgsEffect 
   // Soundtracks (`.asog` files may carry one), heard from where each clip
   // stands once the page has had a click or key press.
   loaded.forEach(({ clip }, index) => {
-    void createClipSound(clip, meshes[index]!, camera).then(
+    const action = actions[index]!;
+    const mixer = mixers[index]!;
+    void createClipSound(clip, meshes[index]!, camera, {
+      // Seconds of clip time per second: the sound plays at the same rate.
+      rate: () => action.getEffectiveTimeScale() * mixer.timeScale,
+    }).then(
       (sound) => {
         if (!sound) return;
         if (disposed || !host.isCurrent()) sound.dispose();
@@ -389,6 +407,8 @@ export async function mountCsgsEffect(host: CsgsEffectHost): Promise<CsgsEffect 
   const timer = new THREE.Timer();
   return {
     unifiedDraw,
+    actions,
+    sounds,
     update(): void {
       timer.update();
       const delta = timer.getDelta();

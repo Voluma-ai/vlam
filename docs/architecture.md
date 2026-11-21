@@ -88,7 +88,7 @@ src/
  splat/ → `@voluma/vlam/formats/splat`
  ksplat/ → `@voluma/vlam/formats/ksplat`
  csgs/ → `@voluma/vlam/formats/csgs` (parse-csgs, csgs-frame; csgs-gpu-layout is internal to dynamic/)
- asog/ → `@voluma/vlam/formats/asog` (asog-container, parse-asog, asog-motion)
+ asog/ → `@voluma/vlam/formats/asog` (asog-container, parse-asog, asog-motion; internal asog-bytes for streamed decodes)
  dynamic/ → `@voluma/vlam/dynamic` (experimental animated splats). Format-neutral: splat-clip
       (the public `SplatClip`), load-splat-clip (format dispatch), splat-clip-mesh (transport
       only), splat-clip-playback (internal driver contract), frame-playback (the frame path

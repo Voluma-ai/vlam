@@ -3197,6 +3197,7 @@ async function main(): Promise<void> {
       if (!isCurrent()) return;
       const effect = await mountCsgsEffect({
         clipUrl: params.get('clips') ?? params.get('csgs'),
+        clipSpeed: Number(params.get('clipSpeed') ?? 1) || 1,
         scene,
         splats,
         sceneTitle,
@@ -6774,7 +6775,7 @@ function buildEffectPicker(
       mode: '4dgs',
       title:
         '4D clips in the scene: ?clips=<url>[,…] (.asog or a Faltwerk scene JSON), ' +
-        'else the Faltwerk demo clips',
+        'else the Faltwerk demo clips; ?clipSpeed=<rate> plays them faster or slower',
     },
     { label: 'pulse', mode: 'demo', title: 'Opacity pulse (breathing alpha) + height tint (M7.2)' },
     {

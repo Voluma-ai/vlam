@@ -22,6 +22,39 @@ import {
   readMotion,
 } from './fixtures/animated-sog/motion.js';
 import { getHalfTable } from './fixtures/animated-sog/half.js';
+import { ASOG_LIFE_SIGMAS } from '../formats/asog/asog-motion';
+import { createAsogByteSink } from '../formats/asog/asog-bytes';
+import { parseAsogFrom } from '../formats/asog/parse-asog';
+
+/**
+ * `asogMotionBounds` without its skip: every dynamic splat sampled at 33
+ * times across its life. The skip must not change the box.
+ */
+function sampledMotionBounds(data: AsogData): { min: number[]; max: number[] } {
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  const grow = (p: ArrayLike<number>): void => {
+    if (![0, 1, 2].every((c) => Number.isFinite(p[c]!))) return;
+    for (let c = 0; c < 3; c++) {
+      min[c] = Math.min(min[c]!, p[c]!);
+      max[c] = Math.max(max[c]!, p[c]!);
+    }
+  };
+  const out = new Float64Array(7);
+  for (let i = 0; i < data.count; i++) {
+    grow(data.centers.subarray(i * 3, i * 3 + 3));
+    const m = i * ASOG_MOTION_FLOATS;
+    if (data.motion[m + ASOG_MOTION.flags]! % 2 === 1) continue;
+    const mu = data.motion[m + ASOG_MOTION.mu]!;
+    const half = ASOG_LIFE_SIGMAS * data.motion[m + ASOG_MOTION.sigma]!;
+    for (let s = 0; s < 33; s++) {
+      if (evaluateAsogSplat(data.motion, data.centers, i, mu - half + (half * s) / 16, out) > 0)
+        grow(out);
+    }
+  }
+  const pad = 0.01 * Math.max(max[0]! - min[0]!, max[1]! - min[1]!, max[2]! - min[2]!, 1e-6);
+  return { min: min.map((v) => v - pad), max: max.map((v) => v + pad) };
+}
 
 /**
  * The `.asog` port against the vendored animated-sog reference decoder
@@ -199,6 +232,50 @@ describe('parseAsog', () => {
     }
   });
 
+  it('decodes a file arriving in chunks exactly as a file held whole', async () => {
+    const bytes = await encodeAsog(
+      syntheticAsogStreams({ count: 1200, coeffs: 8, clips: 2 }).manifest,
+      syntheticAsogStreams({ count: 1200, coeffs: 8, clips: 2 }).streams,
+      { mime: 'audio/wav', bytes: new Uint8Array([1, 2, 3, 4, 5]) },
+    );
+    const whole = await parseAsog(bytes);
+    for (const size of [1, 7, 4096]) {
+      const sink = createAsogByteSink();
+      const streams: string[] = [];
+      const parsed = parseAsogFrom(sink.until, { onStream: (name) => streams.push(name) });
+      for (let at = 0; at < bytes.length; at += size) {
+        sink.push(bytes.subarray(at, at + size));
+        // Let the decoder take what has arrived, as between network chunks.
+        if (at % (size * 512) === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      sink.end();
+      expect(await parsed).toEqual(whole);
+      expect(streams).toEqual([...whole.manifest.streams].map((s) => s.name));
+    }
+  });
+
+  it('rejects a download that ends early, and decodes streams before it ends', async () => {
+    const bytes = await syntheticAsog({ count: 1500, coeffs: 0 });
+    const sink = createAsogByteSink();
+    let firstStream!: () => void;
+    const decodedOne = new Promise<void>((resolve) => (firstStream = resolve));
+    const parsed = parseAsogFrom(sink.until, { onStream: () => firstStream() });
+    parsed.catch(() => undefined); // asserted below
+    sink.push(bytes.subarray(0, bytes.length - 64));
+    await decodedOne; // a stream decodes before the file is complete
+    sink.end();
+    await expect(parsed).rejects.toThrow(/truncated/);
+  });
+
+  it('motion bounds skip only splats that cannot grow the box', async () => {
+    for (const seed of [1, 2, 3]) {
+      const data = await parseAsog(
+        await syntheticAsog({ count: 4000, coeffs: 0, clips: seed, seed }),
+      );
+      expect(asogMotionBounds(data)).toEqual(sampledMotionBounds(data));
+    }
+  });
+
   it('keepInvisible writes the visible splats exactly and only opacity for the rest', async () => {
     const data = await parseAsog(await syntheticAsog({ count: 2000, coeffs: 0, clips: 2 }));
     const full = createAsogFrameBuffers(data.count);
@@ -286,6 +363,11 @@ describe('parseAsog', () => {
  */
 const SAMPLE = process.env.VLAM_ASOG_SAMPLE ?? '';
 describe.skipIf(!SAMPLE || !existsSync(SAMPLE))('parseAsog on a local real clip', () => {
+  it('has the same motion bounds as sampling every splat', async () => {
+    const data = await parseAsog(new Uint8Array(readFileSync(SAMPLE)));
+    expect(asogMotionBounds(data)).toEqual(sampledMotionBounds(data));
+  });
+
   it('agrees with the reference across the whole file', async () => {
     const bytes = new Uint8Array(readFileSync(SAMPLE));
     const { ours, ref } = await both(bytes);
