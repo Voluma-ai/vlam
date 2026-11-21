@@ -25,6 +25,36 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 
 ### Added
 
+- **Experimental Animated SOG (`.asog`) clips.** `loadSplatClip` reads
+  [Animated SOG](https://github.com/arrival-space/animated-sog) v1 files
+  (by the `.asog` extension or `format: 'asog'`), also through
+  `loadAsogClip`, which returns an `AsogClip` with the soundtrack's bytes
+  (`audio`, not played) and `clipCount`. On WebGPU a `SplatModifier`
+  evaluates every splat's TRiGS rigid-body motion from a motion texture
+  uploaded once; WebGL2 and worker sorters play worker-evaluated frames, which
+  skip every splat outside its life window (a 400k-splat clip: 27 ms per
+  frame, from 54 ms). Multi-clip timelines with fades are supported. The
+  worker-safe decoder and CPU motion are on the new `@voluma/vlam/formats/asog`
+  subpath (`parseAsog`, `evaluateAsogFrame`), a port of the MIT reference
+  decoder that keeps the motion in float32. Clips are y down: turn the mesh
+  180° about X. The loader, its decode worker and GPU driver are a separate
+  chunk (about 13 kB gzip) fetched on the first `.asog` load; the
+  `@voluma/vlam/dynamic` entry grows by about 3 kB gzip.
+  `/asog-harness.html?src=<url>` plays a clip on the dev server.
+- **`SplatClipMesh` frame path evaluates ahead.** Frames are requested as
+  soon as there is room in the prefetch window instead of after the previous
+  one is shown, and a clip whose source has several workers keeps that many
+  evaluations in flight (`.asog` uses two; `.csgs` one).
+- **`PooledUnifiedSplatMesh` `liveContent` sources (experimental).**
+  `addSource(mesh, { liveContent: true })` uploads a source that rewrites
+  fixed slots every frame (a `SplatClipMesh` on its frame path) as it is
+  written, drawn through the last installed order, instead of holding it for
+  the next combined CPU sort. On WebGL2 a clip in a large scene then moves at
+  frame rate while its depth order against the scene trails by one sort.
+- The demo viewer plays `.asog` clips from `?scene=`, from a dropped or picked
+  file, and inside another scene with `?clips=<url>[,…]` (sorted with the
+  scene on WebGPU, and on WebGL2 through one shared pool and a pooled draw).
+
 - **Experimental `@voluma/vlam/dynamic`: animated Gaussian splats.** One
   app-facing API, all driven by a three.js `AnimationMixer`, with formats
   behind it:

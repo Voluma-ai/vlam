@@ -88,7 +88,11 @@ export default defineConfig({
           // The .csgs evaluator and clip playback are only reached through the
           // lazy 4dgs effect; left out of the eager library chunk, they ride
           // along with that.
-          if (path.includes('/src/lib/formats/csgs/') || path.includes('/src/lib/dynamic/')) {
+          if (
+            path.includes('/src/lib/formats/csgs/') ||
+            path.includes('/src/lib/formats/asog/') ||
+            path.includes('/src/lib/dynamic/')
+          ) {
             return undefined;
           }
           if (path.includes('/src/lib/')) return 'vlam';

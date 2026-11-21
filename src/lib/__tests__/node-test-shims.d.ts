@@ -24,6 +24,7 @@ declare module 'node:worker_threads' {
 
 declare const process: {
   readonly pid: number;
+  readonly env: Record<string, string | undefined>;
 };
 
 interface ImportMeta {

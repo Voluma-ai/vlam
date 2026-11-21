@@ -82,11 +82,27 @@ export interface PooledUnifiedSplatMeshOptions {
   sortIntervalMs?: number;
 }
 
-/** Registration settings for one source; same shape as the compute path's. */
+/** Registration settings for one source; the compute path's, plus {@link PooledUnifiedSourceOptions.liveContent}. */
 export type PooledUnifiedSourceOptions = Pick<
   UnifiedSplatSourceOptions,
   'opacity' | 'visible' | 'priority'
->;
+> & {
+  /**
+   * For a source that rewrites the same splats in fixed slots every frame
+   * (a `SplatClipMesh` on its frame path): its rows upload in the frame they
+   * are written, drawn through the last installed order, instead of waiting
+   * for a combined sort that includes them. The sort keeps running in the
+   * background and reads the source's centers from the pool, so its depth
+   * order against the other sources trails its content by one sort (a
+   * fraction of a second on a large scene) instead of holding its motion.
+   *
+   * Only content may change this way: a change to the source's active list
+   * still waits for a sort. Default `false`.
+   *
+   * @experimental
+   */
+  liveContent?: boolean;
+};
 
 /**
  * WebGL2 resource use of the pooled draw's vertex program, against the
@@ -137,10 +153,15 @@ interface SourceRecord {
   modifiers: readonly SplatModifier[];
   /** Stored-alpha multiplier (2 for `.rad` LOD alpha). */
   alphaScale: number;
+  /** {@link PooledUnifiedSourceOptions.liveContent}. */
+  live: boolean;
+  /** A live source's active-list version in the installed order, or -1. */
+  installedActiveListVersion: number;
 }
 
 interface CapturePart {
   record: SourceRecord;
+  /** The source's publication capture, or -1 for a live source (it publishes itself). */
   requestId: number;
   activeListVersion: number;
   /**
@@ -555,6 +576,8 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
       modifiers: [],
       // Multiplier recovering alpha from the stored byte: `.rad` halves it.
       alphaScale: view.lodAlpha ? 2 : 1,
+      live: options.liveContent === true,
+      installedActiveListVersion: -1,
     };
     this.sources.push(record);
     this.tables.setMatrix(id, view.matrixWorld);
@@ -668,6 +691,13 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
         // main at startup, a hidden marker that keeps streaming).
         if (changed) this.publishUndrawn(record, view, renderer);
         continue;
+      }
+      if (changed && record.live) {
+        // Content in fixed slots: upload it now, through the installed order,
+        // when that order already holds this active list.
+        if (view.activeListVersion === record.installedActiveListVersion) {
+          this.publishLive(record, view, renderer);
+        }
       }
       if (changed) contentChanged = true;
       if (boundsEmpty) {
@@ -926,7 +956,9 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     // under the previous membership.
     this.retainedParts = null;
     if (this.pending !== null) {
-      for (const part of this.pending.parts) part.record.publication.discard();
+      for (const part of this.pending.parts) {
+        if (part.requestId >= 0) part.record.publication.discard();
+      }
       this.pending = null;
     }
     this.sortScheduler.invalidateContent();
@@ -945,6 +977,26 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     if (capture === null || !publication.queue(capture.requestId)) return;
     record.capturedActiveListVersion = view.activeListVersion;
     record.capturedContentRevision = view.contentRevision;
+    if (publication.publish(renderer)) {
+      this.renderAcks.push({ record, activeListVersion: view.activeListVersion });
+    }
+  }
+
+  /**
+   * Uploads a live source's pending rows outside the worker cycle (see
+   * {@link PooledUnifiedSourceOptions.liveContent}). The caller still marks
+   * content changed, so the next sort re-sorts with these centers; a paused
+   * source then stops re-sorting.
+   */
+  private publishLive(
+    record: SourceRecord,
+    view: UnifiedSourceView,
+    renderer: THREE.WebGPURenderer,
+  ): void {
+    const { publication } = record;
+    record.capturedContentRevision = view.contentRevision;
+    const capture = publication.capture();
+    if (capture === null || !publication.queue(capture.requestId)) return;
     if (publication.publish(renderer)) {
       this.renderAcks.push({ record, activeListVersion: view.activeListVersion });
     }
@@ -1072,7 +1124,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
         return (
           entry.record === record &&
           entry.activeListVersion === view.activeListVersion &&
-          entry.contentRevision === view.contentRevision
+          (record.live || entry.contentRevision === view.contentRevision)
         );
       });
     const parts: CapturePart[] = [];
@@ -1080,11 +1132,30 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     let total = 0;
     for (const record of drawn) {
       const view = record.view as UnifiedSourceView;
+      if (record.live) {
+        // A live source publishes its own rows; the worker re-reads its
+        // centers straight from the pool backing for this sort.
+        parts.push({
+          record,
+          requestId: -1,
+          activeListVersion: view.activeListVersion,
+          indices: (view.sourceIndex.array as Uint32Array).subarray(0, view.activeCount),
+        });
+        record.capturedActiveListVersion = view.activeListVersion;
+        record.capturedContentRevision = view.contentRevision;
+        for (const range of record.source.poolRanges()) {
+          this.pendingMirrorRows.push({ start: range.startRow, count: range.rowCount });
+        }
+        total += view.activeCount;
+        continue;
+      }
       const snapshot = record.publication.capture();
       if (snapshot === null) {
         // A source could not capture (its own boundary is busy). Release the
         // others so none of them holds a snapshot nobody will publish.
-        for (const part of parts) part.record.publication.restore(part.requestId);
+        for (const part of parts) {
+          if (part.requestId >= 0) part.record.publication.restore(part.requestId);
+        }
         return null;
       }
       parts.push({
@@ -1141,19 +1212,21 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     const inFlight = this.inFlight;
     if (inFlight === null || inFlight.requestId !== requestId || this.disposed) return;
     this.inFlight = null;
+    // Live sources hold no capture in the cycle (they publish themselves).
+    const captured = inFlight.parts.filter((part) => part.requestId >= 0);
     if (inFlight.membership !== this.membership) {
-      for (const part of inFlight.parts) part.record.publication.restore(part.requestId);
+      for (const part of captured) part.record.publication.restore(part.requestId);
       this.sortScheduler.invalidateContent();
       return;
     }
     let complete = true;
-    for (const part of inFlight.parts) {
+    for (const part of captured) {
       if (!part.record.publication.queue(part.requestId)) complete = false;
     }
     if (!complete) {
       // Some source dropped its capture (strategy change, dispose): its rows
       // would be missing under this order. Discard the whole publication.
-      for (const part of inFlight.parts) part.record.publication.discard();
+      for (const part of captured) part.record.publication.discard();
       this.sortScheduler.invalidateContent();
       return;
     }
@@ -1164,7 +1237,9 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     const inFlight = this.inFlight;
     if (inFlight === null || inFlight.requestId !== requestId) return;
     this.inFlight = null;
-    for (const part of inFlight.parts) part.record.publication.restore(part.requestId);
+    for (const part of inFlight.parts) {
+      if (part.requestId >= 0) part.record.publication.restore(part.requestId);
+    }
     this.retainedParts = null;
     this.sortScheduler.invalidateContent();
   }
@@ -1174,8 +1249,30 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     const pending = this.pending;
     if (pending === null) return;
     this.pending = null;
+    // Live rows can advance while the worker sorts or while its reply waits
+    // for update. Only publish them with an order for their current slots.
+    const staleLiveList = pending.parts.some(
+      (part) =>
+        part.requestId < 0 && part.record.view?.activeListVersion !== part.activeListVersion,
+    );
+    if (staleLiveList) {
+      for (const part of pending.parts) {
+        if (part.requestId >= 0) part.record.publication.discard();
+      }
+      this.sortScheduler.invalidateContent();
+      return;
+    }
     const published: { record: SourceRecord; activeListVersion: number }[] = [];
     for (const part of pending.parts) {
+      if (part.requestId < 0) {
+        // A live source: upload whatever it wrote since, and from now on its
+        // content publishes through this order as soon as it is written.
+        const view = part.record.view;
+        if (view !== null) this.publishLive(part.record, view, renderer);
+        part.record.installedActiveListVersion = part.activeListVersion;
+        published.push({ record: part.record, activeListVersion: part.activeListVersion });
+        continue;
+      }
       if (part.record.publication.publish(renderer)) {
         published.push({ record: part.record, activeListVersion: part.activeListVersion });
       }

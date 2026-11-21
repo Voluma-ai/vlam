@@ -268,6 +268,95 @@ describe('PooledUnifiedSplatMesh', () => {
     pool.dispose();
   });
 
+  it('uploads a liveContent source as it is written, through the installed order', () => {
+    sent.length = 0;
+    const renderer = mockRenderer();
+    const copy = renderer.copyTextureToTexture as unknown as ReturnType<typeof vi.fn>;
+    const pool = new SplatPool({ capacity: 3 * W });
+    const scene = new SplatMesh({ capacity: W }, { pool });
+    const clip = new SplatMesh({ capacity: W }, { pool });
+    scene.appendRange(splat(4, -1));
+    const range = clip.appendRange(splat(3, 0.5));
+    const pooled = new PooledUnifiedSplatMesh(renderer, pool);
+    pooled.addSource(scene);
+    pooled.addSource(clip, { liveContent: true });
+    const camera = cameraAt(3);
+    pooled.update(camera); // captures both
+    pooled.update(camera); // publishes the first order
+    expect(instanceCount(pooled)).toBe(7);
+    const installed = drawList(pooled);
+
+    // Hold the worker: a sort in flight must not hold the clip's next frame.
+    holdReplies = true;
+    const frame = splat(3, 0.8);
+    (
+      clip as unknown as { overwriteRangeCore(r: unknown, d: SplatData, o: number): void }
+    ).overwriteRangeCore(range, frame, 0);
+    pooled.update(camera); // uploads the clip's rows now and starts a re-sort
+    const sortsAfterFirstFrame = sortRequestCount();
+    copy.mockClear();
+    (
+      clip as unknown as { overwriteRangeCore(r: unknown, d: SplatData, o: number): void }
+    ).overwriteRangeCore(range, splat(3, 0.9), 0);
+    pooled.update(camera); // the sort is still in flight: the clip uploads anyway
+    expect(copy).toHaveBeenCalled();
+    expect(sortRequestCount()).toBe(sortsAfterFirstFrame);
+    // Drawn through the installed order, unchanged until the sort lands.
+    expect(drawList(pooled)).toEqual(installed);
+    // The re-sort sends the worker the clip's moved centers from the pool.
+    const clipStart = [...clip.poolRanges()][0]!.startRow * W;
+    const write = [...sent]
+      .reverse()
+      .find(
+        (message): message is Extract<SortWorkerRequest, { type: 'write' }> =>
+          message.type === 'write' && message.start === clipStart,
+      );
+    expect(write).toBeDefined();
+    expect(write!.centers[2]).toBeCloseTo(0.8);
+
+    holdReplies = false;
+    flushReplies();
+    pooled.update(camera);
+    expect(instanceCount(pooled)).toBe(7);
+    // Paused: no new content, so no further re-sort is requested.
+    pooled.update(camera);
+    const settled = sortRequestCount();
+    pooled.update(camera);
+    pooled.update(camera);
+    expect(sortRequestCount()).toBeLessThanOrEqual(settled + 1);
+    pooled.dispose();
+    scene.dispose();
+    clip.dispose();
+    pool.dispose();
+  });
+
+  it('discards a live source order when its active list changes before publication', () => {
+    const renderer = mockRenderer();
+    const pool = new SplatPool({ capacity: 2 * W });
+    const source = new SplatMesh({ capacity: 2 * W }, { pool });
+    const pooled = new PooledUnifiedSplatMesh(renderer, pool);
+    source.appendRange(splat());
+    pooled.addSource(source, { liveContent: true });
+    const camera = cameraAt(3);
+
+    holdReplies = true;
+    try {
+      pooled.update(camera);
+      source.appendRange(splat());
+      flushReplies();
+      pooled.update(camera); // The first order describes only one range.
+      expect(instanceCount(pooled)).toBe(0);
+      flushReplies();
+      pooled.update(camera);
+      expect(instanceCount(pooled)).toBe(2);
+    } finally {
+      holdReplies = false;
+      pooled.dispose();
+      source.dispose();
+      pool.dispose();
+    }
+  });
+
   // A host can keep updating a source as if it drew standalone (a handoff while
   // the pooled draw has no order yet). Its own sort would queue a publication
   // only the owner may release, so the owner could never capture it again.

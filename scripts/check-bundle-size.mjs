@@ -54,7 +54,9 @@ const BUDGET_GZIP_BYTES = {
   './selection': 20_000,
   // 100,500 B measured (core graph plus clip loading with its inlined decode
   // worker, the .csgs GPU driver, SplatClipMesh and SkinnedSplatMesh) × 1.15,
-  // rounded to 1 kB.
+  // rounded to 1 kB; 103,450 B as of the .asog support. The .asog loader, its
+  // decode worker and GPU driver are a lazy chunk outside this graph (about
+  // 12.7 kB gzip); only `loadAsogClip`'s import stub is counted here.
   './dynamic': 116_000,
 };
 
@@ -234,6 +236,9 @@ mustNotContain(
 mustNotContain('.', 'csgsLife', '.csgs GPU playback belongs in /dynamic');
 mustNotContain('.', 'CSGS: the clip was disposed.', '.csgs clip loading belongs in /dynamic');
 mustNotContain('./formats/csgs', 'SplatClipMesh', 'the decoder subpath stays free of playback');
+mustNotContain('.', 'asogBase', '.asog GPU playback belongs in /dynamic');
+mustNotContain('.', 'ASOG: the clip was disposed.', '.asog clip loading belongs in /dynamic');
+mustNotContain('./formats/asog', 'SplatClipMesh', 'the decoder subpath stays free of playback');
 mustNotContain('./unified', 'RadixSorter', 'radix sorting belongs in /sorting/radix');
 mustNotContain(
   './unified',
@@ -298,6 +303,11 @@ mustContain(
   'static-lod entry owns StaticLodSplatMesh',
 );
 mustContain('./dynamic', 'csgsLife', 'dynamic entry owns GPU clip playback');
+mustNotContain(
+  './dynamic',
+  'asogBase',
+  'the .asog loader is lazy-loaded, not in the dynamic entry',
+);
 mustContain('./dynamic', 'vlamSkinIndex01', 'dynamic entry owns skinned splats');
 mustNotContain('.', 'vlamSkinIndex01', 'skinned splats belong in /dynamic');
 mustContain('./relighting', 'attachRelighting', 'relighting entry owns the display attachment');
@@ -345,6 +355,9 @@ if (!allDist.includes('import("./formats/lcc.js")')) {
 }
 if (!allDist.includes('import("./formats/rad.js")')) {
   failures.push('no published chunk lazy-loads formats/rad.js');
+}
+if (!/import\("\.\/asog-clip-[\w-]+\.js"\)/.test(allDist) || !allDist.includes('asogBase')) {
+  failures.push('no published chunk lazy-loads the .asog loader with its GPU driver');
 }
 
 console.log(`\n"${'.'}" chunks:`);

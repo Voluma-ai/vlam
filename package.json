@@ -29,6 +29,7 @@
     "ply",
     "spz",
     "csgs",
+    "asog",
     "4dgs"
   ],
   "type": "module",
@@ -124,6 +125,10 @@
     "./formats/csgs": {
       "types": "./dist/formats/csgs/index.d.ts",
       "import": "./dist/formats/csgs.js"
+    },
+    "./formats/asog": {
+      "types": "./dist/formats/asog/index.d.ts",
+      "import": "./dist/formats/asog.js"
     },
     "./dynamic": {
       "types": "./dist/dynamic/index.d.ts",

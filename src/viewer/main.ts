@@ -18,6 +18,10 @@ import {
   xrSessionInit,
   createWebGPURenderer,
   yUpTransformForFormat,
+  SplatPool,
+  deviceMaxTextureSize,
+  resolveSplatBudget,
+  streamedPoolCapacityFactor,
   type SplatData,
   type SplatDeviceProfile,
   type SplatModifier,
@@ -90,6 +94,7 @@ import { applyOwnedScene, loadLocalRad } from './local-rad';
 import {
   SINGLE_FILE_EXTENSIONS,
   SINGLE_FILE_LIST,
+  isClipScene,
   isRadScene,
   isStreamedScene,
   isSupportedSplatFile,
@@ -244,6 +249,79 @@ async function loadProceduralGoose(params: URLSearchParams): Promise<SplatData> 
     animatedGeese.set(goose.data, { goose, rig, clips });
   }
   return goose.data;
+}
+
+/**
+ * Splat count of an `.asog` file from its header and manifest alone: the
+ * body is read from the start and the download cancelled once both are in,
+ * so a pool can be sized before the clip loads. Range requests are not used:
+ * GitHub Pages compresses before it slices, so a range of a few bytes does
+ * not come back as those bytes.
+ *
+ * @throws for anything that is not an `.asog` file.
+ */
+async function peekAsogCount(url: URL): Promise<number> {
+  const { ASOG_HEADER_SIZE, parseAsogHeader, parseAsogManifest } =
+    await import('../lib/formats/asog');
+  const response = await fetch(url);
+  if (!response.ok || !response.body) throw new Error(`${url.href}: HTTP ${response.status}`);
+  const reader = response.body.getReader();
+  let bytes = new Uint8Array(0);
+  const readTo = async (end: number): Promise<void> => {
+    while (bytes.length < end) {
+      const { done, value } = await reader.read();
+      if (done) throw new Error(`${url.href}: the file ends before byte ${end}.`);
+      const grown = new Uint8Array(bytes.length + value.length);
+      grown.set(bytes);
+      grown.set(value, bytes.length);
+      bytes = grown;
+    }
+  };
+  try {
+    await readTo(ASOG_HEADER_SIZE);
+    const header = parseAsogHeader(bytes.subarray(0, ASOG_HEADER_SIZE));
+    const manifestEnd = header.manifestOffset + header.manifestLength;
+    await readTo(manifestEnd);
+    return parseAsogManifest(bytes.subarray(header.manifestOffset, manifestEnd)).count;
+  } finally {
+    void reader.cancel().catch(() => undefined);
+  }
+}
+
+/** Splats a 4D clip mesh draws now (`SplatClipMesh.alive`), else 0. */
+function clipAlive(mesh: SplatMesh): number {
+  const alive = (mesh as { alive?: unknown }).alive;
+  return typeof alive === 'number' ? alive : 0;
+}
+
+/**
+ * Whether `mesh` plays a 4D clip (a `SplatClipMesh`, which the viewer imports
+ * lazily, hence no `instanceof`). A clip has no editable splat data: it can be
+ * neither painted nor separated.
+ */
+function isClipMesh(mesh: SplatMesh): boolean {
+  return 'clip' in mesh && 'animation' in mesh && 'playback' in mesh;
+}
+
+/** `tool`, or camera controls when `mesh` cannot take it. */
+function toolForMesh(tool: ViewerTool, mesh: SplatMesh): ViewerTool {
+  if (isClipMesh(mesh) && (tool === 'paint' || tool === 'select')) return 'none';
+  return normalizeViewerTool(tool, mesh instanceof StreamedSplatMesh);
+}
+
+/** Box of the 2nd to 98th percentile of `count` centres, per axis. */
+function percentileBounds(positions: Float32Array, count: number): THREE.Box3 {
+  const box = new THREE.Box3();
+  if (count === 0) return box;
+  const stride = Math.max(1, Math.floor(count / 50000));
+  for (let c = 0; c < 3; c++) {
+    const axis: number[] = [];
+    for (let i = 0; i < count; i += stride) axis.push(positions[i * 3 + c]!);
+    axis.sort((a, b) => a - b);
+    box.min.setComponent(c, axis[Math.floor(0.02 * (axis.length - 1))]!);
+    box.max.setComponent(c, axis[Math.ceil(0.98 * (axis.length - 1))]!);
+  }
+  return box;
 }
 
 /** Absolute URL or site-root path for a scene name from `?scene=`. */
@@ -2225,7 +2303,11 @@ async function main(): Promise<void> {
   //   distance  - false-color by camera distance (same band edges as LCC LODs)
   //   4dgs     - Faltwerk .csgs 4DGS clips dancing in the scene (csgs-effect.ts, lazy)
   // `?tool=paint` is enough to arm paint without a separate effects value.
-  let effectMode = params.get('effects') ?? (toolFromUrl === 'paint' ? 'paint' : null);
+  // `?clips=<url>[,…]` (4D clips, e.g. `.asog`) stands them in the scene through
+  // the `4dgs` effect, which it turns on when no other effect is named.
+  let effectMode =
+    params.get('effects') ??
+    (params.has('clips') ? '4dgs' : toolFromUrl === 'paint' ? 'paint' : null);
   /** Parks the visual effect while paint owns the stack; cleared on a local pick. */
   let parkedEffect: string | null = effectMode === 'paint' ? null : effectMode;
   // `defineChannel` throws on a redefinition, so a streamed scene's mask is
@@ -3094,6 +3176,12 @@ async function main(): Promise<void> {
   // the decoder and playback stay out of the viewer bundle. While it runs on
   // WebGPU, its unified draw replaces the scene mesh's own update.
   let csgsEffect: CsgsEffect | null = null;
+  /**
+   * WebGL2 with `?clips=`: the pool the streamed scene was loaded into, sized
+   * for the clips as well, so the `4dgs` effect can sort them with the scene
+   * in one pooled draw. Null otherwise.
+   */
+  let clipPool: SplatPool | null = null;
   let csgsSequence = 0;
   const teardownCsgs = (): void => {
     csgsSequence++;
@@ -3107,8 +3195,8 @@ async function main(): Promise<void> {
     try {
       const { mountCsgsEffect } = await import('./csgs-effect');
       if (!isCurrent()) return;
-      csgsEffect = await mountCsgsEffect({
-        clipUrl: params.get('csgs'),
+      const effect = await mountCsgsEffect({
+        clipUrl: params.get('clips') ?? params.get('csgs'),
         scene,
         splats,
         sceneTitle,
@@ -3116,8 +3204,11 @@ async function main(): Promise<void> {
         renderer,
         sortMetric,
         allowUnified: !benchmarkUnified,
+        pool: clipPool,
         isCurrent,
       });
+      if (isCurrent()) csgsEffect = effect;
+      else effect?.dispose();
     } catch (error) {
       if (sequence !== csgsSequence) return;
       console.error('4DGS clip failed to load', error);
@@ -3305,7 +3396,7 @@ async function main(): Promise<void> {
     }
     if (chrome.overlay) {
       overlay.textContent =
-        `${sceneTitle}${sceneNote} · ${(splatData?.count ?? 0).toLocaleString('en-US')} splats · ` +
+        `${sceneTitle}${sceneNote} · ${(splatData?.count ?? clipAlive(splats)).toLocaleString('en-US')} splats · ` +
         `${shLabel(splats)} · ${backendName}${fpsSuffix()}`;
     }
     // The streaming pill belongs to the streamed path only - a dropped scene
@@ -3373,6 +3464,8 @@ async function main(): Promise<void> {
     readonly worldBounds?: THREE.Box3;
     /** Source transforms already include host orientation/rotation/scale. */
     readonly preservesTransform?: boolean;
+    /** Shared scene-and-clips pool owned by this scene. */
+    readonly ownedPool?: SplatPool;
     /** Called every frame with the elapsed seconds, for a scene that animates itself. */
     readonly animate?: (elapsed: number) => void;
     /** Modifiers the scene needs under every effect (a rig's skin, then its lighting). */
@@ -3686,6 +3779,7 @@ async function main(): Promise<void> {
       next.mesh,
       () => mountScene(next, options),
       () => mounted && splats === next.mesh && next.mesh.parent === scene,
+      () => next.ownedPool?.dispose(),
     );
   };
 
@@ -3715,11 +3809,15 @@ async function main(): Promise<void> {
         benchmarkUnified.dispose();
         benchmarkUnified = null;
       }
+      // Release the clip tenants before disposing the scene's shared pool.
+      teardownCsgs();
       // The mark belongs to the scene it was placed in; it remounts on the next.
       unmountLogo();
       restoreXrMaterial();
       scene.remove(splats);
       splats.dispose();
+      clipPool?.dispose();
+      clipPool = null;
       mounted = false;
       // The paint tool holds the old mesh's range handles and cannot survive
       // the swap; benchmark points likewise belong to the old scene's space.
@@ -3762,18 +3860,24 @@ async function main(): Promise<void> {
       placeXrDiagnosticProbe(next.mesh);
     }
     if (options.frame ?? true) suppressStreamedUpdate = true;
+    clipPool = next.ownedPool ?? null;
     mounted = true;
     if (options.frame ?? true) {
       resetAdaptivePixelRatio();
       renderer.setPixelRatio(resolvePixelRatio());
       renderer.setSize(window.innerWidth, window.innerHeight);
     }
+    // A 4D clip has no splat data to paint: leave paint mode for the effect it
+    // parked before the tool picker drops the paint tool, whose change handler
+    // would otherwise rebuild the scene for paint.
+    if (effectMode === 'paint' && isClipMesh(next.mesh)) effectMode = parkedEffect;
     if (syncEditingToolAvailability) {
       syncEditingToolAvailability(next.mesh);
-    } else if (next.mesh instanceof StreamedSplatMesh) {
-      // The first scene mounts before chrome is built. Only destructive
-      // separation is restricted; persistent painting supports streamed LOD.
-      pointerTool = normalizeViewerTool(pointerTool, true);
+    } else {
+      // The first scene mounts before chrome is built. Streamed LOD only
+      // restricts destructive separation (persistent painting supports it); a
+      // clip takes neither paint nor separation.
+      pointerTool = toolForMesh(pointerTool, next.mesh);
     }
     if (
       next.mesh instanceof StreamedSplatMesh &&
@@ -4115,6 +4219,8 @@ async function main(): Promise<void> {
    */
   const setEffect = async (mode: string | null): Promise<void> => {
     if (mode === effectMode || !mounted) return;
+    // A 4D clip has no splat data to paint (the paint tool is hidden for it).
+    if (mode === 'paint' && isClipMesh(splats)) return;
     if (separateTool?.hasSeparatedParts && (mode === 'paint' || effectMode === 'paint')) {
       console.warn('Restore the separated scene before switching to or from paint mode.');
       return;
@@ -4198,6 +4304,37 @@ async function main(): Promise<void> {
     loadingProgress = null;
     loadingStatus = undefined;
     refreshOverlay();
+
+    // A 4D clip (`.asog`) plays as a looping `SplatClipMesh`, like `?scene=`.
+    if (isClipScene(file.name)) {
+      void file
+        .arrayBuffer()
+        .then((bytes) =>
+          loadClipScene(file.name, {
+            bytes,
+            isCurrent: () => sequence === dropSequence,
+          }),
+        )
+        .then(async (loaded) => {
+          if (sequence !== dropSequence) {
+            loaded.mesh.dispose();
+            return;
+          }
+          await applyScene(loaded);
+          dropMounted = true;
+        })
+        .catch((error: unknown) => {
+          if (sequence !== dropSequence) return;
+          loadingTitle = null;
+          loadingProgress = null;
+          loadingStatus = undefined;
+          refreshOverlay();
+          const info = describeLoadError(error, file.name);
+          showError({ title: info.title, message: info.message });
+          console.error(error);
+        });
+      return;
+    }
 
     // A single `.rad` streams rather than decoding whole: its LOD tree can be
     // tens of millions of splats, past what one data texture holds. A blob
@@ -4346,7 +4483,7 @@ async function main(): Promise<void> {
     if (fileInput && pickFile) {
       // Built from the shared list rather than written into the HTML, so the
       // dialog's filter cannot drift from what the loader actually reads.
-      fileInput.accept = SINGLE_FILE_EXTENSIONS.join(',');
+      fileInput.accept = [...SINGLE_FILE_EXTENSIONS, '.asog'].join(',');
       pickFile.addEventListener('click', () => fileInput.click());
       fileInput.addEventListener('change', () => {
         const file = fileInput.files?.[0];
@@ -4355,7 +4492,7 @@ async function main(): Promise<void> {
         fileInput.value = '';
         if (!file) return;
         // `accept` only filters the dialog; "All files" defeats it.
-        if (!isSupportedSplatFile(file.name)) {
+        if (!isSupportedSplatFile(file.name) && !isClipScene(file.name)) {
           showError({
             title: 'Cannot load that file',
             message: `"${file.name}" is not a splat file this viewer can read. Choose a ${SINGLE_FILE_LIST} file, or a folder holding a .lcc, .lcc2, .rad or lod-meta.json scene.`,
@@ -4437,7 +4574,170 @@ async function main(): Promise<void> {
   }
 
   /** Loads and mounts the `?scene=` scene the page was opened with. */
+  /**
+   * `?scene=<clip.asog>`: a 4D clip played by a `SplatClipMesh`, its `time`
+   * following the viewer clock (looping). `@voluma/vlam/dynamic` is imported
+   * on first use, like the `4dgs` effect. `?clipTime=<seconds>` holds one
+   * moment, and `?playback=gpu|frames` picks the path.
+   */
+  async function loadClipScene(
+    name: string,
+    local?: { bytes: ArrayBuffer; isCurrent: () => boolean },
+  ): Promise<LoadedScene> {
+    const { loadSplatClip, loadAsogClip, SplatClipMesh } = await import('../lib/dynamic');
+    const load = local
+      ? (options: Parameters<typeof loadAsogClip>[1]) =>
+          // A file name, not a URL: escaped so `%`, `#` or `?` in it stay part of the clip's name.
+          loadAsogClip(encodeURIComponent(name), { ...options, bytes: local.bytes })
+      : (options: Parameters<typeof loadSplatClip>[1]) =>
+          loadSplatClip(resolveSceneUrl(name), options);
+    const clip = await load({
+      onProgress: ({ stage, loaded, total, message }) => {
+        if (local ? !local.isCurrent() : dropMounted) return;
+        if (stage === 'fetch') noteLoadProgress(loaded, total);
+        else console.info(`[vlam] ${message}`);
+      },
+    });
+    let candidate: InstanceType<typeof SplatClipMesh> | undefined;
+    try {
+      const playbackParam = params.get('playback');
+      const mesh = new SplatClipMesh(clip, {
+        renderer,
+        sortStrategy: sortStrategyFor(name),
+        ...(playbackParam === 'gpu' || playbackParam === 'frames'
+          ? { playback: playbackParam }
+          : {}),
+        ...(requestedShBands() === undefined ? {} : { shBands: requestedShBands() }),
+      });
+      candidate = mesh;
+      mesh.addEventListener('error', ({ error }) => console.error('[vlam] clip playback', error));
+      // A clip pool has no source format, so it is never auto-oriented: .asog is
+      // y down (TRiGS/COLMAP), stood up by the same 180°-X turn as SOG and PLY.
+      if (orientation === 'y-up') mesh.rotation.x = Math.PI;
+      mesh.updateMatrixWorld(true);
+      const held = params.has('clipTime') ? Number(params.get('clipTime')) || 0 : null;
+      // Show the first frame before mounting: the clip uploads on `update`, and
+      // the viewer frames the camera on what the mesh holds when it mounts.
+      mesh.time = held ?? 0;
+      let shown = false;
+      void mesh.whenShown().then(
+        () => (shown = true),
+        () => (shown = true),
+      );
+      for (let wait = 0; !shown && wait < 200; wait++) {
+        mesh.update(camera, renderer);
+        await new Promise((resolve) => setTimeout(resolve, 16));
+      }
+      // Frame the subject, not the stray splats a capture carries far out (which
+      // the clip's bounds and its pool hold): the 2nd to 98th percentile of the
+      // first frame's centres.
+      const first = await clip.frame(Math.floor(mesh.frame));
+      const worldBounds = percentileBounds(first.positions, first.count).applyMatrix4(
+        mesh.matrixWorld,
+      );
+      // The soundtrack, if the file has one; it goes when the scene is replaced.
+      const sound =
+        held === null
+          ? await import('./clip-sound')
+              .then(({ createClipSound }) =>
+                createClipSound(clip, mesh, camera, { positional: false }),
+              )
+              .catch((error: unknown) => {
+                console.warn('[vlam] clip soundtrack could not be decoded', error);
+                return null;
+              })
+          : null;
+      // Three emits dispose even when a superseded drop never joined the scene.
+      const events = mesh as unknown as THREE.EventDispatcher<{ dispose: Record<string, never> }>;
+      events.addEventListener('dispose', () => {
+        sound?.dispose();
+        clip.dispose();
+      });
+      // The GPU path's motion modifier must survive the effect slots' rebuilds.
+      const motion = mesh.modifiers[0];
+      return {
+        mesh,
+        data: null,
+        title: sceneLabel(name),
+        sortScene: name,
+        note: ` (4D clip, ${mesh.playback})`,
+        paint: null,
+        ...(worldBounds.isEmpty() ? {} : { worldBounds }),
+        animate: (elapsed) => {
+          mesh.time = held ?? elapsed % clip.duration;
+          sound?.update();
+        },
+        ...(motion ? { baseModifiers: [motion] as const } : {}),
+      };
+    } catch (error) {
+      candidate?.dispose();
+      clip.dispose();
+      throw error;
+    }
+  }
+
+  /**
+   * The shared scene-and-clips pool for WebGL2 with `?clips=` (see
+   * {@link clipPool}), or null: on WebGPU, without clips, or when a clip's
+   * size cannot be read up front (only `.asog` headers are read). The scene
+   * gets a pinned budget so its share of the pool is known: that budget times
+   * the slack a streamed mesh would allocate for itself, plus each clip's
+   * splats and a row.
+   */
+  async function sharedClipPool(
+    budgetCap: number | undefined,
+    shBands: 0 | 1 | 2 | 3 | undefined,
+    stagedSwaps: boolean,
+  ): Promise<{ pool: SplatPool; budget: number } | null> {
+    const clips = params.get('clips');
+    const webgpu =
+      (renderer.backend as { isWebGPUBackend?: boolean } | undefined)?.isWebGPUBackend === true;
+    if (!clips || webgpu || benchmarkSeconds > 0) return null;
+    try {
+      const counts = await Promise.all(
+        clips
+          .split(',')
+          .map((url) => url.trim())
+          .filter((url) => url.length > 0)
+          .map((url) => peekAsogCount(new URL(url, location.href))),
+      );
+      const budget = resolveSplatBudget(pinnedBudget, deviceProfile, {
+        ...(budgetCap === undefined ? {} : { cap: budgetCap }),
+      });
+      const rows = (count: number) => Math.ceil(count / 2048) + 1;
+      const slack = streamedPoolCapacityFactor({
+        pageTable: isRadScene(sceneName),
+        stagedSwaps,
+        profile: deviceProfile,
+      });
+      const capacity =
+        (rows(budget * slack) + counts.reduce((sum, count) => sum + rows(count), 0)) * 2048;
+      const bands = shBands ?? 3;
+      const pool = new SplatPool({
+        capacity,
+        packedShBands: bands,
+        // One RGBA32UI texture per four packed words: 3, 8 or 15 coefficients.
+        packedShTextureCount: [0, 1, 2, 4][bands],
+        maxTextureSize: deviceMaxTextureSize(renderer),
+      });
+      console.info(
+        `[vlam] WebGL2 clips: one pool of ${capacity.toLocaleString('en-US')} splats ` +
+          `(scene budget ${budget.toLocaleString('en-US')}, clips ${counts.join(' + ')})`,
+      );
+      return { pool, budget };
+    } catch (error) {
+      console.warn('[vlam] WebGL2 clips: no shared pool; the clips draw over the scene.', error);
+      return null;
+    }
+  }
+
   async function loadInitialScene(): Promise<void> {
+    if (isClipScene(sceneName)) {
+      const loaded = await loadClipScene(sceneName);
+      if (!dropMounted) await applyScene(loaded);
+      else loaded.mesh.dispose();
+      return;
+    }
     if (!streamed) {
       // `?scene=` can point at a scene as big as any drop, so it reports the
       // download the same way.
@@ -4478,11 +4778,16 @@ async function main(): Promise<void> {
     // demo's performance mode pins the budget rather than the profile, so it
     // has to opt out of SH itself - it exists to cut exactly this cost.
     const shBands = requestedShBands() ?? (perfMode.enabled ? 0 : undefined);
+    // WebGL2 has no compute gather, so `?clips=` sorts the clips with the
+    // scene only when both draw from one pool: size it here, for the scene's
+    // budget and the clips, before the scene allocates its own.
+    const shared = await sharedClipPool(budgetCap, shBands, experimentalStagedSwaps);
     const mesh = await StreamedSplatMesh.load(resolveSceneUrl(sceneName), {
       onStatus: (status) => {
         if (!dropMounted) noteLoadStatus(status);
       },
-      budget: pinnedBudget,
+      ...(shared ? { pool: shared.pool, maxBudget: shared.budget } : {}),
+      budget: shared?.budget ?? pinnedBudget,
       deviceProfile,
       ...(budgetCap === undefined ? {} : { budgetCap }),
       experimentalStagedSwaps,
@@ -4526,12 +4831,15 @@ async function main(): Promise<void> {
             },
           }
         : {}),
+    }).catch((error: unknown) => {
+      shared?.pool.dispose();
+      throw error;
     });
-    // A file dropped while this was loading has already taken the screen -
-    // mounting now would replace it. Nothing referenced the mesh yet, so
-    // dispose it here or its chunk loader would keep streaming unseen.
+    // A drop that mounted during loading owns the screen. Release the
+    // unused mesh and its shared pool before returning.
     if (dropMounted) {
       mesh.dispose();
+      shared?.pool.dispose();
     } else {
       await applyScene(
         {
@@ -4541,6 +4849,7 @@ async function main(): Promise<void> {
           sortScene: sceneName,
           note: '',
           paint: null,
+          ...(shared ? { ownedPool: shared.pool } : {}),
         },
         { keepWelcome: keepWelcomeExpanded },
       );
@@ -5887,10 +6196,7 @@ async function main(): Promise<void> {
       : effectMode === 'paint'
         ? 'paint'
         : (toolFromUrl ?? (separateMode ? 'select' : 'none'));
-    const initialTool = normalizeViewerTool(
-      requestedInitialTool,
-      splats instanceof StreamedSplatMesh,
-    );
+    const initialTool = toolForMesh(requestedInitialTool, splats);
     const toolPicker = buildToolPicker(initialTool, (tool) => {
       if (tool === 'paint') {
         effectPicker.setValue(null);
@@ -5910,8 +6216,11 @@ async function main(): Promise<void> {
     if (effectMode === 'paint') effectPicker.setEnabled(false, PAINT_OWNS_EFFECTS);
     syncEditingToolAvailability = (mesh) => {
       const streamed = mesh instanceof StreamedSplatMesh;
-      toolPicker.setToolVisible('paint', true);
-      toolPicker.setToolVisible('select', !streamed);
+      const clip = isClipMesh(mesh);
+      // `applyScene` already left paint mode for a clip; show the effect it restored.
+      if (clip) effectPicker.setValue(effectMode);
+      toolPicker.setToolVisible('paint', !clip);
+      toolPicker.setToolVisible('select', !streamed && !clip);
     };
     syncEditingToolAvailability(splats);
     applyPickerReset = () => {
@@ -6461,9 +6770,11 @@ function buildEffectPicker(
     },
     { label: 'depth of field', mode: 'dof', title: 'Depth of field via the modifier hook (M13)' },
     {
-      label: 'Faltwerk 4DGS',
+      label: '4DGS clips',
       mode: '4dgs',
-      title: 'Faltwerk .csgs 4DGS clips dancing in the scene (from the faltwerk-demo site)',
+      title:
+        '4D clips in the scene: ?clips=<url>[,…] (.asog or a Faltwerk scene JSON), ' +
+        'else the Faltwerk demo clips',
     },
     { label: 'pulse', mode: 'demo', title: 'Opacity pulse (breathing alpha) + height tint (M7.2)' },
     {

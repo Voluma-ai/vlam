@@ -13,10 +13,11 @@ import type { SplatClipDriver } from './splat-clip-playback';
  *
  * - `'csgs'`: a Faltwerk CurveStream-GS clip, given by its `scene_*.json`
  *   (the `.csgs` sections sit next to it).
+ * - `'asog'`: an Animated SOG clip, one `.asog` file.
  *
  * @experimental
  */
-export const SPLAT_CLIP_FORMATS = ['csgs'] as const;
+export const SPLAT_CLIP_FORMATS = ['csgs', 'asog'] as const;
 
 /**
  * A clip format {@link loadSplatClip} reads (see {@link SPLAT_CLIP_FORMATS}).

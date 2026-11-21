@@ -6,7 +6,8 @@ import { defineConfig } from '@playwright/test';
  */
 export default defineConfig({
   testDir: './browser-tests',
-  testMatch: '**/hardware-projection.spec.ts',
+  // asog-playback adds its unified-draw pass on a native adapter only.
+  testMatch: ['**/hardware-projection.spec.ts', '**/asog-playback.spec.ts'],
   fullyParallel: false,
   use: { baseURL: 'http://127.0.0.1:4174', trace: 'retain-on-failure' },
   projects: [

@@ -30,6 +30,7 @@ import * as spz from '../formats/spz';
 import * as splat from '../formats/splat';
 import * as ksplat from '../formats/ksplat';
 import * as csgs from '../formats/csgs';
+import * as asog from '../formats/asog';
 import * as dynamic from '../dynamic';
 
 const movedOffRoot = [
@@ -471,19 +472,29 @@ describe('public API surface (@voluma/vlam/formats/*)', () => {
       'SplatClipStagingBudget',
       'computeSplatSkinWeights',
       'fetchCsgsScene',
+      'loadAsogClip',
       'loadCsgsClip',
       'loadSplatClip',
       'loadSplatGltf',
       'splatFrameBounds',
     ]);
-    expect(dynamic.SPLAT_CLIP_FORMATS).toEqual(['csgs']);
+    expect(dynamic.SPLAT_CLIP_FORMATS).toEqual(['csgs', 'asog']);
     expect(Object.getPrototypeOf(dynamic.SplatClipMesh)).toBe(vlam.SplatMesh);
     expect(Object.getPrototypeOf(dynamic.SkinnedSplatMesh)).toBe(vlam.SplatMesh);
     // The format driver stays internal: an app's clip needs only the public members.
     expectTypeOf<dynamic.SplatClip>().not.toHaveProperty('evaluate');
     expectTypeOf<dynamic.CsgsClip>().toExtend<dynamic.SplatClip>();
+    expectTypeOf<dynamic.AsogClip>().toExtend<dynamic.SplatClip>();
     expectTypeOf<dynamic.SplatClipMeshOptions['renderer']>().not.toBeUndefined();
     expect('SplatClipMesh' in vlam).toBe(false);
+  });
+
+  it('asog', () => {
+    expect(typeof asog.parseAsog).toBe('function');
+    expect(typeof asog.evaluateAsogFrame).toBe('function');
+    expect(asog.ASOG_MOTION_FLOATS).toBe(20);
+    // The GPU modifier is an implementation detail of /dynamic.
+    expect('asogMotionModifier' in asog).toBe(false);
   });
 
   it('ply / sog', () => {

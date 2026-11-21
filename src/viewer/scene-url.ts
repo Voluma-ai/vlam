@@ -25,8 +25,8 @@ export const SINGLE_FILE_EXTENSIONS = [
  */
 export const STREAMED_EXTENSIONS = ['.json', '.lcc2', '.lcc', '.rad'] as const;
 
-/** Human-readable list for the drop overlay and rejection messages. */
-export const SINGLE_FILE_LIST = SINGLE_FILE_EXTENSIONS.join(', ');
+/** Human-readable list for the drop overlay and rejection messages (clips included). */
+export const SINGLE_FILE_LIST = [...SINGLE_FILE_EXTENSIONS, '.asog'].join(', ');
 
 /** The path part of a scene name, whether it arrived as a URL or a bare path. */
 function scenePathname(name: string): string {
@@ -55,9 +55,22 @@ export function isRadScene(name: string): boolean {
   return splatNameExtension(scenePathname(name)) === '.rad';
 }
 
-/** Anything `?scene=` accepts: a self-contained file or a streamed manifest. */
+/**
+ * 4D splat clips `?scene=` plays through `SplatClipMesh` (`@voluma/vlam/dynamic`).
+ * `.csgs` is not here: its clips are given by a Faltwerk scene JSON, which the
+ * `4dgs` effect plays.
+ */
+export const CLIP_EXTENSIONS = ['.asog'] as const;
+
+/** Whether a scene URL or path is a 4D clip (see {@link CLIP_EXTENSIONS}). */
+export function isClipScene(name: string): boolean {
+  const extension = splatNameExtension(scenePathname(name));
+  return (CLIP_EXTENSIONS as readonly string[]).includes(extension);
+}
+
+/** Anything `?scene=` accepts: a self-contained file, a streamed manifest, or a clip. */
 export function isSupportedSceneUrl(name: string): boolean {
-  return isSupportedSplatFile(name) || isStreamedScene(name);
+  return isSupportedSplatFile(name) || isStreamedScene(name) || isClipScene(name);
 }
 
 /** A rejected URL, with the message to show under the input. */

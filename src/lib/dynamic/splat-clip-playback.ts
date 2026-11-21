@@ -52,6 +52,11 @@ export interface SplatClipFrameSource {
   evaluate(frame: number, recycle?: SplatFrameBuffers, sh?: boolean): Promise<SplatClipFrame>;
   /** {@link SplatClipFrame.section} of integer frame `frame`. */
   sectionOf(frame: number): number;
+  /**
+   * Evaluations the source runs at once (its workers); the frame path keeps
+   * this many in flight. Default 1.
+   */
+  readonly parallel?: number;
 }
 
 /** What a format's playback may do to its mesh (bound protected members). */

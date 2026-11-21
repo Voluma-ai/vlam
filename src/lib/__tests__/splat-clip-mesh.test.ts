@@ -444,6 +444,50 @@ describe('SplatClipMesh CPU playback', () => {
     expect(pending.map((p) => p.frame)).toEqual([1]);
   });
 
+  it('keeps the evaluator busy: the next frame is asked for while one waits', async () => {
+    const { clip, pending } = manualClip();
+    const { mesh, step } = makeMesh(clip, { playback: 'frames' });
+    await step();
+    pending.shift()!.resolve();
+    await settle();
+    await step();
+    expect(mesh.shownFrame).toBe(0);
+    mesh.time = 0.5 / 8;
+    await step();
+    expect(pending.map((p) => p.frame)).toEqual([1]);
+    pending.shift()!.resolve();
+    await settle();
+    // Still playing through frame 0 (a time that stands still is a pause).
+    mesh.time = 0.75 / 8;
+    await step();
+    // Frame 1 is evaluated but not due yet; frame 2 is already being evaluated.
+    expect(mesh.shownFrame).toBe(0);
+    expect(pending.map((p) => p.frame)).toEqual([2]);
+    mesh.time = 1 / 8;
+    await step();
+    expect(mesh.shownFrame).toBe(1);
+    pending.shift()!.resolve();
+    await settle();
+    mesh.time = 1.5 / 8;
+    await step();
+    // Two ahead at most: frame 3 is asked for, not 4.
+    expect(pending.map((p) => p.frame)).toEqual([3]);
+    mesh.time = 2 / 8;
+    await step();
+    expect(mesh.shownFrame).toBe(2);
+    // A jump drops the queued prefetch and asks for the frame jumped to.
+    pending.shift()!.resolve();
+    await settle();
+    mesh.time = 10 / 8;
+    await step();
+    expect(mesh.shownFrame).toBe(2);
+    expect(pending.map((p) => p.frame)).toEqual([10]);
+    pending.shift()!.resolve();
+    await settle();
+    await step();
+    expect(mesh.shownFrame).toBe(10);
+  });
+
   it('discards a stale frame after a jump', async () => {
     const { clip, pending } = manualClip();
     const { mesh, step } = makeMesh(clip, { playback: 'frames' });
