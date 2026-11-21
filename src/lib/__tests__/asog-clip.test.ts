@@ -93,6 +93,26 @@ describe('loadAsogClip', () => {
     await expect(clip.frame(0)).rejects.toThrow(/disposed/);
   });
 
+  it('names a clip from a file name with a stray % and releases its workers on a failed load', async () => {
+    const bytes = await syntheticAsog({ count: 300, coeffs: 0 });
+    const clip = await loadAsogClip('https://example.test/50%.asog', {
+      bytes: bytes.slice().buffer,
+    });
+    expect(clip.name).toBe('50%');
+    clip.dispose();
+
+    InProcessWorker.instances = [];
+    const failing = loadAsogClip('https://example.test/ball.asog', {
+      bytes: bytes.slice().buffer,
+      onProgress: ({ stage, loaded }) => {
+        if (stage === 'decode' && loaded === 1) throw new Error('progress handler failed');
+      },
+    });
+    await expect(failing).rejects.toThrow(/progress handler failed/);
+    expect(InProcessWorker.instances.length).toBeGreaterThan(0);
+    expect(InProcessWorker.instances.every((worker) => worker.terminated)).toBe(true);
+  });
+
   it('starts the second worker only when the frame path asks for frames', async () => {
     serve(await syntheticAsog({ count: 1500, coeffs: 0 }));
     // Frames take longer than the clip's frame interval below (20 ms), so a

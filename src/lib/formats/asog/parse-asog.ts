@@ -113,6 +113,13 @@ const STREAM_CHANNELS: Readonly<Record<string, number>> = {
   g: 5,
 };
 
+/**
+ * Deflate's largest expansion: one compressed byte yields at most about 1032
+ * bytes. A stream whose shape needs more than this times its compressed size
+ * is not a real stream.
+ */
+const MAX_INFLATE_RATIO = 1032;
+
 function fail(why: string): never {
   throw new Error(`ASOG: ${why}`);
 }
@@ -252,6 +259,41 @@ export async function parseAsog(input: ArrayBuffer | Uint8Array): Promise<AsogDa
   const hasSh = !!shN && present.has('shlabels') && present.has('shpalette');
   const shBands = hasSh ? asogShBands(shN.coeffs) : 0;
   if (hasSh && shBands === 0) fail(`shN.coeffs ${shN.coeffs} is not 3, 8 or 15.`);
+  if (hasSh && !(Number.isInteger(shN.count) && shN.count > 0)) {
+    fail(`shN.count ${shN.count} is not a palette size.`);
+  }
+
+  // Every stream's shape, and a size its compressed bytes can hold, before
+  // `count` sizes any allocation: a few bytes of manifest must not ask for
+  // gigabytes.
+  const shapeOf = (s: AsogStreamDesc): { rows: number; channels: number } | null => {
+    if (s.name === 'shpalette') return hasSh ? { rows: shN.count, channels: shN.coeffs * 3 } : null;
+    if (s.name === 'shlabels') return hasSh ? { rows: n, channels: 1 } : null;
+    if (!(REQUIRED_STREAMS as readonly string[]).includes(s.name)) return null;
+    return { rows: n, channels: STREAM_CHANNELS[s.name] ?? 1 };
+  };
+  for (const s of manifest.streams) {
+    const shape = shapeOf(s);
+    if (!shape) continue;
+    if (s.count !== shape.rows || s.channels !== shape.channels) {
+      fail(
+        `stream "${s.name}" is ${s.count} × ${s.channels}, expected ${shape.rows} × ${shape.channels}.`,
+      );
+    }
+    if (!(Number.isInteger(s.planes) && s.planes >= 1 && s.planes <= 6)) {
+      fail(`stream "${s.name}" has ${s.planes} byte planes.`);
+    }
+    if (
+      !(Number.isInteger(s.byteOffset) && s.byteOffset >= 0) ||
+      !(Number.isInteger(s.byteLength) && s.byteLength >= 0)
+    ) {
+      fail(`stream "${s.name}" has no valid byte range.`);
+    }
+    const size = s.count * s.channels * s.planes;
+    if (size > s.byteLength * MAX_INFLATE_RATIO + 64) {
+      fail(`stream "${s.name}" needs ${size} bytes, more than its ${s.byteLength} can inflate to.`);
+    }
+  }
 
   const centers = new Float32Array(n * 3);
   const rotations = new Float32Array(n * 4);
@@ -420,13 +462,8 @@ export async function parseAsog(input: ArrayBuffer | Uint8Array): Promise<AsogDa
   const decoded = new Set<string>();
   for (const s of [...manifest.streams].sort((a, b) => a.byteOffset - b.byteOffset)) {
     const decode = decoders[s.name];
+    // Shapes and byte ranges were checked above.
     if (!decode || (!hasSh && (s.name === 'shlabels' || s.name === 'shpalette'))) continue;
-    const rows = s.name === 'shpalette' ? shN!.count : n;
-    const channels = s.name === 'shpalette' ? shN!.coeffs * 3 : (STREAM_CHANNELS[s.name] ?? 1);
-    if (s.count !== rows || s.channels !== channels) {
-      fail(`stream "${s.name}" is ${s.count} × ${s.channels}, expected ${rows} × ${channels}.`);
-    }
-    if (!(s.planes >= 1 && s.planes <= 6)) fail(`stream "${s.name}" has ${s.planes} byte planes.`);
     for (const need of STREAM_NEEDS[s.name] ?? []) {
       if (!decoded.has(need)) fail(`stream "${s.name}" comes before "${need}", which it needs.`);
     }

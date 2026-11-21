@@ -16,10 +16,7 @@ the centre (1 MB, written by `scripts/generate-asog-sample.mjs`). It shows the
 playback, not what the format can look like, and it has no sound. Add
 `?src=<url>` to the live page to play a real capture; the server has to allow
 cross-origin reads. The **Play sound** button appears only for a clip that
-carries a soundtrack. The format's
-[own sample clips](https://github.com/arrival-space/animated-sog/tree/main/test-data)
-are served that way from `https://arrival-space.github.io/animated-sog/test-data/`
-(they have no sound either).
+carries a soundtrack.
 
 ## One file
 
@@ -54,8 +51,9 @@ Browsers only start audio after a user gesture, hence the button.
 
 On WebGPU a `SplatModifier` evaluates every splat's motion on the GPU from a
 texture uploaded once, so a frame costs no CPU work and no upload. On WebGL2
-the clip's worker evaluates whole frames and the mesh writes them into its
-pool (about 50 ms per frame for 400,000 splats on a desktop CPU).
+the clip's two workers evaluate whole frames, skipping every splat outside
+its short life, and the mesh writes them into its pool (about 27 ms per frame
+for 400,000 splats on a desktop CPU).
 `mesh.playback` says which one the constructor picked.
 
 ## The code

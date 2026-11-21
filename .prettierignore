@@ -18,4 +18,3 @@ src/lib/__tests__/fixtures
 # The demo pages' inline CSS reads worse formatted: Prettier splits shorthands
 # like `font: 13px/1.5 system-ui, sans-serif` across three lines.
 *.html
-src/lib/__tests__/fixtures/animated-sog

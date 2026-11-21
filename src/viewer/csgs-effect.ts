@@ -147,8 +147,25 @@ function createCreditBanner(demoClips: boolean, faltwerk: boolean, asog: boolean
   return banner;
 }
 
-/** Decoded clips by URL, kept across effect switches (decoding takes ~1 s each). */
+/**
+ * Decoded clips by URL, kept across effect switches (decoding takes ~1 s
+ * each). `.asog` clips are released with the effect instead (see
+ * {@link releaseAsogClips}).
+ */
 const clips = new Map<string, Promise<SplatClip>>();
+
+/**
+ * Drops the `.asog` clips among `loaded` from the cache and disposes them: each
+ * holds its decode workers with a decoded copy of the file (about 75 MB per
+ * 400k splats), too much to keep for a later switch back.
+ */
+function releaseAsogClips(loaded: readonly { clip: SplatClip; href: string }[]): void {
+  for (const { clip, href } of loaded) {
+    if (clip.format !== 'asog') continue;
+    clips.delete(href);
+    clip.dispose();
+  }
+}
 
 function loadClip(url: URL): Promise<SplatClip> {
   let clip = clips.get(url.href);
@@ -200,16 +217,20 @@ export async function mountCsgsEffect(host: CsgsEffectHost): Promise<CsgsEffect 
   // frame's bounds set where each dancer's feet are.
   const loaded = await Promise.all(
     urls.map(async (url) => {
-      const clip = await loadClip(new URL(url, location.href));
+      const { href } = new URL(url, location.href);
+      const clip = await loadClip(new URL(href));
       // .asog is y down: the mesh turns 180° about X, so its first frame's
       // bounds are taken in that turned frame (y and z negated).
       const yDown = clip.format === 'asog';
       const first = await clip.frame(0);
       const bounds = yDown ? subjectBounds(first.positions, first.count) : splatFrameBounds(first);
-      return { clip, yDown, bounds };
+      return { clip, href, yDown, bounds };
     }),
   );
-  if (!host.isCurrent()) return null;
+  if (!host.isCurrent()) {
+    releaseAsogClips(loaded);
+    return null;
+  }
   const { scene, splats, camera, renderer, sortMetric } = host;
   // The clips are already Y-up; draw settings follow the scene's, which the
   // unified draw requires of every source anyway.
@@ -266,6 +287,7 @@ export async function mountCsgsEffect(host: CsgsEffectHost): Promise<CsgsEffect 
     for (const sound of sounds) sound.dispose();
     for (const group of groups) scene.remove(group);
     for (const mesh of meshes) mesh.dispose();
+    releaseAsogClips(loaded);
     banner.remove();
   };
   try {

@@ -63,8 +63,12 @@ export interface AsogClipSource {
   gpuData(): Promise<AsogGpuData>;
 }
 
-/** Why the GPU path cannot play `count` splats on this renderer, or null. */
-function gpuBlocker(renderer: THREE.WebGPURenderer, count: number): string | null {
+/** Why the GPU path cannot play `count` splats of `clipCount` clips on this renderer, or null. */
+function gpuBlocker(
+  renderer: THREE.WebGPURenderer,
+  count: number,
+  clipCount: number,
+): string | null {
   const webgpu =
     (renderer.backend as { isWebGPUBackend?: boolean } | undefined)?.isWebGPUBackend === true;
   if (!webgpu) return 'it needs the WebGPU backend';
@@ -76,6 +80,10 @@ function gpuBlocker(renderer: THREE.WebGPURenderer, count: number): string | nul
       `${count} splats need ${rows} motion texture rows, beyond the device's ` +
       `maxTextureDimension2D (${maxTexture}) or the ${MAX_MOTION_TEXELS} texels a float32 index addresses`
     );
+  }
+  // The clip table is one row of two texels per clip.
+  if (clipCount * 2 > maxTexture) {
+    return `${clipCount} clips need a clip table wider than maxTextureDimension2D (${maxTexture})`;
   }
   return null;
 }
@@ -95,7 +103,11 @@ export function asogClipDriver(
     plan(request: SplatClipPlanRequest) {
       const framePath = framePlan(clip as SplatClip, frameSource);
       if (request.playback === 'frames') return framePath;
-      const why = gpuBlocker(request.renderer, source.count);
+      const why = gpuBlocker(
+        request.renderer,
+        source.count,
+        source.clips.length / ASOG_CLIP_FLOATS,
+      );
       if (why !== null) {
         if (request.playback === 'gpu') {
           throw new Error(`SplatClipMesh: playback 'gpu' is not possible: ${why}.`);
@@ -121,6 +133,8 @@ class AsogGpuPlayback implements ClipPlayback {
   /** μ, σ and flags per splat, kept for {@link alive}. */
   private timing: Float32Array | null = null;
   private poolDone = 0;
+  /** Whether the motion texture and the base channel are written. */
+  private motionStaged = false;
   private staged = false;
   private failed = false;
   private released = false;
@@ -229,22 +243,29 @@ class AsogGpuPlayback implements ClipPlayback {
     this.state.clips.dispose();
   }
 
-  /** Uploads up to `budget` bytes of the canonical splats; returns the bytes used. */
+  /**
+   * Uploads up to `budget` bytes of the canonical splats; returns the bytes
+   * used. The motion texture and the base channel go first, whole and once
+   * (the texture is one upload); the pool follows a chunk at a time, at
+   * least one chunk per call once they are written, so staging always ends.
+   */
   private stage(budget: number): number {
     const data = this.data;
     if (!data || this.staged) return 0;
     let used = 0;
     const { pool } = data;
-    if (this.poolDone === 0) {
+    if (!this.motionStaged) {
       const base = new Float32Array(pool.count);
       for (let i = 0; i < pool.count; i++) base[i] = i * ASOG_MOTION_TEXELS;
       this.host.writeChannel(this.range, ASOG_BASE_CHANNEL, base);
       const image = this.state.motion.image.data as Float32Array;
       image.set(data.motion);
       this.state.motion.needsUpdate = true;
+      this.motionStaged = true;
       used += data.motion.byteLength + pool.count * 4;
+      if (used >= budget) return used;
     }
-    while (this.poolDone < pool.count && used < budget) {
+    while (this.poolDone < pool.count && (used === 0 || used < budget)) {
       const start = this.poolDone;
       const end = Math.min(pool.count, start + POOL_CHUNK);
       this.host.overwriteRangeData(this.range, sliceSplats(pool, start, end), start);
@@ -267,9 +288,11 @@ class AsogGpuPlayback implements ClipPlayback {
     const clipCount = clips.length / ASOG_CLIP_FLOATS;
     const local = new Float64Array(clipCount);
     const weight = new Float64Array(clipCount);
+    // The clip edges are decided on the float32 time the modifier sees.
+    const t32 = Math.fround(t);
     for (let c = 0; c < clipCount; c++) {
       local[c] = asogClipLocalTime(clips, c, t);
-      weight[c] = asogClipWeight(clips, c, t);
+      weight[c] = asogClipWeight(clips, c, t32);
     }
     let alive = 0;
     for (let i = 0; i < this.source.count; i++) {

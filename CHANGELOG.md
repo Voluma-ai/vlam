@@ -29,22 +29,22 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   [Animated SOG](https://github.com/arrival-space/animated-sog) v1 files
   (by the `.asog` extension or `format: 'asog'`), also through
   `loadAsogClip`, which returns an `AsogClip` with the soundtrack's bytes
-  (`audio`, not played) and `clipCount`. The loader, its decode worker and
-  GPU driver are a separate chunk (about 13 kB gzip) fetched on the first
-  `.asog` load, so `@voluma/vlam/dynamic` stays the size it was.
+  (`audio`, not played) and `clipCount`. On WebGPU a `SplatModifier`
+  evaluates every splat's TRiGS rigid-body motion from a motion texture
+  uploaded once; WebGL2 and worker sorters play worker-evaluated frames, which
+  skip every splat outside its life window (a 400k-splat clip: 27 ms per
+  frame, from 54 ms). Multi-clip timelines with fades are supported. The
+  worker-safe decoder and CPU motion are on the new `@voluma/vlam/formats/asog`
+  subpath (`parseAsog`, `evaluateAsogFrame`), a port of the MIT reference
+  decoder that keeps the motion in float32. Clips are y down: turn the mesh
+  180° about X. The loader, its decode worker and GPU driver are a separate
+  chunk (about 13 kB gzip) fetched on the first `.asog` load; the
+  `@voluma/vlam/dynamic` entry grows by about 3 kB gzip.
+  `/asog-harness.html?src=<url>` plays a clip on the dev server.
 - **`SplatClipMesh` frame path evaluates ahead.** Frames are requested as
   soon as there is room in the prefetch window instead of after the previous
   one is shown, and a clip whose source has several workers keeps that many
-  evaluations in flight (`.asog` uses two; `.csgs` one). `.asog` frames also
-  skip every splat outside its life window (Rubloff, 400k splats: 27 ms per
-  frame, from 54 ms). On WebGPU a `SplatModifier`
-  evaluates every splat's TRiGS rigid-body motion from a motion texture
-  uploaded once; WebGL2 and worker sorters play worker-evaluated frames.
-  Multi-clip timelines with fades are supported. The worker-safe decoder and
-  CPU motion are on the new `@voluma/vlam/formats/asog` subpath (`parseAsog`,
-  `evaluateAsogFrame`), a port of the MIT reference decoder that keeps the
-  motion in float32. Clips are y down: turn the mesh 180° about X.
-  `/asog-harness.html?src=<url>` plays a clip on the dev server.
+  evaluations in flight (`.asog` uses two; `.csgs` one).
 - **`PooledUnifiedSplatMesh` `liveContent` sources (experimental).**
   `addSource(mesh, { liveContent: true })` uploads a source that rewrites
   fixed slots every frame (a `SplatClipMesh` on its frame path) as it is

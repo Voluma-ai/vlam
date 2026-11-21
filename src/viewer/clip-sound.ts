@@ -2,7 +2,8 @@
  * A 4D clip's soundtrack in the demo viewer: an `.asog` file's `audio`, played
  * as a `THREE.PositionalAudio` on the clip's mesh (so it comes from where the
  * clip stands) and kept at the mesh's `time`, restarted there whenever the two
- * drift more than 60 ms apart (each loop, a pause, a hitch).
+ * drift more than 60 ms apart (each loop, a hitch), and stopped while the
+ * clip's time holds still.
  *
  * Browsers start audio only after a user gesture: the sound waits for the
  * first click, tap or key press on the page.
@@ -43,17 +44,34 @@ export async function createClipSound(
   sound.setBuffer(buffer);
   mesh.add(sound);
 
-  const resume = (): void => void context.resume();
-  for (const type of ['pointerdown', 'keydown'] as const) {
-    addEventListener(type, resume, { once: true, capture: true });
+  // A touch activates the page on its release, not its `pointerdown`, so the
+  // context is resumed on every gesture until one of them lets it run.
+  const gestures = ['pointerdown', 'pointerup', 'touchend', 'click', 'keydown'] as const;
+  const stopListening = (): void => {
+    for (const type of gestures) removeEventListener(type, resume, { capture: true });
+  };
+  const resume = (): void => {
+    void context.resume().then(() => {
+      if (context.state === 'running') stopListening();
+    });
+  };
+  if (context.state !== 'running') {
+    for (const type of gestures) addEventListener(type, resume, { capture: true });
   }
 
   let started = 0; // context time at which the sound was at second 0
+  let lastTime = Number.NaN;
   return {
     update(): void {
       if (context.state !== 'running') return;
       const time = mesh.time;
-      if (time >= buffer.duration) return; // a shorter sound waits for the loop
+      const held = time === lastTime;
+      lastTime = time;
+      if (held || time >= buffer.duration) {
+        // A held clip is silent, and a shorter sound waits for the loop.
+        if (sound.isPlaying) sound.stop();
+        return;
+      }
       const heard = context.currentTime - started;
       if (sound.isPlaying && Math.abs(heard - time) < MAX_DRIFT) return;
       if (sound.isPlaying) sound.stop();
@@ -65,9 +83,7 @@ export async function createClipSound(
       if (sound.isPlaying) sound.stop();
       sound.removeFromParent();
       sound.disconnect();
-      for (const type of ['pointerdown', 'keydown'] as const) {
-        removeEventListener(type, resume, { capture: true });
-      }
+      stopListening();
     },
   };
 }

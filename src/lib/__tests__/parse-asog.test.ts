@@ -30,6 +30,36 @@ import { getHalfTable } from './fixtures/animated-sog/half.js';
  * anchor, Ω and G in half floats, so motion agrees to half precision.
  */
 
+/** `bytes` with its JSON manifest edited by `edit` (the payload moves after it). */
+function withManifest(
+  bytes: Uint8Array,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- edits write invalid values on purpose
+  edit: (manifest: any) => unknown,
+): Uint8Array {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const field = (offset: number) => Number(view.getBigUint64(offset, true));
+  const manifestOffset = field(16);
+  const manifestLength = field(24);
+  const payloadOffset = field(32);
+  const payloadLength = field(40);
+  const manifest: unknown = JSON.parse(
+    new TextDecoder().decode(bytes.subarray(manifestOffset, manifestOffset + manifestLength)),
+  );
+  edit(manifest);
+  const json = new TextEncoder().encode(JSON.stringify(manifest));
+  const payload = bytes.subarray(payloadOffset, payloadOffset + payloadLength);
+  const out = new Uint8Array(64 + json.length + payload.length);
+  out.set(bytes.subarray(0, 64));
+  out.set(json, 64);
+  out.set(payload, 64 + json.length);
+  const header = new DataView(out.buffer);
+  header.setBigUint64(16, 64n, true);
+  header.setBigUint64(24, BigInt(json.length), true);
+  header.setBigUint64(32, BigInt(64 + json.length), true);
+  header.setBigUint64(40, BigInt(payload.length), true);
+  return out;
+}
+
 async function both(bytes: Uint8Array): Promise<{ ours: AsogData; ref: ReferenceAsogData }> {
   const ours = await parseAsog(bytes.slice());
   const ref = await decodeAsog(bytes.slice().buffer);
@@ -212,13 +242,31 @@ describe('parseAsog', () => {
     const bytes = await encodeAsog(manifest, streams);
     await expect(parseAsog(bytes.subarray(0, bytes.length - 10))).rejects.toThrow(/truncated/);
   });
+
+  it('rejects a manifest that would divide by zero or allocate past its streams', async () => {
+    const { manifest, streams } = syntheticAsogStreams({ count: 64, coeffs: 0 });
+    const bytes = await encodeAsog(manifest, streams);
+    // A splat count no compressed stream of this size can hold: refused
+    // before anything is allocated for it.
+    const huge = withManifest(bytes, (m) => {
+      m.count = 2 ** 30;
+      for (const s of m.streams) if (s.count === 64) s.count = 2 ** 30;
+    });
+    await expect(parseAsog(huge)).rejects.toThrow(/can inflate to/);
+    const zeroScale = withManifest(bytes, (m) => (m.mu.scale = 0));
+    await expect(parseAsog(zeroScale)).rejects.toThrow(/mu\.scale must be positive/);
+    const zeroRadius = withManifest(bytes, (m) => (m.motion.r_min = 0));
+    await expect(parseAsog(zeroRadius)).rejects.toThrow(/motion\.r_min must be positive/);
+    const badClip = withManifest(bytes, (m) => (m.clips[0].global.activeTimeEnd = 'end'));
+    await expect(parseAsog(badClip)).rejects.toThrow(/clips\[0\]\.global\.activeTimeEnd/);
+    // The untouched file still parses.
+    await expect(parseAsog(withManifest(bytes, () => undefined))).resolves.toBeTruthy();
+  });
 });
 
 /**
- * The Rubloff sample of animated-sog, when a local copy is present
- * (`VLAM_ASOG_SAMPLE=<path>`, default the scratch clone used during
- * development). The capture belongs to Infinite Realities and is not
- * committed; the check skips without it.
+ * A real captured clip, when `VLAM_ASOG_SAMPLE=<path to an .asog>` names a
+ * local copy. Captures are not committed; the check skips without one.
  */
 const SAMPLE = process.env.VLAM_ASOG_SAMPLE ?? '';
 describe.skipIf(!SAMPLE || !existsSync(SAMPLE))('parseAsog on a local real clip', () => {

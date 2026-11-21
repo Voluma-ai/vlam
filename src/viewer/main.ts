@@ -294,6 +294,21 @@ function clipAlive(mesh: SplatMesh): number {
   return typeof alive === 'number' ? alive : 0;
 }
 
+/**
+ * Whether `mesh` plays a 4D clip (a `SplatClipMesh`, which the viewer imports
+ * lazily, hence no `instanceof`). A clip has no editable splat data: it can be
+ * neither painted nor separated.
+ */
+function isClipMesh(mesh: SplatMesh): boolean {
+  return 'clip' in mesh && 'animation' in mesh && 'playback' in mesh;
+}
+
+/** `tool`, or camera controls when `mesh` cannot take it. */
+function toolForMesh(tool: ViewerTool, mesh: SplatMesh): ViewerTool {
+  if (isClipMesh(mesh) && (tool === 'paint' || tool === 'select')) return 'none';
+  return normalizeViewerTool(tool, mesh instanceof StreamedSplatMesh);
+}
+
 /** Box of the 2nd to 98th percentile of `count` centres, per axis. */
 function percentileBounds(positions: Float32Array, count: number): THREE.Box3 {
   const box = new THREE.Box3();
@@ -3852,12 +3867,17 @@ async function main(): Promise<void> {
       renderer.setPixelRatio(resolvePixelRatio());
       renderer.setSize(window.innerWidth, window.innerHeight);
     }
+    // A 4D clip has no splat data to paint: leave paint mode for the effect it
+    // parked before the tool picker drops the paint tool, whose change handler
+    // would otherwise rebuild the scene for paint.
+    if (effectMode === 'paint' && isClipMesh(next.mesh)) effectMode = parkedEffect;
     if (syncEditingToolAvailability) {
       syncEditingToolAvailability(next.mesh);
-    } else if (next.mesh instanceof StreamedSplatMesh) {
-      // The first scene mounts before chrome is built. Only destructive
-      // separation is restricted; persistent painting supports streamed LOD.
-      pointerTool = normalizeViewerTool(pointerTool, true);
+    } else {
+      // The first scene mounts before chrome is built. Streamed LOD only
+      // restricts destructive separation (persistent painting supports it); a
+      // clip takes neither paint nor separation.
+      pointerTool = toolForMesh(pointerTool, next.mesh);
     }
     if (
       next.mesh instanceof StreamedSplatMesh &&
@@ -4199,6 +4219,8 @@ async function main(): Promise<void> {
    */
   const setEffect = async (mode: string | null): Promise<void> => {
     if (mode === effectMode || !mounted) return;
+    // A 4D clip has no splat data to paint (the paint tool is hidden for it).
+    if (mode === 'paint' && isClipMesh(splats)) return;
     if (separateTool?.hasSeparatedParts && (mode === 'paint' || effectMode === 'paint')) {
       console.warn('Restore the separated scene before switching to or from paint mode.');
       return;
@@ -4565,7 +4587,8 @@ async function main(): Promise<void> {
     const { loadSplatClip, loadAsogClip, SplatClipMesh } = await import('../lib/dynamic');
     const load = local
       ? (options: Parameters<typeof loadAsogClip>[1]) =>
-          loadAsogClip(name, { ...options, bytes: local.bytes })
+          // A file name, not a URL: escaped so `%`, `#` or `?` in it stay part of the clip's name.
+          loadAsogClip(encodeURIComponent(name), { ...options, bytes: local.bytes })
       : (options: Parameters<typeof loadSplatClip>[1]) =>
           loadSplatClip(resolveSceneUrl(name), options);
     const clip = await load({
@@ -6173,10 +6196,7 @@ async function main(): Promise<void> {
       : effectMode === 'paint'
         ? 'paint'
         : (toolFromUrl ?? (separateMode ? 'select' : 'none'));
-    const initialTool = normalizeViewerTool(
-      requestedInitialTool,
-      splats instanceof StreamedSplatMesh,
-    );
+    const initialTool = toolForMesh(requestedInitialTool, splats);
     const toolPicker = buildToolPicker(initialTool, (tool) => {
       if (tool === 'paint') {
         effectPicker.setValue(null);
@@ -6196,8 +6216,11 @@ async function main(): Promise<void> {
     if (effectMode === 'paint') effectPicker.setEnabled(false, PAINT_OWNS_EFFECTS);
     syncEditingToolAvailability = (mesh) => {
       const streamed = mesh instanceof StreamedSplatMesh;
-      toolPicker.setToolVisible('paint', true);
-      toolPicker.setToolVisible('select', !streamed);
+      const clip = isClipMesh(mesh);
+      // `applyScene` already left paint mode for a clip; show the effect it restored.
+      if (clip) effectPicker.setValue(effectMode);
+      toolPicker.setToolVisible('paint', !clip);
+      toolPicker.setToolVisible('select', !streamed && !clip);
     };
     syncEditingToolAvailability(splats);
     applyPickerReset = () => {

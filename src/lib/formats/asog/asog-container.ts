@@ -162,6 +162,12 @@ function finite(value: unknown, label: string): number {
   return value;
 }
 
+function positive(value: unknown, label: string): number {
+  const number = finite(value, label);
+  if (!(number > 0)) fail(`manifest ${label} must be positive.`);
+  return number;
+}
+
 function codebook(value: unknown, label: string): void {
   const book = (value as { codebook?: unknown } | undefined)?.codebook;
   if (!Array.isArray(book) || book.length !== 256) {
@@ -195,6 +201,24 @@ export function parseAsogManifest(bytes: Uint8Array): AsogManifest {
   if (!(fps > 0) || !(duration > 0)) fail('the timeline needs a positive frame rate and duration.');
   if (!Array.isArray(manifest.clips) || manifest.clips.length === 0)
     fail('the manifest has no clips.');
+  manifest.clips.forEach((clip: Partial<AsogClipDesc> | null, c: number) => {
+    const label = `clips[${c}]`;
+    for (const key of [
+      'frameStart',
+      'activeTimeStart',
+      'activeTimeEnd',
+      'coreTimeStart',
+      'coreTimeEnd',
+    ] as const) {
+      finite(clip?.global?.[key], `${label}.global.${key}`);
+    }
+    finite(clip?.local?.frameStart, `${label}.local.frameStart`);
+    for (const key of ['fadeInFrames', 'fadeOutFrames'] as const) {
+      const frames = clip?.render?.[key];
+      if (frames !== undefined && !(finite(frames, `${label}.render.${key}`) >= 0))
+        fail(`manifest ${label}.render.${key} is negative.`);
+    }
+  });
   for (const axis of [0, 1, 2]) {
     finite(manifest.means?.mins?.[axis], `means.mins[${axis}]`);
     finite(manifest.means?.maxs?.[axis], `means.maxs[${axis}]`);
@@ -202,14 +226,22 @@ export function parseAsogManifest(bytes: Uint8Array): AsogManifest {
   codebook(manifest.scales, 'scales');
   codebook(manifest.sh0, 'sh0');
   if (manifest.shN) codebook(manifest.shN, 'shN');
-  finite(manifest.mu?.scale, 'mu.scale');
+  // Divisors of the dequantisation (format section 4.2): zero would turn
+  // every splat's motion into NaN or infinity.
+  positive(manifest.mu?.scale, 'mu.scale');
   finite(manifest.logsigma?.min, 'logsigma.min');
   finite(manifest.logsigma?.max, 'logsigma.max');
-  finite(manifest.logsigma?.bits, 'logsigma.bits');
-  for (const key of ['qp', 'qa', 'sm', 'midO', 'midG', 'mref_samples', 'r_min'] as const) {
+  const bits = finite(manifest.logsigma?.bits, 'logsigma.bits');
+  if (!Number.isInteger(bits) || bits < 1 || bits > 16)
+    fail('manifest logsigma.bits must be an integer from 1 to 16.');
+  for (const key of ['qp', 'qa', 'midO', 'midG'] as const) {
     finite(manifest.motion?.[key], `motion.${key}`);
   }
-  if (!(manifest.motion.mref_samples >= 2)) fail('motion.mref_samples must be at least 2.');
+  positive(manifest.motion?.sm, 'motion.sm');
+  positive(manifest.motion?.r_min, 'motion.r_min');
+  const samples = finite(manifest.motion?.mref_samples, 'motion.mref_samples');
+  if (!Number.isInteger(samples) || samples < 2)
+    fail('motion.mref_samples must be an integer of at least 2.');
   if (!Array.isArray(manifest.streams)) fail('the manifest has no stream list.');
   return manifest;
 }

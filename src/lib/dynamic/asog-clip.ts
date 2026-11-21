@@ -111,7 +111,13 @@ async function fetchBytes(url: URL, options: SplatClipLoadOptions): Promise<Arra
 
 /** Clip name: the file name without `.asog`. */
 function clipName(url: URL): string {
-  const file = decodeURIComponent(url.pathname.split('/').pop() ?? '');
+  const raw = url.pathname.split('/').pop() ?? '';
+  let file = raw;
+  try {
+    file = decodeURIComponent(raw);
+  } catch {
+    // A stray `%` (a file name passed as a URL): keep the name as written.
+  }
   return file.replace(/\.asog$/i, '') || 'clip';
 }
 
@@ -156,8 +162,12 @@ export async function loadAsogClip(
   let shRange: SplatPackedShData['range'] | null = null;
   let info!: AsogClipInfo;
   let audio: AsogClip['audio'] = null;
+  // A copy for the frame path's second worker, started on its first frame
+  // request; the GPU path never needs it and drops it.
+  let secondCopy: ArrayBuffer | null = FRAME_WORKERS > 1 ? bytes.slice(0) : null;
   const fail = (error: Error): void => {
     failure = error;
+    secondCopy = null;
     for (const { worker } of workers) worker.terminate();
     failDecode?.(error);
     failDecode = null;
@@ -215,9 +225,6 @@ export async function loadAsogClip(
   const onAbort = (): void => fail(abortReason(signal!));
   signal?.addEventListener('abort', onAbort, { once: true });
 
-  // A copy for the frame path's second worker, started on its first frame
-  // request; the GPU path never needs it and drops it.
-  let secondCopy: ArrayBuffer | null = FRAME_WORKERS > 1 ? bytes.slice(0) : null;
   const decoded = new Promise<void>((resolve, reject) => {
     failDecode = reject;
     startWorker(bytes, (reply) => {
@@ -233,12 +240,18 @@ export async function loadAsogClip(
   } finally {
     signal?.removeEventListener('abort', onAbort);
   }
-  onProgress?.({
-    stage: 'decode',
-    loaded: 1,
-    total: 1,
-    message: `Decoded ${info.count} splats in ${info.decodeMs.toFixed(0)} ms`,
-  });
+  try {
+    onProgress?.({
+      stage: 'decode',
+      loaded: 1,
+      total: 1,
+      message: `Decoded ${info.count} splats in ${info.decodeMs.toFixed(0)} ms`,
+    });
+  } catch (error) {
+    // No clip reaches the caller to dispose: release the workers here.
+    fail(error instanceof Error ? error : new Error(String(error)));
+    throw error;
+  }
 
   const { fps, count } = info;
   const totalFrames = Math.max(1, Math.round(info.durationSeconds * fps));

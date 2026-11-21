@@ -9,9 +9,10 @@ loaders and `StreamedSplatMesh` do not read the format.
 
 Upstream: [arrival-space/animated-sog](https://github.com/arrival-space/animated-sog)
 (MIT, see `THIRD_PARTY_NOTICES.md`). Its `docs/format.md` is the byte-level
-specification of format v1, which is all VLAM reads. Its `test-data/` Rubloff
-clips are an Infinite Realities capture with no stated licence for reuse:
-VLAM does not commit or link them, and they stay off the public demo.
+specification of format v1, which is all VLAM reads. VLAM commits no captured
+`.asog` clip: its tests and examples use synthetic clips, and the
+measurements below were taken on a local copy of a real capture (400k
+splats, SH degree 3, 6 s; a 1 s cut of it for the decoder comparison).
 
 ## What a file is
 
@@ -42,7 +43,7 @@ VLAM does not commit or link them, and they stay off the public demo.
 - `parseAsog` decodes the whole file. Unlike the reference decoder, which
   stores anchor, Ω and G as half floats for its textures, VLAM keeps the
   motion in float32 and computes `m_ref` from those float32 control points, as
-  spec section 4.2 asks. On the Rubloff 1 s clip, decoded centres agree with
+  spec section 4.2 asks. On the 1 s capture, decoded centres agree with
   the reference to 9 µm at the median and 0.7 mm at the 99.9th percentile; the
   fastest splats differ by up to 1 cm, from the reference's half floats.
 - **GPU path** (WebGPU): the canonical splats go into one pool range once,
@@ -51,28 +52,34 @@ VLAM does not commit or link them, and they stay off the public demo.
   at a time uniform, with each clip's offset, active range and fades from a
   clip-table texture; a position-only twin feeds the GPU sort. Small rotation angles use Taylor series, since `(θ − sin θ)/θ³`
   cancels in float32. The float32 texel index limits the path to about
-  3.35M splats, and the texture height to the device's
-  `maxTextureDimension2D`.
+  3.35M splats, and the texture height (and the clip table's width, two
+  texels per clip) to the device's `maxTextureDimension2D`. Both paths
+  decide a clip's active range, a hard cut, on the float32 time the modifier
+  compares against the float32 clip table, so they cut on the same frame.
+- `parseAsog` refuses a manifest whose dequantisation would divide by zero
+  (`mu.scale`, `motion.sm`, `motion.r_min`), non-numeric clip entries, and a
+  stream shape its compressed bytes cannot inflate to (more than deflate's
+  1032:1), before any allocation is sized by `count`.
 - **Frame path** (WebGL2, a worker sorter, or a clip beyond those limits): the
   clip's worker evaluates every splat in its own slot and the SH is written
   once. Most splats are invisible at any one time: a splat outside its life
   window (`|t − μ| ≥ 2.45σ`) is rejected before any motion is evaluated, and
   only its opacity (0) is written, its slot keeping the pose it last had (or
-  the canonical pose, which fresh buffers start in). Rubloff 6 s (400k
+  the canonical pose, which fresh buffers start in). The 6 s capture (400k
   splats, about 85k visible) evaluates in about 27 ms per frame on a desktop
   CPU (Node and Chrome alike), down from 54 ms writing every slot. Playing
-  Rubloff 6 s in Chrome on the RTX 3090 workstation, with one worker, the
+  it in Chrome on an RTX 3090 desktop, with one worker, the
   clip advanced 29.8 of its 30 frames per second on the WebGPU GPU path,
   26.1 on the WebGPU frame path (GPU sort) and 19.7 on WebGL2 (frame path and
   CPU worker sort), the page rendering at 56, 60 and 38 fps: one worker at
   27 to 30 ms per frame plus the transfer leaves little margin under 33 ms,
   and WebGL2 adds its CPU sort of 400k splats.
 - The frame path now evaluates with two workers. The second decodes its own
-  copy of the clip (about 75 MB more for Rubloff 6 s, and a second decode
+  copy of the clip (about 75 MB more for the 6 s capture, and a second decode
   alongside playback) and starts only when the frame path asks for its first
   frame, so the GPU path never pays for it; `clip.frame()` snapshots use the
   first. A second evaluation starts whenever the first is still running when
-  the next frame is due. With two workers Rubloff 6 s advances 29.6 of its
+  the next frame is due. With two workers the 6 s capture advances 29.6 of its
   30 frames per second on the WebGPU frame path (page at 60 fps) and 29.9 on
   WebGL2 (page at 41 fps), the same machine as above.
 - `bounds` covers every visible centre (each dynamic splat sampled at 33
@@ -99,8 +106,8 @@ VLAM does not commit or link them, and they stay off the public demo.
   `UnifiedSplatMesh` source against the standalone GPU path (measured 0 to
   0.0007/255).
 - `/asog-harness.html?src=<url>` plays any clip on the dev server
-  (`playback=`, `frame=`, `orbit=`, `flip=0`, `sh=0`, `sort=exact`). Rubloff
-  6 s (400k splats, SH degree 3) in Chrome on an RTX 3090: decoded in 1.5 s;
+  (`playback=`, `frame=`, `orbit=`, `flip=0`, `sh=0`, `sort=exact`). The 6 s
+  capture in Chrome on an RTX 3090: decoded in 1.5 s;
   GPU vs frame path at frames 30, 90, 150 and 179 at most 2/255 on any
   96 × 96 thumbnail pixel (one pixel above 1/255), mean 0.01/255, identical
   visible-splat counts. The SH view-direction difference above does not

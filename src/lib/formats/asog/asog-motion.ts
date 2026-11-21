@@ -199,9 +199,13 @@ export function evaluateAsogFrame(
   const clipCount = clips.length / ASOG_CLIP_FLOATS;
   const clipLocal = new Float64Array(clipCount);
   const clipWeight = new Float64Array(clipCount);
+  // A clip's active range is a hard cut: decide it on the float32 time the
+  // GPU path compares against the same float32 table, so both paths cut on
+  // the same frame.
+  const t32 = Math.fround(t);
   for (let c = 0; c < clipCount; c++) {
     clipLocal[c] = asogClipLocalTime(clips, c, t);
-    clipWeight[c] = asogClipWeight(clips, c, t);
+    clipWeight[c] = asogClipWeight(clips, c, t32);
   }
   const moved = new Float64Array(7);
   const keep = options.keepInvisible === true && options.compact !== true;
