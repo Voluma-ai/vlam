@@ -690,6 +690,10 @@ export function createRelightingShadowFactorMaterial(
     : 0.25;
   const diffuse = Number.isFinite(options.diffuse) ? Math.max(0, options.diffuse as number) : 0;
   const material = new THREE.MeshStandardNodeMaterial();
+  // The factor comes only from `outputNode` and the explicit shadow nodes below. Left on, three.js
+  // still generated full PBR lighting for every scene light, plus a second lookup of every shadow
+  // map, all discarded by `outputNode`: a larger shader, and twice the shadow-map renders.
+  material.lights = false;
   material.side = THREE.DoubleSide;
   material.color = new THREE.Color(1, 1, 1);
   material.roughness = 1;

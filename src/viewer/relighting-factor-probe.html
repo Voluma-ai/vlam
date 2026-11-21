@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" />
+  <title>VLAM relighting factor probe</title>
+  <canvas id="canvas" width="64" height="64"></canvas>
+  <output data-testid="result"></output>
+  <script type="module">
+    import * as THREE from 'three/webgpu';
+    import { createWebGPURenderer } from '../lib/core';
+    import { createRelightingShadowFactorMaterial, renderRelightingFactorMap } from '../lib/relighting';
+
+    // Renders one shadow factor map from above: a ground proxy that receives and an occluder that
+    // only the shadow camera sees (layer 3, as hosts hide relight casters). The factor material is
+    // rendered as built and again with three.js lighting forced on, so the probe shows the output is
+    // the same and only the shader shrinks.
+    const output = document.querySelector('[data-testid="result"]');
+    const report = (value) => (output.textContent = JSON.stringify(value));
+    addEventListener('error', (event) => report({ error: String(event.error ?? event.message) }));
+    addEventListener('unhandledrejection', (event) => report({ error: String(event.reason) }));
+
+    const requested = new URLSearchParams(location.search).get('backend');
+    if (requested !== 'webgpu' && requested !== 'webgl2') throw new Error(`Unknown backend: ${requested}`);
+    const SIZE = 64;
+    const CASTER_LAYER = 3;
+    const renderer = await createWebGPURenderer({
+      canvas: document.querySelector('#canvas'),
+      antialias: false,
+      forceWebGL: requested === 'webgl2',
+      requireWebGpu: requested === 'webgpu',
+    });
+    renderer.setSize(SIZE, SIZE, false);
+    await renderer.init();
+    const backend = renderer.backend.isWebGPUBackend ? 'webgpu' : 'webgl2';
+    if (backend !== requested) throw new Error(`Requested ${requested}, initialized ${backend}.`);
+
+    const camera = new THREE.OrthographicCamera(-5, 5, 5, -5, 0.1, 50);
+    camera.position.set(0, 20, 0);
+    camera.up.set(0, 0, -1);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld();
+
+    const render = async (forceLights) => {
+      const scene = new THREE.Scene();
+      const light = new THREE.DirectionalLight(0xffffff, 1);
+      light.position.set(0, 10, 0);
+      light.target.position.set(0, 0, 0);
+      light.castShadow = true;
+      light.shadow.mapSize.set(512, 512);
+      Object.assign(light.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6, near: 0.5, far: 30 });
+      light.shadow.camera.updateProjectionMatrix();
+      light.shadow.camera.layers.enable(CASTER_LAYER);
+      scene.add(light, light.target);
+
+      const material = createRelightingShadowFactorMaterial(light, { umbra: 0.45, receiveUpMin: 0 });
+      if (forceLights) material.lights = true;
+      const ground = new THREE.Mesh(new THREE.PlaneGeometry(10, 10).rotateX(-Math.PI / 2), material);
+      ground.castShadow = true;
+      ground.receiveShadow = true;
+      const occluder = new THREE.Mesh(new THREE.BoxGeometry(3, 0.2, 3), material);
+      occluder.position.set(0, 3, 0);
+      occluder.castShadow = true;
+      occluder.layers.set(CASTER_LAYER);
+      scene.add(ground, occluder);
+
+      const target = new THREE.RenderTarget(SIZE, SIZE, { depthBuffer: true });
+      renderRelightingFactorMap(renderer, scene, camera, target);
+      const pixels = await renderer.readRenderTargetPixelsAsync(target, 0, 0, SIZE, SIZE);
+      let fragmentLength = null;
+      if (renderer.debug?.getShaderAsync) {
+        const shader = await renderer.debug.getShaderAsync(scene, camera, ground);
+        fragmentLength = shader.fragmentShader?.length ?? null;
+      }
+      target.dispose();
+      material.dispose();
+      return { pixels: Array.from(pixels), lights: material.lights, fragmentLength };
+    };
+
+    const built = await render(false);
+    const lit = await render(true);
+    const at = (pixels, x, y) => pixels.slice((y * SIZE + x) * 4, (y * SIZE + x) * 4 + 4);
+    let maxDiff = 0;
+    for (let i = 0; i < built.pixels.length; i++) maxDiff = Math.max(maxDiff, Math.abs(built.pixels[i] - lit.pixels[i]));
+    report({
+      backend,
+      builtLights: built.lights,
+      center: at(built.pixels, SIZE / 2, SIZE / 2),
+      // Lit ground beside the occluder's umbra, away from the shadow camera's edges.
+      lit: at(built.pixels, 12, SIZE / 2),
+      maxDiff,
+      builtFragmentLength: built.fragmentLength,
+      litFragmentLength: lit.fragmentLength,
+    });
+  </script>
+</html>
