@@ -4462,6 +4462,7 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
       // A generic discrete adapter is not evidence that this policy will win.
       isValidatedDeviceClass:
         /nvidia/.test(adapterText) && /ampere|ga10[2-9]|rtx\s*30/.test(adapterText),
+      isAppleSiliconMac: this.isAppleSiliconMac(renderer),
       isMobile: detectSplatDeviceProfile()?.isMobile === true,
     });
     this.automaticProjectionStrategy = result.strategy;
@@ -4472,6 +4473,11 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
   /** Apple Silicon and auto-selected desktop compute paths use generated final color. */
   private appleMacAutoSmallWorkload(renderer: THREE.WebGPURenderer): boolean {
     if (this.shEvaluation !== 'auto' || this.capacity >= APPLE_MAC_AUTO_SH_MIN_SPLATS) return false;
+    return this.isAppleSiliconMac(renderer);
+  }
+
+  /** macOS without touch on an Apple/Metal WebGPU adapter. */
+  private isAppleSiliconMac(renderer: THREE.WebGPURenderer): boolean {
     const adapter = this.webGpuBackend(renderer).device?.adapterInfo;
     const text = [adapter?.vendor, adapter?.architecture, adapter?.device, adapter?.description]
       .join(' ')

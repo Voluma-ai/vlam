@@ -12,6 +12,7 @@ import {
   StandaloneProjectedSplatPipeline,
 } from '../core/projected-splat-pipeline';
 import {
+  AUTO_APPLE_SILICON_PROJECTION_MIN_SPLATS,
   DEFAULT_AUTO_PROJECTION_MEMORY_BUDGET_BYTES,
   estimateAutomaticProjectionMemoryBytes,
   resolveAutomaticProjectionStrategy,
@@ -161,6 +162,50 @@ describe('automatic compute-projection policy', () => {
     expect(resolveAutomaticProjectionStrategy({ ...measured, ...override })).toMatchObject({
       strategy: 'vertex',
       reason,
+    });
+  });
+
+  describe('Apple Silicon Mac cohort', () => {
+    // Measured 2026-11-21 on an Apple M3: 4,592,169-splat PLY, no SH, default `quality` profile.
+    const apple: AutomaticProjectionPolicyInput = {
+      ...measured,
+      capacity: 4_592_169,
+      hasSh: false,
+      hasBalancedContributionCulls: false,
+      gpuClass: 'integrated',
+      isValidatedDeviceClass: false,
+      isAppleSiliconMac: true,
+    };
+
+    it('selects compute for a large static scene without SH under full detail', () => {
+      expect(resolveAutomaticProjectionStrategy(apple)).toMatchObject({
+        strategy: 'compute',
+        reason: 'auto-large-static-apple-silicon',
+      });
+    });
+
+    it.each([
+      [
+        'small static scene',
+        { capacity: AUTO_APPLE_SILICON_PROJECTION_MIN_SPLATS - 1 },
+        'auto-small-static-scene',
+      ],
+      ['explicit memory cap', { memoryBudgetBytes: 0 }, 'auto-memory-budget'],
+      ['streamed pool', { isStatic: false }, 'auto-dynamic-or-shared-pool'],
+      ['modifier graph', { hasModifiers: true }, 'auto-modifiers'],
+      ['radix sort', { usesCountingSort: false }, 'auto-sort-strategy'],
+      ['touch device', { isMobile: true }, 'auto-mobile-device'],
+    ])('keeps %s on vertex projection', (_label, override, reason) => {
+      expect(resolveAutomaticProjectionStrategy({ ...apple, ...override })).toMatchObject({
+        strategy: 'vertex',
+        reason,
+      });
+    });
+
+    it('leaves other integrated adapters on vertex projection', () => {
+      expect(
+        resolveAutomaticProjectionStrategy({ ...apple, isAppleSiliconMac: false }),
+      ).toMatchObject({ strategy: 'vertex', reason: 'auto-nondiscrete-device' });
     });
   });
 
