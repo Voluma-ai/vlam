@@ -256,13 +256,52 @@ export function asogClipTable(manifest: AsogManifest): Float32Array {
 export async function parseAsog(input: ArrayBuffer | Uint8Array): Promise<AsogData> {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   const header = parseAsogHeader(bytes.subarray(0, ASOG_HEADER_SIZE));
+  const end = asogFileEnd(header);
+  if (end > bytes.length) {
+    fail(`the file is truncated (${bytes.length} bytes, the header names ${end}).`);
+  }
+  return parseAsogFrom(async () => bytes);
+}
+
+/** Bytes a file's header says it spans: its manifest and payload. */
+function asogFileEnd(header: AsogHeader): number {
+  return Math.max(
+    header.manifestOffset + header.manifestLength,
+    header.payloadOffset + header.payloadLength,
+  );
+}
+
+/**
+ * The bytes of a file as they arrive: resolves with a view of the file's
+ * first bytes, at least `end` of them, and rejects when the file ends first.
+ *
+ * @internal
+ */
+export type AsogBytesUntil = (end: number) => Promise<Uint8Array>;
+
+/** Options of {@link parseAsogFrom}. @internal */
+export interface ParseAsogFromOptions {
+  /** After each stream is decoded: its name, and how many of how many are done. */
+  onStream?: (name: string, done: number, total: number) => void;
+}
+
+/**
+ * Decodes an `.asog` file whose bytes arrive through `until`, each stream as
+ * soon as its bytes are there (they sit in the payload in the order a decoder
+ * needs them, format section 3.2). {@link parseAsog} is this over a file
+ * held whole.
+ *
+ * @internal
+ */
+export async function parseAsogFrom(
+  until: AsogBytesUntil,
+  options: ParseAsogFromOptions = {},
+): Promise<AsogData> {
+  let bytes = await until(ASOG_HEADER_SIZE);
+  const header = parseAsogHeader(bytes.subarray(0, ASOG_HEADER_SIZE));
   const manifestEnd = header.manifestOffset + header.manifestLength;
   const payloadEnd = header.payloadOffset + header.payloadLength;
-  if (manifestEnd > bytes.length || payloadEnd > bytes.length) {
-    fail(
-      `the file is truncated (${bytes.length} bytes, the header names ${Math.max(manifestEnd, payloadEnd)}).`,
-    );
-  }
+  bytes = await until(manifestEnd);
   const manifest = parseAsogManifest(bytes.subarray(header.manifestOffset, manifestEnd));
   const n = manifest.count;
   const present = new Set(manifest.streams.map((s) => s.name));
@@ -474,10 +513,14 @@ export async function parseAsog(input: ArrayBuffer | Uint8Array): Promise<AsogDa
   };
 
   const decoded = new Set<AsogStreamName>();
-  for (const s of [...manifest.streams].sort((a, b) => a.byteOffset - b.byteOffset)) {
-    // Unknown streams are skipped; shapes and byte ranges were checked above.
+  const order = [...manifest.streams].sort((a, b) => a.byteOffset - b.byteOffset);
+  const wanted = order.filter((s) => {
     const name = knownStream(s.name);
-    if (name === undefined || (!hasSh && (name === 'shlabels' || name === 'shpalette'))) continue;
+    return name !== undefined && (hasSh || (name !== 'shlabels' && name !== 'shpalette'));
+  });
+  for (const s of wanted) {
+    // Unknown streams are skipped; shapes and byte ranges were checked above.
+    const name = knownStream(s.name)!;
     for (const need of STREAM_NEEDS[name] ?? []) {
       if (!decoded.has(need)) fail(`stream "${name}" comes before "${need}", which it needs.`);
     }
@@ -485,12 +528,14 @@ export async function parseAsog(input: ArrayBuffer | Uint8Array): Promise<AsogDa
     if (s.byteOffset < 0 || start + s.byteLength > payloadEnd) {
       fail(`stream "${s.name}" lies outside the payload.`);
     }
+    bytes = await until(start + s.byteLength);
     const raw = await inflateAsogStream(
       bytes.subarray(start, start + s.byteLength),
       s.count * s.channels * s.planes,
     );
     decoders[name](s, raw);
     decoded.add(name);
+    options.onStream?.(name, decoded.size, wanted.length);
   }
 
   let audio: AsogData['audio'] = null;
@@ -498,8 +543,11 @@ export async function parseAsog(input: ArrayBuffer | Uint8Array): Promise<AsogDa
     const start = header.payloadOffset + manifest.audio.byteOffset;
     const end = start + manifest.audio.byteLength;
     if (end > payloadEnd) fail('the soundtrack lies outside the payload.');
+    bytes = await until(end);
     audio = { mime: manifest.audio.mime, bytes: bytes.slice(start, end) };
   }
+  // The whole file, as the header names it, or it is truncated.
+  await until(asogFileEnd(header));
 
   return {
     header,

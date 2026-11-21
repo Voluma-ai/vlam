@@ -49,7 +49,95 @@ function serve(bytes: Uint8Array) {
   return fetch;
 }
 
+/**
+ * A response whose body arrives in `size`-byte chunks, one per macrotask,
+ * ending at `stopAt`; the last chunk waits for `holdLast`.
+ */
+function chunked(
+  bytes: Uint8Array,
+  size: number,
+  stopAt = bytes.length,
+  holdLast?: Promise<void>,
+): Response {
+  let at = 0;
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (holdLast && at + size >= stopAt) await holdLast;
+      if (at >= stopAt) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(bytes.slice(at, Math.min(at + size, stopAt)));
+      at += size;
+    },
+  });
+  return new Response(body, { headers: { 'content-length': String(bytes.length) } });
+}
+
 describe('loadAsogClip', () => {
+  it('decodes while the file downloads, the same clip as from whole bytes', async () => {
+    const bytes = await syntheticAsog({ count: 2000, duration: 2, fps: 30, coeffs: 8 });
+    // The last chunk waits for a decoded stream: decoding starts mid-download.
+    let firstStream!: () => void;
+    const decodedOne = new Promise<void>((resolve) => (firstStream = resolve));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => chunked(bytes, 8192, bytes.length, decodedOne)),
+    );
+    const events: string[] = [];
+    const clip = await loadAsogClip('https://example.test/ball.asog', {
+      onProgress: ({ stage, loaded, total }) => {
+        events.push(`${stage} ${loaded}/${total}`);
+        if (stage === 'decode') firstStream();
+      },
+    });
+    // Per-stream decode progress, the first before the download is done.
+    const firstDecode = events.findIndex((e) => e.startsWith('decode'));
+    const lastFetch = events.map((e) => e.startsWith('fetch')).lastIndexOf(true);
+    expect(firstDecode).toBeGreaterThan(-1);
+    expect(firstDecode).toBeLessThan(lastFetch);
+    expect(InProcessWorker.instances[0]!.requests[0]).toBe('chunk');
+    expect(InProcessWorker.instances[0]!.requests).toContain('end');
+
+    const whole = await loadAsogClip('https://example.test/ball.asog', {
+      bytes: bytes.slice().buffer,
+    });
+    expect(clip.maxCount).toBe(whole.maxCount);
+    expect(clip.bounds.equals(whole.bounds)).toBe(true);
+    const [a, b] = await Promise.all([clip.frame(11), whole.frame(11)]);
+    expect(Array.from(a.positions)).toEqual(Array.from(b.positions));
+    expect(Array.from(a.shPacked!.packed)).toEqual(Array.from(b.shPacked!.packed));
+    clip.dispose();
+    whole.dispose();
+  });
+
+  it('terminates the worker on an abort or a short body during a streaming load', async () => {
+    const bytes = await syntheticAsog({ count: 3000, coeffs: 0 });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => chunked(bytes, 1024)),
+    );
+    const controller = new AbortController();
+    const aborted = loadAsogClip('https://example.test/x.asog', {
+      signal: controller.signal,
+      onProgress: ({ stage, loaded }) => {
+        if (stage === 'fetch' && loaded >= 4096) controller.abort();
+      },
+    });
+    await expect(aborted).rejects.toThrow(/abort/i);
+    expect(InProcessWorker.instances[0]!.requests).toContain('chunk');
+    expect(InProcessWorker.instances.every((worker) => worker.terminated)).toBe(true);
+
+    InProcessWorker.instances = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => chunked(bytes, 4096, bytes.length - 100)),
+    );
+    await expect(loadAsogClip('https://example.test/x.asog')).rejects.toThrow(/truncated/);
+    expect(InProcessWorker.instances.every((worker) => worker.terminated)).toBe(true);
+  });
+
   it('loads a clip through loadSplatClip by its extension', async () => {
     const bytes = await syntheticAsog({ count: 3000, duration: 2, fps: 30, coeffs: 8 });
     serve(bytes);

@@ -18,15 +18,25 @@
       canvas {
         touch-action: none;
       }
-      #sound {
+      #controls {
         position: fixed;
         bottom: 16px;
         left: 16px;
+        display: flex;
+        gap: 8px;
       }
     </style>
   </head>
   <body>
-    <button id="sound" type="button" hidden>Play sound</button>
+    <div id="controls">
+      <button id="sound" type="button" hidden>Play sound</button>
+      <select id="speed" aria-label="Playback speed">
+        <option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option>
+        <option value="2">2×</option>
+        <option value="-1">Reverse</option>
+      </select>
+    </div>
     <script type="module" src="../../docs/examples/samples/play-asog-clip.ts"></script>
   </body>
 </html>

@@ -306,10 +306,70 @@ export function writeAsogCanonical(
 }
 
 /**
+ * Distance from the origin to the triangle of the three points at
+ * `p[at .. at + 9)` (Ericson, "Real-Time Collision Detection", 5.1.5).
+ */
+function originToTriangle(p: Float32Array, at: number): number {
+  const ax = p[at]!,
+    ay = p[at + 1]!,
+    az = p[at + 2]!;
+  const bx = p[at + 3]!,
+    by = p[at + 4]!,
+    bz = p[at + 5]!;
+  const cx = p[at + 6]!,
+    cy = p[at + 7]!,
+    cz = p[at + 8]!;
+  const length = (x: number, y: number, z: number): number => Math.sqrt(x * x + y * y + z * z);
+  const abx = bx - ax,
+    aby = by - ay,
+    abz = bz - az;
+  const acx = cx - ax,
+    acy = cy - ay,
+    acz = cz - az;
+  const d1 = -(abx * ax + aby * ay + abz * az);
+  const d2 = -(acx * ax + acy * ay + acz * az);
+  if (d1 <= 0 && d2 <= 0) return length(ax, ay, az);
+  const d3 = -(abx * bx + aby * by + abz * bz);
+  const d4 = -(acx * bx + acy * by + acz * bz);
+  if (d3 >= 0 && d4 <= d3) return length(bx, by, bz);
+  const vc = d1 * d4 - d3 * d2;
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+    const v = d1 / (d1 - d3);
+    return length(ax + v * abx, ay + v * aby, az + v * abz);
+  }
+  const d5 = -(abx * cx + aby * cy + abz * cz);
+  const d6 = -(acx * cx + acy * cy + acz * cz);
+  if (d6 >= 0 && d5 <= d6) return length(cx, cy, cz);
+  const vb = d5 * d2 - d1 * d6;
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+    const w = d2 / (d2 - d6);
+    return length(ax + w * acx, ay + w * acy, az + w * acz);
+  }
+  const va = d3 * d6 - d5 * d4;
+  if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
+    const w = (d4 - d3) / (d4 - d3 + (d5 - d6));
+    return length(bx + w * (cx - bx), by + w * (cy - by), bz + w * (cz - bz));
+  }
+  const scale = 1 / (va + vb + vc);
+  const v = vb * scale;
+  const w = vc * scale;
+  return length(ax + abx * v + acx * w, ay + aby * v + acy * w, az + abz * v + acz * w);
+}
+
+/**
  * A box around every centre a splat of `data` takes while visible: the
  * canonical centres, and each dynamic splat sampled at 33 times across its
  * visible life (`μ ± 2.45σ`), padded by 1 % of the box's size for the path
  * between samples.
+ *
+ * Sampling is skipped for a splat that cannot grow the box: its motion is a
+ * screw about an axis through its anchor `a`, a rotation (which keeps
+ * `|x − a|`) plus a slide along the axis of `|g · dt| / |Ω|`. `g` is a
+ * Bernstein blend of `G0..G4` (so at most their largest magnitude), `|dt|`
+ * stays below `2.45σ`, and `Ω` a Bézier blend of `O0..O2`, so at least the
+ * origin's distance to their triangle. A splat whose ball around `a` of that
+ * radius already lies inside the box (canonical centres first) leaves it
+ * unchanged, which makes the result the same as sampling every splat.
  *
  * @experimental
  */
@@ -329,14 +389,36 @@ export function asogMotionBounds(data: Pick<AsogData, 'count' | 'centers' | 'mot
     if (y > max[1]) max[1] = y;
     if (z > max[2]) max[2] = z;
   };
+  for (let i = 0; i < count; i++) grow(centers[i * 3]!, centers[i * 3 + 1]!, centers[i * 3 + 2]!);
   const out = new Float64Array(7);
   const samples = 33;
   for (let i = 0; i < count; i++) {
-    grow(centers[i * 3]!, centers[i * 3 + 1]!, centers[i * 3 + 2]!);
     const m = i * ASOG_MOTION_FLOATS;
     if (motion[m + ASOG_MOTION.flags]! % 2 === 1) continue;
     const mu = motion[m + ASOG_MOTION.mu]!;
     const half = ASOG_LIFE_SIGMAS * motion[m + ASOG_MOTION.sigma]!;
+    const A = m + ASOG_MOTION.anchor;
+    const ax = motion[A]!;
+    const ay = motion[A + 1]!;
+    const az = motion[A + 2]!;
+    const rx = centers[i * 3]! - ax;
+    const ry = centers[i * 3 + 1]! - ay;
+    const rz = centers[i * 3 + 2]! - az;
+    let g = 0;
+    for (let j = 0; j < 5; j++) g = Math.max(g, Math.abs(motion[m + ASOG_MOTION.g + j]!));
+    const slide = g > 0 ? (g * half) / originToTriangle(motion, m + ASOG_MOTION.omega) : 0;
+    // A margin for rounding; a NaN or infinite radius never skips.
+    const radius = (Math.sqrt(rx * rx + ry * ry + rz * rz) + slide) * (1 + 1e-6) + 1e-9;
+    if (
+      ax - radius >= min[0] &&
+      ay - radius >= min[1] &&
+      az - radius >= min[2] &&
+      ax + radius <= max[0] &&
+      ay + radius <= max[1] &&
+      az + radius <= max[2]
+    ) {
+      continue;
+    }
     for (let s = 0; s < samples; s++) {
       const t = mu - half + (2 * half * s) / (samples - 1);
       if (evaluateAsogSplat(motion, centers, i, t, out) > 0) grow(out[0]!, out[1]!, out[2]!);

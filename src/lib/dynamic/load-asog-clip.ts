@@ -12,8 +12,12 @@ import type { AsogClip, LoadAsogClipOptions } from './asog-clip';
  * Play the result with a `SplatClipMesh`; {@link AsogClip.dispose}
  * terminates the worker.
  *
- * The whole file is fetched and decoded before the clip is ready (about
- * 1.5 s for 400k splats on a desktop). Only format version 1 is supported.
+ * The download goes to the worker as it arrives, and each stream of the file
+ * is decoded as soon as its bytes are there, so most of the decode (about
+ * 0.6 s of work for 400k splats on a desktop) overlaps the download. The clip
+ * resolves once the whole file is decoded. Progress reports bytes fetched
+ * (`stage: 'fetch'`) and streams decoded (`stage: 'decode'`). Only format
+ * version 1 is supported.
  * The loader itself is a separate chunk, fetched on the first call.
  *
  * @example

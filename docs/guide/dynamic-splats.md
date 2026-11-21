@@ -53,7 +53,7 @@ the constructor. A host that does not want a mixer sets `mesh.time` itself.
 | Format | Given by | Notes |
 |---|---|---|
 | `'csgs'` | a [Faltwerk](https://github.com/edrethardo/Faltwerk) `scene_*.json`, with its `.csgs` sections beside it | Version-1 containers. Also loadable with `loadCsgsClip`, which returns the `.csgs` details (`scene`, `sections`). Format notes: [`docs/formats/csgs-notes.md`](../formats/csgs-notes.md) |
-| `'asog'` | an [Animated SOG](https://github.com/arrival-space/animated-sog) `.asog` file | Format v1, multi-clip timelines included. Also loadable with `loadAsogClip`, which returns the soundtrack (`audio`, not played) and `clipCount`. The clip is y down: set `mesh.rotation.x = Math.PI` to stand it up. Format notes: [`docs/formats/asog-notes.md`](../formats/asog-notes.md) |
+| `'asog'` | an [Animated SOG](https://github.com/arrival-space/animated-sog) `.asog` file | Format v1, multi-clip timelines included. Also loadable with `loadAsogClip`, which returns the soundtrack (`audio`; the library does not play it, the example does) and `clipCount`. The clip is y down: set `mesh.rotation.x = Math.PI` to stand it up. Format notes: [`docs/formats/asog-notes.md`](../formats/asog-notes.md) |
 
 Anything else is rejected with an error that lists the supported formats.
 `SPLAT_CLIP_FORMATS` lists them in code. A new format arrives as one more

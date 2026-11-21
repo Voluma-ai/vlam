@@ -10,7 +10,8 @@ import {
   evaluateAsogFrame,
   writeAsogCanonical,
 } from '../formats/asog/asog-motion';
-import { parseAsog, type AsogData } from '../formats/asog/parse-asog';
+import { createAsogByteSink, type AsogByteSink } from '../formats/asog/asog-bytes';
+import { parseAsog, parseAsogFrom, type AsogData } from '../formats/asog/parse-asog';
 import type { AsogWorkerReply, AsogWorkerRequest } from './asog-worker-protocol';
 import type { SplatFrameBuffers } from './splat-clip-playback';
 
@@ -28,9 +29,17 @@ export function createAsogWorkerHandler(
   /** Splat index of each slot of a compact frame. */
   let sources: Uint32Array | null = null;
 
-  async function decode(bytes: ArrayBuffer): Promise<void> {
+  /** The download being decoded as it arrives, if any. */
+  let sink: AsogByteSink | null = null;
+
+  /** Decodes a file held whole (`bytes`) or arriving into `from`. */
+  async function decode(bytes: ArrayBuffer | null, from: AsogByteSink | null): Promise<void> {
     const started = performance.now();
-    data = await parseAsog(bytes);
+    data = from
+      ? await parseAsogFrom(from.until, {
+          onStream: (stream, done, total) => post({ type: 'progress', stream, done, total }),
+        })
+      : await parseAsog(bytes!);
     shPacked = data.sh ? packPaletteSh(data.sh, data.count, data.shBands as 1 | 2 | 3) : null;
     shWords = shPacked ? shPacked.packed.length / Math.max(data.count, 1) : 0;
     const { manifest } = data;
@@ -45,7 +54,8 @@ export function createAsogWorkerHandler(
         clips: data.clips,
         bounds: asogMotionBounds(data),
         sourceFormat: manifest.source?.format ?? null,
-        decodeMs: performance.now() - started,
+        // Work only: a streamed decode spends much of its time waiting for bytes.
+        decodeMs: performance.now() - started - (from?.waitedMs ?? 0),
       },
       shRange: shPacked?.range ?? { min: [0, 0, 0], max: [0, 0, 0] },
       audio: data.audio,
@@ -148,13 +158,20 @@ export function createAsogWorkerHandler(
     const report = (error: unknown): void => {
       const reply: AsogWorkerReply = {
         type: 'error',
-        ...(request.type !== 'decode' ? { id: request.id } : {}),
+        ...('id' in request ? { id: request.id } : {}),
         error: error instanceof Error ? error.message : String(error),
       };
       post(reply);
     };
     try {
-      if (request.type === 'decode') decode(request.bytes).catch(report);
+      if (request.type === 'decode') decode(request.bytes, null).catch(report);
+      else if (request.type === 'chunk') {
+        if (!sink) {
+          sink = createAsogByteSink();
+          decode(null, sink).catch(report);
+        }
+        sink.push(new Uint8Array(request.bytes));
+      } else if (request.type === 'end') sink?.end();
       else if (request.type === 'gpu') packGpu(request.id);
       else
         evaluate(request.id, request.frame, request.sh, request.buffers, request.compact === true);

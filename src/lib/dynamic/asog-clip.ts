@@ -14,7 +14,7 @@ import type {
   AsogWorkerReply,
   AsogWorkerRequest,
 } from './asog-worker-protocol';
-import type { SplatClip, SplatClipLoadOptions } from './splat-clip';
+import type { SplatClip, SplatClipLoadOptions, SplatClipLoadProgress } from './splat-clip';
 import type { SplatClipFrame, SplatFrameBuffers } from './splat-clip-playback';
 
 /**
@@ -48,8 +48,8 @@ export interface AsogClip extends SplatClip {
 }
 
 /**
- * Options of {@link loadAsogClip}: progress counts bytes fetched, then the
- * decode.
+ * Options of {@link loadAsogClip}: progress counts bytes fetched and, as
+ * they arrive, the file's streams decoded.
  *
  * @experimental
  */
@@ -77,30 +77,70 @@ function abortReason(signal: AbortSignal): Error {
     : new DOMException('The .asog load was aborted.', 'AbortError');
 }
 
-/** Fetches `url` whole, reporting bytes as they arrive. */
-async function fetchBytes(url: URL, options: SplatClipLoadOptions): Promise<ArrayBuffer> {
-  const { onProgress, signal } = options;
+/**
+ * Fetches `url` and posts its body to `target`'s worker chunk by chunk
+ * (`chunk`, then `end`), reporting bytes as they arrive. `onChunks` gets
+ * every chunk once the body is complete. Stops early once `isFailed`.
+ */
+async function streamToWorker(
+  url: URL,
+  signal: AbortSignal | undefined,
+  target: { readonly worker: Worker },
+  hooks: {
+    isFailed(): boolean;
+    onChunks(chunks: readonly Uint8Array[], length: number): void;
+    report(event: SplatClipLoadProgress): void;
+  },
+): Promise<void> {
   const response = await fetch(url, signal ? { signal } : {});
   if (!response.ok) throw new Error(`${url.href}: HTTP ${response.status}`);
   const total = Number(response.headers.get('content-length')) || 0;
-  const mb = (bytes: number) => (bytes / 1e6).toFixed(1);
-  if (!response.body || !onProgress) return response.arrayBuffer();
-  const reader = response.body.getReader();
+  const mb = (bytes: number): string => (bytes / 1e6).toFixed(1);
+  const post = (chunk: Uint8Array): void => {
+    // A copy goes to the worker: the chunk itself stays for the second copy.
+    const bytes = chunk.slice().buffer;
+    const request: AsogWorkerRequest = { type: 'chunk', bytes };
+    target.worker.postMessage(request, [bytes]);
+  };
   const chunks: Uint8Array[] = [];
   let loaded = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    loaded += value.length;
-    onProgress({
-      stage: 'fetch',
-      loaded,
-      total: Math.max(total, loaded),
-      message: total ? `Fetching ${mb(loaded)} / ${mb(total)} MB…` : `Fetching ${mb(loaded)} MB…`,
-    });
+  if (response.body) {
+    const reader = response.body.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (hooks.isFailed()) return;
+        chunks.push(value);
+        loaded += value.length;
+        post(value);
+        hooks.report({
+          stage: 'fetch',
+          loaded,
+          total: Math.max(total, loaded),
+          message: total
+            ? `Fetching ${mb(loaded)} / ${mb(total)} MB…`
+            : `Fetching ${mb(loaded)} MB…`,
+        });
+      }
+    } finally {
+      if (hooks.isFailed()) await reader.cancel().catch(() => undefined);
+    }
+  } else {
+    const whole = new Uint8Array(await response.arrayBuffer());
+    chunks.push(whole);
+    loaded = whole.length;
+    post(whole);
   }
-  const bytes = new Uint8Array(loaded);
+  if (hooks.isFailed()) return;
+  hooks.onChunks(chunks, loaded);
+  const end: AsogWorkerRequest = { type: 'end' };
+  target.worker.postMessage(end);
+}
+
+/** `chunks` joined into one buffer of `length` bytes. */
+function joinChunks(chunks: readonly Uint8Array[], length: number): ArrayBuffer {
+  const bytes = new Uint8Array(length);
   let offset = 0;
   for (const chunk of chunks) {
     bytes.set(chunk, offset);
@@ -134,14 +174,7 @@ export async function loadAsogClip(
   const { onProgress, signal } = options;
   signal?.throwIfAborted();
   const resolved = new URL(url, globalThis.location?.href);
-  const bytes = options.bytes ?? (await fetchBytes(resolved, options));
-  signal?.throwIfAborted();
-  onProgress?.({
-    stage: 'decode',
-    loaded: 0,
-    total: 1,
-    message: `Decoding ${(bytes.byteLength / 1e6).toFixed(1)} MB in a worker…`,
-  });
+  const mb = (bytes: number): string => (bytes / 1e6).toFixed(1);
 
   /** One clip worker: it decodes the file, then evaluates on request. */
   interface ClipWorker {
@@ -163,9 +196,12 @@ export async function loadAsogClip(
   let info!: AsogClipInfo;
   let audio: AsogClip['audio'] = null;
   // A copy for the frame path's second worker, started on its first frame
-  // request; the GPU path never needs it and drops it.
-  let secondCopy: ArrayBuffer | null = FRAME_WORKERS > 1 ? bytes.slice(0) : null;
+  // request; the GPU path never needs it and drops it. A download keeps its
+  // chunks until it ends, then joins them.
+  let secondCopy: ArrayBuffer | null =
+    FRAME_WORKERS > 1 && options.bytes ? options.bytes.slice(0) : null;
   const fail = (error: Error): void => {
+    if (failure !== null) return;
     failure = error;
     secondCopy = null;
     for (const { worker } of workers) worker.terminate();
@@ -174,20 +210,42 @@ export async function loadAsogClip(
     for (const request of pending.values()) request.reject(error);
     pending.clear();
   };
+  /** Calls the app's progress handler; one that throws fails the load. */
+  const report = (event: Parameters<NonNullable<typeof onProgress>>[0]): void => {
+    try {
+      onProgress?.(event);
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error(String(error)));
+    }
+  };
   const settle = (id: number) => {
     const request = pending.get(id);
     pending.delete(id);
     if (request) request.owner.busy--;
     return request;
   };
-  /** Starts a worker decoding `file`; `onDecoded` runs when it is ready. */
-  const startWorker = (file: ArrayBuffer, onDecoded: (reply: DecodedReply) => void): ClipWorker => {
+  /**
+   * Starts a worker decoding `file`, or, without one, the chunks posted to it
+   * next; `onDecoded` runs when it is ready.
+   */
+  const startWorker = (
+    file: ArrayBuffer | null,
+    onDecoded: (reply: DecodedReply) => void,
+  ): ClipWorker => {
     const entry: ClipWorker = { worker: new AsogWorker(), decoded: false, busy: 0 };
     entry.worker.onmessage = (event: MessageEvent<AsogWorkerReply>) => {
       const reply = event.data;
       if (reply.type === 'decoded') {
         entry.decoded = true;
         onDecoded(reply);
+      } else if (reply.type === 'progress') {
+        if (entry === workers[0])
+          report({
+            stage: 'decode',
+            loaded: reply.done,
+            total: reply.total,
+            message: `Decoded ${reply.stream} (${reply.done} of ${reply.total} streams)…`,
+          });
       } else if (reply.type === 'frame') {
         settle(reply.id)?.resolve(frameFromReply(reply, info.shBands, shRange!) as never);
       } else if (reply.type === 'gpu') {
@@ -201,13 +259,15 @@ export async function loadAsogClip(
     entry.worker.onerror = (event) =>
       fail(new Error(event.message || 'ASOG: the clip worker failed.'));
     workers.push(entry);
-    const request: AsogWorkerRequest = { type: 'decode', bytes: file };
-    entry.worker.postMessage(request, [file]);
+    if (file) {
+      const request: AsogWorkerRequest = { type: 'decode', bytes: file };
+      entry.worker.postMessage(request, [file]);
+    }
     return entry;
   };
   /** Sends `message` to `owner`, or for a frame to the least busy decoded worker. */
   const ask = <T>(
-    message: Exclude<AsogWorkerRequest, { type: 'decode' }>,
+    message: Extract<AsogWorkerRequest, { id: number }>,
     transfer: Transferable[] = [],
     owner: ClipWorker = workers[0]!,
   ): Promise<T> => {
@@ -225,18 +285,43 @@ export async function loadAsogClip(
   const onAbort = (): void => fail(abortReason(signal!));
   signal?.addEventListener('abort', onAbort, { once: true });
 
+  let resolveDecoded!: () => void;
   const decoded = new Promise<void>((resolve, reject) => {
+    resolveDecoded = resolve;
     failDecode = reject;
-    startWorker(bytes, (reply) => {
-      info = reply.info;
-      shRange = reply.shRange;
-      audio = reply.audio;
-      failDecode = null;
-      resolve();
-    });
   });
+  decoded.catch(() => undefined); // awaited below; a failure mid-download is handled there
+  const onDecoded = (reply: DecodedReply): void => {
+    info = reply.info;
+    shRange = reply.shRange;
+    audio = reply.audio;
+    failDecode = null;
+    resolveDecoded();
+  };
   try {
+    if (options.bytes) {
+      report({
+        stage: 'decode',
+        loaded: 0,
+        total: 1,
+        message: `Decoding ${mb(options.bytes.byteLength)} MB in a worker…`,
+      });
+      if (failure === null) startWorker(options.bytes, onDecoded);
+    } else {
+      // The download goes to the worker chunk by chunk, which decodes each
+      // stream as soon as its bytes have arrived.
+      await streamToWorker(resolved, signal, startWorker(null, onDecoded), {
+        isFailed: () => failure !== null,
+        onChunks: (chunks, length) => {
+          if (FRAME_WORKERS > 1) secondCopy = joinChunks(chunks, length);
+        },
+        report,
+      });
+    }
     await decoded;
+  } catch (error) {
+    fail(error instanceof Error ? error : new Error(String(error)));
+    throw failure ?? error;
   } finally {
     signal?.removeEventListener('abort', onAbort);
   }

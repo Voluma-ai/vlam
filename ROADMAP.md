@@ -76,9 +76,9 @@ selection features until their benefits are measured and visually validated.
   WebGPU and the frame path elsewhere) and rigged splats (`SkinnedSplatMesh` bound to a
   `THREE.Skeleton`). See `docs/guide/dynamic-splats.md`. Next: new clip
   formats as they become public (each a loader behind `loadSplatClip`, with
-  an optional GPU driver); for `.asog`, decoding while the file downloads,
-  soundtrack playback synced to `time`, and a
-  license-cleared clip for the demo; `.csgs` section fetch/decode lookahead with
+  an optional GPU driver); for `.asog`, a license-cleared clip for the demo
+  (decoding while the file downloads, the demo's soundtrack sync at any
+  speed and the side-by-side check against the reference player are done); `.csgs` section fetch/decode lookahead with
   region-atomic swaps (everything is decoded up front today), later container
   versions and compacting dead splats out of slots; for rigged splats, SH
   rotated with the bone (a pre-fold deformation hook in core), posed centers

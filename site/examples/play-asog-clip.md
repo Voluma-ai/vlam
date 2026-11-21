@@ -13,7 +13,8 @@ played from one file, with its soundtrack kept in step through three.js audio.
 The default clip is synthetic: a ball of splats, a quarter of them still and
 the rest each living a fraction of a second while it swings about a point near
 the centre (1 MB, written by `scripts/generate-asog-sample.mjs`). It shows the
-playback, not what the format can look like, and it has no sound. Add
+playback, not what the format can look like, and its sound is a synthetic
+tone each half second, rising in pitch through the clip. Add
 `?src=<url>` to the live page to play a real capture; the server has to allow
 cross-origin reads. The **Play sound** button appears only for a clip that
 carries a soundtrack.
@@ -40,12 +41,21 @@ correction VLAM applies to SOG and PLY captures.
 
 ## The soundtrack
 
-VLAM decodes the file but does not play its sound: `clip.audio` is the sound
+The library decodes the file but does not play its sound: `clip.audio` is the sound
 file's MIME type and bytes, or `null`. Decode it with the Web Audio context of
 a `THREE.AudioListener` and give it to a `THREE.Audio`. The sound has to stay
-at `mesh.time`: the example restarts it there whenever the two drift more than
-60 ms apart, which covers each loop of the clip, a pause and a hitched frame.
-Browsers only start audio after a user gesture, hence the button.
+at `mesh.time`:
+
+- it plays at the clip's rate (`playbackRate` from the action's effective
+  time scale), so the speed menu's 0.5× and 2× stay in step;
+- where it is heard is integrated frame by frame, and it restarts at
+  `mesh.time` whenever the two drift more than 60 ms apart, which covers each
+  loop of the clip, a scrub and a hitched frame;
+- it is silent while the clip is paused or plays in reverse.
+
+Browsers only start audio after a user gesture, hence the button. The
+[format notes](https://github.com/Voluma-ai/vlam/blob/main/docs/formats/asog-notes.md#soundtrack-sync)
+list the same rules for an app that writes its own.
 
 ## Which path it plays on
 

@@ -54,6 +54,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
 - The demo viewer plays `.asog` clips from `?scene=`, from a dropped or picked
   file, and inside another scene with `?clips=<url>[,…]` (sorted with the
   scene on WebGPU, and on WebGL2 through one shared pool and a pooled draw).
+- **`.asog` decodes while it downloads.** `loadAsogClip` streams the response
+  into the clip's worker, which decodes each stream as soon as its bytes have
+  arrived, and `onProgress` reports streams decoded as well as bytes fetched.
+  `asogMotionBounds` skips the splats whose motion cannot leave the box
+  (the same box, 1.14 s → 0.12 s on a 400k-splat clip). Together they cut
+  fetch-to-first-frame on that clip from about 2.9 s to about 1.9 s in Chrome.
+- The demo plays `.asog` soundtracks at the clip's rate (`?clipSpeed=<rate>`
+  sets it), silent while paused or in reverse; the "Play an Animated SOG
+  clip" example does the same, with a speed menu and a synthetic soundtrack
+  on its default clip. `docs/formats/asog-notes.md` lists the sync rules.
 
 - **Experimental `@voluma/vlam/dynamic`: animated Gaussian splats.** One
   app-facing API, all driven by a three.js `AnimationMixer`, with formats
