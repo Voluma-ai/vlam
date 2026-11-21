@@ -93,8 +93,22 @@ const REQUIRED_STREAMS = [
   'flags',
 ] as const;
 
+/** Every stream VLAM decodes. */
+const STREAM_NAMES = [...REQUIRED_STREAMS, 'shlabels', 'shpalette'] as const;
+type AsogStreamName = (typeof STREAM_NAMES)[number];
+
+/**
+ * The known stream a file's stream name stands for, or undefined. Returns
+ * VLAM's own constant, never the file's string, so nothing the file names is
+ * used as a property key (a name such as `constructor` or `toString` would
+ * otherwise find a member of `Object.prototype`).
+ */
+function knownStream(name: string): AsogStreamName | undefined {
+  return STREAM_NAMES.find((known) => known === name);
+}
+
 /** Streams whose decoding reads what another stream decoded. */
-const STREAM_NEEDS: Readonly<Record<string, readonly string[]>> = {
+const STREAM_NEEDS: Readonly<Partial<Record<AsogStreamName, readonly AsogStreamName[]>>> = {
   quatmode: ['quats'],
   opacity: ['sh0'],
   anchor: ['means'],
@@ -321,7 +335,7 @@ export async function parseAsog(input: ArrayBuffer | Uint8Array): Promise<AsogDa
   const scaleBook = manifest.scales.codebook;
   const sh0Book = manifest.sh0.codebook;
 
-  const decoders: Record<string, (s: AsogStreamDesc, raw: Uint8Array) => void> = {
+  const decoders: Record<AsogStreamName, (s: AsogStreamDesc, raw: Uint8Array) => void> = {
     means(s, raw) {
       for (let c = 0; c < 3; c++) {
         decodeAsogChannel(s, raw, c, v);
@@ -459,17 +473,13 @@ export async function parseAsog(input: ArrayBuffer | Uint8Array): Promise<AsogDa
     },
   };
 
-  // Looked up by the file's own stream names: a Map, so a name such as
-  // `constructor` or `toString` finds no decoder on `Object.prototype` (and
-  // skips the shape checks above, which only know the real names).
-  const decoderByName = new Map(Object.entries(decoders));
-  const decoded = new Set<string>();
+  const decoded = new Set<AsogStreamName>();
   for (const s of [...manifest.streams].sort((a, b) => a.byteOffset - b.byteOffset)) {
-    const decode = decoderByName.get(s.name);
-    // Shapes and byte ranges were checked above.
-    if (!decode || (!hasSh && (s.name === 'shlabels' || s.name === 'shpalette'))) continue;
-    for (const need of STREAM_NEEDS[s.name] ?? []) {
-      if (!decoded.has(need)) fail(`stream "${s.name}" comes before "${need}", which it needs.`);
+    // Unknown streams are skipped; shapes and byte ranges were checked above.
+    const name = knownStream(s.name);
+    if (name === undefined || (!hasSh && (name === 'shlabels' || name === 'shpalette'))) continue;
+    for (const need of STREAM_NEEDS[name] ?? []) {
+      if (!decoded.has(need)) fail(`stream "${name}" comes before "${need}", which it needs.`);
     }
     const start = header.payloadOffset + s.byteOffset;
     if (s.byteOffset < 0 || start + s.byteLength > payloadEnd) {
@@ -479,8 +489,8 @@ export async function parseAsog(input: ArrayBuffer | Uint8Array): Promise<AsogDa
       bytes.subarray(start, start + s.byteLength),
       s.count * s.channels * s.planes,
     );
-    decode(s, raw);
-    decoded.add(s.name);
+    decoders[name](s, raw);
+    decoded.add(name);
   }
 
   let audio: AsogData['audio'] = null;
