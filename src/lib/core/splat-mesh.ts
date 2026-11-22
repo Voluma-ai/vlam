@@ -93,6 +93,7 @@ import {
   assertSplatSortStrategy,
   isAutomaticProjectionStrategy,
   isComputeProjectionStrategy,
+  type AutomaticProjectionPolicyInput,
   type ProjectedSplatPipeline,
 } from './strategy-types';
 
@@ -223,6 +224,20 @@ const UPLOAD_STAGING_CACHE_SIZE = 12;
  */
 const SH_COMPUTE_CACHE_VALIDATED_MAX_BYTES = 64 * 1024 * 1024;
 const APPLE_MAC_AUTO_SH_MIN_SPLATS = 8_000_000;
+
+/**
+ * Vertex verdicts of the auto projection policy that rest on state a mesh can
+ * leave again: an XR session ends, a unified owner releases the source, a
+ * placement or modifier is removed. They are not locked in, so a mesh that
+ * starts with (say) a reveal modifier still gets compute projection once the
+ * reveal has ended. Compute re-checks the same state every frame.
+ */
+const TRANSIENT_AUTO_PROJECTION_REASONS: ReadonlySet<string> = new Set([
+  'auto-xr',
+  'auto-unified-source',
+  'auto-source-placement',
+  'auto-modifiers',
+]);
 
 /** Next power of two ≥ n (n ≥ 1). Staging GPU textures are immutable-sized. */
 function uploadStagingBucketHeight(height: number): number {
@@ -543,9 +558,18 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
   private projectedDofFocusDistance = Number.NaN;
   private projectedDofAperture = Number.NaN;
   private readonly projectionStrategyValue: NonNullable<SplatMeshOptions['projectionStrategy']>;
-  /** Auto selection is deliberately made once, never retuned from camera motion. */
+  /**
+   * Auto selection is deliberately made once, never retuned from camera motion.
+   * It stays open only while the verdict rests on state the mesh can leave again
+   * (see {@link TRANSIENT_AUTO_PROJECTION_REASONS}).
+   */
   private automaticProjectionStrategy: 'vertex' | 'compute' | null = null;
   private automaticProjectionReason = 'auto-pending';
+  /** Adapter and device signals of the auto policy; read once, they cannot change for a mesh. */
+  private automaticProjectionDevice: Pick<
+    AutomaticProjectionPolicyInput,
+    'isWebGpu' | 'gpuClass' | 'isValidatedDeviceClass' | 'isAppleSiliconMac' | 'isMobile'
+  > | null = null;
   private computeProjectionActive = false;
   private readonly projectionStrategyState = {
     effective: 'vertex' as 'vertex' | 'compute',
@@ -4416,11 +4440,10 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
     };
   }
 
-  /** Resolves and locks the auto projection decision from reusable scene and device signals. */
-  private resolvedProjectionStrategy(renderer: THREE.WebGPURenderer): 'vertex' | 'compute' {
-    if (this.projectionStrategyValue === 'vertex') return 'vertex';
-    if (this.projectionStrategyValue.mode === 'explicit') return 'compute';
-    if (this.automaticProjectionStrategy !== null) return this.automaticProjectionStrategy;
+  /** Reads the adapter and device signals of the auto projection policy. */
+  private readAutomaticProjectionDevice(
+    renderer: THREE.WebGPURenderer,
+  ): NonNullable<SplatMesh['automaticProjectionDevice']> {
     const backend = this.webGpuBackend(renderer);
     const adapterInfo = backend.device?.adapterInfo;
     const hasAdapterIdentity =
@@ -4440,6 +4463,24 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
     ]
       .join(' ')
       .toLowerCase();
+    return {
+      isWebGpu: backend.isWebGPUBackend === true,
+      gpuClass: hasAdapterIdentity ? classifySplatGpuClass(adapterInfo) : undefined,
+      // Only NVIDIA Ampere has the full measured static-SH corpus so far.
+      // A generic discrete adapter is not evidence that this policy will win.
+      isValidatedDeviceClass:
+        /nvidia/.test(adapterText) && /ampere|ga10[2-9]|rtx\s*30/.test(adapterText),
+      isAppleSiliconMac: this.isAppleSiliconMac(renderer),
+      isMobile: detectSplatDeviceProfile()?.isMobile === true,
+    };
+  }
+
+  /** Resolves and locks the auto projection decision from reusable scene and device signals. */
+  private resolvedProjectionStrategy(renderer: THREE.WebGPURenderer): 'vertex' | 'compute' {
+    if (this.projectionStrategyValue === 'vertex') return 'vertex';
+    if (this.projectionStrategyValue.mode === 'explicit') return 'compute';
+    if (this.automaticProjectionStrategy !== null) return this.automaticProjectionStrategy;
+    this.automaticProjectionDevice ??= this.readAutomaticProjectionDevice(renderer);
     const culls = this.resolvedContributionCulls();
     const result = this.projectionStrategyValue.resolveAutomatic({
       capacity: this.capacity,
@@ -4447,7 +4488,6 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
       hasBalancedContributionCulls: culls.minPixelSize >= 2 && culls.minContribution >= 3,
       isStatic: this.isStatic,
       ownsPool: this.ownsPool,
-      isWebGpu: backend.isWebGPUBackend === true,
       isXr: renderer.xr?.isPresenting === true,
       isUnifiedSource: this.unifiedPickVisibility !== null,
       hasSourcePlacement: this.perSourceSort !== null,
@@ -4457,16 +4497,15 @@ export class SplatMesh extends THREE.Mesh implements SplatPoolTenant, SplatBudge
         this.foveationMode === 'frontier' ||
         (this.foveationMode === 'band' &&
           (this.minSplatScreenRadius > 0 || this.maxSplatScreenRadius > 0)),
-      gpuClass: hasAdapterIdentity ? classifySplatGpuClass(adapterInfo) : undefined,
-      // Only NVIDIA Ampere has the full measured static-SH corpus so far.
-      // A generic discrete adapter is not evidence that this policy will win.
-      isValidatedDeviceClass:
-        /nvidia/.test(adapterText) && /ampere|ga10[2-9]|rtx\s*30/.test(adapterText),
-      isAppleSiliconMac: this.isAppleSiliconMac(renderer),
-      isMobile: detectSplatDeviceProfile()?.isMobile === true,
+      ...this.automaticProjectionDevice,
     });
-    this.automaticProjectionStrategy = result.strategy;
     this.automaticProjectionReason = result.reason;
+    // A reveal that ends, a released unified owner or a finished XR session must not
+    // leave the mesh on vertex projection for good: ask again on the next prepare.
+    if (result.strategy === 'vertex' && TRANSIENT_AUTO_PROJECTION_REASONS.has(result.reason)) {
+      return 'vertex';
+    }
+    this.automaticProjectionStrategy = result.strategy;
     return result.strategy;
   }
 

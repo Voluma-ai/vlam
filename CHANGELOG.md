@@ -248,6 +248,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/spec/v2.
   Apple M3 a 4.59M-splat PLY went from 18 to 57 fps and a 4M SH3 SOG from 14
   to 32 fps. The demo now passes the `auto` strategy unless
   `?projectionStrategy=` is set.
+- **`computeProjection({ mode: 'auto' })` no longer locks a vertex choice made
+  for a passing state.** A mesh that was in an XR session, drawn by a unified
+  owner, placed per source or carrying a modifier (a reveal, for example) on
+  its first prepare stayed on vertex projection for its lifetime. Those four
+  reasons (`auto-xr`, `auto-unified-source`, `auto-source-placement`,
+  `auto-modifiers`) now leave the choice open, and the mesh resolves again on
+  the next prepare. Choices that rest on the device or the scene, and every
+  compute choice, are still made once.
 - **`SplatDeviceProfile.isMacDesktop`** flags a Mac desktop browser (macOS, no
   touch). The library default profile is unchanged; the demo uses it to opt
   static whole-file scenes into `balanced` on Macs (an Apple M3 in Safari at
