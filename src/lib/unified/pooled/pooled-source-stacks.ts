@@ -20,6 +20,13 @@
  * linear placement, rotations by conjugation. Sources sharing an identical
  * stack share one fold.
  *
+ * `ctx.channel(name)` reads the source's own channel (`SplatMesh.defineChannel`).
+ * A tenant's channel texture spans the whole shared pool and is indexed by
+ * pool row, exactly as the draw's instances are, so the stack reads it
+ * unchanged. The material sees each source's channels under a per-source key
+ * ({@link pooledChannelKey}); a group of several sources sums their reads
+ * under float masks of the instance's source id.
+ *
  * Each group runs in a real branch (`If` on the instance's source id), so a
  * splat pays for its own source's effects only, however many markers carry
  * stacks. Two TSL rules keep that correct:
@@ -34,7 +41,20 @@
  *   vertex stage before any of its own branches.
  */
 import type * as THREE from 'three/webgpu';
-import { Fn, If, bool, float, int, mat3, mat4, modelWorldMatrix, vec3, vec4 } from 'three/tsl';
+import {
+  Fn,
+  If,
+  abs,
+  bool,
+  float,
+  int,
+  mat3,
+  mat4,
+  min,
+  modelWorldMatrix,
+  vec3,
+  vec4,
+} from 'three/tsl';
 import { asNode } from '../../core/splat-material-types';
 import type { SplatContext, SplatModifier, SplatOutputs } from '../../core/splat-modifier';
 import { ROW_CAMERA_LOCAL, ROW_INVERSE_LINEAR, SOURCE_DATA_ROWS } from './pooled-source-tables';
@@ -45,22 +65,40 @@ type Node<T extends string> = THREE.Node<T>;
 export interface PooledStackGroup {
   ids: readonly number[];
   modifiers: readonly SplatModifier[];
+  /** Channel names each source in {@link ids} defines, in the same order. */
+  channels: readonly ReadonlySet<string>[];
+}
+
+/** The material's channel key for source `id`'s channel `name`. */
+export function pooledChannelKey(id: number, name: string): string {
+  return `source${id}:${name}`;
 }
 
 /** Groups sources by stack contents (element-wise identity, order-sensitive). */
 export function groupSourceStacks(
-  sources: readonly { id: number; modifiers: readonly SplatModifier[] }[],
+  sources: readonly {
+    id: number;
+    modifiers: readonly SplatModifier[];
+    channels?: Iterable<string>;
+  }[],
 ): PooledStackGroup[] {
-  const groups: { ids: number[]; modifiers: readonly SplatModifier[] }[] = [];
-  for (const { id, modifiers } of sources) {
+  const groups: {
+    ids: number[];
+    modifiers: readonly SplatModifier[];
+    channels: ReadonlySet<string>[];
+  }[] = [];
+  for (const { id, modifiers, channels } of sources) {
     if (modifiers.length === 0) continue;
+    const names = new Set(channels ?? []);
     const match = groups.find(
       (group) =>
         group.modifiers.length === modifiers.length &&
         group.modifiers.every((modifier, i) => modifier === modifiers[i]),
     );
-    if (match) match.ids.push(id);
-    else groups.push({ ids: [id], modifiers });
+    if (match) {
+      match.ids.push(id);
+      match.channels.push(names);
+    } else groups.push({ ids: [id], modifiers, channels: [names] });
   }
   return groups;
 }
@@ -108,8 +146,8 @@ export function createSourceStacksModifier(options: {
 
     const folds = groups.map((group) => ({
       gate: groupGate(sourceId, group.ids),
-      out: foldInSourceFrame(group.modifiers, frame),
-      modifiers: group.modifiers,
+      out: foldInSourceFrame(group, frame, sourceId),
+      group,
     }));
     const needs = {
       offset: folds.some(({ out }) => out.offset !== null),
@@ -125,7 +163,7 @@ export function createSourceStacksModifier(options: {
     const rotationFolds = needs.rotation
       ? folds
           .filter(({ out }) => out.rotation !== null)
-          .map(({ gate, modifiers }) => ({ gate, out: foldInSourceFrame(modifiers, frame) }))
+          .map(({ gate, group }) => ({ gate, out: foldInSourceFrame(group, frame, sourceId) }))
       : [];
 
     // col0 color; col1 drawn offset + scale; col2 isotropic mix, variance
@@ -217,6 +255,36 @@ interface SourceFrame {
   ctx: SplatContext;
 }
 
+/**
+ * A group's read of channel `name`: its one source's texture, or for several
+ * sources the sum of each one's read under its id mask (arithmetic, not a
+ * `select`, which drops splats inside a modifier; the instance belongs to
+ * exactly one of them).
+ */
+function groupChannel(
+  group: PooledStackGroup,
+  name: string,
+  ctx: SplatContext,
+  sourceId: Node<'int'>,
+): Node<'float'> {
+  const owners = group.ids.filter((_, i) => group.channels[i]?.has(name));
+  if (owners.length !== group.ids.length) {
+    throw new Error(
+      `PooledUnifiedSplatMesh: a source modifier reads channel "${name}", which ` +
+        `${owners.length === 0 ? 'its source does not define' : 'not every source sharing the stack defines'}. ` +
+        `Call defineChannel("${name}") on the source before assigning the modifier.`,
+    );
+  }
+  if (owners.length === 1) return ctx.channel(pooledChannelKey(owners[0] as number, name));
+  let sum: Node<'float'> = asNode<'float'>(float(0));
+  for (const id of owners) {
+    // 1 for this id, 0 for any other (ids are integers).
+    const mask = asNode<'float'>(float(1).sub(min(abs(float(sourceId.sub(int(id)))), float(1))));
+    sum = asNode<'float'>(sum.add(ctx.channel(pooledChannelKey(id, name)).mul(mask)));
+  }
+  return sum;
+}
+
 function groupGate(sourceId: Node<'int'>, ids: readonly number[]): Node<'bool'> {
   let gate = asNode<'bool'>(sourceId.equal(int(ids[0] as number)));
   for (const id of ids.slice(1)) gate = asNode<'bool'>(gate.or(sourceId.equal(int(id))));
@@ -252,8 +320,13 @@ interface FoldResult {
  * `foldSplatModifierStack`'s running-state semantics, starting from an
  * untouched transform (the per-source block runs first in the pooled stack).
  */
-function foldInSourceFrame(modifiers: readonly SplatModifier[], frame: SourceFrame): FoldResult {
+function foldInSourceFrame(
+  group: PooledStackGroup,
+  frame: SourceFrame,
+  sourceId: Node<'int'>,
+): FoldResult {
   const { ctx } = frame;
+  const { modifiers } = group;
   const identity = asNode<'mat3'>(mat3(vec3(1, 0, 0), vec3(0, 1, 0), vec3(0, 0, 1)));
   const state = {
     color: frame.color,
@@ -301,7 +374,7 @@ function foldInSourceFrame(modifiers: readonly SplatModifier[], frame: SourceFra
         frame.linear.transpose().mul(ctx.normal).normalize(),
       );
     },
-    channel: (name: string) => ctx.channel(name),
+    channel: (name: string) => groupChannel(group, name, ctx, sourceId),
     get color() {
       return state.color;
     },

@@ -228,8 +228,10 @@ function withPackedSh(data: SplatData, bands: 0 | 1 | 2 | 3): SplatData {
  * sets itself is only ever grown.
  *
  * Limits: view-dependent SH is evaluated in the bind pose, so strong SH on a
- * turned limb is stale. The WebGL2 worker sorter sorts bind-pose centers, and
- * the pooled unified draw rejects channel-reading modifiers. For rigid parts
+ * turned limb is stale. The WebGL2 worker sorter, standalone or in a
+ * `PooledUnifiedSplatMesh` (pass {@link modifiers} to its
+ * `setSourceModifiers` so the skin runs there), sorts bind-pose centers.
+ * For rigid parts
  * alone (a vehicle's wheels and doors), `MergedSplatMesh` with one source per
  * part is exact on every path.
  *
