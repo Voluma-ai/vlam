@@ -7,12 +7,17 @@
  *
  * The goose stands near where the `4dgs` dancers do (`scene-stage.ts`), facing
  * the camera. On WebGPU the scene and the goose draw through one
- * `UnifiedSplatMesh`, so the goose is depth-sorted with the scene's splats;
- * on WebGL2 it is layered over the scene.
+ * `UnifiedSplatMesh`, so the goose is depth-sorted with the scene's splats.
+ * On WebGL2, when the scene was loaded into a pool with room for the goose
+ * ({@link GooseEffectHost.pool}, `?effects=rigged` at load), the goose joins
+ * that pool and both draw through one CPU-sorted `PooledUnifiedSplatMesh`,
+ * whose worker sorts the goose's bind-pose centers; otherwise it is layered
+ * over the scene.
  */
 import * as THREE from 'three/webgpu';
-import type { SplatMesh, SplatSortMetric } from '../lib/core';
+import type { SplatMesh, SplatPool, SplatSortMetric } from '../lib/core';
 import { UnifiedSplatMesh, supportsUnifiedSplatMesh } from '../lib/unified';
+import { PooledUnifiedSplatMesh } from '../lib/unified/pooled';
 import { createProceduralGoose, type ProceduralGoose } from './goose-procedural';
 import { createGooseRig } from './goose-rig';
 import { GooseChoreography, GoosePuppet, type GooseClipName } from './goose-clips';
@@ -28,6 +33,12 @@ export interface GooseEffectHost {
   readonly camera: THREE.PerspectiveCamera;
   readonly renderer: THREE.WebGPURenderer;
   readonly sortMetric: SplatSortMetric;
+  /**
+   * The pool the scene mesh draws from when the viewer sized it for the
+   * goose too (WebGL2 with `?effects=rigged`), else null: the goose then
+   * joins it and one pooled draw sorts it with the scene.
+   */
+  readonly pool: SplatPool | null;
   /** False while another unified draw (the benchmark's) already owns the scene mesh. */
   readonly allowUnified: boolean;
   /** Re-checked once the goose is built; a stale mount builds nothing. */
@@ -37,7 +48,7 @@ export interface GooseEffectHost {
 /** A mounted effect: the viewer calls these from its own loop and teardown. */
 export interface GooseEffect {
   /** The scene + goose draw to update instead of the scene mesh, else null. */
-  readonly unifiedDraw: UnifiedSplatMesh | null;
+  readonly unifiedDraw: UnifiedSplatMesh | PooledUnifiedSplatMesh | null;
   /** The goose's clips and mixer (for the console and checks). */
   readonly choreography: GooseChoreography;
   /** Fires a gesture, as its button does. */
@@ -83,6 +94,11 @@ function buildGoose(): ProceduralGoose {
   // No ground patch: the goose stands on the scene's own floor.
   built ??= createProceduralGoose({ ground: false });
   return built;
+}
+
+/** The goose's splat count, for sizing a shared pool before the scene loads (builds the goose). */
+export function gooseSplatCount(): number {
+  return buildGoose().data.count;
 }
 
 /** The bar of gesture buttons, and how the effect shows which gestures are playing. */
@@ -200,7 +216,10 @@ export async function mountGooseEffect(host: GooseEffectHost): Promise<GooseEffe
   const { scene, splats, camera, renderer, sortMetric } = host;
   // Draw settings follow the scene's, which the unified draw requires of every source.
   const view = splats.getUnifiedSourceView();
+  const pool =
+    host.allowUnified && host.pool && !supportsUnifiedSplatMesh(renderer) ? host.pool : null;
   const rig = createGooseRig(goose, {
+    ...(pool ? { pool } : {}),
     sortMetric,
     srgbOutput: view.srgbOutput,
     maxStdDev: view.maxStdDev,
@@ -238,7 +257,7 @@ export async function mountGooseEffect(host: GooseEffectHost): Promise<GooseEffe
     choreography.mixer.update(0);
   };
 
-  let unifiedDraw: UnifiedSplatMesh | null = null;
+  let unifiedDraw: UnifiedSplatMesh | PooledUnifiedSplatMesh | null = null;
   let disposed = false;
   const controls = createControls(play, (value) => {
     auto = value;
@@ -257,7 +276,19 @@ export async function mountGooseEffect(host: GooseEffectHost): Promise<GooseEffe
     controls.bar.remove();
   };
   try {
-    if (host.allowUnified && supportsUnifiedSplatMesh(renderer)) {
+    if (pool) {
+      const pooled = new PooledUnifiedSplatMesh(renderer, pool, {
+        srgbOutput: view.srgbOutput,
+        sortMetric,
+      });
+      unifiedDraw = pooled;
+      pooled.addSource(splats, { visible: true });
+      // The goose's rows never change, only its bone texture: no live content.
+      // Its skin and light run as its own stack, reading its channels.
+      pooled.addSource(mesh, { visible: true });
+      pooled.setSourceModifiers(mesh, mesh.modifiers);
+      scene.add(pooled);
+    } else if (host.allowUnified && supportsUnifiedSplatMesh(renderer)) {
       unifiedDraw = new UnifiedSplatMesh(renderer, splats.capacity + mesh.capacity, {
         performanceProfile: splats.performanceProfile,
         srgbOutput: view.srgbOutput,

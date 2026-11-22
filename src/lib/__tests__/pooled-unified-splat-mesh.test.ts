@@ -654,6 +654,51 @@ describe('PooledUnifiedSplatMesh source stacks', () => {
     pool.dispose();
   });
 
+  it("lets a source stack read that source's own channels", () => {
+    const renderer = mockRenderer();
+    const pool = new SplatPool({ capacity: 2 * W });
+    const main = new SplatMesh(splat(), { pool });
+    const marker = new SplatMesh(splat(), { pool });
+    marker.defineChannel('label');
+    const pooled = new PooledUnifiedSplatMesh(renderer, pool);
+    pooled.addSource(main);
+    pooled.addSource(marker);
+    const reads: unknown[] = [];
+    const reader: SplatModifier = (ctx) => {
+      reads.push(ctx.channel('label'));
+      return {};
+    };
+    pooled.setSourceModifiers(marker, [reader]);
+    const camera = cameraAt(3);
+    // A skinned mesh's skin reads its bone channels this way (the WebGL2 goose).
+    expect(() => pooled.update(camera)).not.toThrow();
+    expect(reads.length).toBeGreaterThan(0);
+    expect(reads.every((node) => node !== undefined)).toBe(true);
+    pooled.dispose();
+    main.dispose();
+    marker.dispose();
+    pool.dispose();
+  });
+
+  it('names the channel when a source stack reads one its source lacks', () => {
+    const renderer = mockRenderer();
+    const pool = new SplatPool({ capacity: 2 * W });
+    const main = new SplatMesh(splat(), { pool });
+    const marker = new SplatMesh(splat(), { pool });
+    // Another source's channel of that name is not this source's.
+    main.defineChannel('label');
+    const pooled = new PooledUnifiedSplatMesh(renderer, pool);
+    pooled.addSource(main);
+    pooled.addSource(marker);
+    const reader: SplatModifier = (ctx) => ({ color: ctx.color.mul(ctx.channel('label')) });
+    pooled.setSourceModifiers(marker, [reader]);
+    expect(() => pooled.update(cameraAt(3))).toThrow(/channel "label"/);
+    pooled.dispose();
+    main.dispose();
+    marker.dispose();
+    pool.dispose();
+  });
+
   it('sizes the per-source tables to the live source count', () => {
     const renderer = mockRenderer();
     const pool = new SplatPool({ capacity: 4 * W });

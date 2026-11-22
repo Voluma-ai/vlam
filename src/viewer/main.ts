@@ -3191,11 +3191,33 @@ async function main(): Promise<void> {
   // WebGPU, its unified draw replaces the scene mesh's own update.
   let csgsEffect: CsgsEffect | null = null;
   /**
-   * WebGL2 with `?clips=`: the pool the streamed scene was loaded into, sized
-   * for the clips as well, so the `4dgs` effect can sort them with the scene
-   * in one pooled draw. Null otherwise.
+   * WebGL2 with `?clips=` or `?effects=rigged`: the pool the streamed scene
+   * was loaded into, sized for the clips or the goose as well, so the `4dgs`
+   * or `rigged` effect can sort them with the scene in one pooled draw. Null
+   * otherwise.
    */
   let clipPool: SplatPool | null = null;
+  /** The effect {@link clipPool} has room for; only that one joins it. */
+  let clipPoolGuest: SharedPoolGuest | null = null;
+  /** The streamed mesh loaded from `?scene=` (not a drop), while it is the one mounted. */
+  let urlStreamedMesh: SplatMesh | null = null;
+  let gooseReload: Promise<void> | null = null;
+  /**
+   * Whether picking the rigged goose has to re-stream the scene first: on
+   * WebGL2 the goose sorts with the scene only inside one shared pool, which
+   * must be sized before the scene loads, and the URL scene was loaded
+   * without room for it (the page opened without `?effects=rigged`).
+   */
+  const needsGoosePoolReload = (): boolean =>
+    (renderer.backend as { isWebGPUBackend?: boolean } | undefined)?.isWebGPUBackend !== true &&
+    splats instanceof StreamedSplatMesh &&
+    splats === urlStreamedMesh &&
+    clipPoolGuest !== 'rigged' &&
+    !params.get('clips') &&
+    benchmarkSeconds <= 0 &&
+    !benchmarkUnified &&
+    !dropMounted &&
+    separateTool?.hasSeparatedParts !== true;
   let csgsSequence = 0;
   const teardownCsgs = (): void => {
     csgsSequence++;
@@ -3219,7 +3241,7 @@ async function main(): Promise<void> {
         renderer,
         sortMetric,
         allowUnified: !benchmarkUnified,
-        pool: clipPool,
+        pool: clipPoolGuest === '4dgs' ? clipPool : null,
         isCurrent,
       });
       if (isCurrent()) csgsEffect = effect;
@@ -3260,6 +3282,7 @@ async function main(): Promise<void> {
         renderer,
         sortMetric,
         allowUnified: !benchmarkUnified,
+        pool: clipPoolGuest === 'rigged' ? clipPool : null,
         isCurrent,
       });
       if (isCurrent()) gooseEffect = effect;
@@ -3525,8 +3548,10 @@ async function main(): Promise<void> {
     readonly worldBounds?: THREE.Box3;
     /** Source transforms already include host orientation/rotation/scale. */
     readonly preservesTransform?: boolean;
-    /** Shared scene-and-clips pool owned by this scene. */
+    /** Shared scene-and-guests pool owned by this scene. */
     readonly ownedPool?: SplatPool;
+    /** The effect {@link ownedPool} was sized for. */
+    readonly ownedPoolGuest?: SharedPoolGuest;
     /** Called every frame with the elapsed seconds, for a scene that animates itself. */
     readonly animate?: (elapsed: number) => void;
     /** Modifiers the scene needs under every effect (a rig's skin, then its lighting). */
@@ -3885,6 +3910,7 @@ async function main(): Promise<void> {
       splats.dispose();
       clipPool?.dispose();
       clipPool = null;
+      clipPoolGuest = null;
       mounted = false;
       // The paint tool holds the old mesh's range handles and cannot survive
       // the swap; benchmark points likewise belong to the old scene's space.
@@ -3928,6 +3954,7 @@ async function main(): Promise<void> {
     }
     if (options.frame ?? true) suppressStreamedUpdate = true;
     clipPool = next.ownedPool ?? null;
+    clipPoolGuest = next.ownedPool ? (next.ownedPoolGuest ?? null) : null;
     mounted = true;
     if (options.frame ?? true) {
       resetAdaptivePixelRatio();
@@ -4290,6 +4317,21 @@ async function main(): Promise<void> {
     if (mode === 'paint' && isClipMesh(splats)) return;
     if (separateTool?.hasSeparatedParts && (mode === 'paint' || effectMode === 'paint')) {
       console.warn('Restore the separated scene before switching to or from paint mode.');
+      return;
+    }
+    if (mode === 'rigged' && needsGoosePoolReload()) {
+      effectMode = mode;
+      // Re-stream the same scene into a pool with room for the goose; the
+      // remount attaches the effect. The old scene stays up meanwhile.
+      gooseReload ??= loadStreamedUrlScene({ frame: false })
+        .catch((error: unknown) => {
+          console.error('[vlam] WebGL2 goose: re-streaming the scene failed', error);
+          if (effectMode === 'rigged' && mounted) attachEffects(splats);
+        })
+        .finally(() => {
+          gooseReload = null;
+        });
+      await gooseReload;
       return;
     }
     const rebuild =
@@ -4744,30 +4786,35 @@ async function main(): Promise<void> {
   }
 
   /**
-   * The shared scene-and-clips pool for WebGL2 with `?clips=` (see
-   * {@link clipPool}), or null: on WebGPU, without clips, or when a clip's
-   * size cannot be read up front (only `.asog` headers are read). The scene
-   * gets a pinned budget so its share of the pool is known: that budget times
-   * the slack a streamed mesh would allocate for itself, plus each clip's
-   * splats and a row.
+   * The shared scene-and-guests pool for WebGL2 with `?clips=` or
+   * `?effects=rigged` (see {@link clipPool}), or null: on WebGPU, without
+   * guests, or when a clip's size cannot be read up front (only `.asog`
+   * headers are read). The scene gets a pinned budget so its share of the
+   * pool is known: that budget times the slack a streamed mesh would allocate
+   * for itself, plus each guest's splats (each clip, the goose) and a row.
    */
   async function sharedClipPool(
     budgetCap: number | undefined,
     shBands: 0 | 1 | 2 | 3 | undefined,
     stagedSwaps: boolean,
-  ): Promise<{ pool: SplatPool; budget: number } | null> {
+  ): Promise<{ pool: SplatPool; budget: number; guest: SharedPoolGuest } | null> {
     const clips = params.get('clips');
+    // `?clips=` keeps its pool whichever effect starts; the goose needs one only
+    // when it starts the session (a later pick layers it over the scene).
+    const goose = !clips && effectMode === 'rigged';
     const webgpu =
       (renderer.backend as { isWebGPUBackend?: boolean } | undefined)?.isWebGPUBackend === true;
-    if (!clips || webgpu || benchmarkSeconds > 0) return null;
+    if ((!clips && !goose) || webgpu || benchmarkSeconds > 0) return null;
     try {
-      const counts = await Promise.all(
-        clips
-          .split(',')
-          .map((url) => url.trim())
-          .filter((url) => url.length > 0)
-          .map((url) => peekAsogCount(new URL(url, location.href))),
-      );
+      const counts = goose
+        ? [(await import('./goose-effect')).gooseSplatCount()]
+        : await Promise.all(
+            (clips ?? '')
+              .split(',')
+              .map((url) => url.trim())
+              .filter((url) => url.length > 0)
+              .map((url) => peekAsogCount(new URL(url, location.href))),
+          );
       const budget = resolveSplatBudget(pinnedBudget, deviceProfile, {
         ...(budgetCap === undefined ? {} : { cap: budgetCap }),
       });
@@ -4788,12 +4835,15 @@ async function main(): Promise<void> {
         maxTextureSize: deviceMaxTextureSize(renderer),
       });
       console.info(
-        `[vlam] WebGL2 clips: one pool of ${capacity.toLocaleString('en-US')} splats ` +
-          `(scene budget ${budget.toLocaleString('en-US')}, clips ${counts.join(' + ')})`,
+        `[vlam] WebGL2 ${goose ? 'goose' : 'clips'}: one pool of ${capacity.toLocaleString('en-US')} splats ` +
+          `(scene budget ${budget.toLocaleString('en-US')}, ${goose ? 'goose' : 'clips'} ${counts.join(' + ')})`,
       );
-      return { pool, budget };
+      return { pool, budget, guest: goose ? 'rigged' : '4dgs' };
     } catch (error) {
-      console.warn('[vlam] WebGL2 clips: no shared pool; the clips draw over the scene.', error);
+      console.warn(
+        `[vlam] WebGL2 ${goose ? 'goose' : 'clips'}: no shared pool; they draw over the scene.`,
+        error,
+      );
       return null;
     }
   }
@@ -4835,6 +4885,19 @@ async function main(): Promise<void> {
       }
       return;
     }
+    await loadStreamedUrlScene({ keepWelcome: keepWelcomeExpanded });
+  }
+
+  /**
+   * Streams the URL's scene and mounts it. The initial load frames it; a
+   * reload for the same scene (the rigged goose on WebGL2 needs the scene in
+   * a pool with room for it, sized before the scene loads) passes
+   * `frame: false` and keeps the camera.
+   */
+  async function loadStreamedUrlScene(options: {
+    frame?: boolean;
+    keepWelcome?: boolean;
+  }): Promise<void> {
     // `?budget=` pins absolutely (that is what it is for, and what the A/B needs);
     // performance mode only *tightens* the library's own per-device, per-format
     // default, so it cannot overshoot the way a pinned constant did.
@@ -4845,9 +4908,10 @@ async function main(): Promise<void> {
     // demo's performance mode pins the budget rather than the profile, so it
     // has to opt out of SH itself - it exists to cut exactly this cost.
     const shBands = requestedShBands() ?? (perfMode.enabled ? 0 : undefined);
-    // WebGL2 has no compute gather, so `?clips=` sorts the clips with the
-    // scene only when both draw from one pool: size it here, for the scene's
-    // budget and the clips, before the scene allocates its own.
+    // WebGL2 has no compute gather, so `?clips=` (or `?effects=rigged`) sorts
+    // the clips (or the goose) with the scene only when both draw from one
+    // pool: size it here, for the scene's budget and the guests, before the
+    // scene allocates its own.
     const shared = await sharedClipPool(budgetCap, shBands, experimentalStagedSwaps);
     const mesh = await StreamedSplatMesh.load(resolveSceneUrl(sceneName), {
       onStatus: (status) => {
@@ -4916,10 +4980,11 @@ async function main(): Promise<void> {
           sortScene: sceneName,
           note: '',
           paint: null,
-          ...(shared ? { ownedPool: shared.pool } : {}),
+          ...(shared ? { ownedPool: shared.pool, ownedPoolGuest: shared.guest } : {}),
         },
-        { keepWelcome: keepWelcomeExpanded },
+        options,
       );
+      urlStreamedMesh = mesh;
     }
   }
 
@@ -6645,6 +6710,9 @@ function buildCopyViewButton(
   });
   document.body.appendChild(button);
 }
+
+/** The effect whose guests (4D clips, the rigged goose) a WebGL2 shared scene pool has room for. */
+type SharedPoolGuest = '4dgs' | 'rigged';
 
 /** The collision controls' live state, so the caller can drive them back. */
 interface CollisionToggles {

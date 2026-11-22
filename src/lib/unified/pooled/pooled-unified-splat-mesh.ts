@@ -60,7 +60,11 @@ import {
   ROW_SH_MIN,
   SOURCE_DATA_ROWS,
 } from './pooled-source-tables';
-import { createSourceStacksModifier, groupSourceStacks } from './pooled-source-stacks';
+import {
+  createSourceStacksModifier,
+  groupSourceStacks,
+  pooledChannelKey,
+} from './pooled-source-stacks';
 import type {
   UnifiedDrawPublicationSnapshot,
   UnifiedSplatPickResult,
@@ -441,10 +445,11 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
   }
 
   /**
-   * The one modifier stack applied to every drawn splat. Sources' own stacks
-   * are not evaluated by this draw; `ctx.sourceCenter` is the pool-local
-   * center and `ctx.localCenter` the placed world center. Modifiers reading
-   * per-splat channels are not supported here (the pooled mesh defines none).
+   * The one modifier stack applied to every drawn splat, after each source's
+   * own stack ({@link setSourceModifiers}); `ctx.sourceCenter` is the pool-local
+   * center and `ctx.localCenter` the placed world center. Modifiers here
+   * cannot read per-splat channels (the pooled mesh defines none); a source's
+   * own stack ({@link setSourceModifiers}) reads that source's channels.
    */
   get modifiers(): readonly SplatModifier[] {
     return this.modifierList;
@@ -1317,8 +1322,17 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
     // Display opacity times the per-view draw mask (setSourceDrawMask).
     const params = dataRow(ROW_PARAMS);
     const opacity = asNode<'float'>(asNode<'float'>(params.x).mul(asNode<'float'>(params.z)));
+    // Sources' channels, keyed per source: a tenant's channel texture spans
+    // the pool and is indexed by pool row, as this draw's instances are.
+    const channels = new Map<string, { texture: THREE.DataTexture }>();
+    const stackSources = this.sources.map((record) => {
+      if (record.modifiers.length === 0) return { id: record.id, modifiers: record.modifiers };
+      const own = record.source.getUnifiedSourceView().channels;
+      for (const [name, channel] of own) channels.set(pooledChannelKey(record.id, name), channel);
+      return { id: record.id, modifiers: record.modifiers, channels: own.keys() };
+    });
     const sourceStacks = createSourceStacksModifier({
-      groups: groupSourceStacks(this.sources),
+      groups: groupSourceStacks(stackSources),
       sourceId,
       columns: tables.columnsNode,
       data: tables.dataNode,
@@ -1384,7 +1398,7 @@ export class PooledUnifiedSplatMesh extends THREE.Mesh {
         // the Gaussian.
         lodAlpha: true,
       },
-      channels: new Map(),
+      channels,
       // Source stacks first (each in its source's frame, as the compute path
       // gathers them), then the mesh's own drawn-frame stack, then opacity.
       modifiers: [...(sourceStacks ? [sourceStacks] : []), ...this.modifierList, sourceOpacity],
