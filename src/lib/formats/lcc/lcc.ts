@@ -1,4 +1,5 @@
 import { isAbortError } from '../../loaders/loading';
+import { warn } from '../../core/logging';
 import { discardResponseBody } from '../../loaders/worker-fetch';
 import * as THREE from 'three/webgpu';
 import { LodScheduler } from '../../streaming/lod-scheduler';
@@ -98,18 +99,31 @@ export async function buildLccScene(
   const dataUrl = require('data.bin');
   const environmentUrl = source.resolve('environment.bin');
 
-  const index = parseLccIndex(
-    await fetchBytes(require('index.bin'), options, 'manifest'),
-    manifest,
-  );
-  assertIndexMatchesManifest(index, manifest);
-
   // A Portable capture has no shcoef.bin at all, so it caps everyone at 0 -
   // asking for SH on one must not allocate pool textures for SH that can
   // never arrive, nor fetch a file that does not exist.
   const available = manifest.fileType === 'Quality' ? MAX_SH_BANDS : 0;
   const requested = options.shBands ?? available;
-  const bands = Math.min(requested, available);
+  const wantsSh = Math.min(requested, available) > 0;
+  // A Quality manifest does not guarantee its shcoef.bin was shipped: copies
+  // are often uploaded without the (2x data.bin sized) sidecar. Every chunk
+  // fetches its SH slice alongside its base slice, so a missing sidecar would
+  // fail every chunk and leave only the cover. Probe it once, in parallel with
+  // index.bin, and stream base splats without higher-order SH instead.
+  const [indexBytes, shAvailable] = await Promise.all([
+    fetchBytes(require('index.bin'), options, 'manifest'),
+    wantsSh ? shSidecarAvailable(source, options.signal) : Promise.resolve(false),
+  ]);
+  const index = parseLccIndex(indexBytes, manifest);
+  assertIndexMatchesManifest(index, manifest);
+
+  if (wantsSh && !shAvailable) {
+    warn(
+      'LCC: manifest declares a Quality capture but shcoef.bin is missing; ' +
+        'streaming without higher-order spherical harmonics.',
+    );
+  }
+  const bands = shAvailable ? Math.min(requested, available) : 0;
   const shBands: 1 | 2 | 3 | undefined = bands === 0 ? undefined : (bands as 1 | 2 | 3);
   const shUrl = shBands === undefined ? null : require('shcoef.bin');
 
@@ -437,6 +451,20 @@ function assertIndexMatchesManifest(index: LccIndexCell[], manifest: LccManifest
  * `environment.bin` has no index. A missing file is not an error: it is
  * optional, and plenty of captures have no sky.
  */
+/**
+ * Whether a Quality capture's `shcoef.bin` can be streamed. Absent means the
+ * dataset cannot resolve it or its size probe finds no file (a 404 over HTTP);
+ * an empty file counts as absent too, since no chunk could read its SH slice.
+ */
+async function shSidecarAvailable(
+  source: SplatDatasetSource,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (source.resolve('shcoef.bin') === null) return false;
+  const size = await source.size('shcoef.bin', signal ? { signal } : {});
+  return size !== null && size > 0;
+}
+
 async function environmentSplatCount(
   source: SplatDatasetSource,
   manifest: LccManifest,
