@@ -6,7 +6,7 @@
  * viewer's bundle until the effect is first picked.
  *
  * The clips stand in a small circle on the floor of a known scene
- * ({@link CSGS_PLACEMENTS}), or at the center of an unknown one, each facing
+ * (`scene-stage.ts`), or at the center of an unknown one, each facing
  * outward, the first toward the camera. On WebGPU the scene and the clips
  * draw through one `UnifiedSplatMesh`, so the dancers are depth-sorted with
  * the scene's splats and each other. On WebGL2, when the scene was loaded
@@ -26,17 +26,8 @@ import {
   type SplatClip,
 } from '../lib/dynamic';
 import { CSGS_DEMO_SCENE } from './csgs-demo';
+import { sceneStageCenter } from './scene-stage';
 import { createClipSound, type ClipSound } from './clip-sound';
-
-/**
- * Where the circle's center stands in known scenes (the dancers' feet), keyed
- * by scene file name. Tempel: under the VLAM! mark's placement point, a little
- * above the courtyard floor (y ≈ -0.36) so the legs clear the planted bed in
- * the middle.
- */
-const CSGS_PLACEMENTS: Readonly<Record<string, readonly [number, number, number]>> = {
-  'Tempel.lcc2': [-0.42, 0, -23.3],
-};
 
 /** The four clips of the public Faltwerk demo, played by default. */
 const DEMO_CLIPS = ['female', 'male_1', 'male_2', 'angry_j'].map(
@@ -58,7 +49,7 @@ export interface CsgsEffectHost {
   readonly scene: THREE.Scene;
   /** The mounted scene mesh; joins the unified draw while the effect runs. */
   readonly splats: SplatMesh;
-  /** Scene file name, for {@link CSGS_PLACEMENTS}. */
+  /** Scene file name, for the stage's placement (`scene-stage.ts`). */
   readonly sceneTitle: string;
   readonly camera: THREE.PerspectiveCamera;
   readonly renderer: THREE.WebGPURenderer;
@@ -245,15 +236,7 @@ export async function mountCsgsEffect(host: CsgsEffectHost): Promise<CsgsEffect 
   // unified draw requires of every source anyway.
   const sceneView = splats.getUnifiedSourceView();
 
-  let center: THREE.Vector3;
-  const preset = CSGS_PLACEMENTS[host.sceneTitle];
-  if (preset) {
-    center = new THREE.Vector3(...preset);
-  } else {
-    const bounds = splats.computeSplatBounds().clone().applyMatrix4(splats.matrixWorld);
-    const middle = bounds.getCenter(new THREE.Vector3());
-    center = new THREE.Vector3(middle.x, bounds.min.y, middle.z);
-  }
+  const center = sceneStageCenter(host.sceneTitle, splats);
   const toward = camera.position.clone().sub(center);
   const towardAngle = Math.atan2(toward.x, toward.z);
   const radius = loaded.length > 1 ? CIRCLE_RADIUS : 0;

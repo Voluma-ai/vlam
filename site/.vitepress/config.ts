@@ -84,9 +84,13 @@ export default defineConfig({
       // new tab each way just piles them up. `target` is still required -
       // it is what makes the VitePress router skip the link and do a real
       // navigation; `/demo/` is served by Vite, not a VitePress page.
+      // Same start pose as the home page's "Open demo" button: standing in the
+      // courtyard. Without it the auto-framing treats Tempel as a landscape
+      // and opens ~30 m outside the hall, and `orbit=0` keeps the cinematic
+      // path from pulling the camera back out there.
       {
         text: 'Demo',
-        link: '/demo/?scene=/remote/voluma/cultural-heritage/Tempel/Tempel.lcc2&sunCity=Athens&fallback=goose',
+        link: '/demo/?scene=/remote/voluma/cultural-heritage/Tempel/Tempel.lcc2&sunCity=Athens&fallback=goose&fpv=1&orbit=0&cameraPosition=-8.125064,1.388029,-38.339206&cameraTarget=-7.335471,1.494982,-36.504784',
         target: '_self',
       },
     ],
