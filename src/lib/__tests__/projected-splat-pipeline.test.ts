@@ -241,6 +241,61 @@ describe('automatic compute-projection policy', () => {
     expect(resolve(renderer)).toBe('compute');
     mesh.dispose();
   });
+
+  it('keeps an automatic choice open while only a transient blocker holds it on vertex', () => {
+    // Regression: a mesh that started with a reveal modifier (or as a unified source, or in XR)
+    // was locked to vertex for its lifetime, although the device and scene qualify for compute.
+    const mesh = new SplatMesh(data, { projectionStrategy: computeProjection({ mode: 'auto' }) });
+    Object.defineProperty(mesh, 'capacity', {
+      configurable: true,
+      value: AUTO_APPLE_SILICON_PROJECTION_MIN_SPLATS,
+    });
+    const internals = mesh as unknown as {
+      modifierList: unknown[];
+      automaticProjectionReason: string;
+      isAppleSiliconMac(): boolean;
+      resolvedProjectionStrategy(renderer: THREE.WebGPURenderer): 'vertex' | 'compute';
+    };
+    internals.isAppleSiliconMac = () => true;
+    const renderer = {
+      backend: { isWebGPUBackend: true, device: { adapterInfo: { vendor: 'apple' } } },
+    } as unknown as THREE.WebGPURenderer;
+
+    internals.modifierList = [{}];
+    expect(internals.resolvedProjectionStrategy(renderer)).toBe('vertex');
+    expect(internals.automaticProjectionReason).toBe('auto-modifiers');
+
+    internals.modifierList = [];
+    expect(internals.resolvedProjectionStrategy(renderer)).toBe('compute');
+    expect(internals.automaticProjectionReason).toBe('auto-large-static-apple-silicon');
+
+    // Once made, the choice stays: compute re-checks modifiers itself every frame.
+    internals.modifierList = [{}];
+    expect(internals.resolvedProjectionStrategy(renderer)).toBe('compute');
+    mesh.dispose();
+  });
+
+  it('still locks a vertex choice that rests on the device or the scene', () => {
+    const mesh = new SplatMesh(data, { projectionStrategy: computeProjection({ mode: 'auto' }) });
+    const internals = mesh as unknown as {
+      automaticProjectionReason: string;
+      isAppleSiliconMac(): boolean;
+      resolvedProjectionStrategy(renderer: THREE.WebGPURenderer): 'vertex' | 'compute';
+    };
+    internals.isAppleSiliconMac = () => true;
+    const renderer = {
+      backend: { isWebGPUBackend: true, device: { adapterInfo: { vendor: 'apple' } } },
+    } as unknown as THREE.WebGPURenderer;
+
+    expect(internals.resolvedProjectionStrategy(renderer)).toBe('vertex');
+    expect(internals.automaticProjectionReason).toBe('auto-small-static-scene');
+    Object.defineProperty(mesh, 'capacity', {
+      configurable: true,
+      value: AUTO_APPLE_SILICON_PROJECTION_MIN_SPLATS,
+    });
+    expect(internals.resolvedProjectionStrategy(renderer)).toBe('vertex');
+    mesh.dispose();
+  });
 });
 
 function makeStandalonePipeline(sh: SplatShInputs | null): StandaloneProjectedSplatPipeline {
