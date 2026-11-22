@@ -80,6 +80,8 @@ function stubFetch(
     collisionBytes?: number | null;
     /** Which collision filename answers the size probe. */
     collisionName?: 'collision.lci' | 'Collision.lci';
+    /** `shcoef.bin` size; null = absent (404). Present by default. */
+    shcoefBytes?: number | null;
   } = {},
 ) {
   const calls: string[] = [];
@@ -96,6 +98,13 @@ function stubFetch(
         if (bytes === null || bytes === undefined) {
           return Promise.resolve(new Response(null, { status: 404 }));
         }
+        return Promise.resolve(
+          new Response(null, { status: 200, headers: { 'content-length': String(bytes) } }),
+        );
+      }
+      if (url.endsWith('shcoef.bin')) {
+        const bytes = options.shcoefBytes === undefined ? 64 * 1024 : options.shcoefBytes;
+        if (bytes === null) return Promise.resolve(new Response(null, { status: 404 }));
         return Promise.resolve(
           new Response(null, { status: 200, headers: { 'content-length': String(bytes) } }),
         );
@@ -308,6 +317,33 @@ describe('buildLccScene', () => {
     // so the whole scene decodes through one pool uniform.
     expect(env.sh?.range).toEqual({ min: [-1, -1, -1], max: [1, 1, 1] });
     expect(env.sh?.requantizeTo).toEqual({ min: [-3, -3, -3], max: [3, 3, 3] });
+  });
+
+  it('streams a Quality capture without SH when shcoef.bin is missing', async () => {
+    // Regression: uploaded copies often lack the 2x data.bin sized sidecar.
+    // Requesting SH anyway failed every chunk (its SH slice 404s) and left
+    // only the cover drawn.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const calls = stubFetch({ environmentBytes: 96 * 10, shcoefBytes: null });
+    const scene = await buildLccScene(manifest({ fileType: 'Quality' }), BASE, OPTIONS);
+    expect(scene.shBands).toBe(0);
+    for (const chunk of scene.chunkOptions!) expect(lccOf(chunk).sh).toBeUndefined();
+    // The Quality environment stride still follows fileType.
+    expect(lccOf(scene.chunkOptions![scene.chunkUrls.length - 1]).stride).toBe(96);
+    expect(calls.filter((call) => call.includes('shcoef.bin'))).toEqual([
+      'HEAD https://example.test/capture/shcoef.bin',
+    ]);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('shcoef.bin is missing'));
+    warnSpy.mockRestore();
+  });
+
+  it('does not probe shcoef.bin when SH is off or unavailable', async () => {
+    const quality = stubFetch();
+    await buildLccScene(manifest({ fileType: 'Quality' }), BASE, { ...OPTIONS, shBands: 0 });
+    expect(quality.some((call) => call.includes('shcoef.bin'))).toBe(false);
+    const portable = stubFetch();
+    await buildLccScene(manifest(), BASE, OPTIONS);
+    expect(portable.some((call) => call.includes('shcoef.bin'))).toBe(false);
   });
 
   it('never fetches SH for a Portable capture, whatever is asked for', async () => {
