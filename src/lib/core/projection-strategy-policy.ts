@@ -6,8 +6,18 @@ import type {
   AutomaticProjectionPolicyResult,
 } from './strategy-types';
 
-/** The only measured automatic cohort is a static SH capture of at least 8 million splats. */
+/** The measured discrete-GPU automatic cohort is a static SH capture of at least 8 million splats. */
 export const AUTO_PROJECTION_MIN_SPLATS = 8_000_000;
+/**
+ * Smallest static scene the Apple Silicon Mac cohort projects with compute. Measured
+ * 2026-11-21 on an Apple M3 (16 GB, Chromium WebGPU, demo defaults: `quality`
+ * profile, counting sort, DPR 2, orbiting): a 3,994,523-splat SH3 SOG went from
+ * 13.7 to 31.7 fps (GPU completion 361 -> 126 ms behind submission) and a
+ * 4,592,169-splat PLY without SH from 18.1 to 56.8 fps (215 -> 15 ms). 14,636- and
+ * 384,366-splat scenes tied at vsync. 0.4M-4M is unmeasured, so the cut sits below
+ * the smallest measured win.
+ */
+export const AUTO_APPLE_SILICON_PROJECTION_MIN_SPLATS = 3_500_000;
 /**
  * Conservative cap for projection plus cached SH allocations on an identified
  * desktop dGPU. It is an application policy, never a claim about available VRAM.
@@ -42,7 +52,8 @@ export function estimateAutomaticProjectionMemoryBytes(capacity: number): number
 }
 
 /**
- * Chooses only the cohort measured with compute projection plus the SH cache.
+ * Chooses only measured cohorts: discrete NVIDIA Ampere with SH and the SH cache, and
+ * large static scenes on Apple Silicon Macs.
  * Every unknown or unmeasured case remains on the established vertex path.
  */
 export function resolveAutomaticProjectionStrategy(
@@ -65,6 +76,15 @@ export function resolveAutomaticProjectionStrategy(
   if (!input.usesCountingSort) return vertex('auto-sort-strategy');
   if (input.usesFoveation) return vertex('auto-foveation');
   if (input.isMobile) return vertex('auto-mobile-device');
+  // Unlike the discrete cohort, Apple Silicon wins without SH and under the full-detail
+  // `quality` profile, so neither gate applies to it (see the constant above).
+  if (input.isAppleSiliconMac === true) {
+    if (input.capacity < AUTO_APPLE_SILICON_PROJECTION_MIN_SPLATS) {
+      return vertex('auto-small-static-scene');
+    }
+    if (requiredMemoryBytes > input.memoryBudgetBytes) return vertex('auto-memory-budget');
+    return { strategy: 'compute', reason: 'auto-large-static-apple-silicon', requiredMemoryBytes };
+  }
   if (input.gpuClass === undefined) return vertex('auto-unknown-device');
   if (input.gpuClass !== 'discrete') return vertex('auto-nondiscrete-device');
   if (!input.isValidatedDeviceClass) return vertex('auto-unvalidated-device-class');

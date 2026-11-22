@@ -64,6 +64,7 @@ describe('detectSplatDeviceProfile', () => {
       isMobile: true,
       isHeadset: false,
       isLowPower: false,
+      isMacDesktop: false,
       hasWebGpu: false,
     });
   });
@@ -75,6 +76,7 @@ describe('detectSplatDeviceProfile', () => {
       isMobile: true,
       isHeadset: false,
       isLowPower: false,
+      isMacDesktop: false,
       hasWebGpu: false,
     });
   });
@@ -92,6 +94,7 @@ describe('detectSplatDeviceProfile', () => {
       isMobile: false,
       isHeadset: false,
       isLowPower: false,
+      isMacDesktop: false,
       hasWebGpu: false,
     });
   });
@@ -124,6 +127,7 @@ describe('detectSplatDeviceProfile', () => {
       isMobile: true,
       isHeadset: true,
       isLowPower: false,
+      isMacDesktop: false,
       hasWebGpu: false,
     });
   });
@@ -902,6 +906,27 @@ describe('desktop GPU class budgets', () => {
     expect(resolveSplatPerformanceProfile(undefined, integrated)).toBe('smooth');
     expect(isFillConstrainedSplatDevice({ ...desktop, gpuClass: 'discrete' })).toBe(false);
     expect(recommendedMaxPixelRatio({ ...desktop, gpuClass: 'discrete' })).toBe(2);
+  });
+});
+
+describe('Mac desktop detection', () => {
+  const stubNavigator = (nav: Partial<Navigator>) =>
+    vi.stubGlobal('navigator', { userAgent: '', maxTouchPoints: 0, platform: '', ...nav });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('flags a Mac desktop without changing the library default profile', () => {
+    stubNavigator({ userAgent: DESKTOP_MAC_UA, platform: 'MacIntel' });
+    const profile = detectSplatDeviceProfile();
+    expect(profile?.isMacDesktop).toBe(true);
+    // Hosts opt in to `balanced` per scene; the library keeps full detail.
+    expect(resolveSplatPerformanceProfile(undefined, profile)).toBe('quality');
+  });
+
+  it('does not flag an iPad that reports MacIntel', () => {
+    stubNavigator({ userAgent: DESKTOP_MAC_UA, platform: 'MacIntel', maxTouchPoints: 5 });
+    expect(detectSplatDeviceProfile()?.isMacDesktop).toBe(false);
   });
 });
 

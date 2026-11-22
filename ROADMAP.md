@@ -134,6 +134,10 @@ selection features until their benefits are measured and visually validated.
   intermediate 1.83M SH2 SOG exercises the missing scene-size band,
   but its median/tail split rules out a broader automatic cohort on this GPU;
   a second GPU class is still needed before the auto threshold can broaden.
+  That second class is now an Apple M3 (2026-11-21): `auto` also selects
+  compute for static scenes of at least 3.5M splats on Apple Silicon Macs,
+  with or without SH under `quality` (4.59M no-SH PLY 18 → 57 fps, 4M SH3 SOG
+  14 → 32 fps, 15k and 384k ties at vsync); 0.4M–4M is still unmeasured.
   A camera move under a held sort gate re-projects at once (the compute draw
   reads cached clip centers), but on the adaptive cadence rather than every
   held frame: re-projecting every held frame took the 8.72M overview orbit to
