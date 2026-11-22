@@ -84,6 +84,7 @@ import {
 } from './vlam-logo';
 import { createProxyDepth, type ProxyDepth } from './proxy-depth';
 import type { CsgsEffect } from './csgs-effect';
+import type { GooseEffect } from './goose-effect';
 import type { ProceduralGoose } from './goose-procedural';
 import { createVolumeFire, type VolumeFire } from './volume-fire';
 import { createPostDepthOfField, type PostDepthOfField } from './post-dof';
@@ -2314,6 +2315,7 @@ async function main(): Promise<void> {
   //   lod      - false-color by resident LOD level (red=finest … blue=coarse)
   //   distance  - false-color by camera distance (same band edges as LCC LODs)
   //   4dgs     - Faltwerk .csgs 4DGS clips dancing in the scene (csgs-effect.ts, lazy)
+  //   rigged   - the procedural goose, rigged and animated, with gesture buttons (goose-effect.ts, lazy)
   // `?tool=paint` is enough to arm paint without a separate effects value.
   // `?clips=<url>[,…]` (4D clips, e.g. `.asog`) stands them in the scene through
   // the `4dgs` effect, which it turns on when no other effect is named.
@@ -3232,6 +3234,52 @@ async function main(): Promise<void> {
     }
   };
 
+  // ?effects=rigged: the procedural goose standing in the scene, skinned and
+  // played by its clips, with buttons for each gesture. Lazy like `4dgs`, and
+  // likewise its unified draw replaces the scene mesh's own update on WebGPU.
+  let gooseEffect: GooseEffect | null = null;
+  let gooseSequence = 0;
+  const teardownGoose = (): void => {
+    gooseSequence++;
+    gooseEffect?.dispose();
+    gooseEffect = null;
+  };
+  const mountGoose = async (): Promise<void> => {
+    teardownGoose();
+    const sequence = gooseSequence;
+    const isCurrent = (): boolean =>
+      sequence === gooseSequence && effectMode === 'rigged' && mounted;
+    try {
+      const { mountGooseEffect } = await import('./goose-effect');
+      if (!isCurrent()) return;
+      const effect = await mountGooseEffect({
+        scene,
+        splats,
+        sceneTitle,
+        camera,
+        renderer,
+        sortMetric,
+        allowUnified: !benchmarkUnified,
+        isCurrent,
+      });
+      if (isCurrent()) gooseEffect = effect;
+      else effect?.dispose();
+    } catch (error) {
+      if (sequence !== gooseSequence) return;
+      console.error('Rigged goose failed to load', error);
+      showError({
+        title: 'Rigged splats unavailable',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+  /** Updates the effect draw (scene + guests) that replaces the scene mesh's own update; false when there is none. */
+  const updateGuestDraw = (): boolean => {
+    const draw = csgsEffect?.unifiedDraw ?? gooseEffect?.unifiedDraw ?? null;
+    draw?.update(camera);
+    return draw !== null;
+  };
+
   // ?effects=fog: low ground fog lit by a carried flashlight and one fixed
   // spot, on the same collision proxy as relight (see volumetric-fog.ts).
   let fogMode: VolumetricFogMode | null = null;
@@ -3658,6 +3706,7 @@ async function main(): Promise<void> {
     }
     if (effectMode !== 'fog') teardownFog();
     if (effectMode !== '4dgs') teardownCsgs();
+    if (effectMode !== 'rigged') teardownGoose();
     syncLogoVisible();
     syncLogoLighting();
     // LOD level channel is only written while the lod effect is active.
@@ -3682,6 +3731,10 @@ async function main(): Promise<void> {
       setEffectModifiers([]);
       updateEffects = null;
       void mountCsgs();
+    } else if (effectMode === 'rigged') {
+      setEffectModifiers([]);
+      updateEffects = null;
+      void mountGoose();
     } else if (effectMode === 'reveal') {
       const reveal = revealPreset({ frequency: 6, edge: 0.06 });
       setEffectModifiers([reveal.modifier]);
@@ -3824,6 +3877,7 @@ async function main(): Promise<void> {
       }
       // Release the clip tenants before disposing the scene's shared pool.
       teardownCsgs();
+      teardownGoose();
       // The mark belongs to the scene it was placed in; it remounts on the next.
       unmountLogo();
       restoreXrMaterial();
@@ -5787,15 +5841,18 @@ async function main(): Promise<void> {
         scene.add(benchmarkUnified);
       }
       // Before the scene update: the unified draw gathers the clip's new frame.
-      if (mounted && !presenting) csgsEffect?.update();
+      if (mounted && !presenting) {
+        csgsEffect?.update();
+        gooseEffect?.update();
+      }
       const postUpdate = xrPostUpdateEnabled && presenting && mounted && !suppressStreamedUpdate;
       if (!postUpdate) xrPostUpdatePrimed = false;
       if (mounted && !suppressStreamedUpdate && (!postUpdate || !xrPostUpdatePrimed)) {
         const sortThisFrame =
           !presenting || backendName !== 'WebGL2' || xrSortCadence.shouldAttempt(timestamp);
         if (benchmarkUnified) benchmarkUnified.update(camera);
-        else if (csgsEffect?.unifiedDraw) csgsEffect.unifiedDraw.update(camera);
-        else splats.update(camera, renderer, sortThisFrame ? undefined : XR_SKIP_SORT_OPTIONS);
+        else if (!updateGuestDraw())
+          splats.update(camera, renderer, sortThisFrame ? undefined : XR_SKIP_SORT_OPTIONS);
         if (postUpdate) xrPostUpdatePrimed = true;
       }
       if (mounted && !presenting && logo && logoShown) {
@@ -5919,8 +5976,8 @@ async function main(): Promise<void> {
             const sortThisFrame =
               backendName !== 'WebGL2' || xrSortCadence.shouldAttempt(performance.now());
             if (benchmarkUnified) benchmarkUnified.update(camera);
-            else if (csgsEffect?.unifiedDraw) csgsEffect.unifiedDraw.update(camera);
-            else splats.update(camera, renderer, sortThisFrame ? undefined : XR_SKIP_SORT_OPTIONS);
+            else if (!updateGuestDraw())
+              splats.update(camera, renderer, sortThisFrame ? undefined : XR_SKIP_SORT_OPTIONS);
           } catch (error) {
             console.error('XR post-render update failed', error);
             renderer.setAnimationLoop(null);
@@ -6369,6 +6426,9 @@ async function main(): Promise<void> {
       get csgs(): CsgsEffect | null {
         return csgsEffect;
       },
+      get goose(): GooseEffect | null {
+        return gooseEffect;
+      },
       get logoFire(): VolumeFire | null {
         return logoFire;
       },
@@ -6790,6 +6850,11 @@ function buildEffectPicker(
       title:
         '4D clips in the scene: ?clips=<url>[,…] (.asog or a Faltwerk scene JSON), ' +
         'else the Faltwerk demo clips; ?clipSpeed=<rate> plays them faster or slower',
+    },
+    {
+      label: 'Rigged splats',
+      mode: 'rigged',
+      title: 'The procedural goose, skinned to a skeleton and animated; buttons fire each gesture',
     },
     { label: 'pulse', mode: 'demo', title: 'Opacity pulse (breathing alpha) + height tint (M7.2)' },
     {
