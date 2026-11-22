@@ -509,7 +509,10 @@ discrete, integrated and mobile devices, custom sorting, and full-detail
 `performanceProfile: 'quality'`
 —stays on vertex projection. `projectionStrategyStatus` reports the selected
 mode and a stable `auto-*` reason. The selected path is locked for the mesh
-lifetime; a WebGL/XR/device failure falls back safely without camera-driven
+lifetime, except a vertex choice made only because the mesh was in XR, drawn by
+a unified owner, placed per source or carrying a modifier on that prepare: that
+state can end (a reveal finishes), so the mesh resolves again on the next
+prepare. A WebGL/XR/device failure falls back safely without camera-driven
 material rebuilds. `performanceProfile: 'quality'` or
 `projectionStrategy: 'vertex'` is the full-detail escape hatch.
 
