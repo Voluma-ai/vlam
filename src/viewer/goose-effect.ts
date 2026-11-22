@@ -57,20 +57,23 @@ const GESTURES: readonly { readonly name: Gesture; readonly label: string }[] = 
   { name: 'wag', label: 'Wag' },
 ];
 
+/** Where the goose stands in a known scene, the point it faces, and its size. */
+interface GoosePlacement {
+  readonly feet: readonly [number, number, number];
+  readonly faces: readonly [number, number];
+  /** Uniform scale; the goose is life-size (about 0.8 m tall) at 1. */
+  readonly scale: number;
+}
+
 /**
- * Where the goose's feet stand in known scenes and the point it faces, keyed
- * by scene file name; elsewhere it takes the `4dgs` stage and faces the camera.
- * Tempel: on the courtyard floor (y ≈ -0.36) in front of the planted bed,
- * which would hide all but its head, facing the demo's start pose at the
- * courtyard entrance (the site's "Demo" link).
+ * Goose placements keyed by scene file name; elsewhere it takes the `4dgs`
+ * stage at life size and faces the camera. Tempel: on the stone in the middle
+ * of the courtyard's planted bed (the `4dgs` stage), twice life size so it
+ * stands clear of the plants and reads from the courtyard entrance, facing the
+ * demo's start pose there (the site's "Demo" link).
  */
-const GOOSE_PLACEMENTS: Readonly<
-  Record<
-    string,
-    { readonly feet: readonly [number, number, number]; readonly faces: readonly [number, number] }
-  >
-> = {
-  'Tempel.lcc2': { feet: [-2.24, -0.36, -26.86], faces: [-8.13, -38.34] },
+const GOOSE_PLACEMENTS: Readonly<Record<string, GoosePlacement>> = {
+  'Tempel.lcc2': { feet: [-0.42, 0, -23.3], faces: [-8.13, -38.34], scale: 2 },
 };
 
 /** The goose takes a moment to build; it is kept for a later switch back. */
@@ -82,13 +85,23 @@ function buildGoose(): ProceduralGoose {
   return built;
 }
 
+/** The bar of gesture buttons, and how the effect shows which gestures are playing. */
+interface GooseControls {
+  readonly bar: HTMLElement;
+  /** Lights a gesture's button while its clip plays (fired by a click or the schedule). */
+  showPlaying(name: Gesture, playing: boolean): void;
+}
+
 /** Top-center bar, where the `4dgs` credit sits: a title line and one button per gesture, plus the schedule toggle. */
 function createControls(
   play: (name: Gesture) => void,
   setAuto: (auto: boolean) => void,
-): HTMLElement {
+): GooseControls {
   const bar = document.createElement('div');
   bar.id = 'goose-controls';
+  // A press on the bar is not a camera drag or a scene pick, as with the
+  // viewer's other controls.
+  bar.addEventListener('pointerdown', (event) => event.stopPropagation());
   Object.assign(bar.style, {
     position: 'fixed',
     top: '66px',
@@ -132,6 +145,7 @@ function createControls(
       color: '#eee',
       font: 'inherit',
       cursor: 'pointer',
+      transition: 'background 120ms, color 120ms',
     });
     element.addEventListener('click', () => {
       onClick(element);
@@ -141,9 +155,11 @@ function createControls(
     row.append(element);
     return element;
   };
+  const gestureButtons = new Map<Gesture, HTMLButtonElement>();
   for (const { name, label } of GESTURES) {
     const element = button(label, () => play(name));
     element.dataset.gesture = name;
+    gestureButtons.set(name, element);
   }
   let auto = true;
   const autoButton = button('', () => {
@@ -160,7 +176,16 @@ function createControls(
   };
   syncAuto();
   bar.append(title, note, row);
-  return bar;
+  return {
+    bar,
+    showPlaying(name, playing) {
+      const element = gestureButtons.get(name);
+      if (!element || (element.dataset.playing === 'true') === playing) return;
+      element.dataset.playing = String(playing);
+      element.style.background = playing ? '#ffb84d' : 'rgba(255, 255, 255, 0.1)';
+      element.style.color = playing ? '#1a1a1f' : '#eee';
+    },
+  };
 }
 
 /**
@@ -198,6 +223,7 @@ export async function mountGooseEffect(host: GooseEffectHost): Promise<GooseEffe
   const [facesX, facesZ] = preset?.faces ?? [camera.position.x, camera.position.z];
   const group = new THREE.Group();
   group.position.copy(center);
+  group.scale.setScalar(preset?.scale ?? 1);
   group.rotation.y = Math.atan2(facesX - center.x, facesZ - center.z) - Math.PI / 2;
   group.add(mesh);
   scene.add(group);
@@ -228,7 +254,7 @@ export async function mountGooseEffect(host: GooseEffectHost): Promise<GooseEffe
     choreography.mixer.stopAllAction();
     scene.remove(group);
     mesh.dispose();
-    controls.remove();
+    controls.bar.remove();
   };
   try {
     if (host.allowUnified && supportsUnifiedSplatMesh(renderer)) {
@@ -253,7 +279,7 @@ export async function mountGooseEffect(host: GooseEffectHost): Promise<GooseEffe
     dispose();
     throw error;
   }
-  document.body.append(controls);
+  document.body.append(controls.bar);
 
   const timer = new THREE.Timer();
   return {
@@ -267,6 +293,9 @@ export async function mountGooseEffect(host: GooseEffectHost): Promise<GooseEffe
       if (auto) choreography.update(delta);
       else choreography.mixer.update(delta);
       rig.setPose(puppet);
+      for (const { name } of GESTURES) {
+        controls.showPlaying(name, choreography.actions[name].isRunning());
+      }
       // The unified draw updates its sources itself.
       if (!unifiedDraw) mesh.update(camera, renderer);
     },
